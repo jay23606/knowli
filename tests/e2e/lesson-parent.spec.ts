@@ -208,16 +208,20 @@ test("creates a lesson, reviews it grouped by objective and stage, fixes a valid
   const menus = independentStage.locator('[data-testid^="exercise-menu-"]');
   for (let remaining = await menus.count(); remaining > 0; remaining = await menus.count()) {
     // Menu bywa zamykane przez przewijanie/odświeżenie karty albo zasłaniane przez
-    // dolny pasek akcji — otwieramy je od nowa, aż pozycja zostanie kliknięta.
+    // dolny pasek akcji — ponawiamy wyłącznie otwarcie menu (z próbnym kliknięciem
+    // pozycji), a „Usuń” klikamy raz: ponowienie kliknięcia mogłoby usunąć kolejną kartę.
+    const remove = page.locator('[data-testid^="exercise-remove-"]');
     await expect(async () => {
-      await menus.first().scrollIntoViewIfNeeded();
-      await menus.first().click();
-      const remove = page.locator('[data-testid^="exercise-remove-"]');
+      if (!(await remove.isVisible())) {
+        await menus.first().scrollIntoViewIfNeeded();
+        await menus.first().click();
+      }
       await expect(remove).toBeVisible({ timeout: 2_000 });
       await expect(remove).toBeEnabled({ timeout: 2_000 });
-      await remove.click({ timeout: 3_000 });
-      await expect(menus).toHaveCount(remaining - 1, { timeout: 3_000 });
+      await remove.click({ trial: true, timeout: 2_000 });
     }).toPass({ timeout: 30_000 });
+    await remove.click();
+    await expect(menus).toHaveCount(remaining - 1);
   }
   await saveLessonAndWait(page);
   // Pokrycie pokazuje brak etapu samodzielnego; publikacja zablokowana.
