@@ -488,6 +488,27 @@ export async function reconcileDraftAssetsTx(
 }
 
 /**
+ * Wspólny krok uzgadniania wiązań nagrań lekcji (karty, historyjka): `null`,
+ * gdy obecne wiązanie ma ten sam fingerprint, a zasób nie jest `failed`
+ * (zostaje bez zmian); w przeciwnym razie id zasobu do związania (gotowy po
+ * fingerprincie albo nowe zlecenie). Nieudane nagranie zlecamy ponownie.
+ */
+async function assetToBind(
+  tx: Tx,
+  settings: MediaSettings,
+  current: { expectedFingerprint: string; assetId: string | null } | undefined,
+  required: RequiredAsset,
+): Promise<string | null> {
+  if (current && current.expectedFingerprint === required.fingerprint && current.assetId !== null) {
+    const asset = (
+      await tx.select({ state: mediaAssets.state, fingerprint: mediaAssets.fingerprint }).from(mediaAssets).where(eq(mediaAssets.id, current.assetId))
+    )[0];
+    if (asset && asset.fingerprint === required.fingerprint && asset.state !== "failed") return null;
+  }
+  return (await findOrCreateAsset(tx, settings, required)).id;
+}
+
+/**
  * Uzgadnia nagrania kart nauki szkicu (design szkoły §12.2) w transakcji
  * edycji: zgodne zostają, zmienione dostają nowy zasób (gotowy po fingerprincie
  * albo nowe zlecenie), zbędne znikają. Nieudane nagranie zlecamy ponownie —
@@ -541,16 +562,11 @@ async function reconcileLessonCardAssetsTx(
   }
   for (const card of required) {
     const current = existingByKey.get(cardKey(card.objectiveId, card.cardIndex));
-    if (current && current.expectedFingerprint === card.asset.fingerprint && current.assetId !== null) {
-      const asset = (
-        await tx.select({ state: mediaAssets.state, fingerprint: mediaAssets.fingerprint }).from(mediaAssets).where(eq(mediaAssets.id, current.assetId))
-      )[0];
-      if (asset && asset.fingerprint === card.asset.fingerprint && asset.state !== "failed") continue;
-    }
-    const asset = await findOrCreateAsset(tx, settings, card.asset);
+    const assetId = await assetToBind(tx, settings, current, card.asset);
+    if (assetId === null) continue;
     if (current) {
       await tx.update(lessonCardAssets)
-        .set({ expectedFingerprint: card.asset.fingerprint, assetId: asset.id })
+        .set({ expectedFingerprint: card.asset.fingerprint, assetId })
         .where(and(
           eq(lessonCardAssets.deckVersionId, versionId),
           eq(lessonCardAssets.objectiveId, card.objectiveId),
@@ -561,7 +577,7 @@ async function reconcileLessonCardAssetsTx(
         deckVersionId: versionId,
         objectiveId: card.objectiveId,
         cardIndex: card.cardIndex,
-        assetId: asset.id,
+        assetId,
         expectedFingerprint: card.asset.fingerprint,
       });
     }
@@ -600,24 +616,20 @@ export async function reconcileLessonStoryAssetTx(
   const sentences = context.story?.sentences;
   const story: LessonStory | undefined =
     Array.isArray(sentences) && sentences.every((sentence) => typeof sentence === "string")
+      // Pytania pomijamy: na tekst i fingerprint nagrania wpływają tylko zdania.
       ? { sentences: sentences as string[], questions: [] }
       : undefined;
   const required = requiredAssetForLessonStory(story, subject, settings);
   if (!required) return dropRow();
 
-  if (existing && existing.expectedFingerprint === required.fingerprint && existing.assetId !== null) {
-    const asset = (
-      await tx.select({ state: mediaAssets.state, fingerprint: mediaAssets.fingerprint }).from(mediaAssets).where(eq(mediaAssets.id, existing.assetId))
-    )[0];
-    if (asset && asset.fingerprint === required.fingerprint && asset.state !== "failed") return;
-  }
-  const asset = await findOrCreateAsset(tx, settings, required);
+  const assetId = await assetToBind(tx, settings, existing, required);
+  if (assetId === null) return;
   if (existing) {
     await tx.update(lessonStoryAssets)
-      .set({ expectedFingerprint: required.fingerprint, assetId: asset.id })
+      .set({ expectedFingerprint: required.fingerprint, assetId })
       .where(eq(lessonStoryAssets.deckVersionId, version.id));
   } else {
-    await tx.insert(lessonStoryAssets).values({ deckVersionId: version.id, assetId: asset.id, expectedFingerprint: required.fingerprint });
+    await tx.insert(lessonStoryAssets).values({ deckVersionId: version.id, assetId, expectedFingerprint: required.fingerprint });
   }
 }
 
