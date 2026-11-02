@@ -25,6 +25,7 @@ import {
 import { AppError } from "../../../errors";
 import { explanationTextErrors } from "../../../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
+import { resolveGenerationLeaks } from "../../../domain/lessons/exposure-leaks";
 import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE } from "../../../domain/lessons/lesson-coverage";
 import {
   DEFAULT_LESSON_POLICY,
@@ -504,6 +505,9 @@ function batchesForObjectives(
 
 /** Najwięcej ćwiczeń `lesson_listen_choice` na cel w szkicu — dodatek ponad podział etapów (decyzja #198). */
 const LISTEN_CHOICE_PER_OBJECTIVE = 2;
+
+/** Powód odrzucenia świeżego ćwiczenia z rozwiązaniem widocznym wcześniej (klucz `rejectedReasons`, widoczny dla rodzica). */
+const EXPOSURE_LEAK_REASON = "rozwiązanie widoczne wcześniej";
 
 /**
  * Ile ćwiczeń słuchowych generator może jeszcze dodać do celu: limit na cel minus ćwiczenia
@@ -1356,7 +1360,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
 
   // Do not spend an LLM request on a run invalidated by a parent edit/retry.
   // The final write still rechecks the edit number under a row lock.
-  const currentVersion = (await services.db.select({ editNumber: deckVersions.editNumber, state: deckVersions.state })
+  const currentVersion = (await services.db.select({ editNumber: deckVersions.editNumber, state: deckVersions.state, lessonContext: deckVersions.lessonContext })
     .from(deckVersions).where(eq(deckVersions.id, run.deckVersionId!)))[0];
   if (!currentVersion || currentVersion.state === "published" || currentVersion.editNumber !== run.expectedEditNumber) {
     await markCurrentRun(services.db, "superseded", null);
@@ -1389,6 +1393,14 @@ export async function executeLessonGeneration(services: Services, runId: string,
   const legacyExistingExercises = subject.poolDeduplication === "exercise" && input.regenerate && input.regenerate.existingExercises === undefined
     ? await existingExercisesOf(services.db, input.deckVersionId, subject)
     : [];
+  // Szkic przed partiami (poza transakcją; zapis i tak sprawdza editNumber pod blokadą,
+  // więc edycja rodzica w międzyczasie unieważnia run): przykłady kart i ćwiczenia szkicu
+  // dla reguły ujawnionych rozwiązań. Dogenerowanie dopisuje do szkicu: krzyżowa reguła
+  // ćwiczeń słuchowych też widzi ćwiczenia już w szkicu (inaczej konflikt zdania
+  // z odpowiedzią tekstową wyszedłby dopiero przy publikacji).
+  const draftContext = (currentVersion.lessonContext ?? {}) as unknown as Partial<LessonContext>;
+  const draftExamples: Record<string, string[]> = draftContext.examples ?? {};
+  const existingDrafts = input.regenerate ? await existingDraftsOf(services.db, input.deckVersionId) : [];
 
   // Partie per cel: albo dogenerowanie jednego celu, albo pełna pula.
   let batches: { objectiveId: string; count: number; existingAnswers: string[]; existingExercises: LessonExerciseStimulus[] }[] = input.regenerate
@@ -1554,9 +1566,6 @@ export async function executeLessonGeneration(services: Services, runId: string,
       await markCurrentRun(services.db, "failed", "validation");
       return;
     }
-    // Dogenerowanie dopisuje do szkicu: krzyżowa reguła ćwiczeń słuchowych widzi też ćwiczenia już w szkicu
-    // (inaczej konflikt zdania z odpowiedzią tekstową wyszedłby dopiero przy publikacji).
-    const existingDrafts = input.regenerate ? await existingDraftsOf(services.db, input.deckVersionId) : [];
     const fresh = acceptFreshLessonPool({
       rawExercises,
       subject,
@@ -1571,10 +1580,24 @@ export async function executeLessonGeneration(services: Services, runId: string,
       objectiveLimits,
     });
     const { shapeRejected, droppedAcceptedVariants, droppedExplanations, rejected } = fresh;
-    const refined = { rejectedCount: fresh.refineRejected, rejectedReasons: fresh.refinedReasons };
     const dupAgainstExisting = fresh.duplicateCount;
-    const uniqueValid = fresh.accepted;
-    const rejectedCount = shapeRejected + outOfScopeCount + refined.rejectedCount + rejected.length + dupAgainstExisting;
+    // Reguła twarda (spec etapu przeglądu §5.2): świeże ćwiczenie samodzielne z rozwiązaniem
+    // widocznym wcześniej (przykład karty, ćwiczenie niesamodzielne) odpada; ćwiczenia szkicu
+    // są nietykalne — odpadają wtedy świeże źródła i nowe przykłady.
+    const leaks = resolveGenerationLeaks({
+      existing: existingDrafts,
+      fresh: fresh.accepted,
+      existingExamples: draftExamples,
+      newExamples: examples,
+      objectiveOrder: input.regenerate ? (draftContext.objectiveIds ?? input.objectiveIds) : batches.map((batch) => batch.objectiveId),
+      subject,
+    });
+    const uniqueValid = leaks.keptFresh;
+    const leakRejected = leaks.droppedFresh.length;
+    const rejectedCount = shapeRejected + outOfScopeCount + fresh.refineRejected + rejected.length + dupAgainstExisting + leakRejected;
+    const runRejectedReasons = leakRejected > 0
+      ? sumRejectedReasons(fresh.refinedReasons, { [EXPOSURE_LEAK_REASON]: leakRejected })
+      : fresh.refinedReasons;
 
     console.log(
       `[lesson] run=${runId} walidacja puli: ${summarizeLessonPoolValidation({
@@ -1585,9 +1608,12 @@ export async function executeLessonGeneration(services: Services, runId: string,
         rejectedErrors: rejected.flatMap((item) => item.errors),
         duplicateCount: dupAgainstExisting,
         validCount: uniqueValid.length,
-        refineRejected: refined.rejectedCount,
+        refineRejected: fresh.refineRejected,
       })}`,
     );
+    if (leakRejected > 0 || leaks.droppedExampleCount > 0) {
+      console.log(`[lesson] run=${runId} ujawnienia: usunięte=${leakRejected} przykłady=${leaks.droppedExampleCount}`);
+    }
     // Porzucone warianty redundantne nie są odrzuceniem (nie trafiają do
     // rejectedCount ani podsumowania) — sama linia z licznikiem, bez treści
     // wariantów, żeby incydenty tej klasy były widoczne w logach workera.
@@ -1607,7 +1633,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         )[0];
         if (version && version.state !== "published" && version.editNumber === run.expectedEditNumber) {
           const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
-          const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, refined.rejectedReasons);
+          const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, runRejectedReasons);
           await tx
             .update(deckVersions)
             .set({
@@ -1641,7 +1667,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         return;
       }
       const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
-      const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, refined.rejectedReasons);
+      const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, runRejectedReasons);
       // Pula zapisywana do lekcji z historyjką (dogenerowanie, ale też pełny run):
       // ćwiczenie, którego rozwiązanie powtarza zdanie historyjki, ujawniłoby
       // odpowiedź (bariera ekspozycji, spec historyjki §5). Historyjka z tej
@@ -1681,7 +1707,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
       const nextContext: LessonContext = {
         ...prevContext,
         ...(dynamicTopicData ? { dynamicTopic: dynamicTopicData, objectiveIds: dynamicTopicData.objectives.map((o) => o.id) } : {}),
-        examples: { ...prevContext.examples, ...examples },
+        examples: { ...prevContext.examples, ...leaks.keptNewExamples },
         rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + storyRejected,
         ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
         droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,

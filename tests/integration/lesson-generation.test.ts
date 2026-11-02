@@ -1504,6 +1504,120 @@ describe("generowanie puli lekcji (integracja)", () => {
       editLessonDraft(services, edited.id, { expectedEditNumber: edited.editNumber, exercises: forged }),
     ).rejects.toMatchObject({ code: "validation" });
   });
+
+  describe("reguła twarda: rozwiązanie widoczne wcześniej (spec etapu przeglądu §5.2)", () => {
+    const EXPOSURE_REASON = "rozwiązanie widoczne wcześniej";
+    const SCHOOL_MATERIAL = [
+      "Zagadnienie 1: Fotosynteza",
+      "Wyjaśnienie: Fotosynteza to proces, w którym roślina z wody i dwutlenku węgla, przy udziale światła, wytwarza cukry. Cukry są pokarmem rośliny.",
+      "Zagadnienie 2: Chrzest Polski",
+      "Wyjaśnienie: Mieszko I przyjął chrzest w 966 roku. Chrzest włączył państwo do chrześcijańskiej Europy i wzmocnił władzę księcia.",
+    ].join("\n");
+
+    function schoolServices(fakes: FakeGeneration): Services {
+      return createServices({
+        db: testDatabase().db,
+        clock: new ManualClock(),
+        media: fakes.settings,
+        generation: fakes.deps,
+        subjects: createSubjectRegistry([schoolSubject]),
+      });
+    }
+
+    async function generateSchool(services: Services) {
+      const { runId, deckId } = await createSchoolLesson(services, {
+        subjectTitlePl: "Przyroda i historia",
+        topicTitlePl: "Materiał pilotażowy",
+        material: SCHOOL_MATERIAL,
+        poolSize: 40,
+        clientRequestId: randomUUID(),
+      });
+      await executeLessonGeneration(services, runId);
+      expect((await readGeneration(services, runId)).state).toBe("succeeded");
+      return (await readLessonDeck(services, deckId)).draft!;
+    }
+
+    it("gramatyka: tłumaczenie równe przykładowi karty nie trafia do szkicu; przykład zostaje, powód i log", async () => {
+      const fakes = await fakeGeneration();
+      disposers.push(fakes.dispose);
+      const services = lessonServices(fakes);
+      const objectiveId = "english_grammar.present_simple.third_person_s";
+      const translation = (prompt: string, answer: string, focus: string) => ({
+        exerciseType: "lesson_open_answer", objectiveId, instructionPl: "Przetłumacz zdanie na angielski.", prompt,
+        answer, acceptedAnswers: [], focus: [focus],
+      });
+      fakes.llm.queueLesson({
+        exercises: [
+          {
+            exerciseType: "lesson_choice", objectiveId, instructionPl: "Wybierz.", stem: "She ___ football.", answer: "plays",
+            acceptedAnswers: [], focus: [], options: [{ id: "a", text: "plays" }, { id: "b", text: "play" }], correctOption: "a",
+          },
+          translation("On gra w piłkę.", "He plays football.", "plays"),
+          translation("Ona ogląda telewizję.", "She watches TV.", "watches"),
+        ],
+        examples: { [objectiveId]: ["He plays football."] },
+      });
+
+      const { runId, deckId } = await createLesson(services, command());
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      });
+      try {
+        await executeLessonGeneration(services, runId);
+      } finally {
+        spy.mockRestore();
+      }
+      expect((await readGeneration(services, runId)).state).toBe("succeeded");
+
+      const draft = (await readLessonDeck(services, deckId)).draft!;
+      expect(draft.exercises.map((exercise) => exercise.answer).sort()).toEqual(["She watches TV.", "plays"]);
+      expect(draft.examples[objectiveId]).toEqual(["He plays football."]);
+      expect(draft.rejectedCount).toBe(1);
+      expect(draft.rejectedReasons?.[EXPOSURE_REASON]).toBe(1);
+      expect(logs).toContain(`[lesson] run=${runId} ujawnienia: usunięte=1 przykłady=0`);
+    });
+
+    it("szkoła: rodzina trzech pytań otwartych z jedną odpowiedzią zostaje w szkicu, a pokrycie liczy jedno", async () => {
+      const fakes = await fakeGeneration();
+      disposers.push(fakes.dispose);
+      const services = schoolServices(fakes);
+      const regular = fakes.llm.generateLessonPool.bind(fakes.llm);
+      const isOpen = (exercise: unknown) => (exercise as { exerciseType?: string }).exerciseType === "lesson_open_answer";
+      let familyObjectiveId: string | undefined;
+      fakes.deps.llm.generateLessonPool = async (input) => {
+        const result = await regular(input);
+        if (familyObjectiveId !== undefined) return result;
+        familyObjectiveId = input.objectives[0]!.id;
+        expect(input.stageCounts.independent).toBeGreaterThanOrEqual(3);
+        const base = result.exercises.find(isOpen) as Record<string, unknown>;
+        const family = [1, 2, 3].map((n) => ({ ...base, familyId: "fotosynteza-definicja", prompt: `Pytanie rodziny numer ${n}: czym jest fotosynteza?` }));
+        return { ...result, exercises: [...result.exercises.filter((exercise) => !isOpen(exercise)), ...family] };
+      };
+
+      const draft = await generateSchool(services);
+      const family = draft.exercises.filter((exercise) => exercise.objectiveId === familyObjectiveId && exercise.exerciseType === "lesson_open_answer");
+      expect(family).toHaveLength(3);
+      expect(new Set(family.map((exercise) => exercise.answer)).size).toBe(1);
+      expect(draft.rejectedReasons?.[EXPOSURE_REASON]).toBeUndefined();
+      expect(draft.coverage).toContainEqual(expect.objectContaining({ objectiveId: familyObjectiveId, stage: "independent", actual: 1, required: 2 }));
+    });
+
+    it("domyślna pula fake'a gramatyki i szkoły nie ma ujawnionych rozwiązań", async () => {
+      const fakes = await fakeGeneration();
+      disposers.push(fakes.dispose);
+      const grammar = lessonServices(fakes);
+      const { runId, deckId } = await createLesson(grammar, command({ poolSize: 20 }));
+      await executeLessonGeneration(grammar, runId);
+      expect((await readGeneration(grammar, runId)).state).toBe("succeeded");
+      const grammarDraft = (await readLessonDeck(grammar, deckId)).draft!;
+      expect(grammarDraft.rejectedReasons?.[EXPOSURE_REASON]).toBeUndefined();
+      expect(grammarDraft.rejectedCount).toBe(0);
+
+      const schoolDraft = await generateSchool(schoolServices(fakes));
+      expect(schoolDraft.rejectedReasons?.[EXPOSURE_REASON]).toBeUndefined();
+    });
+  });
 });
 
 // Dowód, że fake LLM implementuje nowy port (bez sieci).
