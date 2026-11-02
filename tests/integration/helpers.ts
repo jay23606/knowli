@@ -7,6 +7,7 @@ import {
   MAX_AUDIO_BYTES,
   MAX_DECK_COVER_BYTES,
   MULTIPART_OVERHEAD_BYTES,
+  englishGrammarSubject,
   type Clock,
   type Services,
 } from "@learning/server";
@@ -15,6 +16,23 @@ import { kidRouter } from "@/orpc/kid-router";
 import { parentORpcRouter } from "@/orpc/parent-router";
 
 type Pool = ReturnType<typeof createDatabase>["pool"];
+
+/**
+ * Gramatyka bez nagrań zdań feedbacku (jak po wyłączeniu flagi): wybór ze słuchu
+ * wymaga tych nagrań, więc przedmiot bez nich nie wymienia też typu.
+ */
+export const grammarWithoutSentenceAudio: typeof englishGrammarSubject = {
+  ...englishGrammarSubject,
+  ttsForFeedbackSentence: false,
+  exerciseTypes: englishGrammarSubject.exerciseTypes.filter((type) => type !== "lesson_listen_choice"),
+  topics: englishGrammarSubject.topics.map((topic) => ({
+    ...topic,
+    objectives: topic.objectives.map((objective) => ({
+      ...objective,
+      exerciseTypes: objective.exerciseTypes.filter((type) => type !== "lesson_listen_choice"),
+    })),
+  })),
+};
 
 // Te same limity surowego strumienia co catch-all-e produkcyjne (route.ts).
 const kidApiHandler = createOpenApiHandler(kidRouter, {

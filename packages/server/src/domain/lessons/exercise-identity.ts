@@ -1,3 +1,4 @@
+import { feedbackSentenceText } from "./feedback-sentence-text";
 import type { LessonExerciseDraft, LessonExerciseType, SubjectModule } from "./types";
 
 export interface LessonExerciseStimulus {
@@ -61,6 +62,16 @@ function baseStimulus(exercise: LessonExerciseDraft): string {
       return exercise.visualSubject === undefined
         ? normalizeStimulus(exercise.stem ?? "")
         : JSON.stringify([normalizeStimulus(exercise.stem ?? ""), exercise.visualSubject]);
+    case "lesson_listen_choice": {
+      // Bodźcem jest nagranie pełnego zdania: ten sam stem z inną poprawną opcją to inne ćwiczenie.
+      const sentence = feedbackSentenceText({
+        exerciseType: exercise.exerciseType,
+        stem: exercise.stem,
+        options: exercise.options,
+        correctOption: exercise.correctOption,
+      });
+      return JSON.stringify([normalizeStimulus(exercise.stem ?? ""), normalizeStimulus(sentence ?? "")]);
+    }
     case "lesson_notice":
       return JSON.stringify((exercise.noticeSegments ?? []).map((sentence) => sentence.map(normalizeStimulus)));
     case "lesson_match":

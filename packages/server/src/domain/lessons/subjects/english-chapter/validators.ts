@@ -126,7 +126,9 @@ function checkedElements(ex: LessonExerciseDraft): readonly string[] {
       return (ex.groupItems ?? []).map((item) => item.text);
     case "lesson_cloze":
       return [...(ex.gapAnswers ?? []), ...(ex.extraWords ?? [])];
+    // Wybór ze słuchu: opcje to słowa materiału jak w wyborze; bodźcem jest nagranie, nie polecenie.
     case "lesson_choice":
+    case "lesson_listen_choice":
       return (ex.options ?? []).map((option) => option.text);
     case "lesson_order":
     case "lesson_gap":

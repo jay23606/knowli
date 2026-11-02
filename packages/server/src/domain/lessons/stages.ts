@@ -23,7 +23,18 @@ export const STAGE_BY_TYPE: Readonly<Record<LessonExerciseType, LessonStage>> = 
   lesson_group: "guided",
   // Luki z bankiem słów: bank widoczny, rozpoznanie w kontekście (design szkoły §13.3).
   lesson_cloze: "guided",
+  // Wybór brakującej formy ze słuchu: opcje widoczne, rozpoznanie ze wsparciem nagrania (#198).
+  lesson_listen_choice: "guided",
 };
+
+/**
+ * Typy poza ścieżką etapów: nie wchodzą do kolejki etapów celu (intro → guided →
+ * productive → independent), tylko dochodzą do puli jako dodatek (słuchowy wybór
+ * wymaga gotowego nagrania, słowa kluczowe — odpowiedzi otwartej).
+ */
+export function outsideStagePath(type: LessonExerciseType): boolean {
+  return type === "lesson_listen_choice" || type === "lesson_keywords";
+}
 
 /** Etapy oceniane (poza intro-kartą): guided, productive, independent. */
 export const ASSESSED_STAGES: readonly LessonStage[] = ["guided", "productive", "independent"];

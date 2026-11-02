@@ -588,4 +588,16 @@ describe("NewLessonForm", () => {
     expect(markup).toContain(messages.lessons.poolSizeHint);
     expect(markup).not.toContain(messages.lessons.chapterPoolSizeHint);
   });
+
+  it("dopisek o ćwiczeniach „Posłuchaj i wybierz” przy polu puli: gramatyka i rozdział tak, szkoła nie", () => {
+    expect(messages.lessons.listenChoiceCreateNote).toBe("Do puli dodamy najwyżej 2 ćwiczenia „Posłuchaj i wybierz” na regułę.");
+    for (const subject of [grammar, chapter]) {
+      const markup = renderWithCatalog(subject);
+      expect(markup).toContain('data-testid="lesson-listen-choice-note"');
+      expect(markup).toContain(messages.lessons.listenChoiceCreateNote);
+    }
+    const schoolMarkup = renderWithCatalog(school);
+    expect(schoolMarkup).not.toContain('data-testid="lesson-listen-choice-note"');
+    expect(schoolMarkup).not.toContain(messages.lessons.listenChoiceCreateNote);
+  });
 });

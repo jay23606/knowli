@@ -45,7 +45,13 @@ export const englishGrammarPrompts: SubjectPromptProfile = {
     "Short answers to questions about 'you' answer as 'I': Are you ready? -> Yes, I am. " +
     "Picture choice (only for objectives whose id contains '.affirmative_forms'): some lesson_choice exercises set visualSubject to who is pictured (boy or man = he, girl or woman = she, group = they, dog = it); " +
     "then the stem is a sentence frame with the pronoun missing (___ is happy. / ___ are happy.) and the options are pronouns (He, She, It, They), so the child picks the pronoun for the picture. " +
-    "In such exercises the be form in the stem must match the pictured subject, and never set visualSubject on other exercise types.",
+    "In such exercises the be form in the stem must match the pictured subject, and never set visualSubject on other exercise types. " +
+    "lesson_listen_choice (listening choice): a narrator reads the full sentence aloud and the child picks the word that fills the gap, so use it only when the checked form SOUNDS different. " +
+    "stem is one short natural sentence of at most 12 words with exactly one gap written as ___ (two or more underscores) standing on the objective's checked element; " +
+    "2 or 3 options that differ AUDIBLY in that element (play / plays, don't / doesn't, Do / Does, is / are, isn't / aren't) and exactly one is correct. " +
+    "Never offer an equivalent option (a full form and a contraction of the same form, such as does not and doesn't, or is not and isn't) " +
+    "and never start an option with an apostrophe. Do not check a difference that exists only in spelling. " +
+    "Never set instructionPl, hint or visualSubject on a lesson_listen_choice exercise: the recording is the whole stimulus and the child sees only the gap sentence and the options.",
   // Tematy zdań z zainteresowań dziecka (#197, spec §5.1); same tematy idą w wiadomości użytkownika jako dane.
   interestsRule:
     "Sentence themes: the parent listed a few topics the child enjoys (they may be in Polish — " +

@@ -29,7 +29,8 @@ import {
   MIN_MATCH_PAIRS,
 } from "@learning/contracts";
 import { clozeAnswer, clozeGapCount, clozeParts } from "./cloze";
-import { ASSESSED_STAGES, stageOf } from "./stages";
+import { FEEDBACK_SENTENCE_MAX_LENGTH, feedbackSentenceText, fillGap } from "./feedback-sentence-text";
+import { ASSESSED_STAGES, outsideStagePath, stageOf } from "./stages";
 import type {
   AnswerNormalizer,
   LearningObjective,
@@ -81,6 +82,13 @@ const TEXT_TYPES: ReadonlySet<LessonExerciseType> = new Set<LessonExerciseType>(
 
 /** Pola tekstowe podlegające limitowi długości (payload „Data Models”). */
 const TEXT_FIELDS = ["instructionPl", "stem", "statement", "prompt", "hint"] as const;
+
+/** Typy tekstowe, których odpowiedzi nie może ujawniać zdanie ćwiczenia słuchowego. */
+const LISTEN_CROSS_CHECK_TYPES: ReadonlySet<LessonExerciseType> = new Set<LessonExerciseType>([
+  "lesson_open_answer",
+  "lesson_transform",
+  "lesson_error_fix",
+]);
 
 /** Klucz wariantu normalizacji (sekwencja tokenów) do porównań zbiorowych. */
 function sequenceKey(tokens: readonly string[]): string {
@@ -158,6 +166,9 @@ function anyTokens(text: string, normalizer: AnswerNormalizer): readonly string[
   const variants = normalizer.normalize(text);
   return variants[0] ?? [];
 }
+
+/** Luka `lesson_listen_choice`: ciąg 2+ podkreśleń (jak `feedbackSentenceText` i Kid UI `splitGap`). */
+const LISTEN_GAP_PATTERN = /_{2,}/g;
 
 /** Liczba wystąpień `GAP_MARKER` w tekście. */
 function countGapMarkers(stem: string): number {
@@ -267,6 +278,17 @@ export function validateLessonExercise(
   if ((ex.clozeText !== undefined || ex.gapAnswers !== undefined || ex.extraWords !== undefined) && ex.exerciseType !== "lesson_cloze") {
     errors.push("clozeText: tekst z lukami jest dozwolony tylko dla „lesson_cloze”");
   }
+  if (ex.exerciseType === "lesson_listen_choice") {
+    // Polecenie dziecka jest stałe z katalogu komunikatów; bodźcem jest nagranie, więc
+    // podpowiedź (wskazałaby odpowiedź) i polecenie rodzica nie mają miejsca w payloadzie.
+    // `visualSubject` odrzuca już `validateVisualSubject` (tylko `lesson_choice`).
+    if (ex.instructionPl?.trim()) {
+      errors.push("instructionPl: niedozwolone dla „lesson_listen_choice” (polecenie jest stałe)");
+    }
+    if (ex.hint?.trim()) {
+      errors.push("hint: niedozwolona dla „lesson_listen_choice” (podpowiedź zdradzałaby odpowiedź)");
+    }
+  }
   validateTextFieldLengths(ex, errors);
   validateFocus(ex, normalizer, errors);
   validateByType(ex, topic, objective, normalizer, errors);
@@ -321,6 +343,9 @@ function validateByType(
       if (!ex.stem?.trim()) errors.push("stem: wymagane zdanie dla „lesson_choice”");
       validateOptions(ex, normalizer, errors);
       break;
+    case "lesson_listen_choice":
+      validateListenChoice(ex, normalizer, errors);
+      break;
     case "lesson_short_answer":
       if (!(ex.prompt ?? ex.stem)?.trim()) errors.push("prompt: wymagane pytanie dla „lesson_short_answer”");
       validateOptions(ex, normalizer, errors);
@@ -359,6 +384,56 @@ function validateByType(
       break;
   }
   void objective;
+}
+
+/** Pełne zdanie `lesson_listen_choice` (poprawna opcja w luce) albo `null` — to, co czyta lektor. */
+function listenSentenceOf(ex: LessonExerciseDraft): string | null {
+  return feedbackSentenceText({
+    exerciseType: ex.exerciseType,
+    stem: ex.stem,
+    options: ex.options,
+    correctOption: ex.correctOption,
+  });
+}
+
+/**
+ * `lesson_listen_choice`: zdanie z jedną luką (2+ podkreśleń), 2–4 opcje, a pełne
+ * zdanie z poprawną opcją istnieje i mieści się w limicie nagrania. Opcje nie mogą
+ * zaczynać się od apostrofu (lektor czyta całe tokeny) i muszą dawać nierównoważne
+ * zdania — „doesn't” i „does not” to ta sama odpowiedź, więc zadanie byłoby dwuznaczne.
+ */
+function validateListenChoice(
+  ex: LessonExerciseDraft,
+  normalizer: AnswerNormalizer,
+  errors: string[],
+): void {
+  const stem = ex.stem ?? "";
+  const gaps = (stem.match(LISTEN_GAP_PATTERN) ?? []).length;
+  if (gaps !== 1) {
+    errors.push(`stem: „lesson_listen_choice” wymaga dokładnie jednej luki (ciągu co najmniej dwóch podkreśleń, znaleziono ${gaps})`);
+  }
+  validateOptions(ex, normalizer, errors);
+  const options = ex.options ?? [];
+  for (const option of options) {
+    if (/^['\u2019]/u.test(option.text.trim())) {
+      errors.push(`options: opcja „${option.text}” zaczyna się od apostrofu (skróty tylko jako całe słowa)`);
+    }
+  }
+  if (gaps !== 1) {
+    return;
+  }
+  for (let i = 0; i < options.length; i++) {
+    for (let j = i + 1; j < options.length; j++) {
+      const a = fillGap(stem, options[i]!.text);
+      const b = fillGap(stem, options[j]!.text);
+      if (a !== undefined && b !== undefined && answersEquivalent(a, b, normalizer)) {
+        errors.push(`options: zdania z opcjami „${options[i]!.text}” i „${options[j]!.text}” są równoważne po normalizacji`);
+      }
+    }
+  }
+  if (options.some((option) => option.id === ex.correctOption) && listenSentenceOf(ex) === null) {
+    errors.push(`stem: zdanie z wstawioną poprawną opcją jest puste albo dłuższe niż ${FEEDBACK_SENTENCE_MAX_LENGTH} znaków (lektor go nie nagra)`);
+  }
 }
 
 /**
@@ -834,6 +909,14 @@ export function findDuplicateAnswers(
   );
 }
 
+/**
+ * Kontekst walidacji dopisywanej puli (dogenerowanie): ćwiczenia już zapisane w szkicu. Nie są
+ * walidowane ani zwracane — służą tylko regule krzyżowej ćwiczeń słuchowych.
+ */
+export interface PoolValidationContext {
+  readonly existingExercises?: readonly LessonExerciseDraft[];
+}
+
 /** Wynik walidacji puli: ćwiczenia poprawne i odrzucone z powodami. */
 export interface PoolValidationResult {
   readonly valid: LessonExerciseDraft[];
@@ -851,6 +934,7 @@ export function validatePool(
   exercises: readonly LessonExerciseDraft[],
   subject: SubjectModule,
   topic: LessonTopic,
+  context: PoolValidationContext = {},
 ): PoolValidationResult {
   const rejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
 
@@ -866,13 +950,53 @@ export function validatePool(
     }
   });
 
+  // Ćwiczenie słuchowe, którego pełne zdanie jest odpowiedzią ćwiczenia tekstowego tej
+  // samej puli, ujawniłoby je przed samodzielnym sprawdzeniem. Klucz ekspozycji łapie
+  // tylko identyczny tekst, więc tu porównujemy normalizatorem przedmiotu.
+  // Przy dogenerowaniu reguła obejmuje też szkic: nowe ćwiczenie słuchowe nie może czytać odpowiedzi
+  // tekstowej szkicu, a nowe ćwiczenie tekstowe nie może mieć odpowiedzi równej zdaniu słuchowemu szkicu.
+  const existing = context.existingExercises ?? [];
+  const textAnswers = [...existing, ...singleValid.map((entry) => entry.exercise)]
+    .filter((ex) => LISTEN_CROSS_CHECK_TYPES.has(ex.exerciseType))
+    .flatMap((ex) => [ex.answer, ...ex.acceptedAnswers]);
+  const existingListenSentences = existing
+    .filter((ex) => ex.exerciseType === "lesson_listen_choice")
+    .map(listenSentenceOf)
+    .filter((sentence): sentence is string => sentence !== null);
+  const eligible = singleValid.filter(({ exercise }) => {
+    if (exercise.exerciseType !== "lesson_listen_choice") {
+      if (
+        existingListenSentences.length > 0 &&
+        LISTEN_CROSS_CHECK_TYPES.has(exercise.exerciseType) &&
+        [exercise.answer, ...exercise.acceptedAnswers].some((answer) =>
+          existingListenSentences.some((sentence) => answersEquivalent(sentence, answer, subject.normalizer)))
+      ) {
+        rejected.push({
+          exercise,
+          errors: ["answer: odpowiedź jest zdaniem ćwiczenia słuchowego w tej lekcji (ćwiczenie słuchowe by ją ujawniło)"],
+        });
+        return false;
+      }
+      return true;
+    }
+    const sentence = listenSentenceOf(exercise);
+    if (sentence !== null && textAnswers.some((answer) => answersEquivalent(sentence, answer, subject.normalizer))) {
+      rejected.push({
+        exercise,
+        errors: ["stem: zdanie ćwiczenia słuchowego jest odpowiedzią ćwiczenia tekstowego w tej lekcji (ujawniłoby ją)"],
+      });
+      return false;
+    }
+    return true;
+  });
+
   // Różne przedmioty mogą potrzebować tożsamości zadania zamiast odpowiedzi.
   // To nie zmienia target_key ani kwalifikacji ujawnienia odpowiedzi.
   if (subject.poolDeduplication === "exercise") {
     const seen = new Set<string>();
     const valid: LessonExerciseDraft[] = [];
     const identityOptions = lessonIdentityOptionsOf(subject);
-    for (const { exercise } of singleValid) {
+    for (const { exercise } of eligible) {
       const identity = lessonExerciseIdentity(exercise, identityOptions);
       if (seen.has(identity)) {
         rejected.push({ exercise, errors: ["stimulus: zduplikowany bodziec ćwiczenia w tej samej regule"] });
@@ -885,7 +1009,7 @@ export function validatePool(
   }
 
   // Domyślna polityka: niejęzykowe przedmioty zachowują unikalność odpowiedzi.
-  const answers = singleValid.map((entry) => entry.exercise.answer);
+  const answers = eligible.map((entry) => entry.exercise.answer);
   const duplicateLaterPositions = new Set<number>();
   for (const group of groupEquivalentAnswers(answers, subject.normalizer)) {
     for (let k = 1; k < group.length; k++) {
@@ -894,7 +1018,7 @@ export function validatePool(
   }
 
   const valid: LessonExerciseDraft[] = [];
-  singleValid.forEach((entry, position) => {
+  eligible.forEach((entry, position) => {
     if (duplicateLaterPositions.has(position)) {
       const firstPosition = findFirstGroupPosition(answers, position, subject.normalizer);
       const keptAnswer = firstPosition === -1 ? entry.exercise.answer : answers[firstPosition]!;
@@ -948,8 +1072,9 @@ export function poolCoverage(
     const forObjective = exercises.filter((ex) => ex.objectiveId === objectiveId);
     for (const stage of ASSESSED_STAGES) {
       const required = minimums[stage as keyof PoolMinimums];
-      // Słowa kluczowe są dodatkiem trenera precyzji, nie pokrywają minimum etapu.
-      const actual = forObjective.filter((ex) => ex.exerciseType !== "lesson_keywords" && stageOf(ex.exerciseType) === stage).length;
+      // Typy poza ścieżką etapów (słowa kluczowe, wybór ze słuchu) są dodatkiem,
+      // nie pokrywają minimum etapu.
+      const actual = forObjective.filter((ex) => !outsideStagePath(ex.exerciseType) && stageOf(ex.exerciseType) === stage).length;
       if (actual < required) {
         gaps.push({ objectiveId, stage, required, actual });
       }

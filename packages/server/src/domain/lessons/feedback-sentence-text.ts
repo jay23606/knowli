@@ -31,6 +31,7 @@ export function feedbackSentenceText(source: FeedbackSentenceSource): string | n
       raw = fillGap(source.stem, source.answer);
       break;
     case "lesson_choice":
+    case "lesson_listen_choice":
       raw = fillGap(source.stem, source.options?.find((option) => option.id === source.correctOption)?.text);
       break;
     case "lesson_order":
@@ -59,7 +60,7 @@ function joinOrderItems(items: FeedbackSentenceSource["items"]): string | undefi
 }
 
 /** Wstawia tekst w jedyną lukę (2+ podkreśleń); inaczej `undefined`. */
-function fillGap(stem: string | undefined, fill: string | undefined): string | undefined {
+export function fillGap(stem: string | undefined, fill: string | undefined): string | undefined {
   if (!stem || !fill?.trim()) return undefined;
   if ((stem.match(/_{2,}/g) ?? []).length !== 1) return undefined;
   return stem.replace(/_{2,}/, () => fill.trim());

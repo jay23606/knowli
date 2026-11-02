@@ -137,8 +137,10 @@ Każde słowo należy głównie do jednego zagadnienia. `buildDynamicTopic` przy
 
 | Rodzaj | Typy |
 |---|---|
-| words | card, match, group, choice, cloze, gap, open_answer |
-| frame | card, match (pytanie ↔ odpowiedź), order, choice, cloze, gap, open_answer |
+| words | card, match, group, choice, listen_choice, cloze, gap, open_answer |
+| frame | card, match (pytanie ↔ odpowiedź), order, choice, listen_choice, cloze, gap, open_answer |
+
+`listen_choice` (`lesson_listen_choice`, „Posłuchaj i wybierz”, #198) to ćwiczenie dodatkowe poza etapami, w obu rodzajach zagadnień: dziecko słyszy pełne zdanie (nagranie `feedback_audio`) i wybiera brakujące słowo lub formę z opcji; nie niesie polskiego bodźca w `instructionPl` (polecenie jest stałe), a elementem sprawdzanym jest wypełnienie luki z materiału. Projekt: `docs/superpowers/specs/2026-11-01-lesson-listen-choice-design.md`.
 
 Karty (2–4): lista „słowo — polskie znaczenie” albo wzór ramy z 1–3 przykładami po angielsku **bez polskich tłumaczeń**; żadna karta nie niesie pary zdań polskie → angielskie (karta słów może wypisywać pojedyncze słowa z polskim znaczeniem). Treść karty nie jest ekspozycją, więc para zdań na karcie ujawniałaby rozwiązanie tłumaczenia bez zapisu (4.5). Identyfikatory zagadnień mają prefiks identyfikatora przedmiotu (`english_chapter.d<deckId>.<slug>`); dziś prefiks `school.d` jest wpisany na stałe (`lesson-drafts.ts:448`), a dla przedmiotu szkolnego pozostaje bez zmian.
 

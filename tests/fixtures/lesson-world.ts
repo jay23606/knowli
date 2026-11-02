@@ -16,6 +16,8 @@ export interface LessonWorld {
   objectiveId: string;
   /** `target_key` ćwiczeń bogatej puli (tylko gdy `richPool`). */
   richKeys?: { notice: string; choice: string; gap: string; order: string };
+  /** Ćwiczenie słuchowe (tylko gdy `listenChoice`). */
+  listen?: LessonWorldListen;
 }
 
 export interface LessonWorldOptions {
@@ -64,6 +66,25 @@ export interface LessonWorldOptions {
   transformVariants?: readonly string[];
   /** Seed one issued contact while omitting all schedulable objectives. */
   unschedulableDailyRound?: boolean;
+  /**
+   * Dosiewa ćwiczenie „Posłuchaj i wybierz” (`lesson_listen_choice`) celu z
+   * własnym nagraniem zdania (`feedback_audio`) w danym stanie (`none` = bez
+   * zasobu). `stem` z jedną luką; opcje `plays`/`play` (poprawna `plays`).
+   */
+  listenChoice?: { audio: "ready" | "pending" | "failed" | "none"; stem?: string };
+}
+
+/** Ćwiczenie słuchowe zasiane przez `listenChoice`. */
+export interface LessonWorldListen {
+  itemId: string;
+  revisionId: string;
+  /** Zasób nagrania zdania (`null` przy `audio: "none"`) i jego fingerprint. */
+  assetId: string | null;
+  fingerprint: string;
+  /** `target_key` ćwiczenia (odpowiedź) i klucz pełnego zdania (en-GB). */
+  targetKey: string;
+  sentence: string;
+  sentenceTargetKey: string;
 }
 
 /**
@@ -151,6 +172,8 @@ export async function lessonWorld(sourcePool: Pool, options: LessonWorldOptions 
     if (options.withFeedbackAudio) {
       await attachLessonFeedbackAudio(pool, versionId, options.withFeedbackAudio);
     }
+    // Po `withFeedbackAudio`: ćwiczenie słuchowe ma wyłącznie własny zasób zdania.
+    const listen = options.listenChoice ? await seedListenChoice(pool, { deckId, versionId }, options.listenChoice) : undefined;
     if (options.publish !== false) {
       await pool.query(
         "update learning_app.deck_versions set state = 'published', published_at = $2 where id = $1",
@@ -244,6 +267,7 @@ export async function lessonWorld(sourcePool: Pool, options: LessonWorldOptions 
       topicId,
       objectiveId,
       ...(options.richPool ? { richKeys: RICH_KEYS } : {}),
+      ...(listen ? { listen } : {}),
     };
     await client.query("commit");
     return lesson;
@@ -430,6 +454,76 @@ async function seedRichPool(pool: Pool, version: { deckId: string; versionId: st
       [exRevisionId, exItemId, exSkillVersionId],
     );
   }
+}
+
+/**
+ * Ćwiczenie `lesson_listen_choice` celu (szkic, przed publikacją) z własnym
+ * `feedback_audio`: gotowym, w przygotowaniu, nieudanym albo bez zasobu.
+ */
+async function seedListenChoice(
+  pool: Pool,
+  version: { deckId: string; versionId: string },
+  options: NonNullable<LessonWorldOptions["listenChoice"]>,
+): Promise<LessonWorldListen> {
+  const objectiveId = "english_grammar.present_simple.third_person_s";
+  const stem = options.stem ?? "She ___ football.";
+  const answer = "plays";
+  const sentence = stem.replace(/_{2,}/, answer);
+  const itemId = randomUUID();
+  const revisionId = randomUUID();
+  const skillVersionId = randomUUID();
+  const targetKey = computeTargetKey(answer, RICH_ANSWER_LOCALE);
+  await pool.query("insert into learning_app.learning_items (id, deck_id, kind) values ($1, $2, 'lesson_exercise')", [itemId, version.deckId]);
+  await pool.query(
+    `insert into learning_app.item_revisions (id, item_id, deck_id, deck_version_id, position, payload_version, payload, target_key)
+     values ($1, $2, $3, $4, 8, 2, $5::jsonb, $6)`,
+    [revisionId, itemId, version.deckId, version.versionId, JSON.stringify({
+      exerciseType: "lesson_listen_choice", objectiveId, stem,
+      options: [{ id: "o-play", text: "play" }, { id: "o-plays", text: answer }], correctOption: "o-plays",
+      answer, acceptedAnswers: [answer], focus: [answer], answerLocale: RICH_ANSWER_LOCALE, promptLocale: "pl-PL",
+    }), targetKey],
+  );
+  await pool.query(
+    `insert into learning_app.skill_versions (id, item_id, skill, revision_number, criteria, criteria_hash)
+     values ($1, $2, 'objective', 1, $3::jsonb, $4)`,
+    [skillVersionId, itemId, JSON.stringify({ objectiveId }), `oc-${skillVersionId}`],
+  );
+  await pool.query(
+    `insert into learning_app.item_revision_skills (item_revision_id, item_id, skill, skill_version_id)
+     values ($1, $2, 'objective', $3)`,
+    [revisionId, itemId, skillVersionId],
+  );
+  const fingerprint = `fp-listen-${revisionId}`;
+  let assetId: string | null = null;
+  if (options.audio !== "none") {
+    assetId = randomUUID();
+    if (options.audio === "ready") {
+      await pool.query(
+        `insert into learning_app.media_assets
+           (id, kind, fingerprint, generation_number, state, storage_key, content_sha256, mime_type, byte_count, provider, model, metadata)
+         values ($1, 'tts', $2, 1, 'ready', $3, $4, 'audio/mpeg', 1024, 'fake', 'fake-tts', '{}'::jsonb)`,
+        [assetId, fingerprint, `blob/${assetId}`, `sha-${assetId}`],
+      );
+    } else {
+      await pool.query(
+        `insert into learning_app.media_assets (id, kind, fingerprint, generation_number, state, provider, model, metadata)
+         values ($1, 'tts', $2, 1, 'pending', 'fake', 'fake-tts', '{}'::jsonb)`,
+        [assetId, fingerprint],
+      );
+      if (options.audio === "failed") {
+        await pool.query("update learning_app.media_assets set state = 'failed', lease_token = null where id = $1", [assetId]);
+      }
+    }
+    await pool.query(
+      `insert into learning_app.revision_assets (item_revision_id, role, asset_id, expected_fingerprint, state)
+       values ($1, 'feedback_audio', $2, $3, 'pending')`,
+      [revisionId, assetId, fingerprint],
+    );
+  }
+  return {
+    itemId, revisionId, assetId, fingerprint, targetKey, sentence,
+    sentenceTargetKey: computeTargetKey(sentence, RICH_ANSWER_LOCALE),
+  };
 }
 
 /** Valid full editor pool for third-person -s: 3 guided, 4 productive, 2 independent. */

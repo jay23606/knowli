@@ -159,6 +159,32 @@ describe("validateSubject — reguły (po jednym przypadku negatywnym)", () => {
   });
 });
 
+describe("validateSubject — lesson_listen_choice", () => {
+  const listenErrors = (subject: SubjectModule) => validateSubject(subject).filter((error) => error.includes("lesson_listen_choice"));
+
+  it("odrzuca przedmiot z typem słuchowym bez ttsForFeedbackSentence", () => {
+    const subject = cloneSubject();
+    subject.exerciseTypes = [...subject.exerciseTypes, "lesson_listen_choice"];
+    expect(listenErrors(subject).some((error) => error.includes("ttsForFeedbackSentence"))).toBe(true);
+  });
+
+  it("dopuszcza typ słuchowy, gdy przedmiot ma ttsForFeedbackSentence i guided z innego typu", () => {
+    const subject = cloneSubject();
+    subject.ttsForFeedbackSentence = true;
+    subject.exerciseTypes = [...subject.exerciseTypes, "lesson_listen_choice"];
+    firstObjective(subject).exerciseTypes = [...firstObjective(subject).exerciseTypes, "lesson_listen_choice"];
+    expect(validateSubject(subject)).toEqual([]);
+  });
+
+  it("odrzuca cel, którego jedynym typem guided jest lesson_listen_choice", () => {
+    const subject = cloneSubject();
+    subject.ttsForFeedbackSentence = true;
+    subject.exerciseTypes = [...subject.exerciseTypes, "lesson_listen_choice"];
+    firstObjective(subject).exerciseTypes = ["lesson_card", "lesson_listen_choice", "lesson_gap", "lesson_open_answer"];
+    expect(validateSubject(subject).some((error) => error.includes("guided"))).toBe(true);
+  });
+});
+
 describe("validateSubject — spójność opcji tworzenia z materiału", () => {
   const buildDynamicTopic: SubjectModule["buildDynamicTopic"] = () => historyLikeSubject.topics[0]!;
   const materialErrors = (subject: SubjectModule) => validateSubject(subject).filter((error) => error.includes("materialSubjectTitle"));

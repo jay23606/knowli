@@ -235,6 +235,15 @@ function fakeChapterPool(input: LessonPoolInput): {
         index += 1;
       }
     }
+    // Dodatek poza podziałem etapów: wybór ze słuchu ze słów materiału (zdanie czytane w całości).
+    if (allowed.has(LISTEN_CHOICE_TYPE) && words.length >= 2) {
+      for (let i = 0; i < (input.listenChoicePerObjective ?? 0); i++) {
+        const answer = words[index % words.length]!;
+        const other = words[(index + 1) % words.length]!;
+        exercises.push(fakeListenChoice(objective.id, index % 2 === 0 ? "I can see the ___." : "I have the ___.", answer, other));
+        index += 1;
+      }
+    }
   }
   return { exercises, examples };
 }
@@ -287,6 +296,14 @@ function fakeLessonExercises(input: LessonPoolInput): {
         exercises.push(fakeExercise(type, objective.id, answer, input, (input.existingExercises?.length ?? 0) + exercises.length));
       }
     }
+    // Dodatek poza podziałem etapów: wybór ze słuchu na każdy cel, którego lista zawiera typ.
+    if (allowed.has(LISTEN_CHOICE_TYPE)) {
+      for (let i = 0; i < (input.listenChoicePerObjective ?? 0); i++) {
+        const answer = nextAnswer(input.material);
+        const number = (input.existingExercises?.length ?? 0) + exercises.length + 1;
+        exercises.push(fakeListenChoice(objective.id, `Listen and choose: ___ (${number}).`, answer, FAKE_LISTEN_DISTRACTORS.find((word) => word !== answer.toLowerCase())!));
+      }
+    }
   }
 
   // Gwarancja ≥ 1 ćwiczenia: jeśli etapy nic nie dały (nietypowy cel), dołóż
@@ -301,6 +318,33 @@ function fakeLessonExercises(input: LessonPoolInput): {
   if (input.voiceTones === true && exercises.length > 0) exercises[0] = { ...exercises[0]!, voiceTone: "curious" };
 
   return { exercises, examples };
+}
+
+/** Typ wyboru ze słuchu: dodatek poza podziałem etapów (`listenChoicePerObjective`). */
+const LISTEN_CHOICE_TYPE = "lesson_listen_choice";
+
+/** Słowa dystraktorów fake'a: brzmią inaczej niż jakikolwiek token materiału testów. */
+const FAKE_LISTEN_DISTRACTORS: readonly string[] = ["orange", "window"];
+
+/**
+ * Ćwiczenie wyboru ze słuchu: zdanie z jedną luką, dwie słyszalnie różne opcje, odpowiedź = tekst poprawnej
+ * opcji. Bez polecenia, podpowiedzi i piktogramu (jak po `stripListenChoiceExtras`); zdanie z lukiem
+ * wypełnioną poprawną opcją nie może równać się odpowiedzi ćwiczenia tekstowego puli.
+ */
+function fakeListenChoice(objectiveId: string, stem: string, answer: string, other: string): Record<string, unknown> {
+  return {
+    exerciseType: LISTEN_CHOICE_TYPE,
+    objectiveId,
+    stem,
+    answer,
+    acceptedAnswers: [],
+    focus: [answer],
+    options: [
+      { id: "a", text: answer },
+      { id: "b", text: other },
+    ],
+    correctOption: "a",
+  };
 }
 
 /** Jedno poprawne ćwiczenie danego typu (lub najbliższe poprawnemu). */

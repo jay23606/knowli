@@ -232,3 +232,5 @@ Na tym nagraniu budują: (1) „Powtórz za lektorem”, (2) „Posłuchaj i uzu
 `docs/superpowers/specs/2026-11-01-sentence-readback-followups-design.md`). Niezależne od niego:
 (4) historyjka na koniec lekcji, (5) wyjaśnienie błędu dla dziecka, (6) zdania o zainteresowaniach
 dziecka.
+
+**Stan (2026-11-01):** punkt 2 („Posłuchaj i uzupełnij”) zrealizowano jako ćwiczenie wyboru ze słuchu `lesson_listen_choice` („Posłuchaj i wybierz”, #198): to samo nagranie `feedback_audio` jest bodźcem przed odpowiedzią, a dziecko wybiera brakującą formę z opcji zamiast ją wpisywać (wariant z wpisywaniem pozostaje poza zakresem). Projekt: `docs/superpowers/specs/2026-11-01-lesson-listen-choice-design.md`.

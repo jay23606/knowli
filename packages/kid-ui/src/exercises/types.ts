@@ -57,6 +57,11 @@ export interface ExerciseProps {
    */
   feedbackAudio?: { assetId: string; onPlay: () => void } | null;
   /**
+   * Stan bodźca „Posłuchaj i wybierz” z kontrolera sesji; brak (`null`) =
+   * `pending` (opcje zablokowane — widok nie odblokowuje się sam).
+   */
+  listenStimulus?: { state: "pending" | "blocked" | "unavailable" | "open"; playing: boolean } | null;
+  /**
    * Ostatni wynik dyktowania tego zadania (lekcje z `speechInput`): widok
    * wstawia `text` do pola raz na `seq`.
    */

@@ -126,6 +126,36 @@ const VOICE_TONE_RULE =
   `${VOICE_TONE_BASE_RULE} \`mysterious\` only for curiosities/riddles such as »Czy wiesz, że…« with at least two sentences.`;
 
 /**
+ * Opis pól `lesson_listen_choice` (lektor czyta pełne zdanie, dziecko wybiera brakujące słowo) — tylko
+ * dla przedmiotu, który wspiera typ; reguły dziedzinowe (które różnice są słyszalne) niesie `fieldRules`.
+ */
+function listenChoiceFieldRule(input: LessonPoolInput): string {
+  if (listenChoiceExtra(input) === 0) return "";
+  return "lesson_listen_choice requires stem with exactly one ___ (the sentence the narrator reads aloud with the correct option in the gap), " +
+    "2 to 3 options with distinct texts, correctOption (the id of the option that fills the gap), answer (the text of the correct option) and focus (its tokens); " +
+    "instructionPl, hint and visualSubject must be null for lesson_listen_choice. ";
+}
+
+/** Najwięcej dodatkowych ćwiczeń słuchowych na cel partii (decyzja #198). */
+const MAX_LISTEN_CHOICE_EXTRA = 2;
+
+/**
+ * Przyznany dodatek `lesson_listen_choice` przycięty do 0–2. Bez dodatku (brak pola, 0 albo szkic
+ * ma już komplet) prompt w ogóle nie wymienia typu — także na listach dozwolonych typów.
+ */
+function listenChoiceExtra(input: LessonPoolInput): number {
+  const raw = input.listenChoicePerObjective;
+  if (raw === undefined || !Number.isFinite(raw)) return 0;
+  return Math.min(MAX_LISTEN_CHOICE_EXTRA, Math.max(0, Math.floor(raw)));
+}
+
+/** Typy wymieniane w prompcie: bez `lesson_listen_choice`, gdy dodatek nie został przyznany. */
+function promptExerciseTypes(input: LessonPoolInput, types: readonly string[]): string[] {
+  const listed = poolExerciseTypes(types);
+  return listenChoiceExtra(input) > 0 ? listed : listed.filter((type) => type !== "lesson_listen_choice");
+}
+
+/**
  * Jawny przydział etapu samodzielnego, gdy przedmiot wymaga różnych pytań
  * otwartych: najpierw one, rachunki tylko w nadwyżce miejsc (model traktował
  * menu typów jako wymienne i rachunek zajmował miejsce wymaganego pytania).
@@ -164,7 +194,7 @@ function lessonSystemPrompt(input: LessonPoolInput): string {
   for (const objective of input.objectives) {
     parts.push(
       `- objectiveId "${objective.id}": ${objective.descriptionEn} ` +
-        `Allowed exerciseType values: ${poolExerciseTypes(objective.exerciseTypes).join(", ")}. ` +
+        `Allowed exerciseType values: ${promptExerciseTypes(input, objective.exerciseTypes).join(", ")}. ` +
         `Error categories: ${objective.errorCategories.join(", ") || "none"}.`,
     );
   }
@@ -176,12 +206,14 @@ function lessonSystemPrompt(input: LessonPoolInput): string {
     );
   }
   parts.push(
-    `Supported exercise types for this subject: ${poolExerciseTypes(input.exerciseTypes).join(", ")}.`,
+    `Supported exercise types for this subject: ${promptExerciseTypes(input, input.exerciseTypes).join(", ")}.`,
   );
+  // Wybór ze słuchu leży poza podziałem etapów (jego menu go nie wymienia): limit partii rośnie o dodatek.
+  const listenExtra = listenChoiceExtra(input);
   const stageMenu = (types: readonly string[]) =>
     types.filter((type) => input.exerciseTypes.includes(type)).join(", ") || "none available";
   parts.push(
-    `Return at most ${input.countPerObjective} exercises per objective in this batch, aiming for this stage split: ` +
+    `Return at most ${input.countPerObjective + listenExtra} exercises per objective in this batch, aiming for this stage split: ` +
       `${input.stageCounts.guided} guided (${stageMenu(["lesson_choice", "lesson_order", "lesson_short_answer", "lesson_match", "lesson_group", "lesson_cloze"])}), ` +
       `${input.stageCounts.productive} productive (${stageMenu(["lesson_gap", "lesson_error_fix", "lesson_transform"])}), ` +
       `${input.stageCounts.independent} independent (${stageMenu(["lesson_open_answer", "lesson_calculation"])}). ` +
@@ -190,6 +222,12 @@ function lessonSystemPrompt(input: LessonPoolInput): string {
       "from its objective's allowed list above — if none of a stage's listed types is allowed for the objective, " +
       "cover that stage with an allowed type (typically lesson_choice).",
   );
+  if (listenExtra > 0) {
+    parts.push(
+      `The stage split covers ${input.countPerObjective} exercises; in addition you may return up to ${listenExtra} extra lesson_listen_choice exercises per objective, ` +
+        "outside the stage split, only for an objective whose allowed exerciseType list contains lesson_listen_choice.",
+    );
+  }
   if (!input.graderAvailable) {
     parts.push(
       "The answer-grading model is unavailable, so prefer closed types (lesson_choice, " +
@@ -337,6 +375,7 @@ function lessonSystemPrompt(input: LessonPoolInput): string {
       "(a shortened wording without optional words is different; a copy of the same words with expanded or contracted spellings, or different capitalization, is not). " +
       "lesson_choice and lesson_short_answer must have exactly 2 to 4 options with distinct texts, and correctOption must be the id " +
       "of exactly one of the options. Use only the exerciseType values allowed for the exercise's objective (see the list above). " +
+      listenChoiceFieldRule(input) +
       "Required non-empty stimulus fields by type: lesson_choice requires stem; lesson_gap requires stem with exactly one ___ " +
       "and its answer is at most 3 words; " +
       "lesson_error_fix requires statement with the sentence to correct; lesson_transform requires statement with the sentence to transform; " +

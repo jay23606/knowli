@@ -115,9 +115,13 @@ export function LearnScreen({
             : feedback.dto?.kind === "incorrect" ? "incorrect" : "unevaluated";
   const instructionAudioKey = feedbackGuidanceKey ?? taskGuidanceKey;
   // Odczyt pełnego zdania w doku lekcji (zwykłe tempo i żółw); obok niego
-  // komunikat dostaje „?”, nie drugi głośnik. Stan odtwarzania i błędu trzyma
-  // kontroler, bo autoodczyt startuje bez kliknięcia.
-  const sentenceAudio: FeedbackDockSentenceAudio | null = feedback !== null && feedback.modality !== "audio" && isLessonTask(task) && feedback.dto?.correctAudioAssetId !== undefined
+  // komunikat dostaje „?”, nie drugi głośnik — tak samo zawsze przy głośniku
+  // polecenia „Posłuchaj i wybierz” (także po „Pomiń”, gdy feedback nie ma odczytu).
+  // Stan odtwarzania i błędu trzyma kontroler, bo autoodczyt startuje bez kliknięcia.
+  const sentenceReadback = feedback !== null && feedback.modality !== "audio" && isLessonTask(task) && feedback.dto?.correctAudioAssetId !== undefined;
+  // „Posłuchaj i wybierz”: odczyt zdania odtwarza przycisk w poleceniu (bez drugiego głośnika w doku).
+  const listenChoice = task?.prompt.kind === "lesson_listen_choice";
+  const sentenceAudio: FeedbackDockSentenceAudio | null = sentenceReadback && !listenChoice && feedback !== null
     ? {
         playing: feedback.sentencePlaying ?? null,
         error: feedback.sentenceAudioError ?? null,
@@ -128,7 +132,7 @@ export function LearnScreen({
     : null;
   const guidanceButton = instructionAudioKey
     ? <GuidanceButton audioKey={instructionAudioKey} onPlay={(key) => controller.playGuidance(key)} testId="kid-guidance-play" showError={false}
-        {...(sentenceAudio !== null ? { icon: "question" as const } : {})} />
+        {...(sentenceReadback || listenChoice ? { icon: "question" as const } : {})} />
     : null;
   // W wierszu instrukcji obok odsłuchu słowa: obrysowany „?”, nie drugi głośnik.
   const instructionGuidanceButton = instructionAudioKey
@@ -319,7 +323,9 @@ export function LearnScreen({
         )}
         {screen.guidanceError && instructionAudioKey && <div className="kid-notice" data-testid="kid-guidance-error"><p>{messages.errors.picture_guidance_unavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.playGuidance(instructionAudioKey).catch(() => undefined)}>{messages.errors.picture_audio_retry}</ActionButton><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.endNow()}>{messages.kid.end}</ActionButton></div>}
         {questionAudioError && <div className="kid-notice" role="alert" data-testid="kid-question-audio-error"><p>{cardAudio ? messages.kid.cardAudioUnavailable : messages.kid.questionAudioUnavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" data-testid="kid-question-audio-retry" onClick={() => void controller.playQuestionAudio()}>{cardAudio ? messages.kid.cardAudioRetry : messages.kid.questionAudioRetry}</ActionButton></div>}
-        {screen.taskAudioError && <div className="kid-notice" role="alert" data-testid="kid-task-audio-error"><p>{screen.taskAudioError === "blocked" ? messages.errors.picture_audio_blocked : messages.errors.picture_audio_unavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" data-testid="kid-task-audio-retry" onClick={() => void controller.playTaskAudio()}>{messages.errors.picture_audio_retry}</ActionButton><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.endNow()}>{messages.kid.end}</ActionButton></div>}
+        {/* „Posłuchaj i wybierz”: sam komunikat — ponawia głośnik w poleceniu, a „Pomiń” jest w zadaniu. */}
+        {screen.taskAudioError && listenChoice && <div className="kid-notice" role="alert" data-testid="kid-task-audio-error"><p>{messages.kid.listenStimulusFailed}</p></div>}
+        {screen.taskAudioError && !listenChoice && <div className="kid-notice" role="alert" data-testid="kid-task-audio-error"><p>{screen.taskAudioError === "blocked" ? messages.errors.picture_audio_blocked : messages.errors.picture_audio_unavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" data-testid="kid-task-audio-retry" onClick={() => void controller.playTaskAudio()}>{messages.errors.picture_audio_retry}</ActionButton><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.endNow()}>{messages.kid.end}</ActionButton></div>}
       </div>
 
       {offline ? (
@@ -370,9 +376,12 @@ export function LearnScreen({
                 mediaUrl={(assetId) => controller.mediaUrl(assetId)}
                 optionOutcomes={outcomes}
                 dock={screen.reveal === null ? dock : undefined}
-                feedbackAudio={hasFeedback && feedback !== null && feedback.chosenOptionId !== undefined && feedback.dto?.correctAudioAssetId !== undefined
-                  ? { assetId: feedback.dto.correctAudioAssetId, onPlay: () => void controller.playCorrectOptionAudio() }
-                  : null}
+                listenStimulus={screen.listenStimulus?.taskId === task.taskId ? screen.listenStimulus : null}
+                feedbackAudio={hasFeedback && feedback !== null && listenChoice && feedback.dto?.correctAudioAssetId !== undefined
+                  ? { assetId: feedback.dto.correctAudioAssetId, onPlay: () => void controller.playSentenceAudio() }
+                  : hasFeedback && feedback !== null && feedback.chosenOptionId !== undefined && feedback.dto?.correctAudioAssetId !== undefined
+                    ? { assetId: feedback.dto.correctAudioAssetId, onPlay: () => void controller.playCorrectOptionAudio() }
+                    : null}
                 handlers={handlers}
               />
             )}

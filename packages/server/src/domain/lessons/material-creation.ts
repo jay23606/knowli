@@ -1,4 +1,4 @@
-import type { SubjectModule } from "./types";
+import type { LessonExerciseDraft, SubjectModule } from "./types";
 
 /**
  * Sposób tworzenia zestawu z materiału rodzica — jedno miejsce dla katalogu
@@ -23,4 +23,20 @@ export function materialCreationMode(subject: MaterialCreationSubject): Material
 /** Czy rodzic musi podać nazwę przedmiotu własnym tytułem (formularz szkolny). */
 export function requiresParentSubjectTitle(subject: MaterialCreationSubject): boolean {
   return materialCreationMode(subject) === "parent";
+}
+
+/**
+ * Czyści świeże wyjście modelu z pól, których ćwiczenie wyboru ze słuchu nie
+ * ma: polecenie dziecka jest stałe z katalogu komunikatów, bodźcem jest
+ * nagranie (podpowiedź zdradzałaby odpowiedź), a piktogram należy do wyboru
+ * obrazkowego. To niepożądany dodatek modelu, nie dane rodzica — wołaj
+ * wyłącznie na świeżo wygenerowanych ćwiczeniach (generacja i dogenerowanie),
+ * nigdy w edycji ani publikacji. Inne typy i ćwiczenie bez dodatków wracają
+ * bez zmian (ta sama referencja).
+ */
+export function stripListenChoiceExtras(draft: LessonExerciseDraft): LessonExerciseDraft {
+  if (draft.exerciseType !== "lesson_listen_choice") return draft;
+  if (draft.instructionPl === undefined && draft.hint === undefined && draft.visualSubject === undefined) return draft;
+  const { instructionPl: _instruction, hint: _hint, visualSubject: _visual, ...rest } = draft;
+  return rest;
 }

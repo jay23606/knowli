@@ -115,6 +115,18 @@ describe("requiredAssetsForLessonExercise — zdanie feedbacku (feedback_audio)"
     expect(required[0]!.metadata).toMatchObject({ kind: "tts", text: "She plays football.", locale: "en-GB", instructions: "Speak British English." });
   });
 
+  it("lesson_listen_choice zleca feedback_audio z pełnym zdaniem; zmiana poprawnej opcji zmienia fingerprint", () => {
+    const listen = {
+      exerciseType: "lesson_listen_choice", stem: "She ___ milk.", answerLocale: "en-GB",
+      options: [{ id: "a", text: "likes" }, { id: "b", text: "doesn't like" }], correctOption: "b",
+    };
+    const required = requiredAssetsForLessonExercise(listen, defaultMediaSettings, on);
+    expect(required.map((asset) => asset.role)).toEqual(["feedback_audio"]);
+    expect(required[0]!.metadata).toMatchObject({ kind: "tts", text: "She doesn't like milk.", locale: "en-GB" });
+    const changed = requiredAssetsForLessonExercise({ ...listen, correctOption: "a" }, defaultMediaSettings, on);
+    expect(changed[0]!.fingerprint).not.toBe(required[0]!.fingerprint);
+  });
+
   it("flaga false nie zleca feedback_audio; lesson_match nie ma zdania", () => {
     expect(requiredAssetsForLessonExercise(gap, defaultMediaSettings, { ...on, ttsForFeedbackSentence: false })).toEqual([]);
     expect(requiredAssetsForLessonExercise({ ...gap, exerciseType: "lesson_match" }, defaultMediaSettings, on)).toEqual([]);

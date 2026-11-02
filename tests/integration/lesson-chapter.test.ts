@@ -93,9 +93,9 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
     return { runId, deckId, draft: deck.draft! };
   }
 
-  /** Ćwiczenie szkicu jako wejście edycji (bez identyfikatora rewizji). */
+  /** Ćwiczenie szkicu jako wejście edycji (bez identyfikatora rewizji i stanu nagrania zdania — tylko do odczytu). */
   function editInputs(exercises: LessonDraftDto["exercises"]) {
-    return exercises.map(({ revisionId: _revisionId, ...input }) => LessonExerciseInputSchema.parse(input));
+    return exercises.map(({ revisionId: _revisionId, sentenceAudio: _sentenceAudio, ...input }) => LessonExerciseInputSchema.parse(input));
   }
 
   function stageCounts(draft: LessonDraftDto, objectiveId: string) {
@@ -130,7 +130,7 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
       expect(revision.payload_version).toBe(2);
       expect(revision.payload).not.toHaveProperty("sourceRefs");
       expect(revision.payload).not.toHaveProperty("hint");
-      expect(["lesson_choice", "lesson_gap", "lesson_open_answer"]).toContain(revision.payload.exerciseType);
+      expect(["lesson_choice", "lesson_listen_choice", "lesson_gap", "lesson_open_answer"]).toContain(revision.payload.exerciseType);
     }
     // Klucz ekspozycji luki to rozwiązane zdanie, a nie samo słowo.
     const gap = draft.exercises.find((exercise) => exercise.exerciseType === "lesson_gap")!;
@@ -159,10 +159,14 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
     fakes.deps.llm.generateLessonPool = async (input) => {
       const objectiveId = input.objectives[0]!.id;
       const regular = await new FakeLlmProvider().generateLessonPool(input);
+      // Zamówiona liczba ćwiczeń etapów obowiązuje także przy dodatku słuchowym (nadmiar byłby odrzucony),
+      // więc dwa wadliwe ćwiczenia, które zostają, zajmują miejsca dwóch zwykłych.
+      const isListen = (exercise: unknown) => (exercise as { exerciseType?: string }).exerciseType === "lesson_listen_choice";
       return {
         ...regular,
         exercises: [
-          ...regular.exercises,
+          ...regular.exercises.filter((exercise) => !isListen(exercise)).slice(0, input.countPerObjective - 2),
+          ...regular.exercises.filter(isListen),
           // opcja spoza materiału → odrzucenie całego ćwiczenia
           {
             exerciseType: "lesson_choice", objectiveId, instructionPl: "Pada deszcz. Wybierz słowo.", stem: "I have a ___.",

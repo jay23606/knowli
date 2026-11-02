@@ -13,6 +13,7 @@ import {
   submitAttempt,
   FakeAnswerGrader,
   createDatabase,
+  authorizeDisclosure,
   createSchoolLesson,
   createSubjectRegistry,
   schoolSubject,
@@ -365,8 +366,10 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
         TaskPromptSchema.parse(task.prompt);
         if (task.exerciseType === "lesson_card") { await completePresentation(sessionServices, { taskId: task.taskId }); continue; }
         const key = (await pool.query("select answer_key from learning_app.session_tasks where id=$1", [task.taskId])).rows[0].answer_key;
+        // Odsłuch zdania przed odpowiedzią — prawdziwa autoryzacja (zapieczętowane `audio_issued`).
+        if (task.exerciseType === "lesson_listen_choice") await authorizeDisclosure(sessionServices, { taskId: task.taskId, kind: "audio" });
         const attempt = await submitAttempt(sessionServices, { taskId: task.taskId, clientAttemptId: randomUUID(),
-          ...(["lesson_choice", "lesson_short_answer", "lesson_notice"].includes(task.exerciseType) ? { modality: "choice" as const, optionId: key.correctOptionId }
+          ...(["lesson_choice", "lesson_listen_choice", "lesson_short_answer", "lesson_notice"].includes(task.exerciseType) ? { modality: "choice" as const, optionId: key.correctOptionId }
             : task.exerciseType === "lesson_order" ? { modality: "sequence" as const, itemIds: key.itemIds }
             : { modality: "text" as const, text: key.answer }),
         });
@@ -827,7 +830,8 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
 // --- helpery testowe (SQL i mapowanie DTO→Input) ---
 
 function stripToInput(ex: Record<string, unknown>): LessonExerciseInput {
-  const { revisionId: _r, promptAudio: _a, ...rest } = ex as { revisionId?: string; promptAudio?: unknown } & Record<string, unknown>;
+  // Nagrania pytania i zdania (`promptAudio`, `sentenceAudio`) są tylko do odczytu i nie wracają w patchu.
+  const { revisionId: _r, promptAudio: _a, sentenceAudio: _s, ...rest } = ex as { revisionId?: string; promptAudio?: unknown; sentenceAudio?: unknown } & Record<string, unknown>;
   return rest as LessonExerciseInput;
 }
 

@@ -101,6 +101,8 @@ interface LessonTaskAnswerKey extends LessonAnswerKey {
   reason?: string;
   /** Zamrożone przy wydaniu zadania nagranie pełnego zdania (feedback po odpowiedzi); tylko trening. */
   feedbackAudioAssetId?: string;
+  /** `lesson_listen_choice`: klucz ekspozycji pełnego zdania z nagrania (spec #198 §3.4). */
+  sentenceTargetKey?: string;
   optionValues?: Record<string, string>;
   itemValues?: Record<string, string>;
   segmentValues?: Record<string, string>;
@@ -190,6 +192,7 @@ async function assistanceFor(
   // poprawne ułożenie jest wspomagane, nie niezależne (req 7.2, design etapów).
   if (
     key.exerciseType === "lesson_choice" ||
+    key.exerciseType === "lesson_listen_choice" ||
     key.exerciseType === "lesson_short_answer" ||
     key.exerciseType === "lesson_notice" ||
     key.exerciseType === "lesson_order" ||
@@ -218,7 +221,7 @@ async function assistanceFor(
  * feedback). Nagranie zdania (`feedback_audio`) czyta to samo rozwiązanie.
  */
 function correctTextFor(key: LessonTaskAnswerKey): string {
-  if (key.exerciseType === "lesson_choice" || key.exerciseType === "lesson_short_answer") {
+  if (key.exerciseType === "lesson_choice" || key.exerciseType === "lesson_listen_choice" || key.exerciseType === "lesson_short_answer") {
     return key.optionValues?.[key.correctOptionId ?? ""] ?? key.answer;
   }
   if (key.exerciseType === "lesson_notice") {
@@ -251,6 +254,23 @@ interface LessonGradeResult {
   exposures: string[];
   /** `details` zapisywane w assessments. */
   details: Record<string, unknown>;
+}
+
+/**
+ * „Posłuchaj i wybierz” bez odsłuchu (spec #198 §3.1): odpowiedź, przed której
+ * `receivedAt` nie zapieczętowano `audio_issued` w tym zadaniu (brak `model_audio`
+ * w zamrożonym wsparciu), jest nieoceniona — bez kary, wsparcia i historii
+ * trudności; zadanie zostaje `issued`. „Pomiń” zostaje zwykłą ścieżką (`skipped`).
+ * Werdykt `no_stimulus` jest wewnętrzny (szczegóły oceny), poza kontraktami.
+ */
+function noStimulusGrade(key: LessonTaskAnswerKey, assistance: readonly AssistanceKind[], modality: LessonModality): LessonGradeResult | null {
+  if (key.exerciseType !== "lesson_listen_choice" || modality === "skip" || assistance.includes("model_audio")) return null;
+  return {
+    grade: { outcome: "unevaluated", verdict: "unavailable" },
+    feedback: { kind: "not_assessed" },
+    exposures: [],
+    details: { objectiveId: key.objectiveId, verdict: "no_stimulus" },
+  };
 }
 
 /**
@@ -942,7 +962,7 @@ async function startLessonAttempt(
 /** Modalność musi pasować do typu ćwiczenia (jak walidacja słówek). */
 function assertModalityMatchesExercise(modality: LessonModality, exerciseType: string): void {
   if (modality === "skip" || modality === "dont_remember") return;
-  const CHOICE_TYPES = ["lesson_choice", "lesson_short_answer", "lesson_notice"];
+  const CHOICE_TYPES = ["lesson_choice", "lesson_listen_choice", "lesson_short_answer", "lesson_notice"];
   const TEXT_TYPES = ["lesson_gap", "lesson_error_fix", "lesson_transform", "lesson_open_answer", "lesson_calculation"];
   const ok =
     (modality === "choice" && CHOICE_TYPES.includes(exerciseType)) ||
@@ -1052,7 +1072,9 @@ async function finalizeLessonAttempt(
 ): Promise<AttemptDto> {
   const { task, session, itemId, policy, key, frozen, attemptNumber, requestHash, receivedAt } = start;
   const mockTest = session.mode === "mock_test";
-  const graded = precomputed ?? gradeLessonAnswer(valid, task, key, services, skipsFormCheck(start.answerSource));
+  const graded = precomputed
+    ?? noStimulusGrade(key, frozen.assistance, valid.modality)
+    ?? gradeLessonAnswer(valid, task, key, services, skipsFormCheck(start.answerSource));
   const result = valid.modality === "text" ? withRevisionComparison(key.revisionOf, valid.text, graded) : graded;
   const qualification = qualifyLessonAttempt({
     receivedAt: frozen.receivedAt,
@@ -1286,7 +1308,8 @@ export async function submitLessonAttempt(services: Services, input: AttemptInpu
     if (started.kind === "dto") {
       return { kind: "done" as const, dto: started.dto };
     }
-    const result = gradeLessonAnswer(typed, started.task, started.key, services, skipsFormCheck(started.answerSource));
+    const result = noStimulusGrade(started.key, started.frozen.assistance, typed.modality)
+      ?? gradeLessonAnswer(typed, started.task, started.key, services, skipsFormCheck(started.answerSource));
 
     // Tylko niedopasowana odpowiedź TEKSTOWA eskaluje do zapisanego werdyktu / modelu.
     const needsModel = typed.modality === "text" && started.key.exerciseType !== "lesson_calculation" && result.grade.verdict === "unavailable";

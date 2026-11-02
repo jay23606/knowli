@@ -332,6 +332,79 @@ test("ćwiczenie z gotowym audio: odsłuch w menu ⋯, po zmianie zapowiedź now
   await expect(page.getByTestId("exercise-audio-state-0")).toHaveCount(0);
 });
 
+test("Posłuchaj i wybierz: odznaka, informacja, tekst naprawy i licznik bez przepełnienia (320 px i desktop)", async ({ page }) => {
+  const listen = (n: number, sentenceAudio: Record<string, string>) => ({
+    id: uuid(n), revisionId: uuid(n + 50), exerciseType: "lesson_listen_choice", objectiveId: OBJ_A,
+    stem: `He ___ football (${n}).`, answer: "plays", acceptedAnswers: [], focus: ["plays"],
+    options: [{ id: "a", text: "plays" }, { id: "b", text: "play" }], correctOption: "a", sentenceAudio,
+  });
+  const withListen = {
+    ...lesson,
+    draft: { ...lesson.draft, exercises: [listen(1, { state: "ready", assetId: uuid(90) }), listen(2, { state: "failed" }), listen(3, { state: "pending" })] },
+  };
+  for (const viewport of [{ width: 320, height: 568 }, { width: 1280, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    const calls = await openLesson(page, { data: withListen as unknown as typeof lesson });
+    if (viewport.width < 600) await page.getByTestId(`stage-${OBJ_A}-guided`).getByRole("button").first().click();
+    for (const index of [0, 1, 2]) {
+      await expect(page.getByTestId(`exercise-type-${index}`)).toHaveText(messages.lessons.exerciseTypes.lesson_listen_choice);
+      await expect(page.getByTestId(`exercise-listen-note-${index}`)).toHaveText(messages.lessons.listenChoiceNote);
+      await expect(page.getByTestId(`exercise-sentence-audio-state-${index}`)).toBeVisible();
+      await expect(page.getByTestId(`exercise-audio-state-${index}`)).toHaveCount(0);
+    }
+    await expect(page.getByTestId("exercise-sentence-audio-state-0")).toHaveText(messages.decks.audioState.ready!);
+    await expect(page.getByTestId("exercise-sentence-audio-state-2")).toHaveText(messages.decks.audioState.pending!);
+    // tekst naprawy tylko przy błędzie
+    await expect(page.getByTestId("exercise-sentence-audio-failed-1")).toHaveText(messages.lessons.listenChoiceAudioFailed);
+    await expect(page.getByTestId("exercise-sentence-audio-failed-0")).toHaveCount(0);
+    await expect(page.getByTestId("exercise-sentence-audio-failed-2")).toHaveCount(0);
+    // brak regeneracji i tonu lektora
+    await expect(page.locator('[data-testid^="exercise-prompt-audio-"]')).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+    // elementy karty mieszczą się w oknie
+    for (const id of ["exercise-0", "exercise-1", "exercise-menu-1", "exercise-sentence-audio-failed-1"]) {
+      const box = (await page.getByTestId(id).boundingBox())!;
+      expect(box.x, id).toBeGreaterThanOrEqual(-0.5);
+      expect(box.x + box.width, id).toBeLessThanOrEqual(viewport.width + 0.5);
+    }
+    // licznik: dwa ćwiczenia bez gotowego nagrania (błąd + w tworzeniu)
+    await expect(page.getByTestId("listen-missing-audio")).toHaveText(messages.lessons.listenChoiceMissingAudioCount.replace("{n}", "2"));
+    // odsłuch zdania w menu ⋯: gotowe — aktywny; w tworzeniu bez poprzedniego ujęcia — wyłączony
+    await page.getByTestId("exercise-menu-0").click();
+    await expect(page.getByTestId("exercise-sentence-play-0")).toBeEnabled();
+    const played = page.waitForRequest((request) => new URL(request.url()).pathname === `/api/v1/media/${uuid(90)}`);
+    await page.getByTestId("exercise-sentence-play-0").click();
+    await played;
+    await page.getByTestId("exercise-menu-2").click();
+    await expect(page.getByTestId("exercise-sentence-play-2")).toBeDisabled();
+    await page.keyboard.press("Escape");
+    // edycja: zdanie i opcje, bez polecenia i tonu; zapis nie niesie sentenceAudio
+    await page.getByTestId("exercise-edit-0").click();
+    await expect(page.getByTestId("exercise-stem-0")).toBeVisible();
+    await expect(page.getByTestId("exercise-option-0-1")).toBeVisible();
+    await expect(page.getByTestId("exercise-instruction-0")).toHaveCount(0);
+    await expect(page.getByTestId("exercise-visual-0")).toHaveCount(0);
+    await expect(page.getByTestId("exercise-voice-tone-0")).toHaveCount(0);
+    await expectNoHorizontalOverflow(page);
+    await page.getByTestId("exercise-stem-0").fill("He ___ tennis.");
+    // zmieniona karta traci odznakę nagrania (nowe nagranie po zapisie)
+    await expect(page.getByTestId("exercise-sentence-audio-state-0")).toHaveCount(0);
+    await page.getByTestId("save-lesson").click();
+    await expect.poll(() => calls.requests.filter((request) => request.method === "PATCH").length).toBe(1);
+    const patch = calls.requests.find((request) => request.method === "PATCH")!.body as { exercises: Array<Record<string, unknown>> };
+    expect(patch.exercises[0]).toMatchObject({ exerciseType: "lesson_listen_choice", stem: "He ___ tennis.", correctOption: "a" });
+    expect(JSON.stringify(patch)).not.toContain("sentenceAudio");
+    expect(patch.exercises[0]).not.toHaveProperty("instructionPl");
+  }
+});
+
+test("lekcja bez ćwiczeń słuchowych albo z gotowymi nagraniami nie pokazuje licznika", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await openLesson(page);
+  await expect(page.getByTestId("coverage-section")).toBeVisible();
+  await expect(page.getByTestId("listen-missing-audio")).toHaveCount(0);
+});
+
 test("opublikowana lekcja bez szkicu: stan audio i odsłuch w menu ⋯ karty", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const publishedOnly = {

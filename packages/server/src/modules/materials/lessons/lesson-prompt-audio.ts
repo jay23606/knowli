@@ -48,26 +48,32 @@ function groupBy<T>(rows: readonly T[], key: (row: T) => string): Map<string, T[
 const notCancelled = sql`not exists (select 1 from ${generationRuns} where ${generationRuns.assetId} = ${mediaAssets.id} and ${generationRuns.state} = 'superseded')`;
 
 /**
- * Stan nagrań wersji lekcji: pytania per rewizja i karty w kolejności zagadnień
- * tematu. Wiersz bez żadnej generacji swojego fingerprintu (albo brak wiersza)
+ * Stan nagrań wersji lekcji: pytania i zdania ćwiczeń słuchowych per rewizja
+ * oraz karty w kolejności zagadnień tematu. Wiersz bez żadnej generacji swojego fingerprintu (albo brak wiersza)
  * nie daje wpisu. Jedno zapytanie na rodzaj nagrania dla całej wersji.
  */
 export async function readLessonAudioStates(
   db: Executor,
   versionId: string,
   objectiveOrder: readonly string[],
-): Promise<{ prompts: Map<string, LessonPromptAudioDto>; cards: LessonCardAudioDto[] }> {
-  const promptRows = await db
-    .select({ itemRevisionId: revisionAssets.itemRevisionId, id: mediaAssets.id, state: mediaAssets.state })
-    .from(revisionAssets)
-    .innerJoin(itemRevisions, eq(itemRevisions.id, revisionAssets.itemRevisionId))
-    .innerJoin(mediaAssets, eq(mediaAssets.fingerprint, revisionAssets.expectedFingerprint))
-    .where(and(eq(itemRevisions.deckVersionId, versionId), eq(revisionAssets.role, "prompt_audio"), eq(mediaAssets.kind, "tts"), notCancelled))
-    .orderBy(desc(mediaAssets.generationNumber));
-  const prompts = new Map<string, LessonPromptAudioDto>();
-  for (const [itemRevisionId, generations] of groupBy(promptRows, (row) => row.itemRevisionId)) {
-    prompts.set(itemRevisionId, audioDto(generations));
-  }
+): Promise<{ prompts: Map<string, LessonPromptAudioDto>; sentences: Map<string, LessonPromptAudioDto>; cards: LessonCardAudioDto[] }> {
+  const readRevisionAudio = async (role: "prompt_audio" | "feedback_audio") => {
+    const rows = await db
+      .select({ itemRevisionId: revisionAssets.itemRevisionId, id: mediaAssets.id, state: mediaAssets.state })
+      .from(revisionAssets)
+      .innerJoin(itemRevisions, eq(itemRevisions.id, revisionAssets.itemRevisionId))
+      .innerJoin(mediaAssets, eq(mediaAssets.fingerprint, revisionAssets.expectedFingerprint))
+      .where(and(eq(itemRevisions.deckVersionId, versionId), eq(revisionAssets.role, role), eq(mediaAssets.kind, "tts"), notCancelled))
+      .orderBy(desc(mediaAssets.generationNumber));
+    const byRevision = new Map<string, LessonPromptAudioDto>();
+    for (const [itemRevisionId, generations] of groupBy(rows, (row) => row.itemRevisionId)) {
+      byRevision.set(itemRevisionId, audioDto(generations));
+    }
+    return byRevision;
+  };
+  const prompts = await readRevisionAudio("prompt_audio");
+  // Zdanie ćwiczenia słuchowego (`feedback_audio`): to samo odczytanie stanu co pytanie.
+  const sentences = await readRevisionAudio("feedback_audio");
 
   const cardRows = await db
     .select({ objectiveId: lessonCardAssets.objectiveId, cardIndex: lessonCardAssets.cardIndex, id: mediaAssets.id, state: mediaAssets.state })
@@ -86,7 +92,7 @@ export async function readLessonAudioStates(
   };
   const cards = [...cardsByKey.values()].sort((a, b) =>
     rank(a.objectiveId) - rank(b.objectiveId) || a.objectiveId.localeCompare(b.objectiveId) || a.cardIndex - b.cardIndex);
-  return { prompts, cards };
+  return { prompts, sentences, cards };
 }
 
 /** Blokada wersji jak przy edycji szkicu; opublikowana wersja jest niezmienna. */

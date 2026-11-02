@@ -38,6 +38,7 @@ const STAGE_BY_TYPE: Readonly<Record<LessonExerciseTypeDto, LessonStage>> = {
   lesson_match: "guided",
   lesson_group: "guided",
   lesson_cloze: "guided",
+  lesson_listen_choice: "guided",
 };
 
 /** Etap ćwiczenia danego typu (prezentacja przeglądu). */
@@ -290,20 +291,22 @@ export function createLessonSnapshot(
  * tylko dla jego typów — pusty string nie wycieka do payloadu i nie wywraca
  * `.strict()` kontraktu `LessonExerciseInputSchema`.
  */
-const STEM_TYPES: ReadonlySet<LessonExerciseTypeDto> = new Set(["lesson_choice", "lesson_short_answer", "lesson_gap"]);
+const STEM_TYPES: ReadonlySet<LessonExerciseTypeDto> = new Set(["lesson_choice", "lesson_listen_choice", "lesson_short_answer", "lesson_gap"]);
 // `lesson_transform` niesie zdanie do przekształcenia w `statement` (kanoniczne
 // pole: kontrakt `kid.ts` lesson_transform ma `statement`, materialize czyta
 // `payload.statement`). Serializacja musi wysyłać `statement`, nie `prompt`,
 // inaczej PATCH gubi zdanie i materializacja daje pusty `statement`.
 const STATEMENT_TYPES: ReadonlySet<LessonExerciseTypeDto> = new Set(["lesson_error_fix", "lesson_transform"]);
 const PROMPT_TYPES: ReadonlySet<LessonExerciseTypeDto> = new Set(["lesson_open_answer", "lesson_short_answer", "lesson_calculation"]);
-const OPTION_TYPES: ReadonlySet<LessonExerciseTypeDto> = new Set(["lesson_choice", "lesson_short_answer"]);
+const OPTION_TYPES: ReadonlySet<LessonExerciseTypeDto> = new Set(["lesson_choice", "lesson_listen_choice", "lesson_short_answer"]);
 const ITEM_TYPES: ReadonlySet<LessonExerciseTypeDto> = new Set(["lesson_order"]);
 const NOTICE_TYPES: ReadonlySet<LessonExerciseTypeDto> = new Set(["lesson_notice"]);
 
 function exerciseToInput(exercise: EditableLessonExercise): LessonExerciseInput {
   const type = exercise.exerciseType;
-  const trimmedInstruction = exercise.instructionPl.trim();
+  // „Posłuchaj i wybierz”: polecenie dla dziecka jest stałe (Kid UI), a podpowiedź i piktogram
+  // tego typu nie dotyczą — nawet wpisane w stan edytora nie trafiają do payloadu.
+  const trimmedInstruction = type === "lesson_listen_choice" ? "" : exercise.instructionPl.trim();
   const input: LessonExerciseInput = {
     ...(exercise.id ? { id: exercise.id } : {}),
     exerciseType: type,
@@ -413,6 +416,15 @@ function exerciseToInput(exercise: EditableLessonExercise): LessonExerciseInput 
     input.focus = [];
   }
   return input;
+}
+
+/**
+ * Ile ćwiczeń „Posłuchaj i wybierz” nie ma gotowego nagrania zdania (w tworzeniu, błąd
+ * albo brak wpisu): takie ćwiczenie nie trafia do dziecka, dopóki nagranie nie jest gotowe.
+ * Pole `sentenceAudio` ustawia serwer tylko dla tego typu i tylko do odczytu.
+ */
+export function missingListenAudioCount(exercises: readonly Pick<LessonDraftDto["exercises"][number], "exerciseType" | "sentenceAudio">[]): number {
+  return exercises.filter((exercise) => exercise.exerciseType === "lesson_listen_choice" && exercise.sentenceAudio?.state !== "ready").length;
 }
 
 /**
