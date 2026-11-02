@@ -30,17 +30,18 @@ const grammar = {
   creation: "catalog",
   subjectTitleRequired: false,
   acceptsInterests: true,
+  offersListenChoice: true,
   topics: [{
     id: "present_simple",
     titlePl: "Present Simple",
     objectives: [
-      { id: "third_person_s", titlePl: "-s w 3. osobie" },
+      { id: "third_person_s", titlePl: "-s w 3. osobie", offersListenChoice: true },
       { id: "negation", titlePl: "Przeczenia" },
     ],
   }],
 };
 const school = { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] };
-const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, topics: [] };
+const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, offersListenChoice: true, topics: [] };
 
 const catalog = { subjects: [grammar, school, chapter] } as unknown as SubjectCatalogDto;
 
@@ -498,6 +499,15 @@ describe("NewLessonForm", () => {
       const pills = () => Array.from(document.querySelectorAll("[data-testid='lesson-themes'] .mantine-Pill-root")).map((el) => el.textContent?.trim());
       const insertButton = (id: string) => screen.getByTestId(`lesson-themes-insert-${id}`) as HTMLButtonElement;
 
+      it("dopisek o „Posłuchaj i wybierz” znika po odznaczeniu jedynego celu z ćwiczeniami słuchowymi i wraca po zaznaczeniu", async () => {
+        renderInteractive();
+        expect(screen.queryByTestId("lesson-listen-choice-note")).not.toBeNull();
+        fireEvent.click(screen.getByTestId("lesson-objective-third_person_s"));
+        await waitFor(() => expect(screen.queryByTestId("lesson-listen-choice-note")).toBeNull());
+        fireEvent.click(screen.getByTestId("lesson-objective-third_person_s"));
+        await waitFor(() => expect(screen.queryByTestId("lesson-listen-choice-note")).not.toBeNull());
+      });
+
       it("wstawienie dołącza tematy dziecka bez duplikatów, a przycisk gaśnie, gdy wszystkie już są", async () => {
         const { registerEditorState } = renderInteractive();
         expect(pills()).toEqual([]);
@@ -653,5 +663,10 @@ describe("NewLessonForm", () => {
     const schoolMarkup = renderWithCatalog(school);
     expect(schoolMarkup).not.toContain('data-testid="lesson-listen-choice-note"');
     expect(schoolMarkup).not.toContain(messages.lessons.listenChoiceCreateNote);
+    // Decyduje katalog, nie ścieżka tworzenia: przedmiot katalogowy bez typu słuchowego nie dostaje dopisku.
+    expect(renderWithCatalog({ ...grammar, offersListenChoice: false })).not.toContain('data-testid="lesson-listen-choice-note"');
+    // Temat bez celu z ćwiczeniami słuchowymi (np. sama pisownia -es/-ies): bez dopisku.
+    const noListenObjectives = { ...grammar, topics: grammar.topics.map((t) => ({ ...t, objectives: t.objectives.map(({ id, titlePl }) => ({ id, titlePl })) })) };
+    expect(renderWithCatalog(noListenObjectives)).not.toContain('data-testid="lesson-listen-choice-note"');
   });
 });

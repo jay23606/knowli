@@ -944,6 +944,12 @@ export const messages = {
     // „Posłuchaj i wybierz” (#198): informacja w karcie ćwiczenia, błąd nagrania i adnotacja w tworzeniu lekcji.
     listenChoiceNote: "Lektor przeczyta zdanie. Dziecko dostanie to zadanie, gdy nagranie będzie gotowe.",
     listenChoiceAudioFailed: "Nagranie się nie udało. Utwórz nową wersję lekcji, aby spróbować ponownie.",
+    /** Odznaka nagrania zdania w ćwiczeniu „Posłuchaj i wybierz” (odróżnia je od audio odpowiedzi). */
+    sentenceAudioState: {
+      ready: "Nagranie: gotowe",
+      pending: "Nagranie: w przygotowaniu…",
+      failed: "Nagranie: nie udało się",
+    } as Record<string, string>,
     listenChoiceCreateNote: "Do puli dodamy najwyżej 2 ćwiczenia „Posłuchaj i wybierz” na regułę.",
     listenChoiceMissingAudioCount: "Ćwiczenia słuchowe bez nagrania: {n}",
     promptAudioListen: "Posłuchaj",

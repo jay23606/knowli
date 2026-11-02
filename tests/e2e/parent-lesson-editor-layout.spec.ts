@@ -352,8 +352,8 @@ test("Posłuchaj i wybierz: odznaka, informacja, tekst naprawy i licznik bez prz
       await expect(page.getByTestId(`exercise-sentence-audio-state-${index}`)).toBeVisible();
       await expect(page.getByTestId(`exercise-audio-state-${index}`)).toHaveCount(0);
     }
-    await expect(page.getByTestId("exercise-sentence-audio-state-0")).toHaveText(messages.decks.audioState.ready!);
-    await expect(page.getByTestId("exercise-sentence-audio-state-2")).toHaveText(messages.decks.audioState.pending!);
+    await expect(page.getByTestId("exercise-sentence-audio-state-0")).toHaveText(messages.lessons.sentenceAudioState.ready!);
+    await expect(page.getByTestId("exercise-sentence-audio-state-2")).toHaveText(messages.lessons.sentenceAudioState.pending!);
     // tekst naprawy tylko przy błędzie
     await expect(page.getByTestId("exercise-sentence-audio-failed-1")).toHaveText(messages.lessons.listenChoiceAudioFailed);
     await expect(page.getByTestId("exercise-sentence-audio-failed-0")).toHaveCount(0);
