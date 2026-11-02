@@ -505,6 +505,55 @@ przełączanie miesiąca, pusty miesiąc, „≈”, „+N bez ceny”, przejśc
 
 Historia sprzed wdrożenia nie istnieje — dziennik zaczyna się od zera.
 
+### 8.1 Wynik zadania 0
+
+Zweryfikowano 2026-11-02 prawdziwymi wywołaniami OpenRouter (klucz z `.env`,
+domyślna konfiguracja, koszt prób ok. 0,0003 USD).
+
+| Ścieżka | Czy jest koszt w odpowiedzi | Flaga potrzebna | Decyzja |
+| --- | --- | --- | --- |
+| Czat `/chat/completions` (`google/gemini-3.8-flash`) | tak, `usage.cost` (USD, liczba) bez żadnej flagi | nie | `CHAT_NEEDS_USAGE_INCLUDE = false` |
+| STT `/audio/transcriptions` (`elevenlabs/scribe-v2`) | tak, `usage.cost` (USD) bez żadnej flagi | nie | `STT_NEEDS_USAGE_INCLUDE = false` |
+| TTS `/audio/speech` (`google/gemini-3.8-flash-tts`) | nie: ani w ciele, ani w nagłówku | nie dotyczy | `TTS_COST_HEADER = null` — szacunek ze stawki |
+| 4xx (nieistniejący model, HTTP 400) | nie dotyczy | nie dotyczy | `ERRORS_BILLED = false` (zob. zastrzeżenie niżej) |
+
+Zaobserwowane kształty i szczegóły:
+
+- Czat: `usage` ma pola `prompt_tokens`, `completion_tokens`, `total_tokens`,
+  `cost`, `is_byok`, `prompt_tokens_details` (`cached_tokens`,
+  `cache_write_tokens`, `audio_tokens`, `video_tokens`), `cost_details`
+  (`upstream_inference_cost`, `upstream_inference_prompt_cost`,
+  `upstream_inference_completions_cost`) i `completion_tokens_details`
+  (`reasoning_tokens`, `image_tokens`, `audio_tokens`). Przykład: 2 tokeny
+  wejścia, 16 wyjścia (rozumowanie), `cost` 0,0000615.
+- STT: adapter `providers/openai-compatible/stt.ts` wysyła JSON z `input_audio`
+  (base64), nie multipart — próbę wykonano w tym samym formacie, więc flagą
+  byłoby pole JSON `usage: { include: true }`, a nie pole formularza
+  `usage[include]`. Ponieważ koszt przychodzi bez flagi, flaga w ogóle nie jest
+  potrzebna. `usage` ma dokładnie dwa pola: `seconds` (długość nagrania, 1,04 s)
+  i `cost` (0,0000636). Ciało ma ponadto `text`, `task`, `language`,
+  `language_confidence`, `duration`, `segments`, `words`. Nagłówek
+  `x-generation-id` jest, kosztu w nagłówkach nie ma.
+- TTS: odpowiedź 200 z `content-type: audio/pcm;rate=24000;channels=1`, ciało
+  to surowe PCM (bez JSON). Nagłówki z kosztem: brak (jedyny związany z
+  rozliczeniem to `x-generation-id`, a `GET /generation?id=…` zwróciło 404, więc
+  nie jest to droga odczytu kosztu). Koszt realny, zmierzony różnicą `usage`
+  klucza z `GET /key`: ok. 0,0000615 USD za „Hello” (0,92 s audio) —
+  rozliczenie jest zatem tokenowe, nie za sekundę; to tylko jeden pomiar, więc
+  stawka TTS pozostaje szacunkiem i wymaga skalibrowania na dłuższym tekście.
+- 4xx: `POST /chat/completions` z modelem `google/nonexistent-model-xyz` zwraca
+  400 z ciałem `{"error":{"message":"… is not a valid model ID","code":400},…}`.
+  Zużycie klucza (`GET /key`, pole `usage`) przed i po wywołaniu było identyczne,
+  a kontrola dodatnia (udane wywołanie czatu) podniosła je o 0,0000615 w ciągu
+  3 s — pomiar jest więc dość czuły i opóźnienie go nie maskuje.
+
+Czego nie zweryfikowano: panelu aktywności OpenRouter nie da się otworzyć z tej
+sesji, więc użyto różnicy `usage` z `GET /key`. Sprawdzono tylko 400 dla
+nieistniejącego modelu (żądanie odrzucone przed dostawcą). Nie sprawdzono 4xx/5xx
+zwróconych przez dostawcę po rozpoczęciu pracy (np. 429, 5xx, przerwane
+połączenie), więc założenie `not_billed` dla `failed` z `httpStatus >= 400`
+pozostaje potwierdzone wyłącznie dla błędów walidacji żądania.
+
 ## 9. Rozstrzygnięcia review
 
 | Uwaga | Rozstrzygnięcie |
