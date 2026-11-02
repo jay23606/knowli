@@ -44,12 +44,12 @@
 Skrypt pomocniczy w scratchpadzie (nie w repo), Node 22 `fetch`, klucz z `.env`; wyniki drukuj przez `JSON.stringify(...usage)` (w środowisku nie ma `jq`). Koszt prób: ułamki centa.
 
 - [ ] **Step 2: Czat bez flagi.** `POST https://openrouter.ai/api/v1/chat/completions` z `{"model":"google/gemini-3.8-flash","messages":[{"role":"user","content":"Say hi"}]}` — czy `usage.cost` jest. Jeśli nie, powtórz z `"usage":{"include":true}`.
-- [ ] **Step 3: STT.** `POST /api/v1/audio/transcriptions` (multipart jak `providers/openai-compatible/stt.ts`) z krótkim WAV i modelem `elevenlabs/scribe-v2` — czy `usage.cost` jest; jeśli nie, powtórz z polem formularza `usage[include]=true`.
+- [ ] **Step 3: STT.** `POST /api/v1/audio/transcriptions` (JSON z `input_audio` w base64 jak `providers/openai-compatible/stt.ts`, nie multipart) z krótkim WAV i modelem `elevenlabs/scribe-v2` — czy `usage.cost` jest; jeśli nie, powtórz z polem JSON `usage: { include: true }`.
 - [ ] **Step 4: TTS.** `POST /api/v1/audio/speech` z `{"model":"google/gemini-3.8-flash-tts","voice":"Kore","input":"Hello","response_format":"pcm"}` — wypisz wszystkie nagłówki odpowiedzi; szukaj nagłówka z kosztem.
 - [ ] **Step 5: 4xx.** Czat z nieistniejącym modelem — status i ciało; w panelu aktywności OpenRouter sprawdź, czy pojawiło się obciążenie.
 - [ ] **Step 6: Zapisz wynik w §8.1** (tabela: ścieżka → czy jest `cost`, potrzebna flaga, decyzja) **i commit** `docs: wynik zadania 0 kosztów OpenRouter`. Wynik ustala stałe dla Task 4–5:
   - `CHAT_NEEDS_USAGE_INCLUDE: boolean` → Task 4 Step 3 (`withChatRequestExtras` tylko dla `isOpenRouterEndpoint`);
-  - `STT_NEEDS_USAGE_INCLUDE: boolean` → Task 5 Step 3 (pole formularza w `stt.ts` tylko dla OpenRouter);
+  - `STT_NEEDS_USAGE_INCLUDE: boolean` → Task 5 Step 3 (pole JSON `usage: { include: true }` w ciele żądania `stt.ts` tylko dla OpenRouter; wynik zadania 0: `false`, więc żądanie się nie zmienia);
   - `TTS_COST_HEADER: string | null` (nazwa nagłówka albo brak) → Task 5 Step 3 (odczyt nagłówka jako `providerCostUsd`; brak → szacunek ze stawki);
   - `ERRORS_BILLED: boolean` → jeśli `true`, Task 2 `priceUsage` zwraca dla `failed` z `httpStatus >= 400` `unknown` zamiast `not_billed` (zmień oczekiwanie w `pricing.test.ts`).
 
@@ -193,7 +193,7 @@ Skrypt pomocniczy w scratchpadzie (nie w repo), Node 22 `fetch`, klucz z `.env`;
 - [ ] **Step 1: Testy** (każdy przypadek błędu z `toHaveLength(1)`):
   - TTS: 200 z PCM 24 kHz 1,5 s → event `{ feature: "tts", outcome: "ok", characters: input.text.length, audioMs: 1500 }` (+ `providerCostUsd` z nagłówka, jeśli Task 0 dał `TTS_COST_HEADER`); format mp3 → `audioMs` z `audio/mp3-duration.ts`; 200 z nieznanym content-type → event `ok` (opłacone), potem wyjątek `provider_unexpected_audio`;
   - obrazy: 200 z jednym `b64_json` → `{ images: 1 }` plus tokeny z `usage`, jeśli są; `feature: "deck_cover"` przy tej opcji;
-  - STT OpenRouter: 400 przy `verbose_json`, potem 200 przy `json` → dwa eventy, pierwszy `failed` z `httpStatus: 400`, drugi `ok` z `providerCostUsd`; 401/403 → jeden `failed`, zachowany `AppError`; `audioMs` z `input.durationMs`; jeśli `STT_NEEDS_USAGE_INCLUDE` — pole formularza tylko dla OpenRouter;
+  - STT OpenRouter: 400 przy `verbose_json`, potem 200 przy `json` → dwa eventy, pierwszy `failed` z `httpStatus: 400`, drugi `ok` z `providerCostUsd`; 401/403 → jeden `failed`, zachowany `AppError`; `audioMs` z `input.durationMs`; jeśli `STT_NEEDS_USAGE_INCLUDE` — pole JSON `usage: { include: true }` tylko dla OpenRouter (wynik zadania 0: `false`, brak zmiany żądania);
   - Azure STT i wymowa: `audioMs` z `input.durationMs`, a bez niego z nagłówka WAV; WebM bez `durationMs` → event bez `audioMs` (wycena da `unknown`), bez wyjątku; `provider: "azure"`;
   - dla **wszystkich pięciu** adapterów: HTTP 500, abort, (dla JSON-owych) nieczytelne ciało → jeden event `failed`; brak recordera → zero eventów, zachowanie bez zmian;
   - `factory passes usage to adapter`: `createGenerationDepsFromEnv(env, rec)` → `deps.tts.synthesize` i `deps.image.generate` ze stubem fetch dają po 1 evencie (`illustration`); `imageProviderFromEnv(env, rec, "deck_cover")`, `speechFromEnv(env, rec)` i `lessonSpeechFromEnv(env, rec)` analogicznie;

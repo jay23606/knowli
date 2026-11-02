@@ -47,7 +47,7 @@ dostawcy.
 | --- | --- | --- | --- | --- |
 | `deck_generation` | worker | `providers/openai/llm.ts` `generateDeck` | OpenRouter, Gemini 3.8 Flash | `usage.cost` |
 | `lesson_generation` | worker | `providers/openai/llm.ts` `generateLessonPool` / `generateLessonObjectives` / `generateLessonStory` | OpenRouter, Gemini 3.8 Flash | `usage.cost` |
-| `tts` | worker | `providers/openai/tts.ts` | OpenRouter, Gemini 3.8 Flash TTS | zadanie 0 (§8); w razie braku szacunek z długości audio |
+| `tts` | worker | `providers/openai/tts.ts` | OpenRouter, Gemini 3.8 Flash TTS | zadanie 0 (§8.1): odpowiedź nie niesie kosztu; szacunek z długości audio (przybliżenie, rozliczenie prawdopodobnie tokenowe) |
 | `illustration` | worker | `providers/images/openai.ts` (media run) | OpenAI | szacunek: obrazy × stawka |
 | `deck_cover` | web | `providers/images/openai.ts` przez `materials/deck-cover.ts` `generateDeckCover` (bez runu) | OpenAI | szacunek: obrazy × stawka |
 | `answer_grading` | web | `providers/openai-compatible/grader.ts` | OpenRouter, Gemini 3.8 Flash | `usage.cost` |
@@ -266,7 +266,7 @@ komentarzu:
 | Zmienna | Jednostka | Dotyczy |
 | --- | --- | --- |
 | `UMIEM_PRICE_IMAGE_USD` | USD za obraz | `illustration`, `deck_cover` |
-| `UMIEM_PRICE_TTS_USD_PER_MINUTE` | USD za minutę audio | `tts`, gdy odpowiedź nie niesie kosztu |
+| `UMIEM_PRICE_TTS_USD_PER_MINUTE` | USD za minutę audio (przybliżenie; rozliczenie prawdopodobnie tokenowe) | `tts`, gdy odpowiedź nie niesie kosztu |
 | `UMIEM_PRICE_AZURE_STT_USD_PER_HOUR` | USD za godzinę audio | `speech_stt` |
 | `UMIEM_PRICE_AZURE_PRONUNCIATION_USD_PER_HOUR` | USD za godzinę audio | `pronunciation` |
 
@@ -439,7 +439,8 @@ konfiguracją:
 - czat OpenRouter: czy `usage.cost` przychodzi bez `usage: { include: true }`;
 - `/audio/transcriptions` OpenRouter: czy `usage.cost` jest w odpowiedzi;
 - `/audio/speech` OpenRouter: czy koszt jest w ciele lub nagłówku (jeśli nie —
-  szacunek ze stawki za minutę);
+  szacunek ze stawki za minutę — przybliżenie, bo rozliczenie jest prawdopodobnie
+  tokenowe);
 - odpowiedź z błędem 4xx: czy OpenRouter coś nalicza (weryfikacja założenia
   `not_billed` w panelu aktywności OpenRouter).
 
@@ -537,10 +538,15 @@ Zaobserwowane kształty i szczegóły:
 - TTS: odpowiedź 200 z `content-type: audio/pcm;rate=24000;channels=1`, ciało
   to surowe PCM (bez JSON). Nagłówki z kosztem: brak (jedyny związany z
   rozliczeniem to `x-generation-id`, a `GET /generation?id=…` zwróciło 404, więc
-  nie jest to droga odczytu kosztu). Koszt realny, zmierzony różnicą `usage`
-  klucza z `GET /key`: ok. 0,0000615 USD za „Hello” (0,92 s audio) —
-  rozliczenie jest zatem tokenowe, nie za sekundę; to tylko jeden pomiar, więc
-  stawka TTS pozostaje szacunkiem i wymaga skalibrowania na dłuższym tekście.
+  nie jest to droga odczytu kosztu). Orientacyjny pomiar różnicą `usage` klucza
+  z `GET /key`: ok. 0,0000615 USD za „Hello” (0,92 s audio). Ta wartość
+  jest identyczna jak koszt wywołania czatu i różnica kontrolna z tego samego
+  zadania, więc może to być zbieg okoliczności albo zanieczyszczenie pomiaru
+  (`usage` klucza obejmuje każde użycie tego klucza, także z innych sesji);
+  jest niepotwierdzona. Rozliczenie jest prawdopodobnie tokenowe, nie za
+  sekundę, ale wynika to z jednego pomiaru. `UMIEM_PRICE_TTS_USD_PER_MINUTE`
+  jest więc zgrubnym szacunkiem do skalibrowania później, np. na dłuższym
+  tekście i według panelu aktywności OpenRouter.
 - 4xx: `POST /chat/completions` z modelem `google/nonexistent-model-xyz` zwraca
   400 z ciałem `{"error":{"message":"… is not a valid model ID","code":400},…}`.
   Zużycie klucza (`GET /key`, pole `usage`) przed i po wywołaniu było identyczne,
@@ -571,7 +577,7 @@ pozostaje potwierdzone wyłącznie dla błędów walidacji żądania.
 | Strefa: `family-date.ts` tylko formatuje | `family_settings.timezone` + `report-period.ts` (§5.3) |
 | Koszt wywołań nieudanych niezdefiniowany | `http_status`, `not_billed` vs `unknown`, cennik nie wycenia `failed` (§4.4) |
 | Zapis „przed parsowaniem” niemożliwy — koszt jest w ciele | po `json()`, przed sprawdzeniem treści (§4.2) |
-| `usage.cost` dla czatu i STT niesprawdzony | zadanie 0 + `usage.include` tylko dla OpenRouter (§4.2, §8) |
+| `usage.cost` dla czatu i STT niesprawdzony | rozwiązane w §8.1: czat i STT zwracają `usage.cost` bez flagi `usage.include`, więc żądania się nie zmieniają (§4.2, §8) |
 | Składanie workera przed bazą; zamknięcie zamyka pulę przed zapisem | kolejność §4.3 |
 | Float i zapis wykładniczy w `usage.cost` | mikrodolary `bigint`, agregaty w SQL (§4.4) |
 | Niejednoznaczne „sesje” i średnia w zakładce Dzieci | `learning_sessions.started_at`, także sesje bez kosztu; podpis bez materiałów (§5.2) |
