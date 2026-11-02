@@ -141,3 +141,8 @@ export function kidBurstSeconds(size: KidBurstSize): number {
 
 /** Summary stars: each lands with a bounce, one after another. */
 export const kidStarStaggerSeconds = 0.16;
+
+/** Decorative pair line (matching exercise) appears by fading in; no geometry is animated. */
+export const kidFadeInitial = { opacity: 0 } as const;
+export const kidFadeAnimate = { opacity: 1 } as const;
+export const kidFadeTransition: Transition = { duration: 0.18, ease: "easeOut" };

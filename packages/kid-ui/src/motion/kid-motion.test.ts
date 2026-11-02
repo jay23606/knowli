@@ -23,6 +23,8 @@ import {
   kidListenFailWobble,
   kidListenFailWobbleTransition,
   kidDockExit,
+  kidFadeAnimate,
+  kidFadeInitial,
   kidEntranceAnimate,
   kidEntranceInitial,
   kidLetterPop,
@@ -65,6 +67,8 @@ const ANIMATED_VALUES = [
   kidDockAnimate,
   kidIdleBreath,
   kidSoundRingAnimate,
+  kidFadeInitial,
+  kidFadeAnimate,
 ];
 
 function dampingRatio(spring: { stiffness?: number; damping?: number }): number {

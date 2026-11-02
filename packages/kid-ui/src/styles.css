@@ -2626,6 +2626,35 @@
   outline-offset: 3px;
 }
 
+/* Warstwa linii i kropek „Połącz w pary” (PairLines): ostatnie dziecko
+   `kid-lesson-pair` (position: relative); współrzędne w pikselach wewnętrznych. */
+.kid-ui .kid-lesson-pair__lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.kid-ui .kid-lesson-pair__line {
+  stroke: var(--md-sys-color-primary);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+.kid-ui .kid-lesson-pair__dot {
+  fill: var(--md-sys-color-surface);
+  stroke: var(--md-sys-color-outline);
+  stroke-width: 2;
+}
+
+.kid-ui .kid-lesson-pair__dot--paired,
+.kid-ui .kid-lesson-pair__dot--selected {
+  fill: var(--md-sys-color-primary);
+  stroke: var(--md-sys-color-primary);
+}
+
 /* „Połącz w pary” (design szkoły §10.5): wiersz = lewy element i miejsce na
    pasujący; compact jeden pod drugim, od 600 px obok siebie. */
 .kid-lesson-match,
