@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   createGenerationDepsFromEnv,
@@ -20,6 +18,7 @@ import type { LessonDraftDto } from "@learning/contracts";
 import { stageOf } from "../../packages/server/src/domain/lessons/stages";
 import { UNSOLICITED_V3_FIELDS } from "../../packages/server/src/domain/lessons/subjects/english-chapter/validators";
 import { testDatabase } from "../integration/helpers";
+import { loadDotEnv, resolveOutsideRepoPath } from "./probe-helpers";
 
 /**
  * Próba generowania lekcji z materiału rodzica na PRAWDZIWYM modelu (design
@@ -42,63 +41,6 @@ import { testDatabase } from "../integration/helpers";
  */
 
 const materialPath = process.env.UMIEM_PROBE_MATERIAL;
-
-/** Wczytuje .env (wzór `scripts/evaluate-school-grader.mts`) bez nadpisywania środowiska. */
-function loadDotEnv(): void {
-  let text = "";
-  try {
-    text = readFileSync(new URL("../../.env", import.meta.url), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  for (const line of text.split(/\r?\n/)) {
-    const match = /^(?:export\s+)?([A-Z0-9_]+)=(.*)$/.exec(line.trim());
-    if (match && process.env[match[1]!] === undefined) {
-      process.env[match[1]!] = match[2]!.replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1");
-    }
-  }
-}
-
-/** Katalogi główne repozytorium: ten checkout oraz główny checkout, gdy to worktree. */
-function repositoryRoots(): string[] {
-  const here = resolve(fileURLToPath(new URL("../../", import.meta.url)));
-  const roots = [here];
-  try {
-    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: here, encoding: "utf8" }).trim();
-    if (common.length > 0) roots.push(resolve(common, ".."));
-  } catch {
-    // brak gita: wystarcza katalog tego checkoutu
-  }
-  return [...new Set(roots)];
-}
-
-function realpathOrSelf(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
-
-function isInside(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
-/** Ścieżka zrzutu (rozwiązana) albo błąd, gdy leży w repozytorium; brak zmiennej = brak zrzutu. */
-function resolveDumpPath(raw: string | undefined): string | undefined {
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const resolved = resolve(raw);
-  // Katalog nadrzędny po rozwiązaniu dowiązań/junction, żeby link do repozytorium nie ominął sprawdzenia.
-  const directory = existsSync(dirname(resolved)) ? realpathOrSelf(dirname(resolved)) : dirname(resolved);
-  const candidates = [resolved, join(directory, basename(resolved))];
-  for (const root of repositoryRoots().flatMap((item) => [item, realpathOrSelf(item)])) {
-    if (candidates.some((candidate) => isInside(root, candidate))) {
-      throw new Error(`UMIEM_PROBE_DUMP wskazuje wewnątrz repozytorium (${root}) — zrzut surowego wyjścia modelu z materiału podręcznika nie może trafić do checkoutu. Podaj ścieżkę poza repozytorium.`);
-    }
-  }
-  return resolved;
-}
 
 interface RecordedCall {
   method: "objectives" | "pool";
@@ -220,7 +162,7 @@ describe.skipIf(!materialPath)("próba generowania lekcji na prawdziwym modelu",
     // Bezwarunkowo, po wczytaniu .env: próba nigdy nie wskaże prawdziwego wolumenu mediów.
     process.env.MEDIA_ROOT = mkdtempSync(join(tmpdir(), "knowli-probe-media-"));
     // Przed wywołaniem modelu: zła ścieżka zrzutu nie może kosztować przebiegu.
-    const dumpPath = resolveDumpPath(process.env.UMIEM_PROBE_DUMP);
+    const dumpPath = resolveOutsideRepoPath(process.env.UMIEM_PROBE_DUMP, "UMIEM_PROBE_DUMP");
 
     const subjectKind = process.env.UMIEM_PROBE_SUBJECT === "school" ? "school" : "chapter";
     const material = readFileSync(materialPath!, "utf8");
