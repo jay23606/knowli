@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { z } from "zod";
 import {
   GenerationCommandSchema,
@@ -16,6 +16,8 @@ import type { LlmGenerateDeckInput } from "../../ports/ai";
 import {
   claimQueuedRun,
   enqueueGenerationRun,
+  isStoryRunInput,
+  lessonStoryRunFilter,
   markRun,
   markRunSucceeded,
   markRunWithoutSourceItems,
@@ -276,6 +278,8 @@ export async function readGeneration(services: Services, runId: string): Promise
 /**
  * Ręczne ponowienie po porażce (lub odblokowanie runu utkwionego w running
  * po awarii workera). Resetuje budżet prób; nie rusza runów zakończonych.
+ * Zwraca id runu do śledzenia: zwykle ten sam, a dla runu historyjki
+ * w `running` — id nowego runu, który go zastępuje.
  */
 export async function retryGeneration(services: Services, runId: string): Promise<{ runId: string }> {
   const run = (await services.db.select().from(generationRuns).where(eq(generationRuns.id, runId)))[0];
@@ -285,25 +289,76 @@ export async function retryGeneration(services: Services, runId: string): Promis
   if (run.state === "succeeded" || run.state === "superseded") {
     throw new AppError("conflict");
   }
-  await services.db.transaction(async (tx) => {
+  return services.db.transaction(async (tx): Promise<{ runId: string }> => {
     if (run.kind === "lesson") {
       // Taka sama kolejność blokad jak finalizacja lekcji: wersja, potem run.
       const version = (await tx.select().from(deckVersions).where(eq(deckVersions.id, run.deckVersionId!)).for("update"))[0];
       const current = (await tx.select().from(generationRuns).where(eq(generationRuns.id, runId)).for("update"))[0];
       if (!version || !current || version.state === "published" || current.state === "succeeded" || current.state === "superseded") throw new AppError("conflict");
+      if (isStoryRunInput(current.input)) {
+        // Run historyjki nie zależy od numeru edycji (spec §6.2): ponawiamy go
+        // z bieżącym numerem, bez podbijania go i bez anulowania innych runów.
+        const deferred = current.state === "queued" && current.nextAttemptAt !== null && current.nextAttemptAt > services.clock.now();
+        if (current.state === "queued" && !deferred) return { runId };
+        // Jeden aktywny run historyjki na wersję.
+        const otherActive = (await tx.select({ id: generationRuns.id }).from(generationRuns).where(and(
+          eq(generationRuns.kind, "lesson"),
+          eq(generationRuns.deckVersionId, version.id),
+          inArray(generationRuns.state, ["queued", "running"]),
+          ne(generationRuns.id, runId),
+          lessonStoryRunFilter(),
+        )).limit(1))[0];
+        if (otherActive) throw new AppError("conflict");
+        if (current.state === "running") {
+          // `running` (np. po awarii workera): stary run zostaje `superseded`,
+          // a jego miejsce zajmuje NOWY run z pełnym budżetem prób i tym samym
+          // wejściem (spec §6.2a). Spóźniony worker starego runu nie przejdzie
+          // CAS finalizacji (`running` + próba), więc nie nadpisze wyniku.
+          await tx.update(generationRuns)
+            .set({ state: "superseded", errorCode: null, nextAttemptAt: null, finishedAt: services.clock.now() })
+            .where(eq(generationRuns.id, runId));
+          const newRunId = randomUUID();
+          await tx.insert(generationRuns).values({
+            id: newRunId,
+            deckVersionId: version.id,
+            expectedEditNumber: version.editNumber,
+            kind: "lesson",
+            dedupeKey: `lesson-story:retry:${newRunId}`,
+            state: "queued",
+            input: current.input,
+          });
+          return { runId: newRunId };
+        }
+        // Porażka i odroczone queued dostają nowy budżet prób.
+        await tx.update(generationRuns)
+          .set({
+            state: "queued",
+            attempts: 0,
+            errorCode: null,
+            finishedAt: null,
+            nextAttemptAt: null,
+            expectedEditNumber: version.editNumber,
+          })
+          .where(eq(generationRuns.id, runId));
+        return { runId };
+      }
       if (current.state === "queued") {
         if (current.nextAttemptAt && current.nextAttemptAt > services.clock.now()) {
           await tx.update(generationRuns).set({ attempts: 0, errorCode: null, nextAttemptAt: null })
             .where(eq(generationRuns.id, runId));
         }
-        return;
+        return { runId };
       }
       if (version.editNumber !== current.expectedEditNumber) throw new AppError("conflict");
       const editNumber = version.editNumber + 1;
       await tx.update(deckVersions).set({ editNumber }).where(eq(deckVersions.id, version.id));
-      await supersedeLessonRuns(tx, version.id, services.clock.now(), runId);
+      // Ponowiony pełny run lekcji to nowa pula (spec §6.2): run historyjki
+      // w toku byłby walidowany wobec starej puli, więc też go anulujemy.
+      // Ponowione dogenerowanie celu historyjki nie anuluje.
+      const isTopUp = (current.input as { regenerate?: unknown } | null)?.regenerate !== undefined;
+      await supersedeLessonRuns(tx, version.id, services.clock.now(), runId, { includeStoryRuns: !isTopUp });
       await tx.update(generationRuns).set({ state: "queued", attempts: 0, errorCode: null, finishedAt: null, nextAttemptAt: null, expectedEditNumber: editNumber }).where(eq(generationRuns.id, runId));
-      return;
+      return { runId };
     }
     if (run.assetId) {
       const asset = (await tx.select().from(mediaAssets).where(eq(mediaAssets.id, run.assetId)))[0];
@@ -322,8 +377,8 @@ export async function retryGeneration(services: Services, runId: string): Promis
       .update(generationRuns)
       .set({ state: "queued", attempts: 0, errorCode: null, finishedAt: null, rejectedCount: null })
       .where(eq(generationRuns.id, runId));
+    return { runId };
   });
-  return { runId };
 }
 
 export async function executeGeneration(services: Services, runId: string, signal?: AbortSignal): Promise<void> {

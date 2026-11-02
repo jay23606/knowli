@@ -145,6 +145,12 @@ export interface SubjectPromptProfile {
    */
   readonly objectivesRules?: string;
   /**
+   * Reguły generacji historyjki na koniec sesji (język, długość, formy reguł
+   * tematu, pytania o treść) doklejane do promptu historyjki. Wymagane, gdy
+   * `SubjectModule.lessonStory` jest włączone (pilnuje `validateSubject`).
+   */
+  readonly storyRules?: string;
+  /**
    * Reguła użycia tematów zdań z zainteresowań dziecka (#197), dokładana do promptu
    * systemowego. Obecność pola = przedmiot przyjmuje tematy; same tematy to dane
    * rodzica i idą do wiadomości użytkownika, nigdy do tej reguły.
@@ -254,6 +260,12 @@ export interface SubjectModule {
    * `titlePl` przedmiotu. Brak = przedmiot nie tworzy zestawów z materiału.
    */
   readonly materialSubjectTitle?: "parent" | "fixed";
+  /**
+   * Czy sesje lekcji tego przedmiotu kończą się historyjką (krótki tekst w
+   * języku odpowiedzi z pytaniami o treść). Włączenie wymaga niepustego
+   * `prompts.storyRules`. Brak = `false`.
+   */
+  readonly lessonStory?: boolean;
   /**
    * Czy polecenie (`instructionPl`) niesie bodziec znaczenia: tożsamość ćwiczeń
    * `lesson_choice`, `lesson_gap` i `lesson_order` uwzględnia wtedy znormalizowane

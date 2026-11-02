@@ -28,6 +28,7 @@ import {
   LessonDeckDtoSchema,
   LessonDraftDtoSchema,
   LessonExerciseInputSchema,
+  LessonStorySchema,
   LessonMockTestReportDtoSchema,
   LessonVerdictDecisionSchema,
   LessonVerdictDtoSchema,
@@ -178,6 +179,13 @@ const LessonCardAudioRegenerateInputSchema = z.object({
   cardIndex: z.number().int().nonnegative(),
 }).strict();
 
+/** Wejście POST /lesson-drafts/{lessonDraftId}/story/regenerate: ścieżka + optimistic locking + idempotencja. */
+const LessonStoryRegenerateInputSchema = z.object({
+  lessonDraftId: UuidSchema,
+  expectedEditNumber: z.number().int().positive(),
+  clientRequestId: UuidSchema,
+}).strict();
+
 /** Wejście POST /lesson-drafts/{lessonDraftId}/regenerate: ścieżka + polecenie. */
 const LessonRegenerateInputSchema = LessonRegenerateCommandSchema.extend({ lessonDraftId: UuidSchema });
 
@@ -193,10 +201,16 @@ const LessonDraftPatchContractSchema = z.object({
   exercises: z.array(LessonExerciseInputSchema).optional(),
   examples: z.record(z.string(), z.array(z.string())).optional(),
   dynamicTopic: LessonDynamicTopicPatchSchema.optional(),
+  /** Historyjka: obiekt zastępuje, null usuwa, brak pola nie zmienia. */
+  story: LessonStorySchema.nullable().optional(),
+  /** Historyjka, od której zaczęto edycję (null = bez historyjki); inna niż bieżąca przy `story` → conflict. */
+  expectedStory: LessonStorySchema.nullable().optional(),
   interests: ChildInterestsSchema.optional(),
 }).refine(
-  (patch) => patch.title !== undefined || patch.exercises !== undefined || patch.examples !== undefined || patch.dynamicTopic !== undefined || patch.interests !== undefined,
-  { message: "patch must change title, exercises, examples, dynamicTopic or interests" },
+  (patch) =>
+    patch.title !== undefined || patch.exercises !== undefined || patch.examples !== undefined ||
+    patch.dynamicTopic !== undefined || patch.story !== undefined || patch.interests !== undefined,
+  { message: "patch must change title, exercises, examples, dynamicTopic, story or interests" },
 );
 
 /** Wejście PATCH /lesson-drafts/{lessonDraftId}: ścieżka + patch edycji. */
@@ -469,6 +483,12 @@ export const parentApiContract = {
       .input(LessonCardAudioRegenerateInputSchema)
       .output(z.object({ assetId: UuidSchema }))
       .meta(openapi({ method: "POST", path: "/lesson-drafts/{lessonDraftId}/card-audio/regenerate", successStatus: 202 })),
+
+    /** „Wygeneruj historyjkę” (spec historyjki lekcji): zleca run generowania; tylko szkic. */
+    regenerateStory: oc
+      .input(LessonStoryRegenerateInputSchema)
+      .output(z.object({ runId: UuidSchema, deckId: UuidSchema }))
+      .meta(openapi({ method: "POST", path: "/lesson-drafts/{lessonDraftId}/story/regenerate", successStatus: 202 })),
   },
 
   /** Runy generacji materiałów: odczyt statusu i ponowienie nieudanego. */

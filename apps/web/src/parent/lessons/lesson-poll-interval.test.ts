@@ -6,6 +6,7 @@ type Version = NonNullable<LessonDeckDto["draft"]>;
 
 function lesson(overrides: {
   generation?: LessonDeckDto["generation"];
+  storyGeneration?: LessonDeckDto["storyGeneration"];
   draftAssets?: string[];
   publishedAssets?: string[];
   draftPromptAudio?: string[];
@@ -19,6 +20,7 @@ function lesson(overrides: {
   }) as unknown as Version;
   return {
     generation: overrides.generation ?? null,
+    storyGeneration: overrides.storyGeneration ?? null,
     draft: overrides.draftAssets ? version(overrides.draftAssets, overrides.draftPromptAudio, overrides.draftCardAudio, overrides.draftExplanationAudio) : null,
     published: overrides.publishedAssets ? version(overrides.publishedAssets) : null,
   } as unknown as LessonDeckDto;
@@ -53,6 +55,14 @@ describe("lessonPollInterval", () => {
   it("odpytuje, gdy nagranie wyjaśnienia czeka", () => {
     expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftExplanationAudio: ["pending"] }))).toBe(3000);
     expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftExplanationAudio: ["ready", "failed"] }))).toBe(false);
+  });
+
+  it("odpytuje co sekundę, gdy run historyjki czeka albo trwa (osobno od generowania puli)", () => {
+    const story = (state: string) => ({ state }) as LessonDeckDto["storyGeneration"];
+    expect(lessonPollInterval(lesson({ storyGeneration: story("queued"), draftAssets: ["approved"] }))).toBe(1000);
+    expect(lessonPollInterval(lesson({ storyGeneration: story("running"), draftAssets: ["approved"] }))).toBe(1000);
+    expect(lessonPollInterval(lesson({ storyGeneration: story("failed"), draftAssets: ["approved"] }))).toBe(false);
+    expect(lessonPollInterval(lesson({ storyGeneration: story("succeeded"), draftAssets: ["approved"] }))).toBe(false);
   });
 
   it("odpytuje, gdy nagranie zdania „Posłuchaj i wybierz” czeka (sentenceAudio, nie ma go w assets)", () => {

@@ -123,6 +123,26 @@ export interface LessonObjectivesInput {
   /** Reguły przedmiotu dla podziału materiału na zagadnienia (opcjonalne). */
   readonly objectivesRules?: string;
 }
+
+/**
+ * Wejście generacji historyjki na koniec sesji lekcji (design „Historyjka
+ * lekcji”): temat, cele, materiał rodzica i zasady przedmiotu. Bez danych
+ * dziecka. `avoidSentences` to rozwiązane zdania puli ćwiczeń wersji (bariera
+ * ekspozycji), których model ma nie powtarzać.
+ */
+export interface LessonStoryInput {
+  readonly subjectTitle: string;
+  readonly topicTitle: string;
+  readonly answerLocale: string;
+  readonly promptLocale: string;
+  readonly objectives: readonly { readonly id: string; readonly descriptionEn: string }[];
+  readonly material: string;
+  readonly instruction?: string;
+  readonly generationRole: string;
+  readonly storyRules: string;
+  readonly avoidSentences: readonly string[];
+}
+
 export interface LlmProvider {
   readonly name: string;
   readonly model: string;
@@ -134,6 +154,15 @@ export interface LlmProvider {
     input: LessonObjectivesInput,
     signal?: AbortSignal,
   ): Promise<{ objectives: unknown[] }>;
+  /**
+   * Generacja historyjki: surowy obiekt `{ sentences: string[], questions:
+   * { question, options: string[], correctOptionIndex }[] }`; mapowanie na
+   * `LessonStory` i walidacja semantyczna należą do przypadku użycia.
+   */
+  generateLessonStory(
+    input: LessonStoryInput,
+    signal?: AbortSignal,
+  ): Promise<{ story: unknown }>;
   /**
    * Generacja surowej puli ćwiczeń jednego celu (design „Generowanie puli”).
    * Zwraca ćwiczenia do walidacji w domenie (`pool-validation.ts`) oraz

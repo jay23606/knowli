@@ -58,6 +58,16 @@ describe("validateSubject — reguły (po jednym przypadku negatywnym)", () => {
     expect(validateSubject(subject).length).toBeGreaterThan(0);
   });
 
+  it("subject with lessonStory requires non-empty prompts.storyRules", () => {
+    const subject = cloneSubject();
+    const storyErrors = (candidate: SubjectModule) =>
+      validateSubject(candidate).filter((error) => error.includes("storyRules"));
+    expect(storyErrors({ ...subject, lessonStory: true })).toHaveLength(1);
+    expect(storyErrors({ ...subject, lessonStory: true, prompts: { ...subject.prompts, storyRules: "  " } })).toHaveLength(1);
+    expect(storyErrors({ ...subject, lessonStory: true, prompts: { ...subject.prompts, storyRules: "Write a story." } })).toEqual([]);
+    expect(storyErrors({ ...subject, lessonStory: false })).toEqual([]);
+  });
+
   it("dopuszcza ten sam id tematu w różnych wersjach", () => {
     const subject = cloneSubject();
     const older = cloneData(firstTopic(subject));

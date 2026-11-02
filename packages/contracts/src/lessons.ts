@@ -452,6 +452,28 @@ export const CoverageGapDtoSchema = z.object({
 export type CoverageGapDto = z.infer<typeof CoverageGapDtoSchema>;
 
 /**
+ * Historyjka na koniec sesji lekcji (spec 2026-11-01): zdania do przeczytania
+ * i posłuchania oraz pytania wielokrotnego wyboru. Kształt odpowiada
+ * `LessonStory` z domeny; schemat jest celowo luźny (limity tylko jako bezpiecznik
+ * granicy), a reguły i komunikaty o błędach daje domena.
+ */
+export const LessonStoryOptionSchema = z.object({
+  id: z.string().min(1).max(16),
+  text: z.string().max(1000),
+}).strict();
+export const LessonStoryQuestionSchema = z.object({
+  id: z.string().min(1).max(16),
+  question: z.string().max(1000),
+  options: z.array(LessonStoryOptionSchema).max(10),
+  correctOption: z.string().max(16),
+}).strict();
+export const LessonStorySchema = z.object({
+  sentences: z.array(z.string().max(1000)).max(20),
+  questions: z.array(LessonStoryQuestionSchema).max(10),
+}).strict();
+export type LessonStoryDto = z.infer<typeof LessonStorySchema>;
+
+/**
  * Widok szkicu lekcji dla panelu rodzica (design „Data Models → Kontrakty”).
  * `examples` to przykłady z lekcji per cel; `exercises` to zedytowane payloady
  * z `revisionId`; `coverage` wskazuje braki etapów do publikacji.
@@ -494,6 +516,10 @@ export const LessonDraftDtoSchema = z.object({
   /** Zagadnienia odrzucone/pominięte na etapie generowania tematu (zestawy szkolne). */
   droppedObjectiveCount: z.number().int().nonnegative().optional(),
   coverage: z.array(CoverageGapDtoSchema),
+  /** Historyjka na koniec sesji; brak pola = lekcja bez historyjki. */
+  story: LessonStorySchema.optional(),
+  /** Przedmiot obsługuje historyjkę (flaga przedmiotu); brak pola = nie wiadomo/nie dotyczy. */
+  storyEnabled: z.boolean().optional(),
 });
 export type LessonDraftDto = z.infer<typeof LessonDraftDtoSchema>;
 
@@ -521,6 +547,8 @@ export const LessonDeckDtoSchema = z.object({
   draft: LessonDraftDtoSchema.nullable(),
   published: LessonDraftDtoSchema.nullable(),
   generation: GenerationDtoSchema.nullable(),
+  /** Najnowszy run generowania historyjki (null/brak = nie zlecano). */
+  storyGeneration: GenerationDtoSchema.nullable().optional(),
   assignments: z.array(AssignmentDtoSchema),
   /** Pochodzenie z materiału źródłowego rodzica; brak pola — wklejony tekst albo źródło usunięto. */
   source: LessonDeckSourceDtoSchema.optional(),

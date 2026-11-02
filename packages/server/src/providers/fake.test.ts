@@ -254,6 +254,33 @@ describe("FakeLlmProvider — wyjaśnienie błędu (explanationPl)", () => {
   });
 });
 
+describe("FakeLlmProvider — historyjka lekcji", () => {
+  it("fake generateLessonStory returns 4 sentences and 1 question with index in range", async () => {
+    const llm = new FakeLlmProvider();
+    const { story } = await llm.generateLessonStory({
+      subjectTitle: "Angielski",
+      topicTitle: "Unit 1",
+      answerLocale: "en-GB",
+      promptLocale: "pl-PL",
+      objectives: [],
+      material: "coat — płaszcz",
+      generationRole: "role",
+      storyRules: "rules",
+      avoidSentences: [],
+    });
+    const raw = story as { sentences: string[]; questions: { question: string; options: string[]; correctOptionIndex: number }[] };
+    expect(raw.sentences).toHaveLength(4);
+    expect(raw.sentences[0]).toBe("Sam has a red bike.");
+    expect(raw.questions).toHaveLength(1);
+    const [question] = raw.questions;
+    expect(question!.question).toBe("Jaki rower ma Sam?");
+    expect(question!.options).toEqual(["czerwony", "niebieski", "zielony"]);
+    expect(question!.correctOptionIndex).toBe(0);
+    expect(question!.correctOptionIndex).toBeGreaterThanOrEqual(0);
+    expect(question!.correctOptionIndex).toBeLessThan(question!.options.length);
+  });
+});
+
 describe("FakeLlmProvider — rozdział angielskiego", () => {
   const MATERIAL = [
     "Zagadnienie 1: Ubrania",
