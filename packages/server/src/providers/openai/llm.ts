@@ -657,6 +657,18 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
     accept: (parsed: unknown) => boolean;
   }): Promise<unknown> {
     const base = usageBase("lesson_generation", args.operation);
+    // ciało przed `try`: błąd jego budowy to błąd programu, nie wywołanie dostawcy (bez zapisu `failed`)
+    const body = JSON.stringify(withChatRequestExtras(options.requestExtras, {
+      model,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: args.schemaName, strict: true, schema: args.schema },
+      },
+      messages: [
+        { role: "system", content: args.system },
+        { role: "user", content: args.user },
+      ],
+    }));
     // jedno żądanie HTTP = jeden zapis; catch transportu zapisuje tylko, gdy odpowiedzi nie było
     let recorded = false;
     try {
@@ -668,17 +680,7 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
           authorization: `Bearer ${options.apiKey}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
-          model,
-          response_format: {
-            type: "json_schema",
-            json_schema: { name: args.schemaName, strict: true, schema: args.schema },
-          },
-          messages: [
-            { role: "system", content: args.system },
-            { role: "user", content: args.user },
-          ],
-        })),
+        body,
         signal: requestSignal,
       });
       if (!response.ok) {
@@ -725,6 +727,15 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
     model,
     async generateDeck(input: LlmGenerateDeckInput, signal?: AbortSignal) {
       const base = usageBase("deck_generation", "deck");
+      // ciało przed `try`: błąd jego budowy nie jest wywołaniem dostawcy (bez zapisu `failed`)
+      const body = JSON.stringify(withChatRequestExtras(options.requestExtras, {
+        model,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt(input) },
+          { role: "user", content: "prompt" in input ? input.prompt : deckUserMaterial(input) },
+        ],
+      }));
       let response: Response;
       try {
         response = await fetch(`${baseUrl}/chat/completions`, {
@@ -733,14 +744,7 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
             authorization: `Bearer ${options.apiKey}`,
             "content-type": "application/json",
           },
-          body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
-            model,
-            response_format: { type: "json_object" },
-            messages: [
-              { role: "system", content: systemPrompt(input) },
-              { role: "user", content: "prompt" in input ? input.prompt : deckUserMaterial(input) },
-            ],
-          })),
+          body,
           signal,
         });
       } catch (error) {
@@ -812,6 +816,22 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
       const system = lessonSystemPrompt(input);
       const user = lessonUserMaterial(input);
       const base = usageBase("lesson_generation", "lesson_pool");
+      // ciało też przed `try`: błąd jego budowy nie jest wywołaniem dostawcy (bez zapisu `failed`)
+      const body = JSON.stringify(withChatRequestExtras(options.requestExtras, {
+        model,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "lesson_pool",
+            strict: true,
+            schema,
+          },
+        },
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+      }));
       let recorded = false;
       try {
         const timeoutSignal = AbortSignal.timeout(lessonRequestTimeoutMs);
@@ -822,21 +842,7 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
             authorization: `Bearer ${options.apiKey}`,
             "content-type": "application/json",
           },
-          body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
-            model,
-            response_format: {
-              type: "json_schema",
-              json_schema: {
-                name: "lesson_pool",
-                strict: true,
-                schema,
-              },
-            },
-            messages: [
-              { role: "system", content: system },
-              { role: "user", content: user },
-            ],
-          })),
+          body,
           signal: requestSignal,
         });
         if (!response.ok) {

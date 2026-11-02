@@ -14,6 +14,18 @@ import type { UsagePrices } from "./prices-env";
  */
 const RETRY_UNSCOPED = new Set(["23503", "40P01"]);
 
+/** Pola szczegółowe zerowane przy ponowieniu wiersza sesji lub dziecka (spec §4.3, §5.3). */
+const DETAIL_FIELDS_NULL = {
+  operation: null,
+  model: null,
+  httpStatus: null,
+  inputTokens: null,
+  outputTokens: null,
+  characters: null,
+  audioMs: null,
+  images: null,
+} as const;
+
 /** Kod SQLSTATE błędu bazy; Drizzle opakowuje błąd sterownika w `cause`. */
 function sqlState(error: unknown): string | undefined {
   for (let current: unknown = error, depth = 0; current && depth < 3; depth += 1) {
@@ -63,9 +75,13 @@ export function createDrizzleUsageRecorder(input: {
         return;
       }
       // Zakres wskazuje wiersz, który zniknął albo znika (usunięty profil): koszt zostaje bez przypisania.
+      // Wiersz sesji lub dziecka traci też pola szczegółowe, jak przy zgrubieniu profilu
+      // (`anonymizeChildUsage`) — kwota i `scope_kind` zostają; `occurred_at` bez zmian.
+      const childScoped = row.sessionId != null || row.childId != null;
       try {
         await db.insert(providerUsageEvents).values({
           ...row,
+          ...(childScoped ? DETAIL_FIELDS_NULL : {}),
           generationRunId: null,
           deckId: null,
           sessionId: null,

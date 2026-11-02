@@ -48,6 +48,48 @@ describe("drizzle usage recorder retry", () => {
     expect(log).not.toHaveBeenCalled();
   });
 
+  const detailed: UsageEvent = {
+    ...event,
+    operation: "grade",
+    model: "google/gemini-3.8-flash",
+    httpStatus: 200,
+    inputTokens: 10,
+    outputTokens: 5,
+    characters: 3,
+    audioMs: 1000,
+    images: 1,
+  };
+  const DETAILS_NULL = {
+    operation: null, model: null, httpStatus: null, inputTokens: null, outputTokens: null,
+    characters: null, audioMs: null, images: null,
+  };
+
+  it.each([
+    ["session", { sessionId: "s1" }],
+    ["child", { childId: "c1" }],
+  ])("retry of a row scoped to a %s drops the detail fields like the profile anonymization", async (_kind, scope) => {
+    const { db, rows } = fakeDb([sqlError("23503", true), undefined]);
+    const recorder = createDrizzleUsageRecorder({ db, clock, prices: {} });
+
+    withUsageScope(scope, () => recorder.record(detailed));
+    await recorder.flush();
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ operation: "grade", model: "google/gemini-3.8-flash", inputTokens: 10 });
+    expect(rows[1]).toMatchObject({ ...DETAILS_NULL, sessionId: null, childId: null, costUsd: rows[0]!.costUsd });
+    expect(rows[1]!.occurredAt).toEqual(rows[0]!.occurredAt);
+  });
+
+  it("retry of a run-scoped row keeps the detail fields", async () => {
+    const { db, rows } = fakeDb([sqlError("23503", false), undefined]);
+    const recorder = createDrizzleUsageRecorder({ db, clock, prices: {} });
+
+    withUsageScope({ deckId: "d1", generationRunId: "r1" }, () => recorder.record(detailed));
+    await recorder.flush();
+
+    expect(rows[1]).toMatchObject({ operation: "grade", model: "google/gemini-3.8-flash", httpStatus: 200, images: 1, deckId: null, generationRunId: null });
+  });
+
   it("logs and does not retry other errors", async () => {
     const { db, rows } = fakeDb([sqlError("23514", true)]);
     const log = vi.fn();

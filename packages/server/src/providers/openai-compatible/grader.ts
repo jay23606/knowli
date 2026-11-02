@@ -169,6 +169,16 @@ export function createOpenAiCompatibleGrader(options: OpenAiCompatibleGraderOpti
         provider,
         model: options.model,
       } as const;
+      // ciało przed `try`: błąd jego budowy nie jest wywołaniem dostawcy (bez zapisu `failed`)
+      const body = JSON.stringify(withChatRequestExtras(options.requestExtras, {
+        model: options.model,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: input.school ? schoolSystemPrompt(input) : systemPrompt(input) },
+          { role: "user", content: input.school ? schoolUserMessage(input) : userMessage(input) },
+        ],
+      }));
       let response: Response;
       try {
         response = await doFetch(`${options.baseUrl}/chat/completions`, {
@@ -177,15 +187,7 @@ export function createOpenAiCompatibleGrader(options: OpenAiCompatibleGraderOpti
             authorization: `Bearer ${options.apiKey}`,
             "content-type": "application/json",
           },
-          body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
-            model: options.model,
-            temperature: 0,
-            response_format: { type: "json_object" },
-            messages: [
-              { role: "system", content: input.school ? schoolSystemPrompt(input) : systemPrompt(input) },
-              { role: "user", content: input.school ? schoolUserMessage(input) : userMessage(input) },
-            ],
-          })),
+          body,
           signal,
         });
       } catch (error) {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { shutdownWorker } from "./shutdown";
 
 describe("shutdownWorker", () => {
@@ -24,13 +24,33 @@ describe("shutdownWorker", () => {
     ]);
   });
 
-  it("closes the pool even when flushing usage fails", async () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("closes the pool even when flushing usage fails and logs only the step and code", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     const order: string[] = [];
     await shutdownWorker({
       loop: { stop: async () => { order.push("loop.stop"); } },
-      usage: { record: () => {}, flush: async () => { throw new Error("flush failed"); } },
+      usage: { record: () => {}, flush: async () => { throw Object.assign(new Error("flush failed: secret payload"), { code: "57P01" }); } },
       pool: { end: async () => { order.push("pool.end"); } },
     });
     expect(order).toEqual(["loop.stop", "pool.end"]);
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(errors).toHaveBeenCalledWith("[worker] shutdown step failed", { step: "usage.flush", code: "57P01" });
+    expect(JSON.stringify(errors.mock.calls)).not.toContain("secret payload");
+  });
+
+  it("logs a failed loop stop by error class when there is no code", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const order: string[] = [];
+    await shutdownWorker({
+      loop: { stop: async () => { throw new TypeError("loop exploded"); } },
+      usage: { record: () => {}, flush: async () => { order.push("usage.flush"); } },
+      pool: { end: async () => { order.push("pool.end"); } },
+    });
+    expect(order).toEqual(["usage.flush", "pool.end"]);
+    expect(errors).toHaveBeenCalledWith("[worker] shutdown step failed", { step: "loop.stop", code: "TypeError" });
   });
 });

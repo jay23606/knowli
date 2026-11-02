@@ -145,6 +145,17 @@ describe("createOpenAiTtsProvider — zapis kosztów", () => {
     expect(rec.events[0]).toMatchObject({ feature: "tts", outcome: "ok", characters: 3, audioMs: 52 });
   });
 
+  it("mp3 z jawnie innym typem audio: jeden event bez audioMs z ramek, potem błąd formatu", async () => {
+    // bajty wyglądają na ramki mp3, ale dostawca deklaruje PCM — długość z ramek byłaby fikcją
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(mp3Frames, { status: 200, headers: { "content-type": "audio/pcm" } })));
+    const rec = createTestRecorder();
+    const provider = createOpenAiTtsProvider({ apiKey: "test", usage: rec });
+    await expect(provider.synthesize({ text: "cat", locale: "en-GB", voice: "Kore", format: "mp3" })).rejects.toThrow("provider_unexpected_audio");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "ok", httpStatus: 200, characters: 3 });
+    expect(rec.events[0]!.audioMs).toBeUndefined();
+  });
+
   it("nieznany content-type: opłacone wywołanie jest zapisane jako ok, a potem błąd formatu", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array([1, 2]), { status: 200, headers: { "content-type": "audio/pcm" } })));
     const rec = createTestRecorder();

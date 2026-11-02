@@ -49,9 +49,9 @@ export const CONFIG_DEFAULTS = {
   UMIEM_IMAGE_FORMAT: "webp",
 
   // ── Stawki kosztów (USD; `none` wyłącza → koszt `unknown`) ──
-  // Azure Speech, standard real-time (STT) i pronunciation assessment (Microsoft:
-  // rozliczana jak standardowe STT). Cennik z 2026-11-02: ok. 1 USD za godzinę audio,
-  // region zależny (Q&A Microsoftu podaje 1,32 USD, US East).
+  // Azure Speech, standard real-time (STT) i pronunciation assessment (przyjęto
+  // rozliczenie jak standardowe STT). Przybliżenie ok. 1 USD za godzinę audio, stawka
+  // zależna od regionu. Sprawdzano 2026-11-02, bez potwierdzenia w oficjalnym cenniku;
   // do weryfikacji: https://azure.microsoft.com/en-us/pricing/details/cognitive-services/speech-services/
   UMIEM_PRICE_AZURE_STT_USD_PER_HOUR: "1",
   UMIEM_PRICE_AZURE_PRONUNCIATION_USD_PER_HOUR: "1",
@@ -86,8 +86,8 @@ const CONDITIONAL_DEFAULTS: readonly { name: string; value: string; when: (env: 
   },
   // Stawka obrazu dotyczy tylko domyślnego modelu, jakości i rozmiaru; po zmianie
   // obrazu bez własnej stawki koszty obrazów są `unknown`, a nie liczone starą.
-  // gpt-image jest naliczany per token (obraz 1024x1024 `low` ok. 200 tokenów
-  // wyjścia przy 30 USD za milion), więc to przybliżenie. Cennik z 2026-11-02;
+  // gpt-image jest prawdopodobnie naliczany per token, więc stała stawka za obraz
+  // to przybliżenie. Sprawdzano 2026-11-02, bez potwierdzenia w oficjalnym cenniku;
   // do weryfikacji: https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst
   {
     name: "UMIEM_PRICE_IMAGE_USD",
@@ -98,9 +98,8 @@ const CONDITIONAL_DEFAULTS: readonly { name: string; value: string; when: (env: 
       env.UMIEM_IMAGE_SIZE === CONFIG_DEFAULTS.UMIEM_IMAGE_SIZE,
   },
   // TTS OpenRouter nie zwraca kosztu. Rozliczenie jest prawdopodobnie tokenowe, więc
-  // stawka za minutę to przybliżenie: 9 USD za milion tokenów wyjścia × 25 tokenów
-  // audio na sekundę (Google) = 0,0135 USD za minutę. Cennik z 2026-11-02;
-  // do weryfikacji: https://openrouter.ai/google/gemini-3.8-flash-tts
+  // stawka za minutę to przybliżenie. Sprawdzano 2026-11-02, bez potwierdzenia
+  // w oficjalnym cenniku; do weryfikacji: https://openrouter.ai/google/gemini-3.8-flash-tts
   {
     name: "UMIEM_PRICE_TTS_USD_PER_MINUTE",
     value: "0.0135",

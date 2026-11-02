@@ -30,13 +30,19 @@ function pcmFormatOf(contentType: string): { sampleRate: number; channels: numbe
   return { sampleRate, channels };
 }
 
+/** Jawnie zadeklarowany typ audio inny niż mp3 (np. PCM Gemini przy formacie `mp3`). */
+function isOtherAudioThanMp3(contentType: string): boolean {
+  return /^audio\//i.test(contentType) && !/^audio\/(mpeg|mp3)\b/i.test(contentType);
+}
+
 /**
  * Długość odebranego audio do zapisu kosztów; liczona zanim format zostanie
- * zwalidowany, więc nigdy nie rzuca (nieznany format = brak `audioMs`).
+ * zwalidowany, więc nigdy nie rzuca (nieznany format lub jawnie inny typ audio
+ * niż żądany mp3 = brak `audioMs`, bez fikcyjnej długości z „ramek”).
  */
 function receivedAudioMs(bytes: Uint8Array, format: "mp3" | "wav", contentType: string): number | undefined {
   try {
-    if (format === "mp3") return mp3DurationMs(bytes) ?? undefined;
+    if (format === "mp3") return isOtherAudioThanMp3(contentType) ? undefined : mp3DurationMs(bytes) ?? undefined;
     const pcm = pcmFormatOf(contentType);
     const wav = /^audio\/(wav|x-wav|wave)\b/i.test(contentType) ? normalizeWav(bytes) : pcm && pcmToWav(bytes, pcm);
     return (wav ? wavDurationMs(wav) : null) ?? undefined;
@@ -101,7 +107,7 @@ export function createOpenAiTtsProvider(options: OpenAiTtsOptions): TtsProvider 
       if (input.format === "mp3") {
         // Jawnie inny typ audio (np. PCM Gemini przy pominiętym UMIEM_TTS_FORMAT=wav)
         // zostałby zapisany jako niedekodowalne „mp3” bez ponowienia.
-        if (/^audio\//i.test(contentType) && !/^audio\/(mpeg|mp3)\b/i.test(contentType)) throw new Error("provider_unexpected_audio");
+        if (isOtherAudioThanMp3(contentType)) throw new Error("provider_unexpected_audio");
         return { bytes, mimeType: "audio/mpeg" };
       }
       const pcm = pcmFormatOf(contentType);

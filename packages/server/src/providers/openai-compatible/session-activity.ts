@@ -107,6 +107,16 @@ export function createOpenAiCompatibleSessionActivityReviewer(
     model: options.model,
     promptVersion: PROMPT_VERSION,
     async review(input, signal) {
+      // ciało przed `try`: błąd jego budowy nie jest wywołaniem dostawcy (bez zapisu `failed`)
+      const body = JSON.stringify(withChatRequestExtras(options.requestExtras, {
+        model: options.model,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt() },
+          { role: "user", content: userMessage(input) },
+        ],
+      }));
       let response: Response;
       try {
         response = await doFetch(`${options.baseUrl}/chat/completions`, {
@@ -115,15 +125,7 @@ export function createOpenAiCompatibleSessionActivityReviewer(
             authorization: `Bearer ${options.apiKey}`,
             "content-type": "application/json",
           },
-          body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
-            model: options.model,
-            temperature: 0,
-            response_format: { type: "json_object" },
-            messages: [
-              { role: "system", content: systemPrompt() },
-              { role: "user", content: userMessage(input) },
-            ],
-          })),
+          body,
           signal,
         });
       } catch (error) {
