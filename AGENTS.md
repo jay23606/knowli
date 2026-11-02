@@ -189,7 +189,7 @@ Te zasady określają kierunek nowych zmian. Nie są poleceniem natychmiastowej 
 
 - Polski tekst ma być krótki, naturalny i zrozumiały dla dziecka. Duże pola dotykowe, jeden jasny krok, mobile first i tablet friendly.
 - Przykłady feedbacku: „Świetnie!”, „Prawie! Posłuchaj jeszcze raz”, „Spróbuj jeszcze raz”. Feedback musi odpowiadać rzeczywistemu wynikowi; nie chwal błędnej odpowiedzi jako poprawnej.
-- Sesje trwają około 5–10 minut. Po „Jeszcze 3 i koniec!” nie dokładaj zadań ponad obiecany budżet.
+- Sesje trwają około 5–10 minut. Po „Jeszcze 3 i koniec!” nie dokładaj zadań ponad obiecany budżet; wyjątek: zapowiedziana banerem „Jeszcze N i historyjka!” historyjka lekcji z 1–2 pytaniami o treść jest zamknięciem sesji, nie zadaniem budżetu (pytania są oceniane, ale nie liczą się do postępu).
 - Dziecko nie widzi modeli, promptów, procentowych ocen, konfiguracji powtórek ani administracji.
 - Rodzic ma prosty podgląd materiału, edycję, przypisania i postęp per umiejętność. Obraz pomaga w znaczeniu: object/action, a kolor/liczba/sekwencja korzystają z renderowania deterministycznego.
 - Nauka bez mikrofonu jest pełnoprawną ścieżką. Odmowa uprawnienia nie blokuje sesji. PWA nie obiecuje nauki offline; utrata sieci nie może tworzyć lokalnie fałszywego sukcesu.

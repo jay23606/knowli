@@ -2,7 +2,7 @@
 
 Data: 2026-11-01. Wersja 2 po recenzji trzech niezależnych krytyków: architektura
 i dane; reguły nauki i sesja; Kid UI, kontrakty i testy. Status: zatwierdzony
-przez właściciela 2026-11-01; etap 1 i etap 2 (nagranie lektora) zaimplementowane.
+przez właściciela 2026-11-01; etapy 1–3 zaimplementowane (dane i edycja, nagranie lektora, sesja i Kid UI).
 Issue: lookassh/knowli#195.
 
 Powiązane dokumenty:
@@ -588,6 +588,84 @@ Migracja razem z tabelą z §7:
   i `schema.ts`);
 - `attempts_modality_allowed`, `learning_events_kind_allowed`
   i `generation_runs_*` — bez zmian.
+
+Rozbieżność: tabela z §7 weszła w etapie 2 (migracja `0034`), a poszerzenie
+CHECK zadań w etapie 3 (migracja `0035`) — patrz §8.7.
+
+### 8.7. Uzupełnienie z planowania etapu 3
+
+Rozbieżności między specem a kodem, rozstrzygnięte w planie etapu 3
+(`docs/superpowers/plans/2026-11-02-lesson-end-story-stage3.md`, „Ustalenia
+planowania”); w razie sprzeczności z §8.1–§8.6 obowiązuje to uzupełnienie.
+
+1. **Wybór slotu bez dodatkowego zapytania.** Zamiast szukać pierwszego slotu
+   bez wiersza w `session_tasks`, `nextTask` używa liczników prefiksów z tego
+   samego zapytania co reszta liczników (wydane sloty spoza historyjki =
+   `planned − story`, wydane sloty historyjki = `story`; budżet zapytań
+   `task-transition-queries.test.ts`). Sloty spoza historyjki wychodzą tylko
+   po kolei, a sloty historyjki tylko po kolei i jako sufiks; gdy historyjka
+   ruszyła, wychodzą wyłącznie jej sloty. Zamknięciem jest też pusty zbiór
+   niewydanych slotów spoza historyjki oraz wyczerpany budżet planu (plan bywa
+   krótszy niż budżet sesji) — ta gałąź jest osiągalna tylko wtedy, gdy budżet
+   sesji różni się od budżetu planu (strażnik).
+2. **„Skróć” to trener precyzji, nie skracanie sesji.** `lesson-shorten.ts`
+   zostaje bez zmian i nie usuwa slotów; test „Skróć zachowuje historyjkę”
+   zastępuje test integracyjny „precision follow-up before the story”. Sloty
+   historyjki nie wchodzą do rezerwacji wywołań gradera.
+3. **Kolejność opcji pytania** nie pochodzi z `seededShuffle(taskId)` (ziarno
+   z publicznego `taskId` zdradzałoby poprawną opcję), tylko z domyślnego ziarna
+   z losowym składnikiem; plan zamraża kolejność przy starcie.
+4. **Ujawnienia.** Kontrakt ma tylko `audio | hint`, a kod już odrzucał oba dla
+   `lesson_card` — dodajemy jawny strażnik predykatem w `authorizeDisclosure`
+   (`409 conflict`). Realna luka była gdzie indziej: POST próby `skip` /
+   `dont_remember` na `lesson_card` zapisywał ocenę celu kotwicy, więc
+   `submitAttempt` odrzuca każdą próbę na `lesson_card` i `lesson_story`
+   (`400 validation`; Kid UI ich nie wysyła).
+5. **`contentLocale`** w nowych gałęziach promptu jest opcjonalne, jak w
+   pozostałych gałęziach lekcji.
+6. **`closingStory: true`** dostają wszystkie zadania spoza historyjki w sesji
+   z historyjką (także karty i zadania następcze), bo baner liczy się z
+   `remainingAssessed` każdego zadania.
+7. **Komunikaty:** `messages.ts` nie ma `switch`; dopisano etykiety typu kroku
+   karty pracy (`stepType`) i komunikaty Kid.
+8. **SPEC §22 to „TTS i pliki audio”:** zdanie o nagraniu trafia do §22, a
+   zachowanie dziecka i wyjątek od budżetu do §29a.3.
+9. **Liczniki i filtry.** Filtry czytelników (`previousObjectiveContactSnapshot`,
+   `historicalSupportObjectives`, `lastSeenAt`, historia planowania) wykluczają
+   tylko typy historyjki. Liczniki „ocenianych” używają pełnego predykatu,
+   także `taskCounts` w `sessions.ts` (`SessionDto.assessedTasksIssued` i
+   podsumowanie): karty przestają zawyżać licznik sesji lekcji. Skutki
+   uboczne: zakończone sesje zachowują zapisane podsumowanie ze starą liczbą,
+   a `SessionDto` aktywnych sesji lekcji pokazuje po wdrożeniu mniejszą.
+10. **Stan pytania po odpowiedzi: `answered`**, jak zamknięte zadania lekcji;
+    migracja `0035` poszerza `session_tasks_completed_only_exposure` tylko o
+    `lesson_story`.
+11. **Kosze testów:** nowy plik integracyjny w koszu 3, przebieg `real` w
+    `lesson-real-flow.spec.ts` (kosz 4), spec `mocked` w `lesson-story.spec.ts`;
+    `REAL_BUCKETS` nie przeliczono — kosze do przeliczenia z czasów CI po
+    scaleniu.
+12. **Świętowanie.** Kafelek `AnswerGrid` zachowuje podświetlenie poprawnej
+    opcji (stany opcji należą do `AnswerGrid`); pytania nie zmieniają serii ani
+    gwiazdki kamienia milowego, a dok przy wyborze nie świętuje.
+13. **Autoodtwarzanie:** metoda kontrolera `autoPlayStoryAudio(taskId)` wołana
+    z montowania panelu; z `playSentenceAudio` (#194) przejęta tylko zasada
+    ciszy (zablokowany autoplay i błąd pliku nie ustawiają błędu odsłuchu).
+    Start widać na przycisku (`QuestionAudioButton` ze sterowanym `playing`,
+    stan `storyAudioPlaying`).
+14. **Odczyt planu pilnuje sufiksu historyjki:** `readLessonTrainingSessionPlan`
+    odrzuca (`invalid_training_session_plan`) plan z nieciągłym blokiem,
+    `assessed: true`, blokiem niezaczynającym się jednym `story` z samymi
+    `story_question` po nim albo `exerciseType` niezgodnym z `taskKind`.
+15. **Teksty dla dziecka:** „Przeczytaj i posłuchaj historyjki.” tylko przy
+    nagraniu, bez niego „Przeczytaj historyjkę.”; pod tekstem zapowiedź „Potem
+    odpowiesz na pytania.”; wyjątek w AGENTS.md wymienia historyjkę i pytania.
+16. **Prefetch.** Kid UI pobiera następne zadanie w czasie oglądania wyniku
+    ostatniego zadania ocenianego, więc historyjka może zostać wydana (i jej
+    ekspozycje zapieczętowane) zanim dziecko kliknie „Dalej” — ta sama zasada
+    co dla każdego zadania pobranego z wyprzedzeniem.
+
+Niezweryfikowane: autoodtwarzanie na fizycznym iPhonie/iPadzie (polityka
+autoplay Safari) — symulacja E2E nie jest odbiorem urządzenia.
 
 ## 9. Kontrakt Kid API
 
