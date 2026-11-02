@@ -36,6 +36,10 @@ import { fakeGeneration, FakeLlmProvider, type FakeGeneration } from "./fakes";
 import { GenerationProviderError } from "../../packages/server/src/ports/generation-error";
 import { lessonExerciseIdentity, lessonExerciseStimulusRecord } from "../../packages/server/src/domain/lessons/exercise-identity";
 import type { LessonExerciseDraft } from "../../packages/server/src/domain/lessons/types";
+import { DEFAULT_LESSON_GENERATION_POLICY } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
+
+/** Bez rundy pod brakujący etap: testy z pulami za małymi do pokrycia sprawdzają samą partię główną. */
+const MAIN_BATCH_ONLY = { ...DEFAULT_LESSON_GENERATION_POLICY, stageTopUp: false };
 
 const { pool } = testDatabase();
 
@@ -240,6 +244,7 @@ describe("generowanie puli lekcji (integracja)", () => {
   it("świeże wyjście modelu: polecenie, podpowiedź i piktogram ćwiczenia słuchowego są usuwane zamiast odrzucać ćwiczenie", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const services = lessonServices(fakes);
     fakes.llm.queueLesson({
       exercises: [{
@@ -326,6 +331,7 @@ describe("generowanie puli lekcji (integracja)", () => {
   it("wariant acceptedAnswers redundantny wobec odpowiedzi (skrót przeczenia „to be”) jest porzucany, nie zabija ćwiczenia", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const services = lessonServices(fakes);
     const objectiveId = "english_grammar.to_be.negative_forms";
     // Incydent prod 2026-10-26: model regularnie podaje wariant skrótowy
@@ -411,6 +417,7 @@ describe("generowanie puli lekcji (integracja)", () => {
   it("czyszczenie świeżej puli: odrzucenia z powodami sumują się w kontekście, a hak nie działa przy edycji rodzica", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const refineCalls: number[] = [];
     const refiningSubject = {
       ...englishGrammarSubject,
@@ -493,6 +500,7 @@ describe("generowanie puli lekcji (integracja)", () => {
   it.each(["options", "acceptedAnswers", "focus"])("zły KSZTAŁT %s nie wywraca runu: poprawne zapisane, błędny odrzucony, run terminalny (P2-7)", async (malformedField) => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const services = lessonServices(fakes);
     const objectiveId = "english_grammar.present_simple.third_person_s";
     // Jedno poprawne ćwiczenie + jedno o złym kształcie tablicy opcji (null w
@@ -551,6 +559,7 @@ describe("generowanie puli lekcji (integracja)", () => {
   it("nullExerciseDoesNotRetryWholeRun", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const services = lessonServices(fakes);
     const objectiveId = "english_grammar.present_simple.third_person_s";
     fakes.llm.queueLesson({ exercises: [
@@ -680,6 +689,7 @@ describe("generowanie puli lekcji (integracja)", () => {
   it("0 poprawnych → failed/validation; wersja nadal draft; brak elementów", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const services = lessonServices(fakes);
     fakes.llm.queueLesson({ exercises: [{ exerciseType: "lesson_gap", objectiveId: "english_grammar.present_simple.third_person_s", answer: "a b c d", acceptedAnswers: [], focus: [], stem: "no marker" }] });
 
@@ -698,6 +708,7 @@ describe("generowanie puli lekcji (integracja)", () => {
   it("loguje [lesson] podsumowanie walidacji z powodami odrzuceń i wynik terminalny", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const services = lessonServices(fakes);
     fakes.llm.queueLesson({
       exercises: [
@@ -1540,6 +1551,7 @@ describe("generowanie puli lekcji (integracja)", () => {
     it("gramatyka: tłumaczenie równe przykładowi karty nie trafia do szkicu; przykład zostaje, powód i log", async () => {
       const fakes = await fakeGeneration();
       disposers.push(fakes.dispose);
+      fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
       const services = lessonServices(fakes);
       const objectiveId = "english_grammar.present_simple.third_person_s";
       const translation = (prompt: string, answer: string, focus: string) => ({
@@ -1581,6 +1593,7 @@ describe("generowanie puli lekcji (integracja)", () => {
     it("szkoła: rodzina trzech pytań otwartych z jedną odpowiedzią zostaje w szkicu, a pokrycie liczy jedno", async () => {
       const fakes = await fakeGeneration();
       disposers.push(fakes.dispose);
+      fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
       const services = schoolServices(fakes);
       const regular = fakes.llm.generateLessonPool.bind(fakes.llm);
       const isOpen = (exercise: unknown) => (exercise as { exerciseType?: string }).exerciseType === "lesson_open_answer";
@@ -1616,6 +1629,238 @@ describe("generowanie puli lekcji (integracja)", () => {
 
       const schoolDraft = await generateSchool(schoolServices(fakes));
       expect(schoolDraft.rejectedReasons?.[EXPOSURE_REASON]).toBeUndefined();
+    });
+  });
+
+  describe("dogenerowanie pod brakujący etap (spec etapu przeglądu lekcji)", () => {
+    type PoolInput = Parameters<FakeLlmProvider["generateLessonPool"]>[0];
+    const EXPOSURE_REASON = "rozwiązanie widoczne wcześniej";
+    const WEAR_MATERIAL = "I wear a coat. I wear boots. She wears a dress. We wear a skirt.";
+    const TWO_OBJECTIVES = [
+      "Zagadnienie 1: Ubrania",
+      "coat, boots, dress, skirt, t-shirt",
+      "Zagadnienie 2: Pogoda",
+      "It's raining. It's snowing. What's the weather like?",
+    ].join("\n");
+    const isTranslation = (exercise: unknown) => (exercise as { exerciseType?: string }).exerciseType === "lesson_open_answer";
+    const POLICY = { requestTimeoutMs: 2_000, runTimeoutMs: 60_000, cancelPollMs: 10 };
+
+    /** Rozdział na produkcyjnym rejestrze; `topUpRequests` — żądania rundy zapisane przez `fakes.llm`. */
+    async function chapterWorld(policy = POLICY) {
+      const fakes = await fakeGeneration();
+      disposers.push(fakes.dispose);
+      fakes.deps.lessonExecution = policy;
+      const services = createServices({ db: testDatabase().db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps });
+      return { fakes, services, topUpRequests: () => fakes.llm.lessonRequests.filter((request) => request.purpose === "stage_top_up") };
+    }
+
+    /**
+     * Partia główna: domyślna pula fake'a z dokładnie dwoma tłumaczeniami (minimum etapu samodzielnego),
+     * z których drugie powtarza przykład karty zagadnienia — reguła twarda je usuwa i etap ma brak 1.
+     */
+    async function leakyMainBatch(input: PoolInput, leak: string) {
+      const regular = await new FakeLlmProvider().generateLessonPool(input);
+      const objectiveId = input.objectives[0]!.id;
+      const translations = regular.exercises.filter(isTranslation);
+      expect(translations.length).toBeGreaterThanOrEqual(2);
+      return {
+        exercises: [
+          ...regular.exercises.filter((exercise) => !isTranslation(exercise)),
+          translations[0],
+          { ...(translations[1] as object), prompt: "Płaszcz i sukienka.", answer: leak, acceptedAnswers: [], focus: [leak.split(" ")[1]!] },
+        ],
+        examples: { [objectiveId]: [`${leak}.`] },
+      };
+    }
+
+    /** Partia główna z `main`, runda z `fakes.llm` (kolejka `queueLessonTopUp`, zapis żądań). */
+    function routeRound(fakes: FakeGeneration, main: (input: PoolInput) => Promise<{ exercises: unknown[]; examples: Record<string, string[]> }>) {
+      const round = fakes.llm.generateLessonPool.bind(fakes.llm);
+      fakes.deps.llm.generateLessonPool = async (input) => (input.purpose === "stage_top_up" ? round(input) : main(input));
+    }
+
+    async function startChapter(services: Services, material: string) {
+      return createLessonFromMaterial(services, { subjectId: "english_chapter", topicTitlePl: "Ubrania", material, poolSize: 40, clientRequestId: randomUUID() });
+    }
+
+    async function withLogs<T>(work: () => Promise<T>): Promise<{ result: T; logs: string }> {
+      const lines: string[] = [];
+      const capture = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+      const logSpy = vi.spyOn(console, "log").mockImplementation(capture);
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(capture);
+      try {
+        return { result: await work(), logs: lines.join("\n") };
+      } finally {
+        logSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    }
+
+    function independentCount(exercises: readonly { objectiveId: string; exerciseType: string }[], objectiveId: string) {
+      return exercises.filter((exercise) => exercise.objectiveId === objectiveId && exercise.exerciseType === "lesson_open_answer").length;
+    }
+
+    it("ujawnione tłumaczenie usunięte → runda dogenerowuje brakujący etap; przykłady z rundy pomijane", async () => {
+      const { fakes, services, topUpRequests } = await chapterWorld();
+      const LEAK = "The coat and the dress";
+      routeRound(fakes, (input) => leakyMainBatch(input, LEAK));
+      const { runId, deckId } = await startChapter(services, WEAR_MATERIAL);
+      const { logs } = await withLogs(() => executeLessonGeneration(services, runId));
+
+      expect(await readGeneration(services, runId)).toMatchObject({ state: "succeeded", attempts: 1 });
+      const draft = (await readLessonDeck(services, deckId)).draft!;
+      const objectiveId = draft.objectiveIds[0]!;
+
+      const rounds = topUpRequests();
+      expect(rounds).toHaveLength(1);
+      expect(rounds[0]!.objectives.map((objective) => objective.id)).toEqual([objectiveId]);
+      expect(rounds[0]!.stageCounts).toEqual({ guided: 0, productive: 0, independent: 1 });
+      expect(rounds[0]!.countPerObjective).toBe(1);
+      expect(rounds[0]!).not.toHaveProperty("listenChoicePerObjective");
+      expect(rounds[0]!.avoidSentences).toContain(`${LEAK}.`);
+
+      expect(draft.coverage).toEqual([]);
+      expect(independentCount(draft.exercises, objectiveId)).toBe(2);
+      expect(draft.exercises.some((exercise) => exercise.answer === LEAK)).toBe(false);
+      // Przykłady z odpowiedzi rundy (domyślne „I have the …” fake'a) nie trafiają na karty.
+      expect(draft.examples).toEqual({ [objectiveId]: [`${LEAK}.`] });
+      expect(draft.rejectedCount).toBe(1);
+      expect(draft.rejectedReasons).toEqual({ [EXPOSURE_REASON]: 1 });
+      expect(logs).toMatch(new RegExp(`\\[lesson\\] run=${runId} dogenerowanie pod etap: zagadnienie=\\S+ guided=0 productive=0 independent=1 przyjęte=1`));
+    });
+
+    it("dwa zagadnienia z brakiem → dwa wywołania rundy, numeracja bez kolizji i bez ujawnień", async () => {
+      const { fakes, services, topUpRequests } = await chapterWorld();
+      const leaks = ["The coat and the dress", "The boots and the skirt"];
+      let batch = 0;
+      routeRound(fakes, (input) => leakyMainBatch(input, leaks[batch++]!));
+      const { runId, deckId } = await startChapter(services, TWO_OBJECTIVES);
+      await executeLessonGeneration(services, runId);
+
+      expect((await readGeneration(services, runId)).state).toBe("succeeded");
+      const draft = (await readLessonDeck(services, deckId)).draft!;
+      expect(draft.objectiveIds).toHaveLength(2);
+      expect(topUpRequests().map((request) => request.objectives[0]!.id)).toEqual(draft.objectiveIds);
+      expect(draft.coverage).toEqual([]);
+      for (const objectiveId of draft.objectiveIds) expect(independentCount(draft.exercises, objectiveId)).toBe(2);
+      const prompts = draft.exercises.filter(isTranslation).map((exercise) => exercise.prompt);
+      expect(new Set(prompts).size).toBe(prompts.length);
+      expect(draft.rejectedCount).toBe(2);
+      expect(draft.rejectedReasons).toEqual({ [EXPOSURE_REASON]: 2 });
+    });
+
+    it("błąd providera w rundzie: run succeeded w pierwszej próbie, szkic zapisany z brakiem pokrycia", async () => {
+      const { fakes, services, topUpRequests } = await chapterWorld();
+      routeRound(fakes, (input) => leakyMainBatch(input, "The coat and the dress"));
+      fakes.llm.queueLessonTopUp({ error: "provider down", retryable: true });
+      const { runId, deckId } = await startChapter(services, WEAR_MATERIAL);
+      const { logs } = await withLogs(() => executeLessonGeneration(services, runId));
+
+      expect(await readGeneration(services, runId)).toMatchObject({ state: "succeeded", attempts: 1 });
+      expect(topUpRequests()).toHaveLength(1);
+      const draft = (await readLessonDeck(services, deckId)).draft!;
+      expect(draft.exercises.length).toBeGreaterThan(0);
+      expect(draft.coverage).toEqual([expect.objectContaining({ objectiveId: draft.objectiveIds[0], stage: "independent", required: 2, actual: 1 })]);
+      expect(logs).toContain(`[lesson] run=${runId} dogenerowanie pod etap: błąd=provider`);
+      expect(logs).not.toContain("provider down");
+    });
+
+    it("runda dłuższa niż limit żądania: przerwana miękko, run succeeded bez dogenerowania", async () => {
+      const { fakes, services } = await chapterWorld({ requestTimeoutMs: 150, runTimeoutMs: 60_000, cancelPollMs: 10 });
+      let roundCalls = 0;
+      fakes.deps.llm.generateLessonPool = async (input) => {
+        if (input.purpose !== "stage_top_up") return leakyMainBatch(input, "The coat and the dress");
+        roundCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return new FakeLlmProvider().generateLessonPool(input);
+      };
+      const { runId, deckId } = await startChapter(services, WEAR_MATERIAL);
+      const { logs } = await withLogs(() => executeLessonGeneration(services, runId));
+
+      expect(await readGeneration(services, runId)).toMatchObject({ state: "succeeded", attempts: 1 });
+      expect(roundCalls).toBe(1);
+      const draft = (await readLessonDeck(services, deckId)).draft!;
+      expect(independentCount(draft.exercises, draft.objectiveIds[0]!)).toBe(1);
+      expect(draft.coverage).toHaveLength(1);
+      expect(logs).toContain(`[lesson] run=${runId} dogenerowanie pod etap: błąd=provider_timeout`);
+    });
+
+    it("bliski deadline przebiegu: runda pominięta z logiem „brak czasu”, run succeeded", async () => {
+      const { fakes, services, topUpRequests } = await chapterWorld({ requestTimeoutMs: 2_000, runTimeoutMs: 20_000, cancelPollMs: 10 });
+      routeRound(fakes, (input) => leakyMainBatch(input, "The coat and the dress"));
+      const { runId } = await startChapter(services, WEAR_MATERIAL);
+      const { logs } = await withLogs(() => executeLessonGeneration(services, runId));
+
+      expect((await readGeneration(services, runId)).state).toBe("succeeded");
+      expect(topUpRequests()).toHaveLength(0);
+      expect(logs).toContain(`[lesson] run=${runId} dogenerowanie pod etap: pominięte: brak czasu`);
+    });
+
+    it("edycja rodzica w trakcie rundy → superseded, brak zapisu", async () => {
+      const { fakes, services } = await chapterWorld();
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      let roundSignal!: AbortSignal;
+      fakes.deps.llm.generateLessonPool = async (input, signal) => {
+        if (input.purpose !== "stage_top_up") return leakyMainBatch(input, "The coat and the dress");
+        roundSignal = signal!;
+        enter();
+        return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+      };
+      const { runId } = await startChapter(services, WEAR_MATERIAL);
+      const run = await readGeneration(services, runId);
+      const pending = executeLessonGeneration(services, runId);
+      await entered;
+      await editLessonDraft(services, run.deckVersionId!, { expectedEditNumber: 1, title: "Zmiana rodzica" });
+      await pending;
+
+      expect(roundSignal.aborted).toBe(true);
+      expect((await readGeneration(services, runId)).state).toBe("superseded");
+      expect(await query("select id from learning_app.item_revisions where deck_version_id=$1", [run.deckVersionId])).toHaveLength(0);
+    });
+
+    it("shutdown w trakcie rundy oddaje run do kolejki bez zapisu", async () => {
+      const { fakes, services } = await chapterWorld();
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      fakes.deps.llm.generateLessonPool = async (input, signal) => {
+        if (input.purpose !== "stage_top_up") return leakyMainBatch(input, "The coat and the dress");
+        enter();
+        return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+      };
+      const { runId } = await startChapter(services, WEAR_MATERIAL);
+      const controller = new AbortController();
+      const pending = executeLessonGeneration(services, runId, { signal: controller.signal });
+      await entered;
+      controller.abort();
+      await pending;
+
+      const result = await readGeneration(services, runId);
+      expect(result).toMatchObject({ state: "queued", attempts: 1 });
+      expect(await query("select id from learning_app.item_revisions where deck_version_id=$1", [result.deckVersionId])).toHaveLength(0);
+    });
+
+    it("zagadnienia bez braków → brak wywołania rundy", async () => {
+      const { services, topUpRequests } = await chapterWorld();
+      const { runId, deckId } = await startChapter(services, TWO_OBJECTIVES);
+      await executeLessonGeneration(services, runId);
+
+      expect((await readGeneration(services, runId)).state).toBe("succeeded");
+      expect((await readLessonDeck(services, deckId)).draft!.coverage).toEqual([]);
+      expect(topUpRequests()).toHaveLength(0);
+    });
+
+    it("partia główna bez przyjętych ćwiczeń → failed/validation jak dotąd, bez rundy", async () => {
+      const { fakes, services, topUpRequests } = await chapterWorld();
+      routeRound(fakes, async (input) => ({
+        exercises: [{ exerciseType: "lesson_gap", objectiveId: input.objectives[0]!.id, answer: "a b c d", acceptedAnswers: [], focus: [], stem: "no marker" }],
+        examples: {},
+      }));
+      const { runId } = await startChapter(services, WEAR_MATERIAL);
+      await executeLessonGeneration(services, runId);
+
+      expect(await readGeneration(services, runId)).toMatchObject({ state: "failed", errorCode: "validation" });
+      expect(topUpRequests()).toHaveLength(0);
     });
   });
 });

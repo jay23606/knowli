@@ -25,6 +25,10 @@ import { stageOf } from "../../packages/server/src/domain/lessons/stages";
 import { fakeGeneration, FakeLlmProvider, type FakeGeneration } from "./fakes";
 import { ManualClock, testDatabase } from "./helpers";
 import { mockTestDeck } from "./mock-test-helpers";
+import { DEFAULT_LESSON_GENERATION_POLICY } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
+
+/** Bez rundy pod brakujący etap: testy z pulami za małymi do pokrycia sprawdzają samą partię główną. */
+const MAIN_BATCH_ONLY = { ...DEFAULT_LESSON_GENERATION_POLICY, stageTopUp: false };
 
 /**
  * Lekcja „Angielski — rozdział” na PostgreSQL z fałszywym generatorem (design
@@ -155,6 +159,7 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
 
   it("odrzucenie: słowo spoza materiału usuwa ćwiczenie z powodem dla rodzica, wariant spoza materiału znika, ćwiczenie zostaje", async () => {
     const { fakes, services } = await chapterWorld();
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const VARIANT_GAP = "Mam na sobie płaszcz. Wpisz brakujące słowo.";
     const VARIANT_PROMPT = "Mam płaszcz.";
     fakes.deps.llm.generateLessonPool = async (input) => {
@@ -222,6 +227,7 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
 
   it("pełne odrzucenie: run kończy się failed/validation, rodzic widzi powody w szkicu i może ponowić", async () => {
     const { fakes, services } = await chapterWorld();
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const regular = fakes.llm.generateLessonPool.bind(fakes.llm);
     let everythingOutside = true;
     fakes.deps.llm.generateLessonPool = async (input) => {
@@ -357,6 +363,7 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
 
     it("dogenerowanie: nowa luka rozwiązująca tłumaczenie ze szkicu odpada, tłumaczenie zostaje", async () => {
       const { fakes, services } = await chapterWorld();
+      fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
       let call = 0;
       fakes.deps.llm.generateLessonPool = async (input) => {
         const objectiveId = input.objectives[0]!.id;
@@ -390,6 +397,7 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
 
     it("dogenerowanie: jedyny nowy przykład równy tłumaczeniu ze szkicu odpada — zostają stare przykłady i tłumaczenie", async () => {
       const { fakes, services } = await chapterWorld();
+      fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
       let call = 0;
       fakes.deps.llm.generateLessonPool = async (input) => {
         const objectiveId = input.objectives[0]!.id;

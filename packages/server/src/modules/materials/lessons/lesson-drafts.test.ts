@@ -6,7 +6,7 @@ import { validatePool } from "../../../domain/lessons/pool-validation";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
 import { validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
-import { buildDynamicTopicData, buildPoolInput, capListenChoiceOverflow, buildLessonPayload, createLessonFromMaterial, createMaterialLesson, buildObjectiveCriteria, collectBatchExerciseMetadata, filterExercisesToRequestedObjective, minimumCountPerObjective, objectiveBatchCounts, isWellShapedRawExercise, lessonPayloadVersion, poolStageCounts, refineGeneratedDrafts, scopeFamiliesToRun, splitStages, stripParentAddedFlags, sumRejectedReasons, summarizeLessonPoolValidation, toExerciseDraft, withoutEmptyOptionalArrays, withoutInvalidExplanation, withoutVoiceToneUnlessAllowed, withSubjectObjectiveKinds } from "./lesson-drafts";
+import { buildDynamicTopicData, buildPoolInput, capListenChoiceOverflow, buildLessonPayload, createLessonFromMaterial, createMaterialLesson, buildObjectiveCriteria, collectBatchExerciseMetadata, filterExercisesToRequestedObjective, minimumCountPerObjective, objectiveBatchCounts, isWellShapedRawExercise, lessonPayloadVersion, poolStageCounts, refineGeneratedDrafts, scopeFamiliesToRun, splitStages, stripParentAddedFlags, sumRejectedReasons, summarizeLessonPoolValidation, toExerciseDraft, trimToStageDeficits, withoutEmptyOptionalArrays, withoutInvalidExplanation, withoutVoiceToneUnlessAllowed, withSubjectObjectiveKinds } from "./lesson-drafts";
 
 describe("calculation persistence and grading criteria", () => {
   const calculation = { kind: "scale_distance" as const, params: { scaleDenominator: 25000, mapDistanceCm: 3 }, unit: "m" as const, templateFamilyId: "scale" };
@@ -527,6 +527,26 @@ describe("buildPoolInput — opcje zdań do unikania i celu rundy", () => {
       expect(input).not.toHaveProperty("avoidSentences");
       expect(input).not.toHaveProperty("purpose");
     }
+  });
+});
+
+describe("trimToStageDeficits (runda pod etap: najwyżej brak każdego etapu)", () => {
+  const exercise = (exerciseType: LessonExerciseDraft["exerciseType"], answer: string): LessonExerciseDraft => ({
+    exerciseType, objectiveId: "o1", answer, acceptedAnswers: [], focus: [],
+  });
+
+  it("zachowuje ćwiczenia do braku etapu w kolejności wejścia, nadwyżkę i etapy bez braku odrzuca z powodem", () => {
+    const input = [
+      exercise("lesson_open_answer", "a"),
+      exercise("lesson_choice", "b"),
+      exercise("lesson_open_answer", "c"),
+      exercise("lesson_gap", "d"),
+      exercise("lesson_open_answer", "e"),
+    ];
+    const result = trimToStageDeficits(input, { guided: 0, productive: 1, independent: 2 });
+    expect(result.kept.map((item) => item.answer)).toEqual(["a", "c", "d"]);
+    expect(result.rejected.map((item) => item.exercise.answer)).toEqual(["b", "e"]);
+    for (const item of result.rejected) expect(item.errors).toEqual(["exerciseType: ponad brak etapu"]);
   });
 });
 

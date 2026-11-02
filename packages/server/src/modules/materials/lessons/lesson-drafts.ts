@@ -27,7 +27,7 @@ import { avoidSentencesFor } from "../../../domain/lessons/avoid-sentences";
 import { explanationTextErrors } from "../../../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
 import { resolveGenerationLeaks } from "../../../domain/lessons/exposure-leaks";
-import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE } from "../../../domain/lessons/lesson-coverage";
+import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE, stageDeficits } from "../../../domain/lessons/lesson-coverage";
 import {
   DEFAULT_LESSON_POLICY,
   defaultPoolSize,
@@ -37,6 +37,7 @@ import { materialCreationMode } from "../../../domain/lessons/material-creation"
 import { keywordsAnswer, MAX_TEXT_LENGTH, validatePool } from "../../../domain/lessons/pool-validation";
 import { outsideStagePath, stageOf } from "../../../domain/lessons/stages";
 import {
+  lessonExerciseIdentity,
   lessonExerciseStimulus,
   lessonExerciseStimulusRecord,
   lessonIdentityOptionsOf,
@@ -64,7 +65,7 @@ import {
 import { MAX_AUTOMATIC_ATTEMPTS, requireGeneration } from "../generation-runtime";
 import { classifyLessonGenerationFailure, lessonRetryDelayMs } from "./lesson-generation-errors";
 import { assertLessonGenerationFinalizationAllowed, LessonGenerationCancelledError, withLessonGenerationControl } from "./lesson-generation-control";
-import { DEFAULT_LESSON_GENERATION_POLICY } from "./lesson-generation-policy";
+import { DEFAULT_LESSON_GENERATION_POLICY, type LessonGenerationPolicy } from "./lesson-generation-policy";
 import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { committedRetryAfterSourceChange, lockSourceMaterialForCopy } from "../source-materials";
 import { acceptFreshLessonPool } from "./lesson-pool-acceptance";
@@ -598,6 +599,38 @@ export function capListenChoiceOverflow(
       continue;
     }
     kept.push(exercise);
+  }
+  return { kept, rejected };
+}
+
+/** Braki etapów jednego zagadnienia (wynik `stageDeficits`), zarazem zamówienie rundy pod etap. */
+type StageDeficits = { readonly guided: number; readonly productive: number; readonly independent: number };
+
+/** Błąd nadwyżki rundy pod etap ponad brak (log walidacji, jak przycięcie limitów celu). */
+const STAGE_TOP_UP_EXCESS_ERROR = "exerciseType: ponad brak etapu";
+
+/** Zapas czasu przed deadlinem przebiegu, który zostaje po wywołaniu rundy na walidację i zapis. */
+const STAGE_TOP_UP_MARGIN_MS = 30_000;
+
+/**
+ * Przycina przyjęte ćwiczenia rundy pod etap do braków: z każdego etapu najwyżej jego brak
+ * (kolejność wejścia); nadwyżka i ćwiczenia spoza etapów z brakiem odpadają z powodem.
+ */
+export function trimToStageDeficits(
+  exercises: readonly LessonExerciseDraft[],
+  deficits: StageDeficits,
+): { kept: LessonExerciseDraft[]; rejected: { exercise: LessonExerciseDraft; errors: string[] }[] } {
+  const used = { guided: 0, productive: 0, independent: 0 };
+  const kept: LessonExerciseDraft[] = [];
+  const rejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
+  for (const exercise of exercises) {
+    const stage = stageOf(exercise.exerciseType);
+    if ((stage === "guided" || stage === "productive" || stage === "independent") && used[stage] < deficits[stage]) {
+      used[stage] += 1;
+      kept.push(exercise);
+    } else {
+      rejected.push({ exercise, errors: [STAGE_TOP_UP_EXCESS_ERROR] });
+    }
   }
   return { kept, rejected };
 }
@@ -1337,6 +1370,148 @@ async function existingExercisesOf(tx: Executor, versionId: string, subject: Sub
   });
 }
 
+interface StageTopUpContext {
+  readonly runId: string;
+  readonly llm: ReturnType<typeof requireGeneration>["llm"];
+  readonly subject: SubjectModule;
+  readonly topic: LessonTopic;
+  readonly input: LessonRunInput;
+  readonly graderAvailable: boolean;
+  readonly policy: LessonGenerationPolicy;
+  readonly runDeadlineAtMs: number;
+  readonly signal?: AbortSignal;
+  readonly assertCurrent: () => Promise<boolean>;
+  /** Zagadnienia przebiegu (kolejność partii) — runda sprawdza braki tylko u nich. */
+  readonly objectiveIds: readonly string[];
+  /** Kolejność zagadnień lekcji dla reguły ujawnień i pokrycia. */
+  readonly objectiveOrder: readonly string[];
+  readonly existingDrafts: readonly LessonExerciseDraft[];
+  /** Ćwiczenia przyjęte z partii głównej (po regule ujawnień). */
+  readonly kept: readonly LessonExerciseDraft[];
+  /** Końcowe przykłady kart (szkic z zachowanymi nowymi); runda ich nie zmienia. */
+  readonly examples: Readonly<Record<string, readonly string[]>>;
+  /** Bodźce i odpowiedzi surowych ćwiczeń partii głównej (advisory „nie powtarzaj”, numeracja fake'a). */
+  readonly runStimuli: readonly LessonExerciseStimulus[];
+  readonly runAnswers: readonly string[];
+}
+
+/** Bodźce bez powtórzeń (przyjęte ćwiczenia runu są też wśród jego surowych bodźców). */
+function uniqueStimuli(records: readonly LessonExerciseStimulus[]): LessonExerciseStimulus[] {
+  const seen = new Set<string>();
+  return records.filter((record) => {
+    const key = JSON.stringify([record.objectiveId, record.exerciseType, record.stimulus]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Runda dogenerowania pod brakujący etap (spec etapu przeglądu lekcji): po partii głównej
+ * i regule ujawnień każde zagadnienie przebiegu z brakiem pokrycia dostaje jedno wywołanie
+ * zamawiające dokładnie braki etapów. Własny zakres kontroli z resztą budżetu przebiegu
+ * i miękkim limitem żądania: błąd albo przekroczenie limitu kończy rundę bez wpływu na run
+ * (zostaje to, co już przyjęte). Anulowanie (edycja rodzica, zamknięcie procesu) przechodzi
+ * dalej. Przykłady z odpowiedzi rundy są pomijane.
+ */
+async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
+  added: LessonExerciseDraft[];
+  rejectedCount: number;
+  rejectedReasons: Record<string, number>;
+}> {
+  const { runId, subject, topic, input } = ctx;
+  const kept: LessonExerciseDraft[] = [...ctx.kept];
+  const added: LessonExerciseDraft[] = [];
+  let rejectedCount = 0;
+  let rejectedReasons: Record<string, number> = {};
+  const deficitsOf = (objectiveId: string) =>
+    stageDeficits({ subject, exercises: [...ctx.existingDrafts, ...kept], examples: ctx.examples, objectiveIds: ctx.objectiveOrder }, objectiveId);
+  const total = (deficits: StageDeficits) => deficits.guided + deficits.productive + deficits.independent;
+  if (!ctx.objectiveIds.some((objectiveId) => total(deficitsOf(objectiveId)) > 0)) {
+    return { added, rejectedCount, rejectedReasons };
+  }
+  const byExercise = subject.poolDeduplication === "exercise";
+  const identityOptions = lessonIdentityOptionsOf(subject);
+  const runStimuli = [...ctx.runStimuli];
+  const runAnswers = [...ctx.runAnswers];
+  try {
+    await withLessonGenerationControl({
+      ...ctx.policy,
+      runTimeoutMs: Math.max(1, ctx.runDeadlineAtMs - Date.now()),
+      signal: ctx.signal,
+      assertCurrent: ctx.assertCurrent,
+    }, async (control) => {
+      for (const objectiveId of ctx.objectiveIds) {
+        const deficits = deficitsOf(objectiveId);
+        const count = total(deficits);
+        if (count === 0) continue;
+        if (ctx.runDeadlineAtMs - Date.now() < ctx.policy.requestTimeoutMs + STAGE_TOP_UP_MARGIN_MS) {
+          console.log(`[lesson] run=${runId} dogenerowanie pod etap: pominięte: brak czasu`);
+          return;
+        }
+        const existing = [...ctx.existingDrafts, ...kept];
+        // Wybór ze słuchu to dodatek partii głównej, nie etap: runda go nie zamawia.
+        const { listenChoicePerObjective: _listen, ...base } = buildPoolInput(
+          subject,
+          topic,
+          objectiveId,
+          count,
+          input.material,
+          input.instruction,
+          ctx.graderAvailable,
+          byExercise ? [] : [...new Set([...existing.map((exercise) => exercise.answer), ...runAnswers])],
+          byExercise ? uniqueStimuli([...existing.map((exercise) => lessonExerciseStimulusRecord(exercise, identityOptions)), ...runStimuli]) : [],
+          input.interests,
+          { avoidSentences: avoidSentencesFor({ examples: ctx.examples, exercises: existing, subject }), purpose: "stage_top_up" },
+        );
+        const poolInput: LessonPoolInput = { ...base, countPerObjective: count, stageCounts: { ...deficits } };
+        const result = await control.callSoft((signal) => ctx.llm.generateLessonPool(poolInput, signal));
+        await control.assertCurrent();
+        const scoped = filterExercisesToRequestedObjective(result.exercises, objectiveId);
+        const metadata = collectBatchExerciseMetadata(scoped.exercises, byExercise, identityOptions);
+        runAnswers.push(...metadata.answers);
+        runStimuli.push(...metadata.exerciseRecords);
+        const fresh = acceptFreshLessonPool({
+          rawExercises: scoped.exercises,
+          subject,
+          topic,
+          material: input.material,
+          familyScope: `${runId}-t`,
+          existingDrafts: existing,
+          existingAnswers: new Set(existing.map((exercise) => exercise.answer)),
+          existingExerciseIdentities: new Set(existing.map((exercise) => lessonExerciseIdentity(exercise, identityOptions))),
+          objectiveLimits: new Map([[objectiveId, { count, listen: 0, stages: deficits }]]),
+        });
+        const trimmed = trimToStageDeficits(fresh.accepted, deficits);
+        const leaks = resolveGenerationLeaks({
+          existing,
+          fresh: trimmed.kept,
+          existingExamples: ctx.examples,
+          newExamples: {},
+          objectiveOrder: ctx.objectiveOrder,
+          subject,
+        });
+        kept.push(...leaks.keptFresh);
+        added.push(...leaks.keptFresh);
+        const leakRejected = leaks.droppedFresh.length;
+        rejectedCount += fresh.shapeRejected + scoped.outOfScopeCount + fresh.refineRejected + fresh.rejected.length +
+          trimmed.rejected.length + fresh.duplicateCount + leakRejected;
+        rejectedReasons = sumRejectedReasons(
+          sumRejectedReasons(rejectedReasons, fresh.refinedReasons),
+          leakRejected > 0 ? { [EXPOSURE_LEAK_REASON]: leakRejected } : {},
+        );
+        console.log(
+          `[lesson] run=${runId} dogenerowanie pod etap: zagadnienie=${objectiveId.split(".").at(-1)} guided=${deficits.guided} productive=${deficits.productive} independent=${deficits.independent} przyjęte=${leaks.keptFresh.length}`,
+        );
+      }
+    });
+  } catch (error) {
+    if (error instanceof LessonGenerationCancelledError) throw error;
+    console.error(`[lesson] run=${runId} dogenerowanie pod etap: błąd=${classifyLessonGenerationFailure(error).errorCode}`);
+  }
+  return { added, rejectedCount, rejectedReasons };
+}
+
 export async function executeLessonGeneration(services: Services, runId: string, options: { signal?: AbortSignal } = {}): Promise<void> {
   const deps = requireGeneration(services);
   const run = (await services.db.select().from(generationRuns).where(eq(generationRuns.id, runId)))[0];
@@ -1448,6 +1623,16 @@ export async function executeLessonGeneration(services: Services, runId: string,
   const examples: Record<string, string[]> = {};
   const executionPolicy = deps.lessonExecution ?? DEFAULT_LESSON_GENERATION_POLICY;
   const runDeadlineAtMs = runStartedAtMs + executionPolicy.runTimeoutMs;
+  // Tożsamość runu w bazie (partie i runda pod etap): edycja rodzica, retry albo publikacja ją zmieniają.
+  const runIsCurrent = async (): Promise<boolean> => {
+    const [current] = await services.db.select({ state: generationRuns.state, attempts: generationRuns.attempts, expectedEditNumber: generationRuns.expectedEditNumber })
+      .from(generationRuns).where(eq(generationRuns.id, runId));
+    const [version] = await services.db.select({ editNumber: deckVersions.editNumber, state: deckVersions.state })
+      .from(deckVersions).where(eq(deckVersions.id, run.deckVersionId!));
+    return current?.state === "running" && current.attempts === attempts &&
+      current.expectedEditNumber === run.expectedEditNumber && version?.state !== "published" &&
+      version?.editNumber === run.expectedEditNumber;
+  };
   console.log(
     `[lesson] generacja run=${runId} deck=${input.deckId} cele=${batches.length} próba=${attempts} pula=${input.poolSize} model=${deps.llm.model}`,
   );
@@ -1455,15 +1640,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
     await withLessonGenerationControl({
       ...executionPolicy,
       signal: options.signal,
-      assertCurrent: async () => {
-        const [current] = await services.db.select({ state: generationRuns.state, attempts: generationRuns.attempts, expectedEditNumber: generationRuns.expectedEditNumber })
-          .from(generationRuns).where(eq(generationRuns.id, runId));
-        const [version] = await services.db.select({ editNumber: deckVersions.editNumber, state: deckVersions.state })
-          .from(deckVersions).where(eq(deckVersions.id, run.deckVersionId!));
-        return current?.state === "running" && current.attempts === attempts &&
-          current.expectedEditNumber === run.expectedEditNumber && version?.state !== "published" &&
-          version?.editNumber === run.expectedEditNumber;
-      },
+      assertCurrent: runIsCurrent,
     }, async (control) => {
     if (needsDynamicObjectives) {
       await control.assertCurrent();
@@ -1612,18 +1789,19 @@ export async function executeLessonGeneration(services: Services, runId: string,
     // Reguła twarda (spec etapu przeglądu §5.2): świeże ćwiczenie samodzielne z rozwiązaniem
     // widocznym wcześniej (przykład karty, ćwiczenie niesamodzielne) odpada; ćwiczenia szkicu
     // są nietykalne — odpadają wtedy świeże źródła i nowe przykłady.
+    const objectiveOrder = input.regenerate ? (draftContext.objectiveIds ?? input.objectiveIds) : batches.map((batch) => batch.objectiveId);
     const leaks = resolveGenerationLeaks({
       existing: existingDrafts,
       fresh: fresh.accepted,
       existingExamples: draftExamples,
       newExamples: examples,
-      objectiveOrder: input.regenerate ? (draftContext.objectiveIds ?? input.objectiveIds) : batches.map((batch) => batch.objectiveId),
+      objectiveOrder,
       subject,
     });
-    const uniqueValid = leaks.keptFresh;
+    let uniqueValid = leaks.keptFresh;
     const leakRejected = leaks.droppedFresh.length;
-    const rejectedCount = shapeRejected + outOfScopeCount + fresh.refineRejected + rejected.length + dupAgainstExisting + leakRejected;
-    const runRejectedReasons = leakRejected > 0
+    let rejectedCount = shapeRejected + outOfScopeCount + fresh.refineRejected + rejected.length + dupAgainstExisting + leakRejected;
+    let runRejectedReasons = leakRejected > 0
       ? sumRejectedReasons(fresh.refinedReasons, { [EXPOSURE_LEAK_REASON]: leakRejected })
       : fresh.refinedReasons;
 
@@ -1677,6 +1855,32 @@ export async function executeLessonGeneration(services: Services, runId: string,
         await markCurrentRun(tx, "failed", "validation");
       });
       return;
+    }
+
+    // Runda pod brakujący etap (spec etapu przeglądu lekcji): po regule ujawnień, przed zapisem.
+    if (executionPolicy.stageTopUp !== false) {
+      const topUp = await stageTopUpRound({
+        runId,
+        llm: deps.llm,
+        subject,
+        topic,
+        input,
+        graderAvailable,
+        policy: executionPolicy,
+        runDeadlineAtMs,
+        signal: options.signal,
+        assertCurrent: runIsCurrent,
+        objectiveIds: batches.map((batch) => batch.objectiveId),
+        objectiveOrder,
+        existingDrafts,
+        kept: uniqueValid,
+        examples: { ...draftExamples, ...leaks.keptNewExamples },
+        runStimuli: earlierExercises,
+        runAnswers: earlierAnswers,
+      });
+      uniqueValid = [...uniqueValid, ...topUp.added];
+      rejectedCount += topUp.rejectedCount;
+      runRejectedReasons = sumRejectedReasons(runRejectedReasons, topUp.rejectedReasons);
     }
 
     await services.db.transaction(async (tx) => {
@@ -1773,10 +1977,13 @@ export async function executeLessonGeneration(services: Services, runId: string,
     // Nieprzewidziany wyjątek walidacji/zapisu NIE może zostawić runu „running”.
     // Rozliczamy terminalnie: wyczerpane próby → attempts_exhausted, inaczej
     // validation (błąd kształtu/treści puli, nie błąd przejściowy providera).
-    console.error(`[lesson] run=${runId} nieprzewidziany błąd walidacji/zapisu: kod=validation_or_write`);
     if (error instanceof LessonGenerationCancelledError) {
+      // Anulowanie rundy pod etap (edycja rodzica, zamknięcie procesu) — nie jest błędem zapisu.
       if (error.reason === "shutdown") await markCurrentRun(services.db, "queued", null, null);
-    } else if (classifyLessonGenerationFailure(error).errorCode === "provider_timeout") {
+      return;
+    }
+    console.error(`[lesson] run=${runId} nieprzewidziany błąd walidacji/zapisu: kod=validation_or_write`);
+    if (classifyLessonGenerationFailure(error).errorCode === "provider_timeout") {
       await markCurrentRun(services.db, "failed", "provider_timeout");
     } else if (attempts >= MAX_AUTOMATIC_ATTEMPTS) {
       await markCurrentRun(services.db, "failed", "attempts_exhausted");
