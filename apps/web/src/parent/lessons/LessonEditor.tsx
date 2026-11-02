@@ -1144,7 +1144,7 @@ export default function LessonEditor({
   const storyAudio = active?.storyAudio;
   const storyAudioState = storyAudioView({ editable, saved: draft?.story, form: storyForm, storyGenerating, audio: storyAudio });
   const storyAudioControls = storyAudioState.show && storyAudio && (
-    <div className="pp-lesson-prompt-audio">
+    <div className="pp-lesson-prompt-audio" role="group" aria-label={messages.lessons.story.audioTarget}>
       <PromptAudioControls audio={storyAudio} target={{ kind: "story" }} targetLabel={messages.lessons.story.audioTarget}
         lessonDraftId={active?.id ?? ""} deckId={deckId} canRegenerate={editable} locked={busy || isDirty || conflict}
         testId="lesson-story-audio" onPlay={playAsset} />

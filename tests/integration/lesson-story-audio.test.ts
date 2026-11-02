@@ -143,6 +143,23 @@ async function storyAssets(versionId: string): Promise<StoryAssetRow[]> {
   )).rows;
 }
 
+/**
+ * Edycja szkicu z bieżącym `edit_number` odczytanym z bazy, więc test nie zależy
+ * od liczby zapisów wykonanych wcześniej (generacja, run historyjki, edycje).
+ */
+async function edit(services: Services, versionId: string, patch: Omit<Parameters<typeof editLessonDraft>[2], "expectedEditNumber">) {
+  const { editNumber } = (await pool.query<{ editNumber: number }>(
+    'select edit_number as "editNumber" from learning_app.deck_versions where id = $1',
+    [versionId],
+  )).rows[0]!;
+  return editLessonDraft(services, versionId, { ...patch, expectedEditNumber: editNumber });
+}
+
+async function runStatesOf(assetId: string): Promise<string[]> {
+  return (await pool.query<{ state: string }>("select state from learning_app.generation_runs where asset_id = $1 order by created_at", [assetId]))
+    .rows.map((row) => row.state);
+}
+
 async function ttsRunCount(): Promise<number> {
   return (await pool.query<{ count: number }>("select count(*)::int as count from learning_app.generation_runs where kind = 'tts'")).rows[0]!.count;
 }
@@ -152,7 +169,7 @@ describe("nagranie historyjki lekcji (integracja)", () => {
     const { services, versionId } = await grammarDraft({ styled: true });
     expect(await storyAssets(versionId)).toEqual([]);
 
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
 
     const rows = await storyAssets(versionId);
     expect(rows).toHaveLength(1);
@@ -164,19 +181,19 @@ describe("nagranie historyjki lekcji (integracja)", () => {
 
   it("changing story sentences binds a new recording, changing only questions keeps it", async () => {
     const { services, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [first] = await storyAssets(versionId);
 
     // Zmienione pytanie, zdania bez zmian: to samo nagranie.
     const questionsOnly = { ...STORY, questions: [{ ...STORY.questions[0]!, question: "Jakiego koloru jest pies Toma?" }] };
-    await editLessonDraft(services, versionId, { expectedEditNumber: 3, story: questionsOnly });
+    await edit(services, versionId, { story: questionsOnly });
     const afterQuestions = await storyAssets(versionId);
     expect(afterQuestions).toHaveLength(1);
     expect(afterQuestions[0]!.assetId).toBe(first!.assetId);
 
     // Inne zdanie: nowy zasób o nowym fingerprincie.
     const otherSentences = { ...STORY, sentences: ["Tom has a small cat.", ...STORY.sentences.slice(1)] };
-    await editLessonDraft(services, versionId, { expectedEditNumber: 4, story: otherSentences });
+    await edit(services, versionId, { story: otherSentences });
     const afterSentences = await storyAssets(versionId);
     expect(afterSentences).toHaveLength(1);
     expect(afterSentences[0]!.assetId).not.toBe(first!.assetId);
@@ -186,10 +203,10 @@ describe("nagranie historyjki lekcji (integracja)", () => {
 
   it("removing the story deletes its recording row", async () => {
     const { services, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     expect(await storyAssets(versionId)).toHaveLength(1);
 
-    await editLessonDraft(services, versionId, { expectedEditNumber: 3, story: null });
+    await edit(services, versionId, { story: null });
 
     expect((await pool.query("select 1 from learning_app.lesson_story_assets where deck_version_id = $1", [versionId])).rowCount).toBe(0);
   });
@@ -214,7 +231,7 @@ describe("nagranie historyjki lekcji (integracja)", () => {
 
   it("failed story recording is queued again on publish and publish does not wait for it", async () => {
     const { services, deckId, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [first] = await storyAssets(versionId);
     await pool.query("update learning_app.media_assets set state = 'failed' where id = $1", [first!.assetId]);
 
@@ -230,7 +247,7 @@ describe("nagranie historyjki lekcji (integracja)", () => {
 
   it("published version story recording row is immutable", async () => {
     const { services, deckId, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [row] = await storyAssets(versionId);
     const draft = (await readLessonDeck(services, deckId)).draft!;
     await publishLessonDraft(services, versionId, draft.editNumber);
@@ -251,7 +268,7 @@ describe("nagranie historyjki lekcji (integracja)", () => {
 
   it("new version from published shows the shared recording at once", async () => {
     const { services, deckId, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [published] = await storyAssets(versionId);
     // Zastępuje workera: nagranie historyjki gotowe przed publikacją.
     await markTtsReady(published!.assetId);
@@ -267,6 +284,49 @@ describe("nagranie historyjki lekcji (integracja)", () => {
     expect(rows[0]).toMatchObject({ assetId: published!.assetId, state: "ready" });
     expect(await ttsRunCount()).toBe(runsBefore);
   });
+
+  it("publish without edit binds the story recording of a draft without a row", async () => {
+    const { services, deckId, versionId } = await grammarDraft();
+    // Historyjka trafia do kontekstu poza edycją (jak lekcja z etapu 1), więc szkic nie ma wiersza nagrania.
+    await pool.query(
+      "update learning_app.deck_versions set lesson_context = jsonb_set(lesson_context, '{story}', $2::jsonb) where id = $1",
+      [versionId, JSON.stringify(STORY)],
+    );
+    await pool.query("delete from learning_app.lesson_story_assets where deck_version_id = $1", [versionId]);
+    expect(await storyAssets(versionId)).toEqual([]);
+
+    const draft = (await readLessonDeck(services, deckId)).draft!;
+    await publishLessonDraft(services, versionId, draft.editNumber);
+
+    const rows = await storyAssets(versionId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ state: "pending", locale: "en-GB", text: storyReadText(STORY) });
+  });
+
+  it("new version of a stage-1 published lesson without a row gets the recording", async () => {
+    const { services, deckId, versionId } = await grammarDraft();
+    const edited = await edit(services, versionId, { story: STORY });
+    const [first] = await storyAssets(versionId);
+    await publishLessonDraft(services, versionId, edited.editNumber);
+    // Jedyne ujęcie nieudane, a opublikowana wersja bez wiersza (jak lekcja z etapu 1).
+    await pool.query("update learning_app.media_assets set state = 'failed' where fingerprint = $1", [first!.fingerprint]);
+    await pool.query("alter table learning_app.lesson_story_assets disable trigger lesson_story_assets_immutable");
+    try {
+      await pool.query("delete from learning_app.lesson_story_assets where deck_version_id = $1", [versionId]);
+    } finally {
+      await pool.query("alter table learning_app.lesson_story_assets enable trigger lesson_story_assets_immutable");
+    }
+    expect(await storyAssets(versionId)).toEqual([]);
+    const runsBefore = await ttsRunCount();
+
+    const copy = await createLessonDraftFromPublished(services, deckId);
+
+    const rows = await storyAssets(copy.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ state: "pending", fingerprint: first!.fingerprint, text: storyReadText(STORY) });
+    expect(await ttsRunCount()).toBeGreaterThan(runsBefore);
+    expect(await runStatesOf(rows[0]!.assetId)).toEqual(["queued"]);
+  });
 });
 
 describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", () => {
@@ -280,14 +340,9 @@ describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", (
 
   const readDraft = async (services: Services, deckId: string) => (await readLessonDeck(services, deckId)).draft!;
 
-  async function runStates(assetId: string): Promise<string[]> {
-    return (await pool.query<{ state: string }>("select state from learning_app.generation_runs where asset_id = $1 order by created_at", [assetId]))
-      .rows.map((row) => row.state);
-  }
-
   it("worker brings the story recording to ready and the draft dto shows it", async () => {
     const { fakes, services, deckId, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [row] = await storyAssets(versionId);
     expect((await readDraft(services, deckId)).storyAudio).toEqual({ state: "pending" });
 
@@ -300,30 +355,29 @@ describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", (
 
   it("story recording replaced before the worker ran is cancelled and never shown as failed", async () => {
     const { services, deckId, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [a] = await storyAssets(versionId);
     const other = { ...STORY, sentences: ["Tom has a small cat.", ...STORY.sentences.slice(1)] };
-    await editLessonDraft(services, versionId, { expectedEditNumber: 3, story: other });
+    await edit(services, versionId, { story: other });
     const [b] = await storyAssets(versionId);
     expect(b!.assetId).not.toBe(a!.assetId);
 
     await runWorker(services);
 
     expect((await mediaAsset(a!.assetId)).state).toBe("failed");
-    expect(await runStates(a!.assetId)).toEqual(["superseded"]);
+    expect(await runStatesOf(a!.assetId)).toEqual(["superseded"]);
     expect((await readDraft(services, deckId)).storyAudio).toEqual({ state: "ready", assetId: b!.assetId });
 
     // Powrót do zdań A: nowa generacja czeka, a anulowany zasób nie jest porażką ani poprzednim ujęciem.
-    await editLessonDraft(services, versionId, { expectedEditNumber: 4, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const storyAudio = (await readDraft(services, deckId)).storyAudio!;
     expect(storyAudio.state).toBe("pending");
-    expect(storyAudio.previousAssetId).not.toBe(a!.assetId);
     expect(storyAudio.previousAssetId).toBeUndefined();
   });
 
   it("worker cancels a story recording referenced only by a subject without lessonStory", async () => {
     const { fakes, services, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [row] = await storyAssets(versionId);
     // Wiersz zostaje, ale worker zna przedmiot bez flagi `lessonStory`.
     const worker = grammarServices(fakes, { subjects: [{ ...englishGrammarSubject, lessonStory: false }, schoolSubject] });
@@ -331,13 +385,13 @@ describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", (
     await executeMediaAsset(worker, row!.assetId);
 
     expect((await mediaAsset(row!.assetId)).state).toBe("failed");
-    expect(await runStates(row!.assetId)).toEqual(["superseded"]);
+    expect(await runStatesOf(row!.assetId)).toEqual(["superseded"]);
     expect(fakes.tts.requests).toHaveLength(0);
   });
 
   it("worker keeps a shared story recording when another version still has lessonStory", async () => {
     const { fakes, services, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [row] = await storyAssets(versionId);
     // Druga wersja (przedmiot szkolny, bez `lessonStory`) wiąże to samo nagranie.
     const school = await seedSchoolDraft([{ id: "school.ddeck000.pajaki", titlePl: "Pająki", descriptionEn: "Spiders.", cards: [] }]);
@@ -354,7 +408,7 @@ describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", (
 
   it("regenerate story audio enqueues the next generation and the dto shows pending with previous", async () => {
     const { services, deckId, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [first] = await storyAssets(versionId);
     await markTtsReady(first!.assetId);
 
@@ -368,7 +422,7 @@ describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", (
 
   it("regenerate story audio twice while pending returns the same asset", async () => {
     const { services, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [first] = await storyAssets(versionId);
     await markTtsReady(first!.assetId);
 
@@ -381,7 +435,7 @@ describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", (
 
   it("failed story recording shows failed with the previous ready take", async () => {
     const { services, deckId, versionId } = await grammarDraft();
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     const [first] = await storyAssets(versionId);
     await markTtsReady(first!.assetId);
     await addGeneration(first!.assetId, "failed");
@@ -394,7 +448,7 @@ describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", (
     await expect(regenerateLessonStoryAudio(services, { lessonDraftId: versionId })).rejects.toMatchObject({ code: "not_found" });
     await expect(regenerateLessonStoryAudio(services, { lessonDraftId: randomUUID() })).rejects.toMatchObject({ code: "not_found" });
 
-    const edited = await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    const edited = await edit(services, versionId, { story: STORY });
     await publishLessonDraft(services, versionId, edited.editNumber);
 
     await expect(regenerateLessonStoryAudio(services, { lessonDraftId: versionId })).rejects.toMatchObject({ code: "immutable" });
@@ -405,9 +459,63 @@ describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", (
     const { services, deckId, versionId } = await grammarDraft();
     expect(await readDraft(services, deckId)).not.toHaveProperty("storyAudio");
 
-    await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: STORY });
+    await edit(services, versionId, { story: STORY });
     expect(await readDraft(services, deckId)).toHaveProperty("storyAudio");
-    await editLessonDraft(services, versionId, { expectedEditNumber: 3, story: null });
+    await edit(services, versionId, { story: null });
     expect(await readDraft(services, deckId)).not.toHaveProperty("storyAudio");
+  });
+
+  it("regenerate story audio after a TTS config change rebinds the row without a new generation of the old fingerprint", async () => {
+    const { fakes, services, versionId } = await grammarDraft();
+    await edit(services, versionId, { story: STORY });
+    const [row] = await storyAssets(versionId);
+    await markTtsReady(row!.assetId);
+    const original = await mediaAsset(row!.assetId);
+    const switched = createServices({
+      db,
+      clock: new ManualClock(),
+      media: { ...fakes.settings, tts: { ...fakes.settings.tts, provider: "openrouter", model: "openai/gpt-4o-mini-tts-2025-12-15" } },
+      generation: fakes.deps,
+      subjects: createSubjectRegistry([englishGrammarSubject, schoolSubject]),
+    });
+
+    const { assetId } = await regenerateLessonStoryAudio(switched, { lessonDraftId: versionId });
+
+    const fresh = await mediaAsset(assetId);
+    expect(fresh).toMatchObject({ state: "pending", provider: "openrouter", model: "openai/gpt-4o-mini-tts-2025-12-15", generationNumber: 1 });
+    expect(fresh.fingerprint).not.toBe(original.fingerprint);
+    const [rebound] = await storyAssets(versionId);
+    expect(rebound).toMatchObject({ assetId, expectedFingerprint: fresh.fingerprint });
+    expect(rebound!.expectedFingerprint).not.toBe(row!.expectedFingerprint);
+    expect(await generationsOf(original.fingerprint)).toHaveLength(1);
+    expect(await mediaAsset(row!.assetId)).toEqual(original);
+    // Drugie wywołanie zwraca to samo oczekujące ujęcie nowego fingerprintu.
+    expect((await regenerateLessonStoryAudio(switched, { lessonDraftId: versionId })).assetId).toBe(assetId);
+    expect(await generationsOf(fresh.fingerprint)).toHaveLength(1);
+  });
+
+  it("regenerate story audio without media settings fails with internal", async () => {
+    const { services, versionId } = await grammarDraft();
+    await edit(services, versionId, { story: STORY });
+    const withoutMedia = createServices({ db, clock: new ManualClock(), subjects: createSubjectRegistry([englishGrammarSubject, schoolSubject]) });
+
+    await expect(regenerateLessonStoryAudio(withoutMedia, { lessonDraftId: versionId })).rejects.toMatchObject({ code: "internal" });
+  });
+
+  it("published version shows a new take made in the draft through the shared fingerprint", async () => {
+    const { services, deckId, versionId } = await grammarDraft();
+    const edited = await edit(services, versionId, { story: STORY });
+    const [first] = await storyAssets(versionId);
+    await markTtsReady(first!.assetId);
+    await publishLessonDraft(services, versionId, edited.editNumber);
+    expect((await readLessonDeck(services, deckId)).published!.storyAudio).toEqual({ state: "ready", assetId: first!.assetId });
+
+    const copy = await createLessonDraftFromPublished(services, deckId);
+    const { assetId } = await regenerateLessonStoryAudio(services, { lessonDraftId: copy.id });
+
+    // Wspólny fingerprint: opublikowana wersja widzi nowe ujęcie ze szkicu (do gotowości — poprzednie).
+    expect((await readLessonDeck(services, deckId)).published!.storyAudio).toEqual({ state: "pending", previousAssetId: first!.assetId });
+    await markTtsReady(assetId);
+    expect((await readLessonDeck(services, deckId)).published!.storyAudio).toEqual({ state: "ready", assetId });
   });
 });

@@ -13,6 +13,7 @@ function lesson(overrides: {
   draftCardAudio?: string[];
   draftExplanationAudio?: string[];
   draftStoryAudio?: string;
+  publishedStoryAudio?: string;
 }): LessonDeckDto {
   const version = (states: string[], promptAudio: string[] = [], cardAudio: string[] = [], explanationAudio: string[] = [], storyAudio?: string) => ({
     assets: states.map((state) => ({ state })),
@@ -26,7 +27,9 @@ function lesson(overrides: {
     draft: overrides.draftAssets
       ? version(overrides.draftAssets, overrides.draftPromptAudio, overrides.draftCardAudio, overrides.draftExplanationAudio, overrides.draftStoryAudio)
       : null,
-    published: overrides.publishedAssets ? version(overrides.publishedAssets) : null,
+    published: overrides.publishedAssets
+      ? version(overrides.publishedAssets, [], [], [], overrides.publishedStoryAudio)
+      : null,
   } as unknown as LessonDeckDto;
 }
 
@@ -83,6 +86,11 @@ describe("lessonPollInterval", () => {
   it("stops polling when the story recording is ready", () => {
     expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftStoryAudio: "ready" }))).toBe(false);
     expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftStoryAudio: "failed" }))).toBe(false);
+  });
+
+  it("polls every 3 s while the published story recording is pending", () => {
+    expect(lessonPollInterval(lesson({ publishedAssets: ["approved"], publishedStoryAudio: "pending" }))).toBe(3000);
+    expect(lessonPollInterval(lesson({ publishedAssets: ["approved"], publishedStoryAudio: "ready" }))).toBe(false);
   });
 
   it("does not poll for a draft without storyAudio", () => {

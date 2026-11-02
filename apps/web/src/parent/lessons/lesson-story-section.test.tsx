@@ -258,6 +258,6 @@ describe("LessonStorySection", () => {
 
   it("info mentions listening to the recording", () => {
     renderSection();
-    expect(screen.getByTestId("lesson-story-section").textContent).toContain("odsłuchać tutaj");
+    expect(screen.getByTestId("lesson-story-section").textContent).toContain(messages.lessons.story.info);
   });
 });

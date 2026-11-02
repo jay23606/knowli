@@ -961,9 +961,11 @@ export async function createLessonDraftFromPublished(
     const newVersionId = await createVersionFromPublished(tx, id, (innerTx, { source, newVersionId }) =>
       copyRevisionsSkillsAssets(innerTx, { sourceVersionId: source.id, newVersionId, deckId: id }),
     );
-    // Historyjka przechodzi z kontekstem wersji; jej nagranie wiąże się od razu
-    // z gotowym zasobem tego samego fingerprintu (bez kosztu TTS), więc nowy
-    // szkic pokazuje odsłuch bez czekania na pierwszy zapis.
+    // Historyjka przechodzi z kontekstem wersji; jej nagranie wiąże się od razu.
+    // Gdy gotowy zasób o bieżącym fingerprincie istnieje, kopia nie kosztuje TTS
+    // i szkic pokazuje odsłuch bez czekania na pierwszy zapis; w przeciwnym
+    // razie (zmiana konfiguracji TTS, nieudane ujęcie, lekcja z etapu 1 bez
+    // wiersza) kopia zleca nowe nagranie.
     await reconcileLessonStoryAssetTx(tx, services, { id: newVersionId, state: "draft" });
     return readLessonDraftDto(tx, services, newVersionId);
   });

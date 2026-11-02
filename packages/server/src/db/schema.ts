@@ -445,7 +445,7 @@ export const lessonCardAssets = app.table(
  * Nagranie lektora historyjki lekcji (design „Historyjka lekcji” §7): historyjka
  * żyje w `lesson_context.story`, więc jej nagranie wiąże się z wersją, jedno na
  * wersję. Bez stanu decyzji; wiersz opublikowanej wersji niezmienny (trigger
- * w migracji 0033).
+ * w migracji 0034).
  */
 export const lessonStoryAssets = app.table(
   "lesson_story_assets",
