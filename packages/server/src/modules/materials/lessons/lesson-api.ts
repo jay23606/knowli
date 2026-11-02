@@ -360,6 +360,8 @@ async function readLessonDraftDto(
       assetId: a.assetId,
     }]),
     ...(audio.cards.length > 0 ? { cardAudio: audio.cards } : {}),
+    // Nagranie lektora historyjki; brak pola = lekcja bez historyjki (albo bez nagrania).
+    ...(audio.story ? { storyAudio: audio.story } : {}),
     rejectedCount: context.rejectedCount,
     ...(context.rejectedReasons ? { rejectedReasons: context.rejectedReasons } : {}),
     ...(context.droppedObjectiveCount ? { droppedObjectiveCount: context.droppedObjectiveCount } : {}),

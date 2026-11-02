@@ -514,6 +514,8 @@ export const LessonDraftDtoSchema = z.object({
   story: LessonStorySchema.optional(),
   /** Przedmiot obsługuje historyjkę (flaga przedmiotu); brak pola = nie wiadomo/nie dotyczy. */
   storyEnabled: z.boolean().optional(),
+  /** Nagranie lektora historyjki (odsłuch i „Nagraj ponownie”); brak pola = brak nagrania. Tylko do odczytu. */
+  storyAudio: LessonPromptAudioDtoSchema.optional(),
 });
 export type LessonDraftDto = z.infer<typeof LessonDraftDtoSchema>;
 

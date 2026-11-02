@@ -4,13 +4,13 @@ import { z } from "zod";
 import type { LessonCardAudioDto, LessonPromptAudioDto } from "@learning/contracts";
 import type { Services } from "../../../config";
 import type { Executor, Tx } from "../../../db/client";
-import { generationRuns, itemRevisions, lessonCardAssets, mediaAssets, revisionAssets } from "../../../db/schema";
+import { generationRuns, itemRevisions, lessonCardAssets, lessonStoryAssets, mediaAssets, revisionAssets } from "../../../db/schema";
 import { AppError } from "../../../errors";
 import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { lockVersion } from "../version-ops";
 
 /**
- * Nagrania pytań i kart lekcji w panelu rodzica (spec tonu TTS §2.4, §4.5):
+ * Nagrania pytań, kart i historyjki lekcji w panelu rodzica (spec tonu TTS §2.4, §4.5):
  * stan nagrania w DTO szkicu i „Nagraj ponownie”. Nagranie nie jest decyzją
  * rodzica ani warunkiem publikacji; ponowne nagranie to nowa generacja tego
  * samego fingerprintu, którą odsłuch (najnowsza gotowa generacja) podejmuje we
@@ -48,15 +48,21 @@ function groupBy<T>(rows: readonly T[], key: (row: T) => string): Map<string, T[
 const notCancelled = sql`not exists (select 1 from ${generationRuns} where ${generationRuns.assetId} = ${mediaAssets.id} and ${generationRuns.state} = 'superseded')`;
 
 /**
- * Stan nagrań wersji lekcji: pytania i zdania ćwiczeń słuchowych per rewizja
- * oraz karty w kolejności zagadnień tematu. Wiersz bez żadnej generacji swojego fingerprintu (albo brak wiersza)
- * nie daje wpisu. Jedno zapytanie na rodzaj nagrania dla całej wersji.
+ * Stan nagrań wersji lekcji: pytania i zdania ćwiczeń słuchowych per rewizja,
+ * karty w kolejności zagadnień tematu oraz lektor historyjki. Wiersz bez żadnej
+ * generacji swojego fingerprintu (albo brak wiersza) nie daje wpisu. Jedno
+ * zapytanie na rodzaj nagrania dla całej wersji.
  */
 export async function readLessonAudioStates(
   db: Executor,
   versionId: string,
   objectiveOrder: readonly string[],
-): Promise<{ prompts: Map<string, LessonPromptAudioDto>; sentences: Map<string, LessonPromptAudioDto>; cards: LessonCardAudioDto[] }> {
+): Promise<{
+  prompts: Map<string, LessonPromptAudioDto>;
+  sentences: Map<string, LessonPromptAudioDto>;
+  cards: LessonCardAudioDto[];
+  story: LessonPromptAudioDto | undefined;
+}> {
   const readRevisionAudio = async (role: "prompt_audio" | "feedback_audio") => {
     const rows = await db
       .select({ itemRevisionId: revisionAssets.itemRevisionId, id: mediaAssets.id, state: mediaAssets.state })
@@ -92,7 +98,16 @@ export async function readLessonAudioStates(
   };
   const cards = [...cardsByKey.values()].sort((a, b) =>
     rank(a.objectiveId) - rank(b.objectiveId) || a.objectiveId.localeCompare(b.objectiveId) || a.cardIndex - b.cardIndex);
-  return { prompts, sentences, cards };
+
+  // Lektor historyjki: jeden wiersz na wersję (design „Historyjka lekcji” §7).
+  const storyRows = await db
+    .select({ id: mediaAssets.id, state: mediaAssets.state })
+    .from(lessonStoryAssets)
+    .innerJoin(mediaAssets, eq(mediaAssets.fingerprint, lessonStoryAssets.expectedFingerprint))
+    .where(and(eq(lessonStoryAssets.deckVersionId, versionId), eq(mediaAssets.kind, "tts"), notCancelled))
+    .orderBy(desc(mediaAssets.generationNumber));
+  const story = storyRows.length > 0 ? audioDto(storyRows) : undefined;
+  return { prompts, sentences, cards, story };
 }
 
 /** Blokada wersji jak przy edycji szkicu; opublikowana wersja jest niezmienna. */
@@ -163,6 +178,10 @@ const CardAudioInputSchema = z.object({
   lessonDraftId: z.uuid(),
   objectiveId: z.string().min(1),
   cardIndex: z.number().int().nonnegative(),
+});
+
+const StoryAudioInputSchema = z.object({
+  lessonDraftId: z.uuid(),
 });
 
 /**
@@ -256,6 +275,30 @@ export async function regenerateLessonCardAudio(
     )[0];
     const { assetId, rebound } = await reconcileThenNextTx(tx, services, version, readRow);
     if (!rebound) await tx.update(lessonCardAssets).set({ assetId }).where(where);
+    return { assetId };
+  });
+}
+
+/**
+ * „Nagraj ponownie” lektora historyjki w szkicu lekcji (design „Historyjka lekcji”
+ * §7). Brak wersji albo wiersza nagrania (lekcja bez historyjki) → `not_found`;
+ * opublikowana wersja → `immutable`. Wiersz szkicu wskazuje nową generację.
+ */
+export async function regenerateLessonStoryAudio(
+  services: Services,
+  input: z.infer<typeof StoryAudioInputSchema>,
+): Promise<{ assetId: string }> {
+  const valid = StoryAudioInputSchema.parse(input);
+  assertMediaConfigured(services);
+  return services.db.transaction(async (tx) => {
+    const version = await lockDraft(tx, valid.lessonDraftId);
+    const where = eq(lessonStoryAssets.deckVersionId, valid.lessonDraftId);
+    const readRow = async () => (
+      await tx.select({ expectedFingerprint: lessonStoryAssets.expectedFingerprint, assetId: lessonStoryAssets.assetId })
+        .from(lessonStoryAssets).where(where)
+    )[0];
+    const { assetId, rebound } = await reconcileThenNextTx(tx, services, version, readRow);
+    if (!rebound) await tx.update(lessonStoryAssets).set({ assetId }).where(where);
     return { assetId };
   });
 }

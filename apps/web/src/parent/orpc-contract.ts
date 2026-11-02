@@ -177,6 +177,11 @@ const LessonCardAudioRegenerateInputSchema = z.object({
   cardIndex: z.number().int().nonnegative(),
 }).strict();
 
+/** Wejście POST /lesson-drafts/{lessonDraftId}/story-audio/regenerate: tylko ścieżka (jedno nagranie na wersję). */
+const LessonStoryAudioRegenerateInputSchema = z.object({
+  lessonDraftId: UuidSchema,
+}).strict();
+
 /** Wejście POST /lesson-drafts/{lessonDraftId}/story/regenerate: ścieżka + optimistic locking + idempotencja. */
 const LessonStoryRegenerateInputSchema = z.object({
   lessonDraftId: UuidSchema,
@@ -481,6 +486,12 @@ export const parentApiContract = {
       .input(LessonCardAudioRegenerateInputSchema)
       .output(z.object({ assetId: UuidSchema }))
       .meta(openapi({ method: "POST", path: "/lesson-drafts/{lessonDraftId}/card-audio/regenerate", successStatus: 202 })),
+
+    /** „Nagraj ponownie” historyjki (design „Historyjka lekcji” §7): nowa generacja nagrania lektora; tylko szkic. */
+    regenerateStoryAudio: oc
+      .input(LessonStoryAudioRegenerateInputSchema)
+      .output(z.object({ assetId: UuidSchema }))
+      .meta(openapi({ method: "POST", path: "/lesson-drafts/{lessonDraftId}/story-audio/regenerate", successStatus: 202 })),
 
     /** „Wygeneruj historyjkę” (spec historyjki lekcji): zleca run generowania; tylko szkic. */
     regenerateStory: oc
