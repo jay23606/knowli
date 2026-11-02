@@ -12,6 +12,8 @@ import {
   type GenerationDeps,
   type MediaSettings,
   type MediaStore,
+  type UsageFeature,
+  type UsageRecorder,
 } from "@learning/server";
 
 // Klasy fake'ów żyją w packages/server (współdzielone z trybem
@@ -53,6 +55,29 @@ export async function fakeGeneration(): Promise<FakeGeneration> {
     root,
     dispose: () => rm(root, { recursive: true, force: true }),
   };
+}
+
+/**
+ * Fake providera, który przy każdym wywołaniu metody zwracającej obietnicę zapisuje
+ * zdarzenie kosztu — jak prawdziwy adapter, ale bez HTTP. Metoda jest wołana na
+ * oryginale (`Reflect.apply(fn, target, args)`): fake'i mają pola `#private`, a
+ * `this` równe proxy rzuciłoby TypeError. Wartości niebędące obietnicą (nazwa,
+ * wersja promptu) nie są wywołaniami płatnej usługi i niczego nie zapisują.
+ */
+export function recordingProvider<T extends object>(provider: T, usage: UsageRecorder, feature: UsageFeature): T {
+  return new Proxy(provider, {
+    get(target, property) {
+      const value: unknown = Reflect.get(target, property, target);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        const result: unknown = Reflect.apply(value, target, args);
+        if (result !== null && typeof result === "object" && typeof (result as { then?: unknown }).then === "function") {
+          usage.record({ feature, provider: "fake", outcome: "ok" });
+        }
+        return result;
+      };
+    },
+  });
 }
 
 /** Znacznik "obcego" właściciela lease symulowany w testach awarii workera. */

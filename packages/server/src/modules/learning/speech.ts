@@ -30,6 +30,7 @@ import type {
   PronunciationResult,
   SpeechEvidence,
 } from "../../ports/ai";
+import { withUsageScope } from "../../ports/usage";
 import { normalizeAudioInput } from "../../providers/audio/normalize";
 import { finalizeAttempt, startAttempt } from "./attempts";
 
@@ -305,8 +306,16 @@ export async function submitSpeechAttempt(
     return reserved.dto;
   }
 
-  const analyze: AudioInput = { ...normalized, locale: reserved.targetLocale };
-  const evidence = services.speech ? await analyzeSpeech(services, analyze, reserved.key, signal) : unavailableEvidence();
+  const analyze: AudioInput = {
+    ...normalized,
+    locale: reserved.targetLocale,
+    durationMs: Math.round(normalized.durationSeconds * 1000),
+  };
+  // STT i ocena wymowy to koszt sesji dziecka (spec kosztów §4.1); zakres tylko wokół analizy.
+  const scope = { sessionId: reserved.session.id, childId: reserved.task.childId };
+  const evidence = services.speech
+    ? await withUsageScope(scope, () => analyzeSpeech(services, analyze, reserved.key, signal))
+    : unavailableEvidence();
   const grade = assessSpeechEvidence(evidence, reserved.key, {
     ...reserved.frozen,
     policy: reserved.policy,

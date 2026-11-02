@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createOpenAiCompatibleSessionActivityReviewer } from "./session-activity";
 import type { SessionActivityReviewTask } from "../../ports/ai";
+import type { UsageRecorder } from "../../ports/usage";
+import { createTestRecorder, createThrowingRecorder } from "../usage/test-recorder";
 
 describe("safe session activity provider diagnostics", () => {
   it.each([
@@ -181,5 +183,104 @@ describe("createOpenAiCompatibleSessionActivityReviewer", () => {
     const reviewer = createOpenAiCompatibleSessionActivityReviewer({ baseUrl: "https://g.example/v1", apiKey: "t", model: "m" });
     expect(typeof reviewer.promptVersion).toBe("string");
     expect(reviewer.promptVersion.length).toBeGreaterThan(0);
+  });
+});
+
+describe("createOpenAiCompatibleSessionActivityReviewer — zapis kosztów (usage)", () => {
+  const COST = { prompt_tokens: 50, completion_tokens: 20, cost: 0.0012 };
+  const make = (fetchImpl: (url: string, init: CapturedRequest["init"]) => Promise<Response>, usage?: UsageRecorder) =>
+    createOpenAiCompatibleSessionActivityReviewer({
+      baseUrl: "https://openrouter.ai/api/v1", apiKey: "secret-token", model: "google/gemini-3.8-flash", fetchImpl,
+      ...(usage ? { usage } : {}),
+    });
+  const review = (reviewer: ReturnType<typeof make>, signal: AbortSignal = AbortSignal.timeout(1000)) => reviewer.review({ tasks }, signal);
+  const withUsage = (content: string) => new Response(JSON.stringify({ choices: [{ message: { content } }], usage: COST }), { status: 200 });
+
+  it("records paid response even when content is not JSON", async () => {
+    const rec = createTestRecorder();
+    await expect(review(make(async () => withUsage("not json"), rec))).rejects.toMatchObject({ failureKind: "invalid_json" });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toEqual({
+      feature: "session_activity_review", operation: "review", provider: "openrouter", model: "google/gemini-3.8-flash",
+      outcome: "ok", httpStatus: 200, inputTokens: 50, outputTokens: 20, providerCostUsd: 0.0012,
+    });
+  });
+
+  it("records paid response even when content is missing", async () => {
+    const rec = createTestRecorder();
+    const fetchImpl = async () => new Response(JSON.stringify({ choices: [], usage: COST }), { status: 200 });
+    await expect(review(make(fetchImpl, rec))).rejects.toMatchObject({ failureKind: "missing_content" });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "ok", providerCostUsd: 0.0012 });
+  });
+
+  it("records ok for a valid verdict", async () => {
+    const rec = createTestRecorder();
+    await review(make(async () => withUsage(VALID_JSON), rec));
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "ok", providerCostUsd: 0.0012 });
+  });
+
+  it("records one failed event with httpStatus for HTTP 500 and keeps the error", async () => {
+    const rec = createTestRecorder();
+    await expect(review(make(async () => new Response("private-child-answer", { status: 500 }), rec)))
+      .rejects.toMatchObject({ failureKind: "http_error", httpStatus: 500 });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toEqual({
+      feature: "session_activity_review", operation: "review", provider: "openrouter", model: "google/gemini-3.8-flash",
+      outcome: "failed", httpStatus: 500,
+    });
+  });
+
+  it("records one failed event with httpStatus 200 when the body is unreadable", async () => {
+    const rec = createTestRecorder();
+    await expect(review(make(async () => new Response("<html>", { status: 200 }), rec)))
+      .rejects.toMatchObject({ failureKind: "invalid_response" });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 200 });
+    expect(rec.events[0]).not.toHaveProperty("providerCostUsd");
+  });
+
+  it("records one failed event when the abort happens while reading the body", async () => {
+    const rec = createTestRecorder();
+    const controller = new AbortController();
+    const abortError = new DOMException("aborted", "AbortError");
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => { controller.abort(); throw abortError; },
+    }) as unknown as Response;
+    await expect(review(make(fetchImpl, rec), controller.signal)).rejects.toBe(abortError);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed" });
+  });
+
+  it("records one failed event without httpStatus on abort before the response and rethrows the original", async () => {
+    const rec = createTestRecorder();
+    const abortError = new DOMException("aborted", "AbortError");
+    await expect(review(make(async () => { throw abortError; }, rec), AbortSignal.abort())).rejects.toBe(abortError);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed" });
+    expect(rec.events[0]).not.toHaveProperty("httpStatus");
+  });
+
+  it("records one failed event on a network error", async () => {
+    const rec = createTestRecorder();
+    await expect(review(make(async () => { throw new TypeError("fetch failed"); }, rec))).rejects.toThrow("fetch failed");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).not.toHaveProperty("httpStatus");
+  });
+
+  it("throwing recorder does not change adapter result", async () => {
+    const plain = await review(make(async () => withUsage(VALID_JSON)));
+    expect(await review(make(async () => withUsage(VALID_JSON), createThrowingRecorder()))).toEqual(plain);
+    await expect(review(make(async () => new Response("x", { status: 500 }), createThrowingRecorder())))
+      .rejects.toMatchObject({ failureKind: "http_error", httpStatus: 500 });
+  });
+
+  it("without usage the request is made and nothing changes", async () => {
+    const { fetchImpl, calls } = capturingFetch(() => chatResponse(VALID_JSON));
+    await expect(review(make(fetchImpl))).resolves.toMatchObject({ reason: expect.any(String) });
+    expect(calls).toHaveLength(1);
   });
 });

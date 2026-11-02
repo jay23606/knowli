@@ -1,0 +1,53 @@
+/* Sekcja Koszty na Mantine. Tekst pomocniczy: kontrast ≥ 4,5:1 w obu schematach. */
+
+.pp-costs-muted {
+  color: #565a70;
+}
+
+[data-mantine-color-scheme="dark"] .pp-costs-muted {
+  color: #a8abb9;
+}
+
+.pp-costs-month {
+  max-width: 420px;
+}
+
+/* Treść poprzedniego miesiąca przygaszona, dopóki nie dojdzie wybrany. */
+.pp-costs-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-md);
+  transition: opacity 120ms ease;
+}
+
+.pp-costs-content[data-switching] {
+  opacity: 0.55;
+}
+
+.pp-costs-tab {
+  min-height: 44px;
+}
+
+.pp-costs-table th,
+.pp-costs-table td {
+  vertical-align: top;
+}
+
+.pp-costs-num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.pp-costs-unknown {
+  display: block;
+}
+
+.pp-costs-name {
+  overflow-wrap: anywhere;
+}
+
+.pp-costs-link {
+  color: inherit;
+  text-decoration: underline;
+}

@@ -117,7 +117,7 @@ export async function readLessonAudioStates(
 }
 
 /** Blokada wersji jak przy edycji szkicu; opublikowana wersja jest niezmienna. */
-async function lockDraft(tx: Tx, versionId: string): Promise<{ id: string; state: string }> {
+async function lockDraft(tx: Tx, versionId: string): Promise<{ id: string; state: string; deckId: string }> {
   const version = await lockVersion(tx, versionId);
   if (version.state === "published") {
     throw new AppError("immutable");
@@ -136,8 +136,9 @@ function assertMediaConfigured(services: Services): void {
  * z bieżącej konfiguracji, więc nowe ujęcie odpowiada dokładnie temu samemu
  * tekstowi i instrukcji. Trwająca generacja → jej `assetId` bez nowego wiersza.
  * `durationMs` dopisuje worker po nagraniu, więc nie przechodzi na nowe ujęcie.
+ * Nowy run niesie talię, dla której rodzic nagrywa ponownie (spec kosztów §3.2).
  */
-async function enqueueNextGenerationTx(tx: Tx, fingerprint: string): Promise<string> {
+async function enqueueNextGenerationTx(tx: Tx, fingerprint: string, originDeckId: string | null): Promise<string> {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${fingerprint}))`);
   const generations = await tx
     .select()
@@ -171,6 +172,7 @@ async function enqueueNextGenerationTx(tx: Tx, fingerprint: string): Promise<str
     dedupeKey: `asset:${id}`,
     state: "queued",
     input: metadata,
+    originDeckId,
   });
   return id;
 }
@@ -197,7 +199,7 @@ const StoryAudioInputSchema = z.object({
  * nieudane zasoby wymagające decyzji rodzica (odpowiedzi, ilustracje) zostają;
  * nieudane nagrania pytań i kart uzgodnienie i tak zleca ponownie (nie są decyzją rodzica).
  */
-function reconcileAllDraftAssetsTx(tx: Tx, services: Services, version: { id: string; state: string }): Promise<void> {
+function reconcileAllDraftAssetsTx(tx: Tx, services: Services, version: { id: string; state: string; deckId: string }): Promise<void> {
   return reconcileDraftAssetsTx(tx, services, version, { keepFailed: true });
 }
 
@@ -214,9 +216,9 @@ function reconcileAllDraftAssetsTx(tx: Tx, services: Services, version: { id: st
 async function reconcileThenNextTx(
   tx: Tx,
   services: Services,
-  version: { id: string; state: string },
+  version: { id: string; state: string; deckId: string },
   readRow: () => Promise<{ expectedFingerprint: string; assetId: string | null } | undefined>,
-  reconcile: (tx: Tx, services: Services, version: { id: string; state: string }) => Promise<void> = reconcileAllDraftAssetsTx,
+  reconcile: (tx: Tx, services: Services, version: { id: string; state: string; deckId: string }) => Promise<void> = reconcileAllDraftAssetsTx,
 ): Promise<{ assetId: string; rebound: boolean }> {
   const before = await readRow();
   if (!before) {
@@ -230,7 +232,7 @@ async function reconcileThenNextTx(
   if (after.expectedFingerprint !== before.expectedFingerprint && after.assetId !== null) {
     return { assetId: after.assetId, rebound: true };
   }
-  return { assetId: await enqueueNextGenerationTx(tx, after.expectedFingerprint), rebound: false };
+  return { assetId: await enqueueNextGenerationTx(tx, after.expectedFingerprint, version.deckId), rebound: false };
 }
 
 /**

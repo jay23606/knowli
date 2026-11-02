@@ -253,6 +253,13 @@
       "when": 1793990000000,
       "tag": "0035_lesson_story_tasks",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794090000000,
+      "tag": "0036_provider_usage_events",
+      "breakpoints": true
     }
   ]
 }

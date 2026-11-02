@@ -137,10 +137,10 @@ type AnyServices = ReturnType<typeof createServices>;
 /** STT, które zwraca kolejne zaprogramowane wyniki i liczy wywołania. */
 class ScriptedStt implements SttProvider {
   readonly name = "scripted-stt";
-  calls: { locale: string; bytes: number }[] = [];
+  calls: { locale: string; bytes: number; durationMs?: number }[] = [];
   constructor(private readonly results: TranscriptionResult[]) {}
-  async transcribe(audio: { bytes: Uint8Array; locale: string }): Promise<TranscriptionResult> {
-    this.calls.push({ locale: audio.locale, bytes: audio.bytes.byteLength });
+  async transcribe(audio: { bytes: Uint8Array; locale: string; durationMs?: number }): Promise<TranscriptionResult> {
+    this.calls.push({ locale: audio.locale, bytes: audio.bytes.byteLength, durationMs: audio.durationMs });
     return this.results.shift() ?? { status: "ok", text: DICTATED, confidence: 0.97 };
   }
 }
@@ -272,7 +272,7 @@ describe("dyktowanie odpowiedzi otwartej (Etap 3)", () => {
     const result = await dictateLessonAnswer(services, { taskId: task.taskId }, wav(6));
 
     expect(result).toEqual({ status: "heard", text: DICTATED });
-    expect(stt.calls).toEqual([{ locale: "pl-PL", bytes: wav(6).bytes.byteLength }]);
+    expect(stt.calls).toEqual([{ locale: "pl-PL", bytes: wav(6).bytes.byteLength, durationMs: 6000 }]);
     expect(await countRows("attempts", task.taskId)).toBe(0);
     const context = await sessionContextOf(task.taskId);
     expect(context.dictationCalls).toBe(1);

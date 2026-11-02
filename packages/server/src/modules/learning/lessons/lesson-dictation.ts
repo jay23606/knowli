@@ -11,6 +11,7 @@ import {
   type DictationTranscription,
 } from "../../../domain/lessons/dictation";
 import type { AudioInput } from "../../../ports/ai";
+import { withUsageScope } from "../../../ports/usage";
 import { normalizeAudioInput } from "../../../providers/audio/normalize";
 import { lockTaskWithSession } from "../events";
 import { SPEECH_ANALYSIS_TIMEOUT_MS } from "../speech";
@@ -77,15 +78,21 @@ export async function dictateLessonAnswer(
     await tx.update(learningSessions)
       .set({ context: { ...session.context, dictationCalls: state.dictationCalls + 1 } })
       .where(eq(learningSessions.id, session.id));
-    return { kind: "transcribe" as const, sessionId: session.id, locale: subject.spokenAnswers.locale };
+    return { kind: "transcribe" as const, sessionId: session.id, childId: session.childId, locale: subject.spokenAnswers.locale };
   });
   if (reserved.kind === "unavailable") return { status: "unavailable" };
 
   // Poza transakcją: STT z deadlinem i sygnałem przerwania żądania; awaria = brak tekstu.
   const deps = services.lessonSpeech!;
   const deadline = AbortSignal.any([AbortSignal.timeout(deps.timeoutMs ?? SPEECH_ANALYSIS_TIMEOUT_MS), ...(signal ? [signal] : [])]);
-  const transcription: DictationTranscription = await deps.stt
-    .transcribe({ bytes: normalized.bytes, mimeType: normalized.mimeType, locale: reserved.locale }, deadline)
+  // Koszt dyktowania należy do sesji i dziecka (spec kosztów §4.1); zakres tylko wokół STT.
+  const transcription: DictationTranscription = await withUsageScope({ sessionId: reserved.sessionId, childId: reserved.childId }, () => deps.stt
+    .transcribe({
+      bytes: normalized.bytes,
+      mimeType: normalized.mimeType,
+      locale: reserved.locale,
+      durationMs: Math.round(normalized.durationSeconds * 1000),
+    }, deadline))
     .then(
       (result) => (deadline.aborted ? { status: "failed" as const, text: null, confidence: null } : result),
       (error: unknown) => {

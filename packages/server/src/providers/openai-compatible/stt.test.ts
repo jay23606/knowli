@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AppError } from "../../errors";
+import { createTestRecorder, createThrowingRecorder } from "../usage/test-recorder";
 import { createOpenAiCompatibleSttProvider, stripAudioEventTags } from "./stt";
 
 type Init = { method: "POST"; headers: Record<string, string>; body: string; signal?: AbortSignal };
@@ -113,5 +114,105 @@ describe("stripAudioEventTags", () => {
   it("usuwa znaczniki zdarzeń i zostawia wypowiedź", () => {
     expect(stripAudioEventTags("[szum] Równik to [śmiech] najdłuższy równoleżnik")).toBe("Równik to najdłuższy równoleżnik");
     expect(stripAudioEventTags("[szum]")).toBe("");
+  });
+});
+
+describe("createOpenAiCompatibleSttProvider — zapis kosztów", () => {
+  const options = { baseUrl: "https://openrouter.ai/api/v1", apiKey: "secret", model: "elevenlabs/scribe-v2" };
+  const timed = { ...audio, durationMs: 4200 };
+
+  it("200: jeden event ok z audioMs z durationMs i kosztem z usage", async () => {
+    const { fetchImpl } = recordingFetch([jsonResponse({ text: "Poziomica.", usage: { seconds: 4.2, cost: 0.0000636 } })]);
+    const rec = createTestRecorder();
+    await createOpenAiCompatibleSttProvider({ ...options, fetchImpl, usage: rec }).transcribe(timed);
+    expect(rec.events).toEqual([
+      { feature: "lesson_stt", provider: "openrouter", model: "elevenlabs/scribe-v2", outcome: "ok", httpStatus: 200, audioMs: 4200, providerCostUsd: 0.0000636 },
+    ]);
+  });
+
+  it("400 przy verbose_json, potem 200 przy json: dwa eventy (failed 400, ok z kosztem)", async () => {
+    const { calls, fetchImpl } = recordingFetch([jsonResponse({}, 400), jsonResponse({ text: "Dobrze.", usage: { seconds: 4.2, cost: 0.00005 } })]);
+    const rec = createTestRecorder();
+    const result = await createOpenAiCompatibleSttProvider({ ...options, fetchImpl, usage: rec }).transcribe(timed);
+    expect(result.status).toBe("ok");
+    expect(calls).toHaveLength(2);
+    expect(rec.events).toHaveLength(2);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 400, audioMs: 4200 });
+    expect(rec.events[1]).toMatchObject({ outcome: "ok", httpStatus: 200, audioMs: 4200, providerCostUsd: 0.00005 });
+  });
+
+  it("400, potem awaria transportu drugiego żądania: dwa eventy failed", async () => {
+    let call = 0;
+    const fetchImpl = async () => {
+      call += 1;
+      if (call === 1) return jsonResponse({}, 400);
+      throw new Error("network down");
+    };
+    const rec = createTestRecorder();
+    const result = await createOpenAiCompatibleSttProvider({ ...options, fetchImpl, usage: rec }).transcribe(timed);
+    expect(result.status).toBe("failed");
+    expect(rec.events).toHaveLength(2);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 400 });
+    expect(rec.events[1]).toMatchObject({ outcome: "failed" });
+    expect(rec.events[1]!.httpStatus).toBeUndefined();
+  });
+
+  it("401 i 403: jeden event failed, AppError bez zmian", async () => {
+    for (const status of [401, 403]) {
+      const { fetchImpl } = recordingFetch([jsonResponse({}, status)]);
+      const rec = createTestRecorder();
+      await expect(createOpenAiCompatibleSttProvider({ ...options, fetchImpl, usage: rec }).transcribe(timed)).rejects.toBeInstanceOf(AppError);
+      expect(rec.events).toHaveLength(1);
+      expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: status });
+    }
+  });
+
+  it("HTTP 500: jeden event failed, wynik failed", async () => {
+    const { fetchImpl } = recordingFetch([jsonResponse({}, 500)]);
+    const rec = createTestRecorder();
+    const result = await createOpenAiCompatibleSttProvider({ ...options, fetchImpl, usage: rec }).transcribe(timed);
+    expect(result.status).toBe("failed");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 500 });
+  });
+
+  it("abort: jeden event failed bez kodu HTTP", async () => {
+    const fetchImpl = async () => { throw new DOMException("aborted", "AbortError"); };
+    const rec = createTestRecorder();
+    const result = await createOpenAiCompatibleSttProvider({ ...options, fetchImpl, usage: rec }).transcribe(timed);
+    expect(result.status).toBe("failed");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed" });
+    expect(rec.events[0]!.httpStatus).toBeUndefined();
+  });
+
+  it("nieczytelne ciało 2xx: jeden event failed z kodem 200", async () => {
+    const { fetchImpl } = recordingFetch([new Response("not json", { status: 200 })]);
+    const rec = createTestRecorder();
+    const result = await createOpenAiCompatibleSttProvider({ ...options, fetchImpl, usage: rec }).transcribe(timed);
+    expect(result.status).toBe("failed");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 200 });
+  });
+
+  it("bez durationMs i bez nagłówka WAV: event bez audioMs", async () => {
+    const { fetchImpl } = recordingFetch([jsonResponse({ text: "ok" })]);
+    const rec = createTestRecorder();
+    await createOpenAiCompatibleSttProvider({ ...options, fetchImpl, usage: rec }).transcribe(audio);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]!.audioMs).toBeUndefined();
+  });
+
+  it("żądanie nie zmienia się przez zapis kosztów (bez pola usage)", async () => {
+    const { calls, fetchImpl } = recordingFetch([jsonResponse({ text: "ok" })]);
+    await createOpenAiCompatibleSttProvider({ ...options, fetchImpl, usage: createTestRecorder() }).transcribe(timed);
+    expect(JSON.parse(calls[0]!.init.body)).not.toHaveProperty("usage");
+  });
+
+  it("recorder, który rzuca, nie zmienia wyniku; bez recordera działa jak dotąd", async () => {
+    const first = recordingFetch([jsonResponse({ text: "ok" })]);
+    await expect(createOpenAiCompatibleSttProvider({ ...options, fetchImpl: first.fetchImpl, usage: createThrowingRecorder() }).transcribe(timed)).resolves.toMatchObject({ status: "ok" });
+    const second = recordingFetch([jsonResponse({ text: "ok" })]);
+    await expect(createOpenAiCompatibleSttProvider({ ...options, fetchImpl: second.fetchImpl }).transcribe(timed)).resolves.toMatchObject({ status: "ok" });
   });
 });

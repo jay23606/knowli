@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { buildWorkerServices } from "./composition";
+import { shutdownWorker } from "./shutdown";
 import { countForeignPendingTts, prepareUiAudio, withConfigDefaults } from "@learning/server";
 import { createWorkerLoop, workerLoopSettingsFromEnv } from "./loop";
 import { processDueWork } from "./tasks";
@@ -7,7 +8,7 @@ import { processDueWork } from "./tasks";
 const HEALTH_PORT = Number(process.env.WORKER_HEALTH_PORT ?? 9301);
 
 async function main(): Promise<void> {
-  const { services, pool } = buildWorkerServices();
+  const { services, pool, usage } = buildWorkerServices();
   await prepareUiAudio(services);
   // Zadania TTS innego providera/modelu czekają bez zmiany stanu (design szkoły §11.7).
   const foreignTts = await countForeignPendingTts(services);
@@ -42,9 +43,8 @@ async function main(): Promise<void> {
   const shutdown = (signal: string) => {
     console.log(`[worker] ${signal}: abortuję bieżącą pracę i zamykam`);
     health.close();
-    void loop.stop().finally(() => {
-      pool.end().finally(() => process.exit(0));
-    });
+    // Kolejność: pętla → zaległe koszty → pula (spec llm-cost-tracking §4.3).
+    void shutdownWorker({ loop, usage, pool }).finally(() => process.exit(0));
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));

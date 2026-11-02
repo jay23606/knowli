@@ -292,10 +292,17 @@ function requiredAssetsForRevision(
 }
 
 
+/**
+ * Gotowy albo trwający zasób fingerprintu, w przeciwnym razie nowe zlecenie.
+ * `originDeckId` — talia szkicu, którego uzgodnienie zleca zasób (spec kosztów
+ * §3.2): trafia tylko do nowego runu; współdzielony zasób zostaje przypisany
+ * talii, która go zleciła pierwsza.
+ */
 async function findOrCreateAsset(
   tx: Tx,
   settings: MediaSettings,
   req: RequiredAsset,
+  originDeckId: string | null,
 ): Promise<{ id: string; state: "pending" | "ready" }> {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${req.fingerprint}))`);
 
@@ -347,8 +354,14 @@ async function findOrCreateAsset(
     dedupeKey: `asset:${id}`,
     state: "queued",
     input: req.metadata,
+    originDeckId,
   });
   return { id, state: "pending" };
+}
+
+async function deckIdOfVersion(tx: Tx, versionId: string): Promise<string | null> {
+  const row = (await tx.select({ deckId: deckVersions.deckId }).from(deckVersions).where(eq(deckVersions.id, versionId)))[0];
+  return row?.deckId ?? null;
 }
 
 /**
@@ -359,7 +372,8 @@ async function findOrCreateAsset(
 export async function reconcileDraftAssetsTx(
   tx: Tx,
   services: Services,
-  version: { id: string; state: string },
+  /** `deckId` z wiersza wersji, gdy wywołujący go ma; inaczej odczyt raz na uzgodnienie. */
+  version: { id: string; state: string; deckId?: string },
   options: {
     /**
      * Publikacja nie ponawia nieudanych zasobów: kosztowna regeneracja wymaga
@@ -375,8 +389,10 @@ export async function reconcileDraftAssetsTx(
   if (version.state === "published") {
     throw new AppError("immutable");
   }
-  await reconcileLessonCardAssetsTx(tx, services, settings, version.id);
-  await reconcileLessonStoryAssetTx(tx, services, version);
+  // Talia zlecająca nowe runy mediów (spec kosztów §3.2): jedna dla całego uzgodnienia.
+  const originDeckId = version.deckId ?? await deckIdOfVersion(tx, version.id);
+  await reconcileLessonCardAssetsTx(tx, services, settings, version.id, originDeckId);
+  await reconcileLessonStoryAssetTx(tx, services, { id: version.id, state: version.state, deckId: originDeckId });
   const revisions = await tx
     .select({ id: itemRevisions.id, payload: itemRevisions.payload })
     .from(itemRevisions)
@@ -471,7 +487,7 @@ export async function reconcileDraftAssetsTx(
           }
         }
       }
-      const asset = await findOrCreateAsset(tx, settings, req);
+      const asset = await findOrCreateAsset(tx, settings, req, originDeckId);
       const nextState = asset.state === "ready" ? "approved" : "pending";
       if (existing) {
         await tx
@@ -507,6 +523,7 @@ async function assetToBind(
   settings: MediaSettings,
   current: { expectedFingerprint: string; assetId: string | null } | undefined,
   required: RequiredAsset,
+  originDeckId: string | null,
 ): Promise<string | null> {
   if (current && current.expectedFingerprint === required.fingerprint && current.assetId !== null) {
     const asset = (
@@ -514,7 +531,7 @@ async function assetToBind(
     )[0];
     if (asset && asset.fingerprint === required.fingerprint && asset.state !== "failed") return null;
   }
-  return (await findOrCreateAsset(tx, settings, required)).id;
+  return (await findOrCreateAsset(tx, settings, required, originDeckId)).id;
 }
 
 /**
@@ -528,6 +545,7 @@ async function reconcileLessonCardAssetsTx(
   services: Services,
   settings: MediaSettings,
   versionId: string,
+  originDeckId: string | null,
 ): Promise<void> {
   const row = (
     await tx.select({ lessonContext: deckVersions.lessonContext }).from(deckVersions).where(eq(deckVersions.id, versionId))
@@ -571,7 +589,7 @@ async function reconcileLessonCardAssetsTx(
   }
   for (const card of required) {
     const current = existingByKey.get(cardKey(card.objectiveId, card.cardIndex));
-    const assetId = await assetToBind(tx, settings, current, card.asset);
+    const assetId = await assetToBind(tx, settings, current, card.asset, originDeckId);
     if (assetId === null) continue;
     if (current) {
       await tx.update(lessonCardAssets)
@@ -599,12 +617,13 @@ async function reconcileLessonCardAssetsTx(
  * (gotowy po fingerprincie albo nowe zlecenie), zbędne znika. Nieudane nagranie
  * zlecamy ponownie — nie jest decyzją rodzica i nie blokuje publikacji, więc
  * `keepFailed` go nie dotyczy. Bez ustawień mediów nic nie robi; wersja
- * opublikowana jest niezmienna.
+ * opublikowana jest niezmienna. Bez `version.deckId` talię zlecającą nagranie
+ * (spec kosztów §3.2) bierze z tego samego odczytu wersji co kontekst lekcji.
  */
 export async function reconcileLessonStoryAssetTx(
   tx: Tx,
   services: Services,
-  version: { id: string; state: string },
+  version: { id: string; state: string; deckId?: string | null },
 ): Promise<void> {
   const settings = services.media;
   if (!settings) return;
@@ -612,7 +631,7 @@ export async function reconcileLessonStoryAssetTx(
     throw new AppError("immutable");
   }
   const row = (
-    await tx.select({ lessonContext: deckVersions.lessonContext }).from(deckVersions).where(eq(deckVersions.id, version.id))
+    await tx.select({ lessonContext: deckVersions.lessonContext, deckId: deckVersions.deckId }).from(deckVersions).where(eq(deckVersions.id, version.id))
   )[0];
   const context = row?.lessonContext as { subjectId?: unknown; story?: { sentences?: unknown } | null } | null | undefined;
   const existing = (await tx.select().from(lessonStoryAssets).where(eq(lessonStoryAssets.deckVersionId, version.id)))[0];
@@ -631,7 +650,7 @@ export async function reconcileLessonStoryAssetTx(
   const required = requiredAssetForLessonStory(story, subject, settings);
   if (!required) return dropRow();
 
-  const assetId = await assetToBind(tx, settings, existing, required);
+  const assetId = await assetToBind(tx, settings, existing, required, version.deckId ?? row?.deckId ?? null);
   if (assetId === null) return;
   if (existing) {
     await tx.update(lessonStoryAssets)
@@ -821,6 +840,8 @@ export async function regenerateRevisionAsset(
       dedupeKey: `asset:${assetId}`,
       state: "queued",
       input: req.metadata,
+      // regeneracja rodzica: koszt należy do talii zablokowanej wersji (spec kosztów §3.2)
+      originDeckId: version.deckId,
     });
     await tx
       .insert(revisionAssets)

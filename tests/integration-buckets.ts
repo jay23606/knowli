@@ -108,6 +108,8 @@ export const INTEGRATION_BUCKETS: readonly (readonly string[])[] = [
     picture-vocabulary.test.ts
     progress-rebuild.test.ts
     pronunciation-settings.test.ts
+    provider-usage.test.ts
+    provider-usage-scope.test.ts
     recording-mode-migration.test.ts
     revisions.test.ts
     session-activity-migration.test.ts

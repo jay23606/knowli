@@ -394,6 +394,7 @@ export default function ChildEditor({
         <Stack gap="xs">
           <Text size="sm">{messages.children.removeConfirm}</Text>
           <Text size="sm">{messages.children.removeKeepsLessonThemes}</Text>
+          <Text size="sm">{messages.children.removeKeepsCostTotals}</Text>
         </Stack>
       ),
       labels: { confirm: messages.children.remove, cancel: messages.children.cancel },

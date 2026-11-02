@@ -486,6 +486,10 @@ export const generationRuns = app.table(
     // (`markRunWithoutSourceItems`). NULL — run bez walidacji per element (opis,
     // lekcje, media) albo niezakończony. Lekcje liczą odrzucenia w `lesson_context`.
     rejectedCount: integer("rejected_count"),
+    // Talia, której szkic zlecił zasób runu mediów (spec 2026-11-02 §3.2): tylko
+    // informacyjna dla raportu kosztów — NULL dla runów deck/lesson, głosu UI
+    // i runów zleconych przed migracją 0036. Nie wpływa na dedupe ani lease.
+    originDeckId: uuid("origin_deck_id").references((): AnyPgColumn => decks.id, { onDelete: "set null" }),
   },
   (t) => [
     check("generation_runs_kind_allowed", sql`${t.kind} in ('deck', 'lesson', 'tts', 'illustration')`),
@@ -573,6 +577,64 @@ export const learningSessions = app.table(
     // Worker czyści przeterminowane raporty w ograniczonych partiach po terminie.
     index("learning_sessions_activity_expiry_idx").on(t.activityReportExpiresAt)
       .where(sql`${t.activityReportExpiresAt} is not null`),
+  ],
+);
+
+/**
+ * Dziennik płatnych wywołań usług AI (spec 2026-11-02-llm-cost-tracking §3.1):
+ * jeden wiersz to jedno wywołanie HTTP łącznie z ponowieniami. Bez treści
+ * (promptów, odpowiedzi, transkrypcji), imion i wieku. Klucze obce zerują się
+ * przy usunięciu celu, więc historia kosztów przeżywa profil, sesję i run.
+ */
+export const providerUsageEvents = app.table(
+  "provider_usage_events",
+  {
+    id: uuid("id").primaryKey(),
+    occurredAt: timestamps("occurred_at").notNull(),
+    feature: text("feature").notNull(),
+    operation: text("operation"),
+    provider: text("provider").notNull(),
+    model: text("model"),
+    outcome: text("outcome").notNull(),
+    httpStatus: smallint("http_status"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    characters: integer("characters"),
+    audioMs: integer("audio_ms"),
+    images: integer("images"),
+    costUsd: numeric("cost_usd", { precision: 12, scale: 6 }),
+    costSource: text("cost_source").notNull(),
+    priceRef: text("price_ref"),
+    scopeKind: text("scope_kind").notNull(),
+    generationRunId: uuid("generation_run_id").references((): AnyPgColumn => generationRuns.id, { onDelete: "set null" }),
+    deckId: uuid("deck_id").references((): AnyPgColumn => decks.id, { onDelete: "set null" }),
+    sessionId: uuid("session_id").references((): AnyPgColumn => learningSessions.id, { onDelete: "set null" }),
+    childId: uuid("child_id").references((): AnyPgColumn => childProfiles.id, { onDelete: "set null" }),
+  },
+  (t) => [
+    check(
+      "provider_usage_events_feature_allowed",
+      sql`${t.feature} in ('deck_generation', 'lesson_generation', 'tts', 'illustration', 'deck_cover', 'answer_grading', 'session_activity_review', 'lesson_stt', 'speech_stt', 'pronunciation')`,
+    ),
+    check("provider_usage_events_outcome_allowed", sql`${t.outcome} in ('ok', 'failed')`),
+    check(
+      "provider_usage_events_cost_source_allowed",
+      sql`${t.costSource} in ('provider', 'price_table', 'not_billed', 'unknown')`,
+    ),
+    check("provider_usage_events_scope_kind_allowed", sql`${t.scopeKind} in ('run', 'session', 'deck', 'none')`),
+    check(
+      "provider_usage_events_units_nonnegative",
+      sql`(${t.inputTokens} is null or ${t.inputTokens} >= 0) and (${t.outputTokens} is null or ${t.outputTokens} >= 0) and (${t.characters} is null or ${t.characters} >= 0) and (${t.audioMs} is null or ${t.audioMs} >= 0) and (${t.images} is null or ${t.images} >= 0)`,
+    ),
+    check("provider_usage_events_cost_nonnegative", sql`${t.costUsd} is null or ${t.costUsd} >= 0`),
+    check("provider_usage_events_cost_unknown_null", sql`(${t.costSource} = 'unknown') = (${t.costUsd} is null)`),
+    check("provider_usage_events_not_billed_zero", sql`${t.costSource} <> 'not_billed' or ${t.costUsd} = 0`),
+    check("provider_usage_events_price_ref_shape", sql`(${t.priceRef} is not null) = (${t.costSource} = 'price_table')`),
+    index("provider_usage_events_occurred_at_idx").on(t.occurredAt),
+    index("provider_usage_events_deck_idx").on(t.deckId),
+    index("provider_usage_events_run_idx").on(t.generationRunId),
+    index("provider_usage_events_session_idx").on(t.sessionId),
+    index("provider_usage_events_child_time_idx").on(t.childId, t.occurredAt),
   ],
 );
 

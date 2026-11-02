@@ -56,7 +56,7 @@ test("telefon: dolny pasek sekcji przy dolnej krawędzi i menu z akcjami", async
     const menu = page.getByTestId("parent-menu");
     expect((await menu.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     await menu.click();
-    for (const id of ["to-learning", "parent-logout"]) {
+    for (const id of ["to-costs", "to-learning", "parent-logout"]) {
       await expect(page.getByTestId(id)).toBeVisible();
       expect((await page.getByTestId(id).boundingBox())!.height).toBeGreaterThanOrEqual(44);
     }
@@ -71,13 +71,22 @@ test("od 600 px: zakładki pod nagłówkiem, akcje w nagłówku", async ({ page 
     await openSignedInPanel(page);
     await expectNoHorizontalOverflow(page);
     await expect(page.getByTestId("parent-menu")).toHaveCount(0);
-    for (const id of [...TABS, "to-learning", "parent-logout", "color-scheme-menu"]) {
+    for (const id of [...TABS, "to-costs", "to-learning", "parent-logout", "color-scheme-menu"]) {
       const box = await page.getByTestId(id).boundingBox();
       expect(box, `${id} @${viewport.width}`).not.toBeNull();
       expect(box!.height, `${id} @${viewport.width}`).toBeGreaterThanOrEqual(44);
       expect(box!.y, `${id} @${viewport.width}`).toBeLessThan(140);
       expect(box!.x + box!.width, `${id} @${viewport.width}`).toBeLessThanOrEqual(viewport.width + 0.5);
     }
+    // akcje nagłówka nie nachodzą na siebie ani na markę (Koszty, Do nauki, Wygląd, Wyloguj)
+    const actions = [];
+    for (const id of ["to-costs", "to-learning", "color-scheme-menu", "parent-logout"]) actions.push((await page.getByTestId(id).boundingBox())!);
+    actions.sort((left, right) => left.x - right.x);
+    for (let index = 1; index < actions.length; index += 1) {
+      expect(actions[index]!.x, `akcje nagłówka @${viewport.width}`).toBeGreaterThanOrEqual(actions[index - 1]!.x + actions[index - 1]!.width - 0.5);
+    }
+    const brand = (await page.locator(".pp-shell-logo").boundingBox())!;
+    expect(actions[0]!.x, `marka @${viewport.width}`).toBeGreaterThanOrEqual(brand.x + brand.width - 0.5);
     // pasek zakładek mieści wszystkie zakładki: bez przewijania w poziomie (pasek przewijania
     // w pasku o stałej wysokości dawałby też przewijanie w pionie)
     const tabs = await page.locator("nav.pp-shell-tabs").evaluate((nav) => ({
@@ -176,6 +185,10 @@ test("szerokie fonty CI: pięć zakładek pod nagłówkiem z zapasem ≥ 80 px, 
     expect(tabs.scrollWidth, `pasek ${scrollbar} px`).toBeLessThanOrEqual(tabs.clientWidth);
     expect(tabs.scrollHeight, `pasek ${scrollbar} px`).toBeLessThanOrEqual(tabs.clientHeight);
     expect(await topRowSpareWidth(page), `zapas ${scrollbar} px`).toBeGreaterThanOrEqual(80);
+    for (const id of ["to-costs", "parent-logout"]) {
+      const action = (await page.getByTestId(id).boundingBox())!;
+      expect(action.x + action.width, `${id} ${scrollbar} px`).toBeLessThanOrEqual(600 - scrollbar + 0.5);
+    }
     const last = (await page.getByTestId("tab-work-card").boundingBox())!;
     expect(last.x + last.width, `ostatnia zakładka ${scrollbar} px`).toBeLessThanOrEqual(600 - scrollbar + 0.5);
     // ikony znikają z zakładek, ale nazwa sekcji pozostaje widocznym tekstem linku

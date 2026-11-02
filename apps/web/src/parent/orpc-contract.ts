@@ -35,6 +35,8 @@ import {
   MockTestReportDtoSchema,
   ObjectiveProgressDtoSchema,
   OmitIllustrationSchema,
+  ParentCostsDtoSchema,
+  ParentCostsQuerySchema,
   ParentWorkCardDtoSchema,
   ParentWorkCardQuerySchema,
   ProgressDtoSchema,
@@ -395,6 +397,14 @@ export const parentApiContract = {
       .input(ParentWorkCardQuerySchema)
       .output(noStoreOutput(ParentWorkCardDtoSchema))
       .meta(openapi({ method: "GET", path: "/work-card", outputStructure: "detailed" })),
+  },
+
+  /** Koszty usług AI (miesiąc, funkcje, materiały, dzieci): dane administracyjne rodzica, odczyt na żywo. */
+  costs: {
+    get: oc
+      .input(ParentCostsQuerySchema)
+      .output(noStoreOutput(ParentCostsDtoSchema))
+      .meta(openapi({ method: "GET", path: "/costs", outputStructure: "detailed" })),
   },
 
   /** Katalog przedmiotów/tematów/reguł dla formularza nowej lekcji. */

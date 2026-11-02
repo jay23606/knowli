@@ -1,5 +1,7 @@
 import type { AnswerGraderProvider, GraderInput } from "../../ports/ai";
 import { withChatRequestExtras, type ChatRequestExtras } from "../chat-request-options";
+import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
+import { recordHttpError, recordResponse, recordTransportFailure, recordUnreadable } from "../usage/record-http";
 
 /**
  * Adapter modelu oceniającego zgodnego z OpenAI (design „Model oceniający”).
@@ -21,6 +23,8 @@ export interface OpenAiCompatibleGraderOptions {
   model: string;
   /** Opcjonalne pola pośrednika (rozumowanie, routing dostawcy) — `UMIEM_GRADER_*`. */
   requestExtras?: ChatRequestExtras;
+  /** Zapis kosztów wywołań (spec cost-tracking §4.2); bez niego adapter działa jak dotąd. */
+  usage?: UsageRecorder;
   /** Wstrzykiwalny `fetch` dla testów (jak adaptery Azure). */
   fetchImpl?: (
     url: string,
@@ -152,36 +156,60 @@ function extractJson(content: string): unknown {
 
 export function createOpenAiCompatibleGrader(options: OpenAiCompatibleGraderOptions): AnswerGraderProvider {
   const doFetch = options.fetchImpl ?? ((url, init) => fetch(url, init as RequestInit));
+  const provider = providerFromBaseUrl(options.baseUrl);
   return {
     name: "openai-compatible-grader",
     model: options.model,
     promptVersion: PROMPT_VERSION,
     promptVersionForInput: (input: GraderInput) => (input.school ? SCHOOL_PROMPT_VERSION : PROMPT_VERSION),
     async grade(input: GraderInput, signal: AbortSignal): Promise<unknown> {
-      const response = await doFetch(`${options.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${options.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
-          model: options.model,
-          temperature: 0,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: input.school ? schoolSystemPrompt(input) : systemPrompt(input) },
-            { role: "user", content: input.school ? schoolUserMessage(input) : userMessage(input) },
-          ],
-        })),
-        signal,
-      });
+      const base = {
+        feature: "answer_grading",
+        operation: input.school ? "grade_school" : "grade",
+        provider,
+        model: options.model,
+      } as const;
+      // ciało przed `try`: błąd jego budowy nie jest wywołaniem dostawcy (bez zapisu `failed`)
+      const body = JSON.stringify(withChatRequestExtras(options.requestExtras, {
+        model: options.model,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: input.school ? schoolSystemPrompt(input) : systemPrompt(input) },
+          { role: "user", content: input.school ? schoolUserMessage(input) : userMessage(input) },
+        ],
+      }));
+      let response: Response;
+      try {
+        response = await doFetch(`${options.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${options.apiKey}`,
+            "content-type": "application/json",
+          },
+          body,
+          signal,
+        });
+      } catch (error) {
+        recordTransportFailure(options.usage, base);
+        throw error;
+      }
       if (!response.ok) {
+        recordHttpError(options.usage, base, response.status);
         // bez body w komunikacie — może zawierać echo odpowiedzi dziecka; bez tokenu
         throw new Error(`grader request failed: ${response.status}`);
       }
-      const payload = (await response.json()) as {
+      let payload: {
         choices?: Array<{ message?: { content?: string } }>;
       };
+      try {
+        payload = (await response.json()) as typeof payload;
+      } catch (error) {
+        recordUnreadable(options.usage, base, response.status);
+        throw error;
+      }
+      // płatna odpowiedź jest zapisana zanim treść zostanie zwalidowana
+      recordResponse(options.usage, base, response.status, payload);
       const content = payload.choices?.[0]?.message?.content;
       if (!content) {
         throw new Error("grader returned no content");

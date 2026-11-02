@@ -12,6 +12,7 @@ import {
 import { CONFIG_DEFAULTS, withConfigDefaults } from "./config-defaults";
 import { chatRequestExtrasFromEnv } from "./providers/chat-request-options";
 import { createGenerationDepsFromEnv } from "./providers/generation-env";
+import { pricesFromEnv } from "./providers/usage/prices-env";
 import { DEFAULT_LESSON_GENERATION_POLICY, lessonGenerationPolicyFromEnv } from "./modules/materials/lessons/lesson-generation-policy";
 
 /** Design `2026-11-01-config-defaults-design.md`: domyślna konfiguracja w repo, `.env` tylko nadpisuje. */
@@ -127,5 +128,29 @@ describe("zgodność z wartościami awaryjnymi parserów", () => {
     expect(Number(CONFIG_DEFAULTS.UMIEM_GRADER_TIMEOUT_MS)).toBe(DEFAULT_GRADER_TIMEOUT_MS);
     expect(Number(CONFIG_DEFAULTS.UMIEM_GRADER_MAX_CALLS_PER_SESSION)).toBe(DEFAULT_GRADER_MAX_CALLS_PER_SESSION);
     expect(Number(CONFIG_DEFAULTS.UMIEM_SESSION_ACTIVITY_TIMEOUT_MS)).toBe(DEFAULT_SESSION_ACTIVITY_TIMEOUT_MS);
+  });
+});
+
+describe("stawki kosztów usług AI", () => {
+  it("image price default applies only to default image config", () => {
+    expect(withConfigDefaults({}).UMIEM_PRICE_IMAGE_USD).toBeTruthy();
+    expect(withConfigDefaults({ UMIEM_IMAGE_MODEL: "other" }).UMIEM_PRICE_IMAGE_USD).toBeUndefined();
+    expect(withConfigDefaults({ UMIEM_IMAGE_QUALITY: "high" }).UMIEM_PRICE_IMAGE_USD).toBeUndefined();
+    expect(withConfigDefaults({ UMIEM_IMAGE_SIZE: "1536x1024" }).UMIEM_PRICE_IMAGE_USD).toBeUndefined();
+    expect(withConfigDefaults({ UMIEM_IMAGE_MODEL: "other", UMIEM_PRICE_IMAGE_USD: "0.5" }).UMIEM_PRICE_IMAGE_USD).toBe("0.5");
+  });
+
+  it("tts price default applies only to default tts model", () => {
+    expect(withConfigDefaults({}).UMIEM_PRICE_TTS_USD_PER_MINUTE).toBeTruthy();
+    expect(withConfigDefaults({ UMIEM_TTS_MODEL: "other" }).UMIEM_PRICE_TTS_USD_PER_MINUTE).toBeUndefined();
+    expect(withConfigDefaults({ UMIEM_TTS_MODEL: "other", UMIEM_PRICE_TTS_USD_PER_MINUTE: "0.1" }).UMIEM_PRICE_TTS_USD_PER_MINUTE).toBe("0.1");
+  });
+
+  it("stawki Azure są zawsze, a domyślne stawki są poprawne dla parsera", () => {
+    const env = withConfigDefaults({ UMIEM_IMAGE_MODEL: "other", UMIEM_TTS_MODEL: "other" });
+    expect(env.UMIEM_PRICE_AZURE_STT_USD_PER_HOUR).toBeTruthy();
+    expect(env.UMIEM_PRICE_AZURE_PRONUNCIATION_USD_PER_HOUR).toBeTruthy();
+    const prices = pricesFromEnv(withConfigDefaults({}));
+    expect(Object.keys(prices).sort()).toEqual(["azurePronunciationUsdPerHour", "azureSttUsdPerHour", "imageUsd", "ttsUsdPerMinute"]);
   });
 });

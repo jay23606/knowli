@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOpenAiTtsProvider } from "./tts";
 import { pcmToWav } from "../audio/wav";
+import { createTestRecorder, createThrowingRecorder } from "../usage/test-recorder";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -102,5 +103,102 @@ describe("createOpenAiTtsProvider", () => {
     await expect(provider.synthesize({ text: "kot", locale: "pl-PL", voice: "Kore", format: "wav" })).rejects.toThrow("provider_unexpected_audio");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array([1, 2]), { status: 200, headers: { "content-type": "audio/pcm" } })));
     await expect(provider.synthesize({ text: "kot", locale: "pl-PL", voice: "Kore", format: "wav" })).rejects.toThrow("provider_unexpected_audio");
+  });
+});
+
+describe("createOpenAiTtsProvider — zapis kosztów", () => {
+  const PCM_FORMAT = "audio/pcm;rate=24000;channels=1";
+  const mp3Frames = (() => {
+    const frame = new Uint8Array(417);
+    frame.set([0xff, 0xfb, 0x90, 0x64]);
+    const bytes = new Uint8Array(417 * 2);
+    bytes.set(frame);
+    bytes.set(frame, 417);
+    return bytes;
+  })();
+
+  it("PCM 24 kHz 1,5 s: jeden event ok ze znakami i audioMs, bez kosztu dostawcy", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(72_000), { status: 200, headers: { "content-type": PCM_FORMAT } })));
+    const rec = createTestRecorder();
+    const provider = createOpenAiTtsProvider({ apiKey: "test", baseUrl: "https://openrouter.ai/api/v1", model: "google/gemini-3.8-flash-tts", usage: rec });
+    await provider.synthesize({ text: "pies", locale: "pl-PL", voice: "Kore", format: "wav" });
+    expect(rec.events).toEqual([
+      { feature: "tts", provider: "openrouter", model: "google/gemini-3.8-flash-tts", outcome: "ok", httpStatus: 200, characters: 4, audioMs: 1500 },
+    ]);
+  });
+
+  it("model z żądania (zasób) trafia do eventu zamiast modelu adaptera", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(480), { status: 200, headers: { "content-type": PCM_FORMAT } })));
+    const rec = createTestRecorder();
+    const provider = createOpenAiTtsProvider({ apiKey: "test", model: "adapter-model", usage: rec });
+    await provider.synthesize({ text: "kot", locale: "pl-PL", voice: "Kore", format: "wav", model: "resource-model" });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ provider: "openai", model: "resource-model" });
+  });
+
+  it("mp3: audioMs z nagłówków ramek", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(mp3Frames, { status: 200, headers: { "content-type": "audio/mpeg" } })));
+    const rec = createTestRecorder();
+    const provider = createOpenAiTtsProvider({ apiKey: "test", usage: rec });
+    await provider.synthesize({ text: "cat", locale: "en-GB", voice: "alloy", format: "mp3" });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ feature: "tts", outcome: "ok", characters: 3, audioMs: 52 });
+  });
+
+  it("mp3 z jawnie innym typem audio: jeden event bez audioMs z ramek, potem błąd formatu", async () => {
+    // bajty wyglądają na ramki mp3, ale dostawca deklaruje PCM — długość z ramek byłaby fikcją
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(mp3Frames, { status: 200, headers: { "content-type": "audio/pcm" } })));
+    const rec = createTestRecorder();
+    const provider = createOpenAiTtsProvider({ apiKey: "test", usage: rec });
+    await expect(provider.synthesize({ text: "cat", locale: "en-GB", voice: "Kore", format: "mp3" })).rejects.toThrow("provider_unexpected_audio");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "ok", httpStatus: 200, characters: 3 });
+    expect(rec.events[0]!.audioMs).toBeUndefined();
+  });
+
+  it("nieznany content-type: opłacone wywołanie jest zapisane jako ok, a potem błąd formatu", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array([1, 2]), { status: 200, headers: { "content-type": "audio/pcm" } })));
+    const rec = createTestRecorder();
+    const provider = createOpenAiTtsProvider({ apiKey: "test", usage: rec });
+    await expect(provider.synthesize({ text: "kot", locale: "pl-PL", voice: "Kore", format: "wav" })).rejects.toThrow("provider_unexpected_audio");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "ok", httpStatus: 200, characters: 3 });
+    expect(rec.events[0]!.audioMs).toBeUndefined();
+  });
+
+  it("HTTP 500: jeden event failed, błąd bez zmian", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("detail", { status: 500 })));
+    const rec = createTestRecorder();
+    const provider = createOpenAiTtsProvider({ apiKey: "test", usage: rec });
+    await expect(provider.synthesize({ text: "kot", locale: "pl-PL", voice: "Kore", format: "mp3" })).rejects.toThrow("provider_http_500");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 500 });
+  });
+
+  it("abort: jeden event failed bez kodu HTTP", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("aborted", "AbortError"); }));
+    const rec = createTestRecorder();
+    const provider = createOpenAiTtsProvider({ apiKey: "test", usage: rec });
+    await expect(provider.synthesize({ text: "kot", locale: "pl-PL", voice: "Kore", format: "mp3" })).rejects.toThrow("aborted");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed" });
+    expect(rec.events[0]!.httpStatus).toBeUndefined();
+  });
+
+  it("przerwanie podczas czytania ciała 2xx: jeden event failed z kodem 200", async () => {
+    const response = { ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => { throw new DOMException("aborted", "AbortError"); } };
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+    const rec = createTestRecorder();
+    const provider = createOpenAiTtsProvider({ apiKey: "test", usage: rec });
+    await expect(provider.synthesize({ text: "kot", locale: "pl-PL", voice: "Kore", format: "mp3" })).rejects.toThrow("aborted");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 200 });
+  });
+
+  it("recorder, który rzuca, nie zmienia wyniku; bez recordera działa jak dotąd", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(mp3Frames, { status: 200, headers: { "content-type": "audio/mpeg" } })));
+    const input = { text: "cat", locale: "en-GB", voice: "alloy", format: "mp3" } as const;
+    await expect(createOpenAiTtsProvider({ apiKey: "test", usage: createThrowingRecorder() }).synthesize(input)).resolves.toMatchObject({ mimeType: "audio/mpeg" });
+    await expect(createOpenAiTtsProvider({ apiKey: "test" }).synthesize(input)).resolves.toMatchObject({ mimeType: "audio/mpeg" });
   });
 });

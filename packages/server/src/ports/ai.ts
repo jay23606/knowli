@@ -225,6 +225,11 @@ export interface AudioInput {
   mimeType: string;
   /** Wariant języka nagrania, np. „en-GB” — serwer nadpisze wartością zestawu. */
   locale: string;
+  /**
+   * Czas nagrania w ms z metadanych (ustawiany przez przypadki użycia z
+   * `normalizeAudioInput`); adapter mowy używa go do kosztów przed nagłówkiem WAV.
+   */
+  durationMs?: number;
 }
 
 /**

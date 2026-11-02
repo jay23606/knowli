@@ -10,6 +10,7 @@ import type {
   TtsProvider,
 } from "./ports/ai";
 import type { MediaStore } from "./ports/media";
+import type { UsageRecorder } from "./ports/usage";
 import { createAzurePronunciationProvider } from "./providers/azure/pronunciation";
 import { createAzureSttProvider } from "./providers/azure/stt";
 import { createOpenAiCompatibleGrader } from "./providers/openai-compatible/grader";
@@ -229,6 +230,11 @@ export interface Services {
    */
   generationService?: string;
   /**
+   * Recorder kosztów usług AI (spec llm-cost-tracking §4). Nieobecny = brak
+   * zapisu kosztów; `flush()` przy zamykaniu procesu i w testach.
+   */
+  usage?: UsageRecorder;
+  /**
    * Rejestr przedmiotów lekcji (zadanie 9). Wstrzykiwany jako wartość, nie
    * importowany globalnie w modułach — `createServices` nadaje mu produkcyjną
    * domyślkę `createProductionSubjectRegistry()`, więc żaden wywołujący nie
@@ -251,6 +257,7 @@ export function createServices(
     grader?: GraderDeps;
     sessionActivity?: SessionActivityDeps;
     generationService?: string;
+    usage?: UsageRecorder;
     subjects?: SubjectRegistry;
   },
 ): Services {
@@ -267,6 +274,7 @@ export function createServices(
     ...(input.grader ? { grader: input.grader } : {}),
     ...(input.sessionActivity ? { sessionActivity: input.sessionActivity } : {}),
     ...(input.generationService ? { generationService: input.generationService } : {}),
+    ...(input.usage ? { usage: input.usage } : {}),
   };
 }
 
@@ -275,15 +283,15 @@ export function createServices(
  * (arch §11); bez kluczy zależność pozostaje nieobecna i próby ustne kończą
  * się wynikiem technicznym zamiast udawanej oceny.
  */
-export function speechFromEnv(env: Record<string, string | undefined>): SpeechDeps | undefined {
+export function speechFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): SpeechDeps | undefined {
   const subscriptionKey = env.AZURE_SPEECH_KEY;
   const region = env.AZURE_SPEECH_REGION;
   if (!subscriptionKey || !region) {
     return undefined;
   }
   return {
-    stt: createAzureSttProvider({ subscriptionKey, region }),
-    pronunciation: createAzurePronunciationProvider({ subscriptionKey, region }),
+    stt: createAzureSttProvider({ subscriptionKey, region, ...(usage ? { usage } : {}) }),
+    pronunciation: createAzurePronunciationProvider({ subscriptionKey, region, ...(usage ? { usage } : {}) }),
   };
 }
 
@@ -295,7 +303,7 @@ export const DEFAULT_LESSON_STT_MODEL = "elevenlabs/scribe-v2";
  * i opcjonalnego `_MODEL` (domyślnie {@link DEFAULT_LESSON_STT_MODEL}). Adres
  * i klucz razem albo wcale; https poza test/development jak dla gradera.
  */
-export function lessonSpeechFromEnv(env: Record<string, string | undefined>): LessonSpeechDeps | undefined {
+export function lessonSpeechFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): LessonSpeechDeps | undefined {
   const baseUrl = env.UMIEM_LESSON_STT_BASE_URL;
   const apiKey = env.UMIEM_LESSON_STT_API_KEY;
   const present = [baseUrl, apiKey].filter((v) => v !== undefined && v !== "").length;
@@ -312,7 +320,7 @@ export function lessonSpeechFromEnv(env: Record<string, string | undefined>): Le
   }
   const model = env.UMIEM_LESSON_STT_MODEL?.trim() || DEFAULT_LESSON_STT_MODEL;
   return {
-    stt: createOpenAiCompatibleSttProvider({ baseUrl: baseUrl!, apiKey: apiKey!, model }),
+    stt: createOpenAiCompatibleSttProvider({ baseUrl: baseUrl!, apiKey: apiKey!, model, ...(usage ? { usage } : {}) }),
     publicService: model,
   };
 }
@@ -374,7 +382,7 @@ export function graderConfigured(env: Record<string, string | undefined>): boole
  * dodatnie. Brak konfiguracji → undefined (model wyłączony to stan poprawny).
  * Sekret żyje tylko w adapterze; tu wyłącznie go przekazujemy.
  */
-export function graderFromEnv(env: Record<string, string | undefined>): GraderDeps | undefined {
+export function graderFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): GraderDeps | undefined {
   const connection = graderConnectionFromEnv(env);
   if (connection === undefined) {
     return undefined;
@@ -389,6 +397,7 @@ export function graderFromEnv(env: Record<string, string | undefined>): GraderDe
   return {
     provider: createOpenAiCompatibleGrader({
       baseUrl, apiKey, model, requestExtras: chatRequestExtrasFromEnv(env, "UMIEM_GRADER"),
+      ...(usage ? { usage } : {}),
     }),
     maxCallsPerSession,
     timeoutMs,
@@ -401,7 +410,7 @@ export function graderFromEnv(env: Record<string, string | undefined>): GraderDe
  * §4): brak konfiguracji gradera = ocena aktywności również wyłączona. Osobny
  * deadline `UMIEM_SESSION_ACTIVITY_TIMEOUT_MS` (domyślnie 60 s).
  */
-export function sessionActivityFromEnv(env: Record<string, string | undefined>): SessionActivityDeps | undefined {
+export function sessionActivityFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): SessionActivityDeps | undefined {
   // to samo połączenie co graderFromEnv — nie polegamy na tym, że kompozycja wywoła go wcześniej
   const connection = graderConnectionFromEnv(env);
   if (connection === undefined) {
@@ -416,6 +425,7 @@ export function sessionActivityFromEnv(env: Record<string, string | undefined>):
   return {
     provider: createOpenAiCompatibleSessionActivityReviewer({
       baseUrl, apiKey, model, requestExtras: chatRequestExtrasFromEnv(env, "UMIEM_GRADER"),
+      ...(usage ? { usage } : {}),
     }),
     timeoutMs,
     publicService: `${new URL(baseUrl).host} · ${model}`,
