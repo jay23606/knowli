@@ -444,7 +444,8 @@ z providerem i modelem `fakes.settings`).
       karty), widać „Nagrywanie…” i `lesson-story-audio-listen-previous`;
     - `story recording: editing a sentence hides it, editing a question disables regenerate`;
     - `story recording controls fit a 375 px phone` — brak przepełnienia
-      poziomego, przyciski ≥ 48 px wysokości.
+      poziomego, przyciski ≥ 44 px wysokości (konwencja panelu rodzica; 48 px
+      to reguła Kid UI).
 - [ ] **Step 6: E2E `real`** w `tests/e2e/lesson-parent.spec.ts`, test
   `parent edits generated story and publishes`:
   - po `waitForGeneratedStory`: `lesson-story-audio-listen` widoczny
