@@ -34,7 +34,7 @@ import { AppError } from "../../../errors";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
 import { DEFAULT_LESSON_POLICY } from "../../../domain/lessons/lesson-policy";
 import { materialCreationMode, requiresParentSubjectTitle } from "../../../domain/lessons/material-creation";
-import { poolCoverage, validatePool } from "../../../domain/lessons/pool-validation";
+import { poolCoverage, validatePool, withoutRedundantAcceptedVariants } from "../../../domain/lessons/pool-validation";
 import { solvedSentencesOf, validateLessonStory, type LessonStory } from "../../../domain/lessons/story";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
@@ -570,6 +570,12 @@ async function loadCurrentLessonRevisions(tx: Tx, versionId: string): Promise<Cu
  * (bez `id`) dostają nowy learning_item i skill_version. Usunięte znikają wraz
  * z powiązaniami. `target_key` z `lessonExerciseTargetKey` (domyślnie `computeTargetKey(answer, answerLocale)`).
  */
+/** Ćwiczenie z patcha rodzica bez wariantów `acceptedAnswers` równoważnych odpowiedzi kanonicznej. */
+function withoutRedundantInputVariants(input: LessonExerciseInput, subject: SubjectModule): LessonExerciseInput {
+  const kept = withoutRedundantAcceptedVariants(toExerciseDraft(input), subject.normalizer).acceptedAnswers;
+  return kept.length === input.acceptedAnswers.length ? input : { ...input, acceptedAnswers: [...kept] };
+}
+
 async function applyLessonExercisesEdit(
   tx: Tx,
   version: { id: string; deckId: string },
@@ -770,8 +776,11 @@ export async function editLessonDraft(
 
     if (patch.exercises !== undefined) {
       const topic = requireTopic(services, effectiveContext);
+      // Warianty równoważne odpowiedzi po normalizacji pomijamy jak przy generacji: nie zmieniają
+      // oceny, a rozszerzenie tabeli skrótów (np. „there's”) czyni takimi warianty zapisane wcześniej.
+      const exercises = patch.exercises.map((input) => withoutRedundantInputVariants(input, subject));
       // Walidacja per ćwiczenie — zbieramy wszystkie błędy, nie przerywamy na pierwszym.
-      const drafts = patch.exercises.map(toExerciseDraft);
+      const drafts = exercises.map(toExerciseDraft);
       const grounded = splitByPoolExtra(subject, drafts, context.material);
       const errors = [...grounded.extraRejected, ...validatePool(grounded.kept, subject, topic).rejected]
         .map((rejection) => ({ index: drafts.indexOf(rejection.exercise), errors: rejection.errors }))
@@ -783,7 +792,7 @@ export async function editLessonDraft(
       // a bez pola `story` zapisana (`null` usuwa ją, więc nie ma czego sprawdzać).
       const story = patch.story === undefined ? context.story : patch.story;
       if (story) assertStoryValid(subject, story, drafts);
-      await applyLessonExercisesEdit(tx, { id: version.id, deckId: version.deckId }, subject, context.topicVersion, patch.exercises);
+      await applyLessonExercisesEdit(tx, { id: version.id, deckId: version.deckId }, subject, context.topicVersion, exercises);
     }
 
     if (patch.title !== undefined) {
@@ -875,7 +884,9 @@ export async function publishLessonDraft(
     }
 
     // Pokrycie etapów ocenianych per cel.
-    const drafts: LessonExerciseDraft[] = revisions.map((r) => toExerciseDraft(r.payload));
+    // Bez wariantów równoważnych odpowiedzi (jak przy zapisie): szkic zapisany przed rozszerzeniem
+    // tabeli skrótów publikuje się bez ręcznego czyszczenia; zapisane rewizje zostają bez zmian.
+    const drafts: LessonExerciseDraft[] = revisions.map((r) => withoutRedundantAcceptedVariants(toExerciseDraft(r.payload), subject.normalizer));
     const topic = requireTopic(services, context);
     const groundedPublish = splitByPoolExtra(subject, drafts, context.material);
     const invalid = [...groundedPublish.extraRejected, ...validatePool(groundedPublish.kept, subject, topic).rejected];
