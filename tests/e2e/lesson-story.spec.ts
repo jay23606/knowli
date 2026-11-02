@@ -139,6 +139,9 @@ async function expectReachable(page: Page, testId: string, viewport: { width: nu
   expect(box.height, `${label} height`).toBeGreaterThanOrEqual(minHeight);
 }
 
+/** Niski landscape telefonu (<480 px): najciaśniejsze okno dla pytania i wyniku. */
+const PHONE_LANDSCAPE = { width: 844, height: 390, scale: 1 } as const;
+
 const GEOMETRY_VIEWPORTS: readonly { width: number; height: number; scale: number }[] = [
   ...LESSON_AUDIO_VIEWPORTS.map((viewport) => ({ ...viewport, scale: 1 })),
   { width: 1920, height: 1080, scale: 1.2 },
@@ -250,14 +253,23 @@ test("story answers do not grow the streak", async ({ page }) => {
   await expect(stars).toHaveCount(0);
 });
 
+test("blocked story autoplay stays silent and keeps the listen button", async ({ page }) => {
+  // Przeglądarka blokuje autoodtwarzanie (`NotAllowedError`): bez komunikatu, przycisk zostaje.
+  await open(page, fixture([story(), null], []), "kid-lesson-story", "reject");
+  await expect.poll(() => listenAudioPlays(page)).toBe(1);
+  await nextFrames(page);
+  await nextFrames(page);
+  await expect(page.getByTestId("kid-question-audio-error")).toHaveCount(0);
+  await expect(page.getByTestId("kid-question-audio")).toBeEnabled();
+  await expect(page.getByTestId("kid-question-audio")).not.toHaveAttribute("data-sound-active");
+});
+
 test("story playback error shows the story message and keeps next reachable", async ({ page }) => {
   // Bez atrapy odtwarzania: `/media` daje obrazek SVG, którego przeglądarka nie zdekoduje.
+  // Ciszę nieudanego autoodtwarzania sprawdza deterministycznie test „blocked story autoplay”.
   const media = mediaRequests(page);
   await open(page, fixture([story(), null], [], { audioReady: false }), "kid-lesson-story", null);
-  // Autoodtwarzanie próbuje pobrać nagranie, ale błąd jest cichy.
   await expect.poll(() => media).toContain(`/api/v1/media/${storyAudioAssetId}`);
-  await page.waitForTimeout(500);
-  await expect(page.getByTestId("kid-question-audio-error")).toHaveCount(0);
 
   await page.getByTestId("kid-question-audio").click();
   await expect(page.getByTestId("kid-question-audio-error")).toContainText(messages.kid.storyAudioUnavailable);
@@ -311,7 +323,7 @@ test.describe("geometry", () => {
       await page.screenshot({ path: testInfo.outputPath(`story-question-${label}.png`) });
     }
 
-    await resizeTo(page, GEOMETRY_VIEWPORTS[1]!);
+    await resizeTo(page, PHONE_LANDSCAPE);
     await page.getByTestId("kid-option").nth(1).click();
     await expect(page.getByTestId("kid-feedback-correct-answer")).toHaveText(STORY_WORST_CASE.options[0]);
     for (const viewport of GEOMETRY_VIEWPORTS) {
