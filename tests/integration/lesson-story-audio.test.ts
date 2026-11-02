@@ -420,6 +420,28 @@ describe("nagranie historyjki lekcji — worker i stan w szkicu (integracja)", (
     expect((await readDraft(services, deckId)).storyAudio).toEqual({ state: "pending", previousAssetId: first!.assetId });
   });
 
+  it("regenerate story audio leaves other failed recordings of the draft alone", async () => {
+    const { services, versionId } = await grammarDraft();
+    await edit(services, versionId, { story: STORY });
+    const [story] = await storyAssets(versionId);
+    await markTtsReady(story!.assetId);
+    const other = (await pool.query<{ assetId: string; fingerprint: string }>(
+      `select ra.asset_id as "assetId", ra.expected_fingerprint as fingerprint
+         from learning_app.revision_assets ra
+         join learning_app.item_revisions ir on ir.id = ra.item_revision_id
+        where ir.deck_version_id = $1 and ra.asset_id is not null
+        limit 1`,
+      [versionId],
+    )).rows[0];
+    expect(other).toBeDefined();
+    await pool.query("update learning_app.media_assets set state = 'failed' where id = $1", [other!.assetId]);
+
+    await regenerateLessonStoryAudio(services, { lessonDraftId: versionId });
+
+    expect(await generationsOf(other!.fingerprint)).toHaveLength(1);
+    expect(await generationsOf(story!.fingerprint)).toHaveLength(2);
+  });
+
   it("regenerate story audio twice while pending returns the same asset", async () => {
     const { services, versionId } = await grammarDraft();
     await edit(services, versionId, { story: STORY });

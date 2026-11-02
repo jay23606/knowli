@@ -6,7 +6,7 @@ import type { Services } from "../../../config";
 import type { Executor, Tx } from "../../../db/client";
 import { generationRuns, itemRevisions, lessonCardAssets, lessonStoryAssets, mediaAssets, revisionAssets } from "../../../db/schema";
 import { AppError } from "../../../errors";
-import { reconcileDraftAssetsTx } from "../media-reconciliation";
+import { reconcileDraftAssetsTx, reconcileLessonStoryAssetTx } from "../media-reconciliation";
 import { lockVersion } from "../version-ops";
 
 /**
@@ -193,27 +193,36 @@ const StoryAudioInputSchema = z.object({
 });
 
 /**
+ * Pełne uzgodnienie mediów szkicu przed nowym ujęciem pytania lub karty. `keepFailed`:
+ * nieudane zasoby wymagające decyzji rodzica (odpowiedzi, ilustracje) zostają;
+ * nieudane nagrania pytań i kart uzgodnienie i tak zleca ponownie (nie są decyzją rodzica).
+ */
+function reconcileAllDraftAssetsTx(tx: Tx, services: Services, version: { id: string; state: string }): Promise<void> {
+  return reconcileDraftAssetsTx(tx, services, version, { keepFailed: true });
+}
+
+/**
  * Przed nowym ujęciem uzgadnia media szkicu jak zapis (`reconcileDraftAssetsTx`)
  * w tej samej transakcji. Gdy od ostatniego zapisu zmieniła się konfiguracja TTS
  * (provider, model, głos, styl), uzgodnienie przepina wiersz na fingerprint
  * bieżącej konfiguracji i jego nagranie (nowe zlecenie albo gotowe, wspólne z inną
  * wersją) wraz ze stanem wiersza — kolejnej generacji nie zlecamy (`rebound`).
  * Bez zmiany konfiguracji uzgodnienie zostawia wiersz bez zmian, a wywołujący
- * wskazuje w nim nową generację.
+ * wskazuje w nim nową generację. `reconcile` zawęża uzgodnienie do nagrania,
+ * którego dotyczy operacja (historyjka ma własne); domyślnie całe media szkicu.
  */
 async function reconcileThenNextTx(
   tx: Tx,
   services: Services,
   version: { id: string; state: string },
   readRow: () => Promise<{ expectedFingerprint: string; assetId: string | null } | undefined>,
+  reconcile: (tx: Tx, services: Services, version: { id: string; state: string }) => Promise<void> = reconcileAllDraftAssetsTx,
 ): Promise<{ assetId: string; rebound: boolean }> {
   const before = await readRow();
   if (!before) {
     throw new AppError("not_found");
   }
-  // `keepFailed`: nieudane zasoby wymagające decyzji rodzica (odpowiedzi, ilustracje) zostają;
-  // nieudane nagrania pytań i kart uzgodnienie i tak zleca ponownie (nie są decyzją rodzica).
-  await reconcileDraftAssetsTx(tx, services, version, { keepFailed: true });
+  await reconcile(tx, services, version);
   const after = await readRow();
   if (!after) {
     throw new AppError("not_found");
@@ -306,7 +315,8 @@ export async function regenerateLessonStoryAudio(
       await tx.select({ expectedFingerprint: lessonStoryAssets.expectedFingerprint, assetId: lessonStoryAssets.assetId })
         .from(lessonStoryAssets).where(where)
     )[0];
-    const { assetId, rebound } = await reconcileThenNextTx(tx, services, version, readRow);
+    // Tylko nagranie historyjki: „Nagraj ponownie” nie zleca przy okazji innych nieudanych nagrań szkicu.
+    const { assetId, rebound } = await reconcileThenNextTx(tx, services, version, readRow, reconcileLessonStoryAssetTx);
     if (!rebound) await tx.update(lessonStoryAssets).set({ assetId }).where(where);
     return { assetId };
   });
