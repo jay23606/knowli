@@ -33,11 +33,17 @@ function statusFromObjectives(objectives: LessonReviewReport["objectives"]): Les
   return reviewed === objectives.length ? "reviewed" : "partial";
 }
 
+/** Wpisy przebiegu zastępują wcześniejsze wpisy tego samego ćwiczenia; identyfikator się nie powtarza. */
+function replaceById<T extends { exerciseId: string }>(previous: readonly T[], run: readonly T[]): T[] {
+  const runIds = new Set(run.map((entry) => entry.exerciseId));
+  return [...previous.filter((entry) => !runIds.has(entry.exerciseId)), ...run];
+}
+
 /**
  * Łączy raport przebiegu z poprzednim raportem szkicu. Zagadnienia z przebiegu
  * nadpisują poprzednie wpisy tego samego zagadnienia; `changed`/`notes`/`machine`
- * tracą wpisy ćwiczeń spoza `liveExerciseIds`, a `machine` zastępuje wpis tego
- * samego ćwiczenia; `dropped`/`toppedUp` są ograniczone do 200 najnowszych wpisów.
+ * tracą wpisy ćwiczeń spoza `liveExerciseIds`, a wpis przebiegu zastępuje wcześniejszy
+ * wpis tego samego ćwiczenia; `dropped`/`toppedUp` są ograniczone do 200 najnowszych wpisów.
  * Status wynika z zagadnień (`suspicious` liczy się jak `reviewed`).
  */
 export function mergeReviewReport(
@@ -51,10 +57,6 @@ export function mergeReviewReport(
   const previousObjectiveIds = new Set(previousObjectives.map((o) => o.objectiveId));
   const objectives = [...previousObjectives, ...run.objectives.filter((o) => !previousObjectiveIds.has(o.objectiveId))];
 
-  const runMachineIds = new Set(run.machine.map((m) => m.exerciseId));
-  const machine = [...(previous?.machine ?? []).filter((m) => !runMachineIds.has(m.exerciseId)), ...run.machine].filter(
-    (m) => liveExerciseIds.has(m.exerciseId),
-  );
   const live = <T extends { exerciseId: string }>(entries: readonly T[]) =>
     entries.filter((entry) => liveExerciseIds.has(entry.exerciseId));
 
@@ -63,21 +65,46 @@ export function mergeReviewReport(
     status: statusFromObjectives(objectives),
     ...(model === undefined ? {} : { model }),
     objectives,
-    changed: live([...(previous?.changed ?? []), ...run.changed]),
+    changed: live(replaceById(previous?.changed ?? [], run.changed)),
     dropped: [...(previous?.dropped ?? []), ...run.dropped].slice(-REVIEW_REPORT_LIST_LIMIT),
-    notes: live([...(previous?.notes ?? []), ...run.notes]),
+    notes: live(replaceById(previous?.notes ?? [], run.notes)),
     toppedUp: [...(previous?.toppedUp ?? []), ...run.toppedUp].slice(-REVIEW_REPORT_LIST_LIMIT),
-    machine,
+    machine: live(replaceById(previous?.machine ?? [], run.machine)),
   };
 }
 
-/** Krótki, jednowierszowy fragment ćwiczenia do raportu (≤ 80 znaków). */
+const SNIPPET_SEPARATOR = " → ";
+const SNIPPET_MIN_ANSWER = 30;
+const SNIPPET_MIN_STIMULUS = 20;
+
+function collapse(text: string | undefined): string {
+  return (text ?? "").replace(/\s+/g, " ").trim();
+}
+
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+/**
+ * Jednowierszowy fragment ćwiczenia do raportu: „bodziec → odpowiedź” w ≤ 80 znakach.
+ * Bodziec to pierwsze niepuste z: stem, prompt, statement, clozeText, instructionPl.
+ * Odpowiedź ma gwarantowane min(jej długość, 30) znaków — najpierw skracany jest bodziec.
+ * Puste ćwiczenie daje pusty tekst (zastępnik wybiera warstwa UI).
+ */
 export function exerciseSnippet(draft: LessonExerciseDraft): string {
-  const candidates = [draft.stem, draft.prompt, draft.statement, draft.instructionPl, draft.clozeText, draft.answer];
-  for (const candidate of candidates) {
-    const text = candidate?.replace(/\s+/g, " ").trim();
-    if (!text) continue;
-    return text.length <= SNIPPET_LIMIT ? text : `${text.slice(0, SNIPPET_LIMIT - 1).trimEnd()}…`;
-  }
-  return "(bez treści)";
+  const stimulus =
+    [draft.stem, draft.prompt, draft.statement, draft.clozeText, draft.instructionPl].map(collapse).find((t) => t) ?? "";
+  const answer = collapse(draft.answer);
+  if (!stimulus) return truncate(answer, SNIPPET_LIMIT);
+  if (!answer) return truncate(stimulus, SNIPPET_LIMIT);
+
+  const available = SNIPPET_LIMIT - SNIPPET_SEPARATOR.length;
+  // Bodziec dostaje resztę po całej odpowiedzi (nie mniej niż 20 znaków), ale odpowiedź zawsze ma ≥ min(długość, 30).
+  const stimulusBudget = Math.min(
+    available - Math.min(answer.length, SNIPPET_MIN_ANSWER),
+    Math.max(available - answer.length, Math.min(stimulus.length, SNIPPET_MIN_STIMULUS)),
+  );
+  const shownStimulus = truncate(stimulus, stimulusBudget);
+  const shownAnswer = truncate(answer, available - shownStimulus.length);
+  return `${shownStimulus}${SNIPPET_SEPARATOR}${shownAnswer}`;
 }

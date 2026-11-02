@@ -74,6 +74,21 @@ describe("decideObjectiveReview", () => {
     });
   });
 
+  it("calculation + fix z fixValid false to także keep_with_note bez odrzucenia poprawki", () => {
+    const result = decide(
+      1,
+      6,
+      [{ n: 1, verdict: "fix", category: "ambiguous", reasonPl: "Niejasne.", fixValid: false }],
+      { calculationIndexes: new Set([0]) },
+    );
+    expect(result.outcomes[0]).toEqual({
+      kind: "keep_with_note",
+      category: "ambiguous",
+      reasonPl: "Niejasne.",
+      fixRejected: false,
+    });
+  });
+
   it("calculation + drop nadal usuwa ćwiczenie", () => {
     const result = decide(
       1,
@@ -173,6 +188,48 @@ describe("decideObjectiveReview", () => {
       expect(result.status).toBe("reviewed");
       expect(result.outcomes[0]).toMatchObject({ kind: "drop" });
       expect(result.outcomes[1]).toMatchObject({ kind: "replace" });
+    });
+
+    it("replace na indeksie z twardym ujawnieniem też się nie liczy (jak drop)", () => {
+      const result = decide(
+        4,
+        4,
+        [
+          { n: 1, verdict: "fix", category: "leaked_solution", reasonPl: "A.", fixValid: true },
+          { n: 2, verdict: "fix", category: "leaked_solution", reasonPl: "B.", fixValid: true },
+          { n: 3, verdict: "drop", category: "leaked_solution", reasonPl: "C." },
+        ],
+        { hardLeakIndexes: new Set([0, 1, 2]) },
+      );
+      expect(result.status).toBe("reviewed");
+      expect(result.outcomes.map((o) => o.kind)).toEqual(["replace", "replace", "drop", "keep"]);
+    });
+
+    it("replace poza hardLeakIndexes liczy się do bezpiecznika", () => {
+      const result = decide(
+        4,
+        4,
+        [
+          { n: 1, verdict: "fix", category: "wrong_answer", reasonPl: "A.", fixValid: true },
+          { n: 2, verdict: "fix", category: "wrong_answer", reasonPl: "B.", fixValid: true },
+          { n: 3, verdict: "fix", category: "wrong_answer", reasonPl: "C.", fixValid: true },
+          { n: 4, verdict: "fix", category: "wrong_answer", reasonPl: "D.", fixValid: true },
+        ],
+        { hardLeakIndexes: new Set([0]) },
+      );
+      expect(result.status).toBe("suspicious");
+    });
+
+    it("nieparzysta liczba ćwiczeń: 3 z 5 uruchamia bezpiecznik, 2 z 5 nie", () => {
+      const drops = (count: number): ParsedVerdict[] =>
+        Array.from({ length: count }, (_, i) => ({
+          n: i + 1,
+          verdict: "drop" as const,
+          category: "wrong_answer" as const,
+          reasonPl: "X.",
+        }));
+      expect(decide(5, 5, drops(3)).status).toBe("suspicious");
+      expect(decide(5, 5, drops(2)).status).toBe("reviewed");
     });
 
     it("uwagi i miękkie drop nie liczą się do bezpiecznika", () => {

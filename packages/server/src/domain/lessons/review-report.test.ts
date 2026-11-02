@@ -77,6 +77,24 @@ describe("mergeReviewReport", () => {
     expect(merged.machine).toEqual([{ exerciseId: "e1", fingerprint: "new", reviewed: true }]);
   });
 
+  it("wpisy changed i notes z przebiegu zastępują wcześniejsze tego samego ćwiczenia", () => {
+    const merged = mergeReviewReport(
+      report({
+        changed: [{ exerciseId: "e1", fingerprint: "old", category: "ambiguous", reasonPl: "x", beforePl: "b", addedVariants: [] }],
+        notes: [{ exerciseId: "e1", fingerprint: "old", category: "other", reasonPl: "y", fixRejected: false }],
+      }),
+      report({
+        changed: [{ exerciseId: "e1", fingerprint: "new", category: "wrong_answer", reasonPl: "z", beforePl: "c", addedVariants: [] }],
+        notes: [{ exerciseId: "e1", fingerprint: "new", category: "other", reasonPl: "w", fixRejected: true }],
+      }),
+      new Set(["e1"]),
+    );
+    expect(merged.changed).toHaveLength(1);
+    expect(merged.changed[0]?.fingerprint).toBe("new");
+    expect(merged.notes).toHaveLength(1);
+    expect(merged.notes[0]).toMatchObject({ fingerprint: "new", fixRejected: true });
+  });
+
   it("dropped i toppedUp: limit 200, najstarsze obcinane", () => {
     const previous = report({ dropped: Array.from({ length: 150 }, (_, i) => dropped(i)) });
     const run = report({
@@ -137,27 +155,47 @@ function draft(overrides: Partial<LessonExerciseDraft>): LessonExerciseDraft {
   } as LessonExerciseDraft;
 }
 
+
 describe("exerciseSnippet", () => {
-  it("używa treści ćwiczenia i skraca do 80 znaków", () => {
-    const snippet = exerciseSnippet(draft({ stem: "x".repeat(200) }));
+  it("łączy bodziec i odpowiedź", () => {
+    expect(exerciseSnippet(draft({ stem: "Ala ___ kota", answer: "ma" }))).toBe("Ala ___ kota → ma");
+  });
+
+  it("wybiera najbardziej szczegółowy bodziec: stem, prompt, statement, clozeText, instructionPl", () => {
+    expect(exerciseSnippet(draft({ stem: "Pytanie", prompt: "Inny", answer: "A" }))).toBe("Pytanie → A");
+    expect(exerciseSnippet(draft({ stem: " ", prompt: "Prompt", answer: "A" }))).toBe("Prompt → A");
+    expect(exerciseSnippet(draft({ clozeText: "Luka", instructionPl: "Polecenie", answer: "A" }))).toBe("Luka → A");
+    expect(exerciseSnippet(draft({ instructionPl: "Polecenie", answer: "A" }))).toBe("Polecenie → A");
+  });
+
+  it("długie polecenie nie wypiera odpowiedzi", () => {
+    const answer = "to jest odpowiedź o średniej długości";
+    const snippet = exerciseSnippet(draft({ instructionPl: "x".repeat(300), answer }));
     expect(snippet.length).toBeLessThanOrEqual(80);
-    expect(snippet.startsWith("xxx")).toBe(true);
+    expect(snippet.endsWith(` → ${answer}`)).toBe(true);
+    expect(snippet).toContain("…");
+  });
+
+  it("gwarantuje odpowiedzi co najmniej 30 znaków i skraca ją, gdy jest dłuższa", () => {
+    const snippet = exerciseSnippet(draft({ stem: "s".repeat(300), answer: "a".repeat(300) }));
+    expect(snippet.length).toBeLessThanOrEqual(80);
+    const shownAnswer = snippet.split(" → ")[1] ?? "";
+    expect(shownAnswer.length).toBeGreaterThanOrEqual(30);
+    expect(shownAnswer.endsWith("…")).toBe(true);
   });
 
   it("zamienia nowe linie i wielokrotne spacje na pojedynczą spację", () => {
-    const snippet = exerciseSnippet(draft({ stem: "Ala\n ma\t\tkota" }));
-    expect(snippet).toBe("Ala ma kota");
+    const snippet = exerciseSnippet(draft({ stem: "Ala\n ma\t\tkota", answer: "tak\r\nnie" }));
+    expect(snippet).toBe("Ala ma kota → tak nie");
     expect(snippet).not.toMatch(/[\r\n]/);
   });
 
-  it("wybiera pierwsze niepuste pole: stem, prompt, instrukcja, odpowiedź", () => {
-    expect(exerciseSnippet(draft({ stem: "Pytanie", prompt: "Inny" }))).toBe("Pytanie");
-    expect(exerciseSnippet(draft({ stem: " ", prompt: "Prompt" }))).toBe("Prompt");
-    expect(exerciseSnippet(draft({ instructionPl: "Polecenie" }))).toBe("Polecenie");
+  it("sama odpowiedź i skracanie do 80 znaków", () => {
     expect(exerciseSnippet(draft({ answer: "Tylko odpowiedź" }))).toBe("Tylko odpowiedź");
+    expect(exerciseSnippet(draft({ answer: "y".repeat(200) })).length).toBe(80);
   });
 
-  it("nie zwraca pustego tekstu", () => {
-    expect(exerciseSnippet(draft({ answer: "" }))).toBe("(bez treści)");
+  it("puste ćwiczenie daje pusty tekst", () => {
+    expect(exerciseSnippet(draft({ answer: "" }))).toBe("");
   });
 });
