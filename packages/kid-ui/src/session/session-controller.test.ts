@@ -3650,6 +3650,32 @@ describe("LearningSessionController — odczyt zdania po odpowiedzi w lekcji", (
       expect(feedbackOf(harness)).toMatchObject({ explanationPlaying: false, sentencePlaying: "slow" });
     });
 
+    it("odsłuch zdania zatrzymuje grające wyjaśnienie, a spóźnione zakończenie wyjaśnienia nie gasi zdania", async () => {
+      let releaseExplanation!: () => void;
+      const harness = await answeredWithBoth({ playGate: new Promise<void>(() => undefined) });
+      // Wyjaśnienie kończy się dopiero na żądanie testu (spóźnione zakończenie po stop()),
+      // zdanie gra dalej przez bramkę harnessu.
+      const play = harness.media.player.play.bind(harness.media.player);
+      vi.spyOn(harness.media.player, "play").mockImplementation((url, onStarted, options) => {
+        if (url !== EXPLANATION_URL) return play(url, onStarted, options);
+        void play(url, onStarted, options);
+        return new Promise<void>((resolve) => { releaseExplanation = resolve; });
+      });
+      void harness.controller.playExplanationAudio();
+      await tick();
+      expect(feedbackOf(harness)?.explanationPlaying).toBe(true);
+      const stopsBefore = harness.media.stops;
+      void harness.controller.playSentenceAudio("slow");
+      await tick();
+      expect(harness.media.stops).toBeGreaterThan(stopsBefore);
+      expect(harness.media.playUrls).toEqual([SENTENCE_URL, EXPLANATION_URL, SENTENCE_URL]);
+      expect(harness.media.playOptions.at(-1)).toEqual({ rate: 0.75 });
+      releaseExplanation();
+      await tick();
+      expect(feedbackOf(harness)).toMatchObject({ explanationPlaying: false, sentencePlaying: "slow" });
+      expect(feedbackOf(harness)?.sentenceAudioError ?? null).toBeNull();
+    });
+
     it("udany start wyjaśnienia gasi nieaktualny błąd zdania", async () => {
       const harness = await answeredWithBoth({ playGate: new Promise<void>(() => undefined) });
       harness.media.rejectNextPlays = 1;

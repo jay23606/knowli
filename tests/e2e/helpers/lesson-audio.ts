@@ -85,14 +85,15 @@ export function listenChoiceTask(
  * zaczyna się (`playing`) i trwa do `endListenPlayback`; `end` — kończy się
  * (`ended`) po 50 ms; `reject` — przeglądarka blokuje autoodtwarzanie
  * (`NotAllowedError`). Tryb zmienia `setListenAudioMode` w trakcie testu.
+ * `pause()` nic nie robi, ale zapamiętuje element w `paused` (`listenAudioPausedCurrent`).
  */
 export type ListenAudioMode = "hold" | "end" | "reject";
 
-interface ListenAudioState { mode: ListenAudioMode; plays: number; current: HTMLMediaElement | null }
+interface ListenAudioState { mode: ListenAudioMode; plays: number; current: HTMLMediaElement | null; watched: HTMLMediaElement | null; paused: HTMLMediaElement[] }
 
 export async function stubListenAudio(page: Page, mode: ListenAudioMode): Promise<void> {
   await page.addInitScript((initial: ListenAudioMode) => {
-    const state: ListenAudioState = { mode: initial, plays: 0, current: null };
+    const state: ListenAudioState = { mode: initial, plays: 0, current: null, watched: null, paused: [] };
     (window as unknown as { __listenAudio: ListenAudioState }).__listenAudio = state;
     HTMLMediaElement.prototype.play = function play() {
       state.plays += 1;
@@ -102,8 +103,31 @@ export async function stubListenAudio(page: Page, mode: ListenAudioMode): Promis
       if (state.mode === "end") setTimeout(() => this.dispatchEvent(new Event("ended")), 50);
       return Promise.resolve();
     };
-    HTMLMediaElement.prototype.pause = function pause() {};
+    HTMLMediaElement.prototype.pause = function pause() {
+      state.paused.push(this);
+    };
   }, mode);
+}
+
+/**
+ * Zapamiętuje element odtwarzany teraz (ostatnie `play()`); `false`, gdy nic nie gra.
+ * Potem `listenAudioPausedWatched` mówi, czy na tym elemencie wołano `pause()` — element
+ * rozpoznajemy po referencji, bo odtwarzacz gra z adresów `blob:`.
+ */
+export async function watchListenPlayback(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const state = (window as unknown as { __listenAudio: ListenAudioState }).__listenAudio;
+    state.watched = state.current;
+    state.paused = [];
+    return state.watched !== null;
+  });
+}
+
+export async function listenAudioPausedWatched(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const state = (window as unknown as { __listenAudio: ListenAudioState }).__listenAudio;
+    return state.watched !== null && state.paused.includes(state.watched);
+  });
 }
 
 export async function setListenAudioMode(page: Page, mode: ListenAudioMode): Promise<void> {

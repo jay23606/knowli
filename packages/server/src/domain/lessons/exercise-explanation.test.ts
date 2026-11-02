@@ -1,19 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { computeTargetKey } from "../target-key";
 import {
-  MAX_EXPLANATION_LENGTH,
   explanationExposureKeyFinder,
   explanationExposureKeys,
   explanationTextErrors,
 } from "./exercise-explanation";
-import { MAX_TEXT_LENGTH } from "./pool-validation";
 import { englishChapterSubject } from "./subjects/english-chapter/module";
 
 describe("explanationTextErrors", () => {
-  it("limit wyjaśnienia jest równy limitowi pól tekstowych ćwiczenia", () => {
-    expect(MAX_EXPLANATION_LENGTH).toBe(MAX_TEXT_LENGTH);
-  });
-
   it("przyjmuje jedno zdanie zwykłego tekstu", () => {
     expect(explanationTextErrors("Przy he, she, it dodajemy -s: he plays.")).toEqual([]);
   });

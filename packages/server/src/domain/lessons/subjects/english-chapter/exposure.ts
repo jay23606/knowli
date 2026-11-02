@@ -1,5 +1,5 @@
 import { fillCloze } from "../../cloze";
-import type { LessonExerciseDraft } from "../../types";
+import type { LessonExposureSource } from "../../types";
 import { trimTrailing } from "./text";
 
 /**
@@ -47,11 +47,11 @@ function fillStem(stem: string | undefined, word: string): string {
 }
 
 /** Tekst poprawnej opcji wyboru; bez niej — odpowiedź kanoniczna. */
-function correctOptionText(draft: LessonExerciseDraft): string {
+function correctOptionText(draft: LessonExposureSource): string {
   return draft.options?.find((option) => option.id === draft.correctOption)?.text ?? draft.answer;
 }
 
-export function chapterExposureText(draft: LessonExerciseDraft): string {
+export function chapterExposureText(draft: LessonExposureSource): string {
   switch (draft.exerciseType) {
     case "lesson_choice":
     case "lesson_listen_choice":
