@@ -499,6 +499,15 @@ describe("NewLessonForm", () => {
       const pills = () => Array.from(document.querySelectorAll("[data-testid='lesson-themes'] .mantine-Pill-root")).map((el) => el.textContent?.trim());
       const insertButton = (id: string) => screen.getByTestId(`lesson-themes-insert-${id}`) as HTMLButtonElement;
 
+      it("dopisek o „Posłuchaj i wybierz” znika po odznaczeniu jedynego celu z ćwiczeniami słuchowymi i wraca po zaznaczeniu", async () => {
+        renderInteractive();
+        expect(screen.queryByTestId("lesson-listen-choice-note")).not.toBeNull();
+        fireEvent.click(screen.getByTestId("lesson-objective-third_person_s"));
+        await waitFor(() => expect(screen.queryByTestId("lesson-listen-choice-note")).toBeNull());
+        fireEvent.click(screen.getByTestId("lesson-objective-third_person_s"));
+        await waitFor(() => expect(screen.queryByTestId("lesson-listen-choice-note")).not.toBeNull());
+      });
+
       it("wstawienie dołącza tematy dziecka bez duplikatów, a przycisk gaśnie, gdy wszystkie już są", async () => {
         const { registerEditorState } = renderInteractive();
         expect(pills()).toEqual([]);
