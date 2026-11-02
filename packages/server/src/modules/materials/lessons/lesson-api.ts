@@ -38,7 +38,7 @@ import { poolCoverage, validatePool } from "../../../domain/lessons/pool-validat
 import { solvedSentencesOf, validateLessonStory, type LessonStory } from "../../../domain/lessons/story";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
-import { assertAssetPublishable, mediaPendingError, reconcileBeforePublish, reconcileDraftAssetsTx } from "../media-reconciliation";
+import { assertAssetPublishable, mediaPendingError, reconcileBeforePublish, reconcileDraftAssetsTx, reconcileLessonStoryAssetTx } from "../media-reconciliation";
 import { copyRevisionsSkillsAssets } from "../decks";
 import { supersedeFailedLessonStoryRuns, supersedeLessonRuns } from "../generation-runs";
 import { readDeckSource } from "../source-materials";
@@ -945,6 +945,10 @@ export async function createLessonDraftFromPublished(
     const newVersionId = await createVersionFromPublished(tx, id, (innerTx, { source, newVersionId }) =>
       copyRevisionsSkillsAssets(innerTx, { sourceVersionId: source.id, newVersionId, deckId: id }),
     );
+    // Historyjka przechodzi z kontekstem wersji; jej nagranie wiąże się od razu
+    // z gotowym zasobem tego samego fingerprintu (bez kosztu TTS), więc nowy
+    // szkic pokazuje odsłuch bez czekania na pierwszy zapis.
+    await reconcileLessonStoryAssetTx(tx, services, { id: newVersionId, state: "draft" });
     return readLessonDraftDto(tx, services, newVersionId);
   });
 }

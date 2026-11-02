@@ -74,7 +74,7 @@ export function spiderExercises(firstStem?: string): LessonExerciseInput[] {
 
 /** Czyści tabele lekcji i mediów między testami (po `truncateCoreTables`). */
 export async function truncateLessonAudioTables(): Promise<void> {
-  await pool.query(`truncate learning_app.child_objective_progress, learning_app.lesson_verdicts, learning_app.lesson_card_assets,
+  await pool.query(`truncate learning_app.child_objective_progress, learning_app.lesson_verdicts, learning_app.lesson_card_assets, learning_app.lesson_story_assets,
     learning_app.revision_assets, learning_app.generation_runs, learning_app.media_assets, learning_app.item_revision_skills,
     learning_app.item_revisions, learning_app.skill_versions, learning_app.learning_items,
     learning_app.deck_versions, learning_app.decks cascade`);

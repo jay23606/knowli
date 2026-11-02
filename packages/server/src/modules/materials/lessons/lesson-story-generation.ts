@@ -24,6 +24,7 @@ import {
   lessonStoryRunFilter,
 } from "../generation-runs";
 import { MAX_AUTOMATIC_ATTEMPTS, requireGeneration } from "../generation-runtime";
+import { reconcileLessonStoryAssetTx } from "../media-reconciliation";
 import { classifyLessonGenerationFailure, lessonRetryDelayMs } from "./lesson-generation-errors";
 import {
   assertLessonGenerationFinalizationAllowed,
@@ -333,6 +334,8 @@ export async function executeLessonStoryGeneration(
       await tx.update(deckVersions)
         .set({ lessonContext: { ...prevContext, story } as unknown as Record<string, unknown> })
         .where(eq(deckVersions.id, versionId));
+      // Run zmienia tylko historyjkę, więc uzgadniamy samo jej nagranie (nie cały szkic).
+      await reconcileLessonStoryAssetTx(tx, services, locked);
       await markCurrentRun(tx, "succeeded", null);
     });
     console.log(`[lesson-story] run=${runId} durationMs=${Date.now() - runStartedAtMs}`);
