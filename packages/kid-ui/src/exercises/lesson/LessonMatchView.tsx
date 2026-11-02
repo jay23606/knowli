@@ -72,6 +72,9 @@ export function LessonMatchView({ task, busy, dock, handlers }: ExerciseProps) {
     const isSelected = selected?.side === side && selected.id === item.id;
     const other: PairSide = side === "left" ? "right" : "left";
     const connectTo = partner === null && selected !== null && selected.side !== side ? selectedItem : null;
+    const suffix = partner !== null
+      ? { label: messages.kid.lessonMatchPairedWith, other: partner }
+      : connectTo !== null ? { label: messages.kid.lessonMatchConnectWith, other: connectTo } : null;
     return (
       <div key={item.id} role="listitem">
         <LessonBlockButton
@@ -84,12 +87,19 @@ export function LessonMatchView({ task, busy, dock, handlers }: ExerciseProps) {
           disabled={disabled}
           onClick={() => { setState((current) => tapPairItem(current, side, item.id)); handlers.onEdit(); }}
         >
-          <span lang={langOf(side)}>{item.text}</span>
-          {partner !== null ? (
-            <span className="kid-visually-hidden">{messages.kid.lessonMatchPairedWith} <span lang={langOf(other)}>{partner.text}</span></span>
-          ) : connectTo !== null ? (
-            <span className="kid-visually-hidden">{messages.kid.lessonMatchConnectWith} <span lang={langOf(other)}>{connectTo.text}</span></span>
-          ) : null}
+          {suffix === null ? (
+            <span lang={langOf(side)}>{item.text}</span>
+          ) : (
+            <>
+              {/* Cała nazwa w jednym ukrytym spanie: `kid-visually-hidden` jest
+                  `position: absolute` (blok), więc tekst widoczny obok niego dostałby
+                  w nazwie spację przed przecinkiem („dog , połączone z: pies”). */}
+              <span aria-hidden="true" lang={langOf(side)}>{item.text}</span>
+              <span className="kid-visually-hidden">
+                <span lang={langOf(side)}>{item.text}</span>{suffix.label} <span lang={langOf(other)}>{suffix.other.text}</span>
+              </span>
+            </>
+          )}
         </LessonBlockButton>
       </div>
     );

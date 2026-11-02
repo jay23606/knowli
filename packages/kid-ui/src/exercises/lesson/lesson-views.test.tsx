@@ -369,13 +369,23 @@ describe("lesson exercise views", () => {
 
   it("match: nazwy dostępne z treści", () => {
     const en = "en-GB" as const;
-    // jsdom zwraca pusty `display` spanów, więc dom-accessibility-api wstawia spację
-    // między elementami („pies , połącz z: dog”); przeglądarka liczy spany inline bez
-    // separatora, czyli jak `textContent` — sprawdzamy oba.
-    const named = (expected: string) => {
-      const button = screen.getByRole("button", { name: (name) => name.replace(/\s+(?=,)/g, "") === expected });
-      expect(button.textContent).toBe(expected);
-      return button;
+    // Kafelek z dopowiedzeniem: cała nazwa w jednym ukrytym spanie, a widoczny tekst
+    // aria-hidden (inaczej blokowy `kid-visually-hidden` daje spację przed przecinkiem).
+    const hiddenName = (tile: HTMLElement) => {
+      expect(tile.hasAttribute("aria-label")).toBe(false);
+      expect(tile.hasAttribute("lang")).toBe(false);
+      const [visible, hidden, ...rest] = [...tile.children];
+      expect(rest).toHaveLength(0);
+      expect(visible!.getAttribute("aria-hidden")).toBe("true");
+      expect(hidden!.className).toBe("kid-visually-hidden");
+      expect(visible!.textContent).toBe(hidden!.firstElementChild!.textContent);
+      return hidden as HTMLElement;
+    };
+    const plain = (tile: HTMLElement) => {
+      expect(tile.hasAttribute("aria-label")).toBe(false);
+      expect(tile.querySelectorAll("span")).toHaveLength(1);
+      expect(tile.querySelector("[aria-hidden]")).toBeNull();
+      expect(tile.querySelector(".kid-visually-hidden")).toBeNull();
     };
     renderKid(<LessonMatchView {...makeExerciseProps(task({
       kind: "lesson_match", instructionPl: "Połącz", contentLocale: en,
@@ -385,26 +395,32 @@ describe("lesson exercise views", () => {
     for (const tile of screen.getAllByTestId("kid-lesson-match-left")) {
       expect(tile.tagName).toBe("BUTTON");
       expect(tile.hasAttribute("lang")).toBe(false);
-      expect(tile.hasAttribute("aria-label")).toBe(false);
-      const spans = tile.querySelectorAll("span");
-      expect(spans).toHaveLength(1);
-      expect(spans[0]!.getAttribute("lang")).toBe(en);
+      plain(tile);
+      expect(tile.querySelector("span")!.getAttribute("lang")).toBe(en);
     }
     for (const tile of screen.getAllByTestId("kid-lesson-match-right")) {
       expect(tile.tagName).toBe("BUTTON");
-      expect(tile.hasAttribute("lang")).toBe(false);
-      expect(tile.hasAttribute("aria-label")).toBe(false);
-      expect(tile.querySelectorAll("span")).toHaveLength(1);
+      plain(tile);
       expect(tile.querySelectorAll("[lang]")).toHaveLength(0);
     }
+
     fireEvent.click(leftTile(0));
-    expect(named("pies, połącz z: dog")).toBe(rightTile(0));
-    expect(rightTile(0).querySelector(".kid-visually-hidden span[lang]")?.getAttribute("lang")).toBe(en);
+    plain(leftTile(0));
     expect(screen.getByRole("button", { name: "dog" })).toBe(leftTile(0));
+    const connect = hiddenName(rightTile(0));
+    expect(connect.textContent).toBe("pies, połącz z: dog");
+    expect(rightTile(0).firstElementChild!.hasAttribute("lang")).toBe(false);
+    expect([...connect.children].map((span) => span.getAttribute("lang"))).toEqual([null, en]);
+
     fireEvent.click(rightTile(0));
-    expect(named("dog, połączone z: pies")).toBe(leftTile(0));
-    expect(named("pies, połączone z: dog")).toBe(rightTile(0));
-    expect(leftTile(0).querySelector(".kid-visually-hidden [lang]")).toBeNull();
+    const paired = hiddenName(leftTile(0));
+    expect(paired.textContent).toBe("dog, połączone z: pies");
+    expect(leftTile(0).firstElementChild!.getAttribute("lang")).toBe(en);
+    expect([...paired.children].map((span) => span.getAttribute("lang"))).toEqual([en, null]);
+    const pairedRight = hiddenName(rightTile(0));
+    expect(pairedRight.textContent).toBe("pies, połączone z: dog");
+    expect([...pairedRight.children].map((span) => span.getAttribute("lang"))).toEqual([null, en]);
+    plain(leftTile(1));
     expect(screen.getByRole("button", { name: "cat" })).toBe(leftTile(1));
     expect(screen.getByRole("list", { name: "Słowa do połączenia" }).contains(leftTile(0))).toBe(true);
     expect(screen.getByRole("list", { name: "Odpowiedzi do połączenia" }).contains(rightTile(0))).toBe(true);
@@ -494,6 +510,7 @@ describe("lesson exercise views", () => {
     renderKid(<LessonClozeView {...props} />);
     const text = screen.getByTestId("kid-lesson-cloze-text");
     expect(text.querySelectorAll("button")).toHaveLength(2);
+    // Dawny test id miejsca na słowo (`kid-lesson-cloze-` + `slot`) nie wraca; zapis prefiks/sufiks, bo sloty ExerciseFrame też kończą się na „-slot”.
     expect(document.querySelectorAll("[data-testid^='kid-lesson-cloze-'][data-testid$='-slot']")).toHaveLength(0);
     const check = screen.getByTestId("kid-lesson-check") as HTMLButtonElement;
     const [first, second] = screen.getAllByTestId("kid-lesson-cloze-gap");
