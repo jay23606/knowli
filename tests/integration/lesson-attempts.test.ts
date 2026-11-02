@@ -365,6 +365,15 @@ describe("kwalifikacja i projekcja celu", () => {
     expect(progress!.lastIndependentAt).not.toBeNull();
   });
 
+  it("podpowiedź dla zadania zamkniętego (lesson_choice) → 409 bez zdarzenia i ekspozycji", async () => {
+    const { services, clock } = buildTestServices();
+    const { session } = await newLesson(services, clock);
+    const choice = await issueUntil(services, session.sessionId, "lesson_choice");
+    await expect(authorizeDisclosure(services, { taskId: choice.taskId, kind: "hint" })).rejects.toMatchObject({ code: "conflict" });
+    const events = await pool.query("select id from learning_app.learning_events where task_id = $1 and kind = 'hint_issued'", [choice.taskId]);
+    expect(events.rows).toHaveLength(0);
+  });
+
   it("odsłuch odpowiedzi przed odpowiedzią → zależne", async () => {
     const { services, clock } = buildTestServices();
     const { child, session } = await newLesson(services, clock, true);

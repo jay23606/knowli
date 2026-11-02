@@ -454,6 +454,26 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
     }
   });
 
+  it("capListenChoiceOverflow: nadmiar ćwiczeń etapów przycina najpierw z etapów ponad zamówiony podział", () => {
+    const ex = (exerciseType: LessonExerciseDraft["exerciseType"], answer: string): LessonExerciseDraft =>
+      ({ objectiveId: "o1", exerciseType, answer, acceptedAnswers: [], focus: [] });
+    // Model oddał nadmiar etapu prowadzonego na początku; zamówione: 2 guided, 2 productive, 1 independent.
+    const exercises = [
+      ex("lesson_choice", "c1"), ex("lesson_choice", "c2"), ex("lesson_order", "c3"), ex("lesson_listen_choice", "l1"),
+      ex("lesson_gap", "g1"), ex("lesson_transform", "g2"), ex("lesson_open_answer", "o1"),
+    ];
+    const limits = new Map([["o1", { count: 5, listen: 2, stages: { guided: 2, productive: 2, independent: 1 } }]]);
+    const result = capListenChoiceOverflow(exercises, limits);
+    expect(result.kept.map((e) => e.answer)).toEqual(["c1", "c2", "l1", "g1", "g2", "o1"]);
+    expect(result.rejected.map((r) => r.exercise.answer)).toEqual(["c3"]);
+
+    // Gdy etapom brakuje ćwiczeń, wolne miejsca dobiera kolejność wejścia (bez zmiany limitu `count`).
+    const short = [ex("lesson_choice", "c1"), ex("lesson_choice", "c2"), ex("lesson_choice", "c3"), ex("lesson_choice", "c4"), ex("lesson_gap", "g1")];
+    const shortResult = capListenChoiceOverflow(short, limits);
+    expect(shortResult.kept.map((e) => e.answer)).toEqual(["c1", "c2", "c3", "c4", "g1"]);
+    expect(capListenChoiceOverflow([...short, ex("lesson_choice", "c5")], limits).rejected.map((r) => r.exercise.answer)).toEqual(["c5"]);
+  });
+
   it("przenosi reguły typów z profilu przedmiotu do profilu promptu, a brak reguł pomija pola", () => {
     const withRules = build(schoolSubject).promptProfile;
     expect(withRules.typeRules).toEqual(schoolSubject.prompts.typeRules);

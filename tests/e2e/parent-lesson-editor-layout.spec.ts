@@ -352,8 +352,8 @@ test("Posłuchaj i wybierz: odznaka, informacja, tekst naprawy i licznik bez prz
       await expect(page.getByTestId(`exercise-sentence-audio-state-${index}`)).toBeVisible();
       await expect(page.getByTestId(`exercise-audio-state-${index}`)).toHaveCount(0);
     }
-    await expect(page.getByTestId("exercise-sentence-audio-state-0")).toHaveText(messages.decks.audioState.ready!);
-    await expect(page.getByTestId("exercise-sentence-audio-state-2")).toHaveText(messages.decks.audioState.pending!);
+    await expect(page.getByTestId("exercise-sentence-audio-state-0")).toHaveText(messages.lessons.sentenceAudioState.ready!);
+    await expect(page.getByTestId("exercise-sentence-audio-state-2")).toHaveText(messages.lessons.sentenceAudioState.pending!);
     // tekst naprawy tylko przy błędzie
     await expect(page.getByTestId("exercise-sentence-audio-failed-1")).toHaveText(messages.lessons.listenChoiceAudioFailed);
     await expect(page.getByTestId("exercise-sentence-audio-failed-0")).toHaveCount(0);
@@ -419,6 +419,15 @@ test("opublikowana lekcja bez szkicu: stan audio i odsłuch w menu ⋯ karty", a
   await page.getByTestId("exercise-play-0").click();
   await played;
   await expect(page.getByTestId("new-version")).toBeVisible();
+});
+
+test("opublikowana lekcja bez szkicu: wiersz „Tematy zdań” bez przycisku usuwania i notki", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const publishedOnly = { ...lesson, draft: null, published: { ...lesson.published, interests: ["dinozaury", "Minecraft"] } };
+  await openLesson(page, { data: publishedOnly as unknown as typeof lesson });
+  await expect(page.getByTestId("lesson-themes-line")).toHaveText(messages.lessons.themesLine.replace("{themes}", "dinozaury, Minecraft"));
+  await expect(page.getByTestId("lesson-themes-remove")).toHaveCount(0);
+  await expect(page.getByTestId("lesson-themes-remove-hint")).toHaveCount(0);
 });
 
 test.describe("telefon z klawiaturą ekranową", () => {

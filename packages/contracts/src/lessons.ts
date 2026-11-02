@@ -106,6 +106,8 @@ export const SubjectCatalogDtoSchema = z.object({
     subjectTitleRequired: z.boolean(),
     /** Czy przedmiot przyjmuje tematy zdań z zainteresowań dziecka (pole w formularzu rodzica). */
     acceptsInterests: z.boolean().optional(),
+    /** Czy generacja dodaje do puli ćwiczenia „Posłuchaj i wybierz” (dopisek przy polu puli w formularzu rodzica). */
+    offersListenChoice: z.boolean().optional(),
     topics: z.array(z.object({
       id: z.string().min(1),
       version: z.number().int().positive(),
@@ -114,6 +116,8 @@ export const SubjectCatalogDtoSchema = z.object({
         id: z.string().min(1),
         titlePl: z.string().min(1),
   cards: z.array(z.object({ title: z.string().min(1), body: z.string().min(1) }).strict()),
+        /** Czy generacja może dodać temu celowi ćwiczenia „Posłuchaj i wybierz” (przedmiot `offersListenChoice` i typ w celu). */
+        offersListenChoice: z.boolean().optional(),
       }).strict()),
     }).strict()),
   }).strict()),

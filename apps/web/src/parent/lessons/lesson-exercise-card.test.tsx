@@ -46,19 +46,19 @@ describe("LessonExerciseCard: Posłuchaj i wybierz", () => {
     expect(markup).toContain('data-testid="exercise-listen-note-0"');
     expect(markup).toContain(messages.lessons.listenChoiceNote);
     expect(markup).toContain('data-testid="exercise-sentence-audio-state-0"');
-    expect(markup).toContain(messages.decks.audioState.ready);
+    expect(markup).toContain(messages.lessons.sentenceAudioState.ready);
     expect(markup).not.toContain(messages.lessons.listenChoiceAudioFailed);
   });
 
   it("nagranie pending: odznaka generowania, bez tekstu błędu", () => {
     const markup = render({ state: "pending" });
-    expect(markup).toContain(messages.decks.audioState.pending);
+    expect(markup).toContain(messages.lessons.sentenceAudioState.pending);
     expect(markup).not.toContain(messages.lessons.listenChoiceAudioFailed);
   });
 
   it("nagranie failed: odznaka błędu i sposób naprawy, bez przycisku ponownego nagrania", () => {
     const markup = render({ state: "failed" });
-    expect(markup).toContain(messages.decks.audioState.failed);
+    expect(markup).toContain(messages.lessons.sentenceAudioState.failed);
     expect(markup).toContain('data-testid="exercise-sentence-audio-failed-0"');
     expect(markup).toContain(messages.lessons.listenChoiceAudioFailed);
     expect(markup).not.toContain(messages.lessons.promptAudioRegenerate);
