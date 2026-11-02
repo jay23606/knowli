@@ -107,6 +107,25 @@ describe("stan „Połącz linią”", () => {
     expect(state.selected).toBeNull();
   });
 
+  it("replaces pairs of both tiles when the right tile is selected first", () => {
+    const paired = taps(start, ["left", "l1"], ["right", "r1"], ["left", "l2"], ["right", "r2"]);
+    const state = taps(paired, ["right", "r2"], ["left", "l1"]);
+    expect([...state.pairs]).toEqual([["l1", "r2"]]);
+    expect(pairOf(state, "right", "r1")).toBeNull();
+    expect(pairOf(state, "left", "l2")).toBeNull();
+    expect(pairOf(state, "left", "l1")?.id).toBe("r2");
+    expect(state.selected).toBeNull();
+  });
+
+  it("releases a distractor when its left tile gets another pair", () => {
+    const withDistractor = taps(start, ["left", "l1"], ["right", "rx"]);
+    expect(pairOf(withDistractor, "right", "rx")?.id).toBe("l1");
+    const state = taps(withDistractor, ["left", "l1"], ["right", "r1"]);
+    expect(pairOf(state, "right", "rx")).toBeNull();
+    expect([...state.pairs.values()]).not.toContain("rx");
+    expect([...state.pairs]).toEqual([["l1", "r1"]]);
+  });
+
   it("nieznane id i strona bez elementu nie zmieniają stanu", () => {
     expect(tapPairItem(start, "left", "r1")).toBe(start);
     expect(tapPairItem(start, "right", "nope")).toBe(start);

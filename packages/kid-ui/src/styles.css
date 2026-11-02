@@ -1401,8 +1401,11 @@
 /* Dwa komunikaty naraz (instrukcja + nagranie zadania) zjadają budżet
    pionowy ramy — zwłaszcza nad progiem very-short, np. 480 px. Cała rama
    przewija się wtedy jak przy flow-layout, zamiast trwale przycinać
-   stopkę akcji (wzorzec .root[data-feedback-layout="flow"]). */
-.kid-learning[data-action-notice="true"] .kid-exercise-frame {
+   stopkę akcji (wzorzec .root[data-feedback-layout="flow"]). Nie w trybie
+   przewijanej strony (powiększenie gestem, bardzo niskie okno): tam przewija
+   strona, a rama jako nieprzewijany kontener przewijania odcięłaby `position:
+   sticky` od strony (bank słów luk w niskim landscape by się nie przyklejał). */
+.kid-page:not([data-zoomed="true"], [data-viewport-very-short="true"]) .kid-learning[data-action-notice="true"] .kid-exercise-frame {
   overflow-y: auto;
 }
 
@@ -2638,10 +2641,13 @@
 }
 
 /* Kafelki „Połącz w pary” po `.kid-ui .kid-lesson-block` (jego `overflow-wrap:
-   anywhere` ustępuje `break-word`: słowo łamie się tylko, gdy samo się nie mieści). */
+   anywhere` ustępuje `break-word`: słowo łamie się tylko, gdy samo się nie mieści).
+   `hyphens: auto` dzieli długie słowo z łącznikiem w języku tekstu (`lang` dokumentu
+   pl-PL, lewa kolumna z `lang` materiału), zanim zadziała `break-word`. */
 .kid-ui .kid-lesson-block.kid-lesson-pair__item {
   width: 100%;
   overflow-wrap: break-word;
+  hyphens: auto;
 }
 
 /* Zaznaczony kafelek (wspólny język stanów, §3): wypełniony `primary`;
@@ -2654,10 +2660,24 @@
   font-weight: var(--kid-type-answer-weight);
 }
 
+/* Odpowiednik zaznaczonego kafelka w parze (§5.4): obwódka `primary` poza kafelkiem,
+   bez zmiany wymiarów; razem z grubszą linią pokazuje, z czym kafelek jest połączony. */
+.kid-ui .kid-lesson-block.kid-lesson-pair__item--partner {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
 @media (max-width: 599px) {
   .kid-ui .kid-lesson-block.kid-lesson-pair__item {
     padding: 8px 10px;
     font-size: var(--kid-type-title-sm-size);
+  }
+}
+
+/* Najwęższe telefony (320 px): mniej poziomego paddingu, więcej miejsca na słowa. */
+@media (max-width: 359px) {
+  .kid-ui .kid-lesson-block.kid-lesson-pair__item {
+    padding-inline: 6px;
   }
 }
 
@@ -2676,6 +2696,11 @@
   stroke: var(--md-sys-color-primary);
   stroke-width: 4;
   stroke-linecap: round;
+}
+
+/* Linia zaznaczonego kafelka w parze (§5.4). */
+.kid-ui .kid-lesson-pair__line.kid-lesson-pair__line--selected {
+  stroke-width: 6;
 }
 
 .kid-ui .kid-lesson-pair__dot {
@@ -2838,7 +2863,9 @@
    miejscem, bo stany luk są później w pliku. Luka jest blokiem zawierającym swój
    ukryty przedrostek (`.kid-visually-hidden`, `position: absolute`): bez tego
    jego blok zawierający leży poza przewijanym materiałem, więc przedrostek nie
-   przewija się z tekstem i wystaje poza koniec treści. */
+   przewija się z tekstem i wystaje poza koniec treści. Pionowy margines 3 px
+   wchodzi do wiersza (`inline-flex`), więc luki w sąsiednich wierszach się nie
+   stykają. */
 .kid-ui .kid-lesson-block.kid-lesson-cloze__gap {
   position: relative;
   display: inline-flex;
@@ -2848,7 +2875,7 @@
   min-height: 48px;
   min-inline-size: 4.5em;
   max-inline-size: 100%;
-  margin-inline: 2px;
+  margin: 3px 2px;
   padding: 4px 12px;
   font: inherit;
   font-weight: var(--kid-type-answer-weight);
@@ -2859,7 +2886,7 @@
 
 .kid-ui .kid-lesson-block.kid-lesson-cloze__gap--empty {
   border-bottom: 2px dashed var(--md-sys-color-outline);
-  background: var(--md-sys-color-surface-container);
+  background: var(--md-sys-color-surface-container-high);
 }
 
 .kid-ui .kid-lesson-block.kid-lesson-cloze__gap--filled {

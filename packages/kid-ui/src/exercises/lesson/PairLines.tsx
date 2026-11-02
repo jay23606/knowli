@@ -128,22 +128,28 @@ export function PairLines({
       data-testid="kid-lesson-match-lines"
       aria-hidden="true"
     >
-      {[...state.pairs].map(([leftId, rightId]) => (
-        <m.line
-          key={`${leftId}:${rightId}`}
-          data-testid="kid-lesson-match-line"
-          data-left-id={leftId}
-          data-right-id={rightId}
-          className="kid-lesson-pair__line"
-          x1={0}
-          y1={0}
-          x2={0}
-          y2={0}
-          initial={reduceMotion ? false : kidFadeInitial}
-          animate={kidFadeAnimate}
-          transition={kidFadeTransition}
-        />
-      ))}
+      {[...state.pairs].map(([leftId, rightId]) => {
+        // Linia zaznaczonego kafelka w parze jest grubsza (spec §5.4): skrzyżowane linie
+        // długich opisów da się wtedy prześledzić.
+        const { selected } = state;
+        const emphasised = selected !== null && selected.id === (selected.side === "left" ? leftId : rightId);
+        return (
+          <m.line
+            key={`${leftId}:${rightId}`}
+            data-testid="kid-lesson-match-line"
+            data-left-id={leftId}
+            data-right-id={rightId}
+            className={`kid-lesson-pair__line${emphasised ? " kid-lesson-pair__line--selected" : ""}`}
+            x1={0}
+            y1={0}
+            x2={0}
+            y2={0}
+            initial={reduceMotion ? false : kidFadeInitial}
+            animate={kidFadeAnimate}
+            transition={kidFadeTransition}
+          />
+        );
+      })}
       {dots.map(({ side, id }) => {
         const selected = state.selected?.side === side && state.selected.id === id;
         const paired = pairedIds[side].has(id);

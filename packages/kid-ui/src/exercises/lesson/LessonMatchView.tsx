@@ -24,6 +24,7 @@ import {
  * Kierunek dowolny, tylko stukanie — kafelki to przyciski, działają z klawiatury.
  * Nazwa dostępna z treści (tekst + ukryte polskie dopowiedzenie), bez `aria-label`;
  * `lang` materiału tylko na tekście lewej kolumny (prawa bywa polska).
+ * Zaznaczony kafelek w parze wyróżnia też swoją linię i odpowiednik (obwódka).
  * „Sprawdź” wysyła przypisania, gdy każdy lewy kafelek ma parę.
  */
 export function LessonMatchView({ task, busy, dock, handlers }: ExerciseProps) {
@@ -65,11 +66,14 @@ export function LessonMatchView({ task, busy, dock, handlers }: ExerciseProps) {
   const selectedItem = selected === null
     ? null
     : (selected.side === "left" ? state.left : state.right).find((item) => item.id === selected.id) ?? null;
+  // Odpowiednik zaznaczonego kafelka w parze: obwódka pokazuje, z czym jest teraz połączony (spec §5.4).
+  const selectedPartner = selected === null ? null : pairOf(state, selected.side, selected.id);
   const langOf = (side: PairSide) => (side === "left" ? prompt.contentLocale : undefined);
 
   const renderTile = (side: PairSide, item: LessonItem) => {
     const partner = pairOf(state, side, item.id);
     const isSelected = selected?.side === side && selected.id === item.id;
+    const isPartner = selected !== null && selected.side !== side && selectedPartner?.id === item.id;
     const other: PairSide = side === "left" ? "right" : "left";
     const connectTo = partner === null && selected !== null && selected.side !== side ? selectedItem : null;
     const suffix = partner !== null
@@ -80,7 +84,7 @@ export function LessonMatchView({ task, busy, dock, handlers }: ExerciseProps) {
         <LessonBlockButton
           ref={tileRefs.get(`${side}:${item.id}`)}
           type="button"
-          className={`kid-lesson-block kid-lesson-pair__item${partner ? " kid-lesson-block--placed" : ""}${isSelected ? " kid-lesson-pair__item--selected" : ""}`}
+          className={`kid-lesson-block kid-lesson-pair__item${partner ? " kid-lesson-block--placed" : ""}${isSelected ? " kid-lesson-pair__item--selected" : ""}${isPartner ? " kid-lesson-pair__item--partner" : ""}`}
           data-testid={side === "left" ? "kid-lesson-match-left" : "kid-lesson-match-right"}
           data-item-id={item.id}
           aria-pressed={isSelected}

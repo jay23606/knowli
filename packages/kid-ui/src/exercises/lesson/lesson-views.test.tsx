@@ -367,6 +367,34 @@ describe("lesson exercise views", () => {
     expect(rightTile(0).classList.contains("kid-lesson-block--placed")).toBe(false);
   });
 
+  it("match: zaznaczony kafelek w parze wyróżnia swoją linię i odpowiednik (obie strony)", () => {
+    renderKid(<LessonMatchView {...makeExerciseProps(matchTask())} />);
+    const partners = () => [...document.querySelectorAll(".kid-lesson-pair__item--partner")];
+    const selectedLines = () => [...document.querySelectorAll(".kid-lesson-pair__line--selected")]
+      .map((line) => [line.getAttribute("data-left-id"), line.getAttribute("data-right-id")]);
+    fireEvent.click(leftTile(0));
+    fireEvent.click(rightTile(1));
+    fireEvent.click(leftTile(1));
+    fireEvent.click(rightTile(0));
+    expect(partners()).toHaveLength(0);
+    expect(selectedLines()).toEqual([]);
+    // Zaznaczenie lewego kafelka w parze: obwódka na prawym odpowiedniku, grubsza linia.
+    fireEvent.click(leftTile(0));
+    expect(partners()).toEqual([rightTile(1)]);
+    expect(selectedLines()).toEqual([[id(3), id(7)]]);
+    expect(leftTile(0).classList.contains("kid-lesson-pair__item--partner")).toBe(false);
+    // Przeniesienie zaznaczenia na prawy kafelek drugiej pary (najpierw zdjęcie zaznaczenia).
+    fireEvent.click(leftTile(0));
+    fireEvent.click(rightTile(0));
+    expect(partners()).toEqual([leftTile(1)]);
+    expect(selectedLines()).toEqual([[id(4), id(6)]]);
+    // Wolny kafelek nie ma odpowiednika.
+    fireEvent.click(rightTile(0));
+    fireEvent.click(rightTile(3));
+    expect(partners()).toHaveLength(0);
+    expect(selectedLines()).toEqual([]);
+  });
+
   it("match: nazwy dostępne z treści", () => {
     const en = "en-GB" as const;
     // Kafelek z dopowiedzeniem: cała nazwa w jednym ukrytym spanie, a widoczny tekst
@@ -588,6 +616,37 @@ describe("lesson exercise views", () => {
     expect(gaps.some((gap) => gap.classList.contains("kid-lesson-cloze__gap--filled"))).toBe(false);
     expect(gaps[0]!.getAttribute("aria-pressed")).toBe("true");
     expect(document.activeElement).toBe(gaps[0]);
+  });
+
+  it("cloze keeps filled gaps when the same task arrives as a fresh prompt object", () => {
+    const props = makeExerciseProps(clozeTask());
+    const view = renderKid(<LessonClozeView {...props} />);
+    fireEvent.click(screen.getByText("tlen"));
+    const filled = () => screen.getAllByTestId("kid-lesson-cloze-gap").map((gap) => gap.classList.contains("kid-lesson-cloze__gap--filled"));
+    expect(filled()).toEqual([true, false]);
+    const refreshed = makeExerciseProps(clozeTask());
+    view.rerender(<LessonClozeView {...refreshed} handlers={props.handlers} />);
+    expect(filled()).toEqual([true, false]);
+    expect(screen.getByRole("button", { name: "Luka 1: tlen" })).toBeTruthy();
+    expect(screen.getAllByTestId("kid-lesson-cloze-gap")[1]!.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("match keeps pairs, lines and the selection when the same task arrives as a fresh prompt object", () => {
+    const props = makeExerciseProps(matchTask());
+    const view = renderKid(<LessonMatchView {...props} />);
+    fireEvent.click(leftTile(0));
+    fireEvent.click(rightTile(1));
+    fireEvent.click(leftTile(1));
+    expect(matchLines()).toHaveLength(1);
+    const refreshed = makeExerciseProps(matchTask());
+    view.rerender(<LessonMatchView {...refreshed} handlers={props.handlers} />);
+    expect(matchLines().map((line) => [line.getAttribute("data-left-id"), line.getAttribute("data-right-id")])).toEqual([[id(3), id(7)]]);
+    expect(leftTile(0).classList.contains("kid-lesson-block--placed")).toBe(true);
+    expect(rightTile(1).classList.contains("kid-lesson-block--placed")).toBe(true);
+    expect([...pressedTiles()]).toEqual([leftTile(1)]);
+    // Kafelki po odświeżeniu nadal łączą się w pary (refy przepięte na nowe elementy).
+    fireEvent.click(rightTile(0));
+    expect(matchLines()).toHaveLength(2);
   });
 
   it("order keeps placed blocks when the same task arrives as a fresh prompt object", () => {

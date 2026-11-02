@@ -79,6 +79,31 @@ describe("PairLines", () => {
     }
   });
 
+  it("linia zaznaczonego kafelka w parze jest wyróżniona — zaznaczenie po lewej i po prawej", () => {
+    const lineClasses = (state: PairState) => {
+      const { container, unmount } = renderLines(state);
+      const classes = [...container.querySelectorAll("[data-testid='kid-lesson-match-line']")]
+        .map((line) => [line.getAttribute("data-left-id"), line.getAttribute("class")]);
+      unmount();
+      return classes;
+    };
+    const pairs: Array<[string, string]> = [["l1", "r2"], ["l3", "r1"]];
+    expect(lineClasses(stateWith(pairs))).toEqual([["l1", "kid-lesson-pair__line"], ["l3", "kid-lesson-pair__line"]]);
+    expect(lineClasses(stateWith(pairs, { side: "left", id: "l1" }))).toEqual([
+      ["l1", "kid-lesson-pair__line kid-lesson-pair__line--selected"], ["l3", "kid-lesson-pair__line"],
+    ]);
+    expect(lineClasses(stateWith(pairs, { side: "right", id: "r1" }))).toEqual([
+      ["l1", "kid-lesson-pair__line"], ["l3", "kid-lesson-pair__line kid-lesson-pair__line--selected"],
+    ]);
+    // Wolny zaznaczony kafelek nie wyróżnia żadnej linii, także gdy jego id pokrywa się z drugą stroną pary.
+    expect(lineClasses(stateWith(pairs, { side: "right", id: "r4" }))).toEqual([
+      ["l1", "kid-lesson-pair__line"], ["l3", "kid-lesson-pair__line"],
+    ]);
+    expect(lineClasses(stateWith(pairs, { side: "left", id: "l2" }))).toEqual([
+      ["l1", "kid-lesson-pair__line"], ["l3", "kid-lesson-pair__line"],
+    ]);
+  });
+
   it("działa bez ResizeObserver (jsdom) i przy zerowych offsetach", () => {
     vi.stubGlobal("ResizeObserver", undefined);
     const { container } = renderLines(stateWith([["l1", "r2"]]));
