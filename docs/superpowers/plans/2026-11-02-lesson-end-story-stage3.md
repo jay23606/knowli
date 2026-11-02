@@ -91,13 +91,23 @@ do specu jako uzupełnienie §8 („Uzupełnienie z planowania etapu 3”).
    (`createLessonTrainingSessionPlan` przerywa pętlę, gdy selektor nie ma
    kandydata, a `taskBudget` = liczba ocenianych slotów, więc ostatnie wydane
    zadanie bywa kartą). Inwariant sufiksu pilnuje odczyt planu (ruling 14).
+   *Uzupełnienie z przeglądu końcowego:* gałąź budżetu (pusty zbiór slotów
+   regularnych albo wyczerpany budżet planu) to strażnik na wypadek rozjechania
+   się budżetu sesji i planu — w zwykłym `startSession` nieosiągalna. Gdy
+   zamknięcie przychodzi, zanim wyszedł jakikolwiek slot spoza historyjki
+   (`planned − story = 0`), `nextTask` zwraca `null`: historyjka nie jest
+   pierwszą ani jedyną treścią sesji. Nowe wydanie bierze liczniki
+   z `sessionActivityAndCounts`, ponowny odczyt i „Skróć” — z `lessonTaskCounts`.
 2. **„Skróć” to trener precyzji, nie skracanie sesji.** `lesson-shorten.ts`
    tworzy zadanie następcze „Skróć odpowiedź” i nie usuwa slotów; funkcji
    skracania sesji w kodzie nie ma. Rezerwacja wywołań gradera
    `plan.slots.slice(counts.planned)` filtruje `GRADER_TYPES`, więc sloty
    historyjki do niej nie wchodzą, a przesunięcie indeksu dotyczy tylko
    zamykania sesji, kiedy zadanie następcze już nie powstaje (faza obietnicy).
-   **`lesson-shorten.ts` zostaje bez zmian.** Test specu „Skróć zachowuje
+   *Przegląd końcowy:* rezerwacja liczy się z
+   `unissuedPlanSlots(plan, counts).regular` (filtr `GRADER_TYPES`) zamiast
+   `plan.slots.slice(counts.planned)` — zachowanie dziś bez zmian, indeks nie
+   zależy od wydanych zadań historyjki. Test specu „Skróć zachowuje
    historyjkę” zastępuje test integracyjny „precision follow-up before the
    story” (Task 4): świat szkolny z fake graderem
    (`tests/integration/lesson-grader-school.test.ts`: `seedSchoolDeck`,
@@ -137,13 +147,16 @@ do specu jako uzupełnienie §8 („Uzupełnienie z planowania etapu 3”).
    + historyjka). `taskCounts` w `sessions.ts` (`SessionDto.assessedTasksIssued`
    i podsumowanie) także dostaje pełny predykat: karty lekcji przestają tam
    zawyżać licznik (dziś liczone jak oceniane). Liczenie zadań następczych się
-   nie zmienia. Skutki uboczne (dokumentuje Task 8): zakończone sesje zachowują
+   nie zmienia. Filtr historyjki w `historicalSupportObjectives` jest obronny
+   (próby pytań nie mają `assessments`). Skutki uboczne (dokumentuje Task 8):
+   zakończone sesje zachowują
    zapisane podsumowanie (`context.summary`) ze starą liczbą; `SessionDto`
    aktywnych sesji lekcji pokazuje mniejszą liczbę po wdrożeniu. Istniejące
    asercje, które polegały na starym liczeniu, poprawiamy.
 10. **Stan pytania po odpowiedzi: `answered`**, jak zamknięte zadania lekcji;
     migracja `0035` poszerza `session_tasks_completed_only_exposure` tylko
-    o `lesson_story`.
+    o `lesson_story`. Bez migracji wydanie historyjki przechodzi, a łamie się
+    „Dalej” (`completePresentation` → stan `completed` narusza CHECK).
 11. **Kosze testów.** Nowy plik integracyjny trafia do kosza 3
     `tests/integration-buckets.ts`, bo kosz 2 dostał dwa pliki w etapach 1–2
     (świeżego pomiaru brak). Przebieg `real` E2E dopisujemy do istniejącego
@@ -1085,7 +1098,7 @@ do czystych selektorów `learn-screen-state.ts` (testowanych tak, jak używa ich
 
 **Files:**
 - Modify: `packages/contracts/src/messages.ts` (`lessons.story.info` = tekst §11:
-  „Dziecko przeczyta i posłucha historyjki na koniec każdej sesji, a potem odpowie na pytania. Pytania nie liczą się do postępu.”;
+  „Dziecko przeczyta i posłucha historyjki na koniec każdej sesji nauki (nie w kartkówce), a potem odpowie na pytania. Pytania nie liczą się do postępu.”;
   usuń komentarz etapu 1)
 - Test: `apps/web/src/parent/lessons/lesson-story-section.test.tsx` (asercja `info` bez zmian w kodzie testu — sprawdź, że przechodzi)
 - Modify: `.kiro/specs/grammar-module/requirements.md`:

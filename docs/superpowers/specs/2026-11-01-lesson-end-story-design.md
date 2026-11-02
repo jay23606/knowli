@@ -605,13 +605,23 @@ planowania”); w razie sprzeczności z §8.1–§8.6 obowiązuje to uzupełnien
    `task-transition-queries.test.ts`). Sloty spoza historyjki wychodzą tylko
    po kolei, a sloty historyjki tylko po kolei i jako sufiks; gdy historyjka
    ruszyła, wychodzą wyłącznie jej sloty. Zamknięciem jest też pusty zbiór
-   niewydanych slotów spoza historyjki oraz wyczerpany budżet planu (plan bywa
-   krótszy niż budżet sesji) — ta gałąź jest osiągalna tylko wtedy, gdy budżet
-   sesji różni się od budżetu planu (strażnik).
+   niewydanych slotów spoza historyjki oraz wyczerpany budżet planu — ta gałąź
+   to strażnik na wypadek rozjechania się budżetu sesji i budżetu planu;
+   w zwykłym `startSession` (budżet sesji = liczba ocenianych slotów planu)
+   jest nieosiągalna. Historyjka nie jest pierwszą ani jedyną treścią sesji:
+   zamknięcie bez żadnego wydanego slotu spoza historyjki (`planned − story = 0`,
+   np. pierwsze `nextTask` po miękkim limicie czasu, jeszcze w oknie wznowienia)
+   kończy sesję (`null`) bez historyjki. Liczniki: nowe wydanie bierze je
+   z `sessionActivityAndCounts` (to samo zapytanie co okno wznowienia), a ponowny
+   odczyt wydanego zadania i „Skróć” — z `lessonTaskCounts`.
 2. **„Skróć” to trener precyzji, nie skracanie sesji.** `lesson-shorten.ts`
-   zostaje bez zmian i nie usuwa slotów; test „Skróć zachowuje historyjkę”
-   zastępuje test integracyjny „precision follow-up before the story”. Sloty
-   historyjki nie wchodzą do rezerwacji wywołań gradera.
+   nie usuwa slotów; test „Skróć zachowuje historyjkę” zastępuje test
+   integracyjny „precision follow-up before the story”. Rezerwację wywołań
+   gradera liczy z niewydanych slotów spoza historyjki
+   (`unissuedPlanSlots(plan, counts).regular` z filtrem typów gradera), więc
+   sloty historyjki do niej nie wchodzą, a indeks nie przesuwa się o wydane
+   zadania historyjki (zachowanie dziś bez zmian — zadanie następcze nie
+   powstaje w fazie zamykania).
 3. **Kolejność opcji pytania** nie pochodzi z `seededShuffle(taskId)` (ziarno
    z publicznego `taskId` zdradzałoby poprawną opcję), tylko z domyślnego ziarna
    z losowym składnikiem; plan zamraża kolejność przy starcie.
@@ -637,9 +647,13 @@ planowania”); w razie sprzeczności z §8.1–§8.6 obowiązuje to uzupełnien
    podsumowanie): karty przestają zawyżać licznik sesji lekcji. Skutki
    uboczne: zakończone sesje zachowują zapisane podsumowanie ze starą liczbą,
    a `SessionDto` aktywnych sesji lekcji pokazuje po wdrożeniu mniejszą.
+   Filtr historyjki w `historicalSupportObjectives` jest obronny: próby pytań
+   nie mają `assessments`, więc i bez niego nie byłyby trudnością celu.
 10. **Stan pytania po odpowiedzi: `answered`**, jak zamknięte zadania lekcji;
     migracja `0035` poszerza `session_tasks_completed_only_exposure` tylko o
-    `lesson_story`.
+    `lesson_story`. Bez niej wydanie historyjki (`issued`) przechodzi, a łamie
+    się dopiero „Dalej” na historyjce (`completePresentation` → stan
+    `completed` narusza CHECK).
 11. **Kosze testów:** nowy plik integracyjny w koszu 3, przebieg `real` w
     `lesson-real-flow.spec.ts` (kosz 4), spec `mocked` w `lesson-story.spec.ts`;
     `REAL_BUCKETS` nie przeliczono — kosze do przeliczenia z czasów CI po
@@ -663,6 +677,20 @@ planowania”); w razie sprzeczności z §8.1–§8.6 obowiązuje to uzupełnien
     ostatniego zadania ocenianego, więc historyjka może zostać wydana (i jej
     ekspozycje zapieczętowane) zanim dziecko kliknie „Dalej” — ta sama zasada
     co dla każdego zadania pobranego z wyprzedzeniem.
+17. **Karta pracy rodzica** pokazuje odpowiedzi na pytania historyjki jak inne
+    próby, z `assessment: none` (brak `assessments`), a wynik wyłącznie przez
+    `feedbackKind` (`great` / `incorrect`) — zachowanie udokumentowane, bez
+    osobnego oznaczenia.
+18. **Ochrona przejścia w Kid UI.** „Dalej” historyjki ignoruje aktywację przez
+    300 ms po zamontowaniu (`useFeedbackCooldown` z ochroną kliknięć,
+    `aria-disabled` na ten czas), więc drugie dotknięcie podwójnego dotyku
+    „Dalej” poprzedniego wyniku nie przeskakuje historyjki. Autoodtwarzanie
+    nie gra (i nie ustawia zatrzasku) przy otwartym potwierdzeniu „Koniec”.
+    Blok historyjki na ekranie pytania ma nagłówek „Historyjka — przeczytaj
+    jeszcze raz”.
+19. **Wdrożenie.** Migracja `0035` przed startem nowego webu; otwarte karty
+    Kid UI sprzed wdrożenia trzeba odświeżyć — stary parser klienta odrzuca
+    zadanie historyjki (nowe gałęzie `TaskPromptSchema`).
 
 Niezweryfikowane: autoodtwarzanie na fizycznym iPhonie/iPadzie (polityka
 autoplay Safari) — symulacja E2E nie jest odbiorem urządzenia.
@@ -764,7 +792,8 @@ zwykłe podsumowanie.
 wersję, aby dodać lub zmienić historyjkę”.
 
 **Tekst informacyjny:** „Dziecko przeczyta i posłucha historyjki na koniec
-każdej sesji, a potem odpowie na pytania. Pytania nie liczą się do postępu.”
+każdej sesji nauki (nie w kartkówce), a potem odpowie na pytania. Pytania nie
+liczą się do postępu.”
 
 ## 12. Zmiana uzgodnionych wymagań i zasad
 
