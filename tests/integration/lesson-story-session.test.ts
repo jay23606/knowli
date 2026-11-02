@@ -7,19 +7,24 @@ import {
   createChild,
   createServices,
   createSubjectRegistry,
+  deleteChild,
+  endSession,
   englishGrammarSubject,
+  FakeAnswerGrader,
+  listLessonVerdicts,
   nextTask,
   readAttempt,
+  rebuildProgress,
   schoolSubject,
   startSession,
   submitAttempt,
   type Services,
 } from "@learning/server";
-import { lessonWorld, STORY_FIXTURE, type LessonWorldOptions } from "../fixtures/lesson-world";
+import { lessonWorld, RICH_KEYS, STORY_FIXTURE, type LessonStoryFixture, type LessonWorldOptions } from "../fixtures/lesson-world";
+import { SCHOOL_OBJECTIVE_ID, seedSchoolDeck } from "../fixtures/school-world";
 import {
   buildTestServices,
   finishLessonTask,
-  issuePlanSlotForTest,
   ManualClock,
   testDatabase,
   truncateCoreTables,
@@ -57,11 +62,29 @@ interface StoredPlan {
   slots: StoredSlot[];
 }
 
+interface StartOptions {
+  /** Budżet sesji zestawu (`decks.session_task_budget`); domyślnie `SESSION_BUDGET`. */
+  budget?: number;
+  /**
+   * Cel opanowany z należnym sprawdzeniem: plan bez kart z 7 ocenianymi slotami
+   * (przy budżecie ≥ 7) — miejsce na limit czasu przy więcej niż 3 pozostałych.
+   */
+  dueMastery?: boolean;
+}
+
 /** Lekcja z bogatą pulą przypisana nowemu dziecku i budżetem sesji `SESSION_BUDGET`. */
-async function startLesson(services: Services, options: LessonWorldOptions = {}, mode?: "mock_test") {
+async function startLesson(services: Services, options: LessonWorldOptions = {}, mode?: "mock_test", start: StartOptions = {}) {
   const child = await createChild(services, { displayName: "Historyjka", avatarKey: "owl" });
   const lesson = await lessonWorld(pool, { childId: child.id, richPool: true, ...options });
-  await pool.query("update learning_app.decks set session_task_budget = $2 where id = $1", [lesson.deckId, SESSION_BUDGET]);
+  await pool.query("update learning_app.decks set session_task_budget = $2 where id = $1", [lesson.deckId, start.budget ?? SESSION_BUDGET]);
+  if (start.dueMastery) {
+    await pool.query(
+      `insert into learning_app.child_objective_progress
+         (child_id, subject_id, objective_id, topic_id, status, streak, next_review_at, projection_version)
+       values ($1, 'english_grammar', $2, $3, 'mastered', 3, '2000-01-01T00:00:00Z', 'proj-1')`,
+      [child.id, lesson.objectiveId, lesson.topicId],
+    );
+  }
   const session = await startSession(services, { childId: child.id, deckId: lesson.deckId, microphoneEnabled: false, ...(mode ? { mode } : {}) });
   return { lesson, session };
 }
@@ -186,19 +209,29 @@ async function firstExercise(services: Services, sessionId: string): Promise<Tas
   throw new Error("nie doczekano ćwiczenia");
 }
 
-const storyLesson = (services: Services) => startLesson(services, { story: { value: STORY_FIXTURE, audio: "ready" } });
+const storyLesson = (services: Services, start: StartOptions = {}) =>
+  startLesson(services, { story: { value: STORY_FIXTURE, audio: "ready" } }, undefined, start);
+
+/** Prawdziwe wydanie `index`-tego pytania: zadania przed historyjką, historyjka i wcześniejsze pytania kończone poprawnie. */
+async function issueStoryQuestion(services: Services, sessionId: string, index = 0): Promise<TaskDto> {
+  await finishLessonTask(services, await drainToStory(services, sessionId));
+  for (let current = 0; ; current += 1) {
+    const question = await nextTask(services, sessionId);
+    if (question?.exerciseType !== "lesson_story_question") throw new Error(`brak pytania ${index}`);
+    if (current === index) return question;
+    await finishLessonTask(services, question);
+  }
+}
 
 describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () => {
   it("story question answer creates an attempt without assessment or progress change", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services);
-    const exercise = await firstExercise(services, session.sessionId);
-    await finishLessonTask(services, exercise);
+    const question = await issueStoryQuestion(services, session.sessionId);
     const progressBefore = await progressSnapshot(session.childId);
     expect(progressBefore.length).toBeGreaterThan(0);
     const graderBefore = await graderCallsOf(session.sessionId);
 
-    const question = await issuePlanSlotForTest(pool, session.sessionId, "story_question");
     const key = await storyKeyOf(question.taskId);
     const attempt = await submitAttempt(services, { taskId: question.taskId, clientAttemptId: randomUUID(), modality: "choice", optionId: key.correctOptionId });
 
@@ -216,7 +249,7 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
   it("wrong story answer shows the correct option text", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services);
-    const question = await issuePlanSlotForTest(pool, session.sessionId, "story_question");
+    const question = await issueStoryQuestion(services, session.sessionId);
     const key = await storyKeyOf(question.taskId);
     const wrong = Object.keys(key.optionValues).find((id) => id !== key.correctOptionId)!;
 
@@ -229,7 +262,7 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
   it("story question feedback is sealed without exercise exposures", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services);
-    const question = await issuePlanSlotForTest(pool, session.sessionId, "story_question", 1);
+    const question = await issueStoryQuestion(services, session.sessionId, 1);
     const key = await storyKeyOf(question.taskId);
     const attempt = await submitAttempt(services, { taskId: question.taskId, clientAttemptId: randomUUID(), modality: "choice", optionId: key.correctOptionId });
 
@@ -246,7 +279,7 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
     // Zwykłe zadanie lekcji odpowiedziane wcześniej tym samym kluczem.
     await submitAttempt(services, { taskId: exercise.taskId, clientAttemptId: usedKey, modality: "dont_remember" });
 
-    const question = await issuePlanSlotForTest(pool, session.sessionId, "story_question");
+    const question = await issueStoryQuestion(services, session.sessionId);
     const key = await storyKeyOf(question.taskId);
     const input = { taskId: question.taskId, clientAttemptId: randomUUID(), modality: "choice" as const, optionId: key.correctOptionId };
     const first = await submitAttempt(services, input);
@@ -266,7 +299,7 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
   it("reading a story answer re-discloses without exposures", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services);
-    const question = await issuePlanSlotForTest(pool, session.sessionId, "story_question");
+    const question = await issueStoryQuestion(services, session.sessionId);
     const key = await storyKeyOf(question.taskId);
     const first = await submitAttempt(services, { taskId: question.taskId, clientAttemptId: randomUUID(), modality: "choice", optionId: key.correctOptionId });
 
@@ -280,7 +313,7 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
   it("story question rejects non-choice modalities", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services);
-    const question = await issuePlanSlotForTest(pool, session.sessionId, "story_question");
+    const question = await issueStoryQuestion(services, session.sessionId);
     const base = { taskId: question.taskId, clientAttemptId: randomUUID() };
     await expect(submitAttempt(services, { ...base, modality: "dont_remember" })).rejects.toMatchObject({ code: "validation" });
     await expect(submitAttempt(services, { ...base, modality: "skip" })).rejects.toMatchObject({ code: "validation" });
@@ -292,7 +325,7 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
   it("story question rejects an unknown option id", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services);
-    const question = await issuePlanSlotForTest(pool, session.sessionId, "story_question");
+    const question = await issueStoryQuestion(services, session.sessionId);
     await expect(submitAttempt(services, { taskId: question.taskId, clientAttemptId: randomUUID(), modality: "choice", optionId: randomUUID() }))
       .rejects.toMatchObject({ code: "validation" });
     expect(await attemptsOf(question.taskId)).toHaveLength(0);
@@ -308,7 +341,7 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
       await expect(submitAttempt(services, { taskId: card!.taskId, clientAttemptId: randomUUID(), modality })).rejects.toMatchObject({ code: "validation" });
     }
     await completePresentation(services, { taskId: card!.taskId });
-    const story = await issuePlanSlotForTest(pool, session.sessionId, "story");
+    const story = await drainToStory(services, session.sessionId);
     for (const modality of ["skip", "dont_remember"] as const) {
       await expect(submitAttempt(services, { taskId: story.taskId, clientAttemptId: randomUUID(), modality })).rejects.toMatchObject({ code: "validation" });
     }
@@ -321,11 +354,12 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
   it("complete-presentation finishes the story without an attempt", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services);
-    const story = await issuePlanSlotForTest(pool, session.sessionId, "story");
+    const story = await drainToStory(services, session.sessionId);
     const done = await completePresentation(services, { taskId: story.taskId });
     expect(done.state).toBe("completed");
     expect(await taskStateOf(story.taskId)).toBe("completed");
-    expect((await eventsOf(story.taskId)).map((event) => event.kind)).toEqual(["presentation_completed"]);
+    // Ten sam czas zegara testu: kolejność zdarzeń bez znaczenia, liczy się komplet.
+    expect((await eventsOf(story.taskId)).map((event) => event.kind).sort()).toEqual(["presentation_completed", "prompt_issued"]);
     expect(await attemptsOf(story.taskId)).toHaveLength(0);
   });
 
@@ -341,10 +375,11 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
     };
     await check(card!.taskId);
     await completePresentation(services, { taskId: card!.taskId });
-    const story = await issuePlanSlotForTest(pool, session.sessionId, "story");
+    const story = await drainToStory(services, session.sessionId);
     await check(story.taskId);
     await completePresentation(services, { taskId: story.taskId });
-    const question = await issuePlanSlotForTest(pool, session.sessionId, "story_question");
+    const question = (await nextTask(services, session.sessionId))!;
+    expect(question.exerciseType).toBe("lesson_story_question");
     await check(question.taskId);
 
     const disclosed = await pool.query<{ count: number }>(
@@ -353,5 +388,377 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
       [[card!.taskId, story.taskId, question.taskId]],
     );
     expect(disclosed.rows[0]!.count).toBe(0);
+  });
+
+  it("second answer with a new clientAttemptId on an answered story question conflicts", async () => {
+    const { services } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 2 });
+    await finishLessonTask(services, await drainToStory(services, session.sessionId));
+    const question = (await nextTask(services, session.sessionId))!;
+    expect(question.exerciseType).toBe("lesson_story_question");
+    const key = await storyKeyOf(question.taskId);
+    await submitAttempt(services, { taskId: question.taskId, clientAttemptId: randomUUID(), modality: "choice", optionId: key.correctOptionId });
+    const other = Object.keys(key.optionValues).find((id) => id !== key.correctOptionId)!;
+    await expect(submitAttempt(services, { taskId: question.taskId, clientAttemptId: randomUUID(), modality: "choice", optionId: other }))
+      .rejects.toMatchObject({ code: "conflict" });
+    expect(await attemptsOf(question.taskId)).toHaveLength(1);
+  });
+
+  it("answer after the session closed is rejected as a closed session", async () => {
+    const { services } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 2 });
+    await finishLessonTask(services, await drainToStory(services, session.sessionId));
+    const question = (await nextTask(services, session.sessionId))!;
+    expect(question.exerciseType).toBe("lesson_story_question");
+    await endSession(services, session.sessionId);
+    const key = await storyKeyOf(question.taskId);
+    await expect(submitAttempt(services, { taskId: question.taskId, clientAttemptId: randomUUID(), modality: "choice", optionId: key.correctOptionId }))
+      .rejects.toMatchObject({ code: "conflict", message: "session is closed" });
+    expect(await attemptsOf(question.taskId)).toHaveLength(0);
+  });
+});
+
+const MINUTE = 60_000;
+const isStoryTask = (task: TaskDto): boolean => task.exerciseType === "lesson_story" || task.exerciseType === "lesson_story_question";
+
+/** Kończy kolejne zadania sesji aż do pierwszego `lesson_story` i je zwraca; wcześniejsze zadania dopisuje do `issued`. */
+async function drainToStory(services: Services, sessionId: string, issued: TaskDto[] = []): Promise<TaskDto> {
+  for (let guard = 0; guard < 40; guard += 1) {
+    const task = await nextTask(services, sessionId);
+    if (!task) throw new Error("sesja skończyła się bez historyjki");
+    if (task.exerciseType === "lesson_story") return task;
+    issued.push(task);
+    await finishLessonTask(services, task);
+  }
+  throw new Error("nie doczekano historyjki");
+}
+
+/** Wydaje i kończy zadania aż do `null`; zwraca wydane zadania w kolejności. */
+async function drainSession(services: Services, sessionId: string): Promise<TaskDto[]> {
+  const issued: TaskDto[] = [];
+  for (let guard = 0; guard < 40; guard += 1) {
+    const task = await nextTask(services, sessionId);
+    if (!task) return issued;
+    issued.push(task);
+    await finishLessonTask(services, task);
+  }
+  throw new Error("sesja nie skończyła się");
+}
+
+async function sessionTaskTypes(sessionId: string): Promise<string[]> {
+  return (await pool.query<{ type: string }>(
+    "select exercise_type as type from learning_app.session_tasks where session_id = $1 order by ordinal", [sessionId],
+  )).rows.map((row) => row.type);
+}
+
+const NON_ASSESSED = new Set(["lesson_card", "lesson_story", "lesson_story_question"]);
+const assessedCount = (types: string[]): number => types.filter((type) => !NON_ASSESSED.has(type)).length;
+
+interface StoredFullSlot extends StoredSlot { taskId: string; revealsTargetKeys: string[] }
+
+async function storySlotsOf(sessionId: string): Promise<{ regular: StoredFullSlot[]; story: StoredFullSlot[]; taskBudget: number }> {
+  const plan = (await storedPlans(sessionId)).training as unknown as { taskBudget: number; slots: StoredFullSlot[] };
+  return { regular: plan.slots.filter((slot) => !isStorySlot(slot)), story: plan.slots.filter(isStorySlot), taskBudget: plan.taskBudget };
+}
+
+describe("historyjka — wydanie na koniec sesji", () => {
+  it("story follows the last assessed task and questions follow the story", async () => {
+    const { services } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 2 });
+    const { story: storySlots } = await storySlotsOf(session.sessionId);
+
+    const story = await drainToStory(services, session.sessionId);
+    expect(story).toMatchObject({ taskId: storySlots[0]!.taskId, prompt: { kind: "lesson_story", story: { sentences: STORY_FIXTURE.sentences } } });
+    await finishLessonTask(services, story);
+    const first = await nextTask(services, session.sessionId);
+    expect(first).toMatchObject({ taskId: storySlots[1]!.taskId, exerciseType: "lesson_story_question", prompt: { question: STORY_FIXTURE.questions[0]!.question } });
+    await finishLessonTask(services, first!);
+    const second = await nextTask(services, session.sessionId);
+    expect(second).toMatchObject({ taskId: storySlots[2]!.taskId, exerciseType: "lesson_story_question", prompt: { question: STORY_FIXTURE.questions[1]!.question } });
+    await finishLessonTask(services, second!);
+    expect(await nextTask(services, session.sessionId)).toBeNull();
+  });
+
+  it("plan shorter than session budget still ends with the story", async () => {
+    const { services } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 20 });
+    const { regular, story: storySlots, taskBudget } = await storySlotsOf(session.sessionId);
+    // Selektor skończył plan przed budżetem zestawu.
+    expect(taskBudget).toBeLessThan(20);
+    // Budżet sesji większy niż plan (np. sesja sprzed zrównania budżetu z planem):
+    // `remaining` nie spada do zera, więc historyjkę wydaje wyłącznie pusty zbiór
+    // niewydanych slotów spoza historyjki (ruling 1).
+    await pool.query("update learning_app.learning_sessions set task_budget = 20 where id = $1", [session.sessionId]);
+
+    const before: TaskDto[] = [];
+    const story = await drainToStory(services, session.sessionId, before);
+    expect(before.map((task) => task.taskId)).toEqual(regular.map((slot) => slot.taskId));
+    expect(story.taskId).toBe(storySlots[0]!.taskId);
+  });
+
+  it("closing story flag on every non-story task", async () => {
+    const { services } = buildTestServices();
+    const withStory = await drainSession(services, (await storyLesson(services, { budget: 2 })).session.sessionId);
+    expect(withStory.filter(isStoryTask)).toHaveLength(3);
+    for (const task of withStory.filter((task) => !isStoryTask(task))) expect(task.closingStory).toBe(true);
+    for (const task of withStory.filter(isStoryTask)) expect(task).not.toHaveProperty("closingStory");
+
+    const without = await drainSession(services, (await startLesson(services, {}, undefined, { budget: 2 })).session.sessionId);
+    expect(without.length).toBeGreaterThan(0);
+    for (const task of without) expect(task).not.toHaveProperty("closingStory");
+  });
+
+  it("story tasks report remainingAssessed 0", async () => {
+    const { services } = buildTestServices();
+    const tasks = await drainSession(services, (await storyLesson(services, { budget: 2 })).session.sessionId);
+    const story = tasks.filter(isStoryTask);
+    expect(story.map((task) => task.exerciseType)).toEqual(["lesson_story", "lesson_story_question", "lesson_story_question"]);
+    for (const task of story) expect(task.remainingAssessed).toBe(0);
+    const lastAssessed = tasks.filter((task) => !NON_ASSESSED.has(task.exerciseType)).at(-1)!;
+    expect(lastAssessed.remainingAssessed).toBe(1);
+  });
+
+  it("issued story is re-read with the same counters", async () => {
+    const { services } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 2 });
+    const story = await drainToStory(services, session.sessionId);
+    const again = await nextTask(services, session.sessionId);
+    expect(again).toEqual(story);
+    expect(again!.remainingAssessed).toBe(0);
+    await finishLessonTask(services, story);
+    const question = await nextTask(services, session.sessionId);
+    expect(await nextTask(services, session.sessionId)).toEqual(question);
+    expect(question!.remainingAssessed).toBe(0);
+  });
+
+  it("time limit with more than three left issues the story, never the skipped exercise", async () => {
+    const { services, clock } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 8, dueMastery: true });
+    const { taskBudget } = await storySlotsOf(session.sessionId);
+    expect(taskBudget).toBeGreaterThanOrEqual(6);
+    const first = (await nextTask(services, session.sessionId))!;
+    expect(NON_ASSESSED.has(first.exerciseType)).toBe(false);
+    await finishLessonTask(services, first);
+
+    clock.advanceMs(11 * MINUTE);
+    const rest = await drainSession(services, session.sessionId);
+    expect(rest.map((task) => task.exerciseType)).toEqual(["lesson_story", "lesson_story_question", "lesson_story_question"]);
+    expect(assessedCount(await sessionTaskTypes(session.sessionId))).toBe(1);
+  });
+
+  it("time limit inside the promise keeps the promised tasks before the story", async () => {
+    const { services, clock } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 8, dueMastery: true });
+    const { taskBudget } = await storySlotsOf(session.sessionId);
+    expect(taskBudget).toBeGreaterThan(3);
+    for (let done = 0; done < taskBudget - 3;) {
+      const task = (await nextTask(services, session.sessionId))!;
+      if (!NON_ASSESSED.has(task.exerciseType)) done += 1;
+      await finishLessonTask(services, task);
+    }
+
+    clock.advanceMs(11 * MINUTE);
+    const rest = await drainSession(services, session.sessionId);
+    expect(assessedCount(rest.map((task) => task.exerciseType))).toBe(3);
+    expect(rest.slice(-3).map((task) => task.exerciseType)).toEqual(["lesson_story", "lesson_story_question", "lesson_story_question"]);
+    expect(assessedCount(await sessionTaskTypes(session.sessionId))).toBe(taskBudget);
+  });
+
+  it("stale session ends without the story", async () => {
+    const { services, clock } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 8, dueMastery: true });
+    await finishLessonTask(services, (await nextTask(services, session.sessionId))!);
+
+    clock.advanceMs(31 * MINUTE);
+    expect(await nextTask(services, session.sessionId)).toBeNull();
+    const state = (await pool.query<{ state: string }>("select state from learning_app.learning_sessions where id = $1", [session.sessionId])).rows[0]!.state;
+    expect(state).toBe("ended");
+    expect((await sessionTaskTypes(session.sessionId)).filter((type) => type.startsWith("lesson_story"))).toEqual([]);
+  });
+
+  it("legacy session without a plan never issues the story", async () => {
+    const { services } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 2 });
+    // Sesja sprzed stałego planu (jak `startLegacyTrainingSession`): plan jest niezmienny poza testem.
+    await pool.query("alter table learning_app.learning_sessions disable trigger learning_sessions_training_plan_immutable");
+    try {
+      await pool.query("update learning_app.learning_sessions set training_plan = null where id = $1", [session.sessionId]);
+    } finally {
+      await pool.query("alter table learning_app.learning_sessions enable trigger learning_sessions_training_plan_immutable");
+    }
+    const tasks = await drainSession(services, session.sessionId);
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks.filter(isStoryTask)).toEqual([]);
+    for (const task of tasks) expect(task).not.toHaveProperty("closingStory");
+  });
+
+  it("story tasks do not count as contact with the anchor objective", async () => {
+    const { services, clock } = buildTestServices();
+    const { lesson, session } = await storyLesson(services, { budget: 8, dueMastery: true });
+    const assessedAt = clock.now().toISOString();
+    await finishLessonTask(services, (await nextTask(services, session.sessionId))!);
+
+    // Po miękkim limicie, w oknie wznowienia: historyjka i pytania.
+    clock.advanceMs(20 * MINUTE);
+    const rest = await drainSession(services, session.sessionId);
+    expect(rest.map((task) => task.exerciseType)).toEqual(["lesson_story", "lesson_story_question", "lesson_story_question"]);
+
+    clock.advanceMs(13 * 60 * MINUTE);
+    const next = await startSession(services, { childId: session.childId, deckId: lesson.deckId, microphoneEnabled: false });
+    expect(next.sessionId).not.toBe(session.sessionId);
+    const context = (await pool.query<{ context: { previousObjectiveContact: Record<string, string> } }>(
+      "select context from learning_app.learning_sessions where id = $1", [next.sessionId],
+    )).rows[0]!.context;
+    expect(context.previousObjectiveContact[lesson.objectiveId]).toBeDefined();
+    expect(context.previousObjectiveContact[lesson.objectiveId]! <= assessedAt).toBe(true);
+  });
+
+  it("story exposures do not mark exercises as seen", async () => {
+    const { services } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 2 });
+    const { story: storySlots } = await storySlotsOf(session.sessionId);
+    const story = await drainToStory(services, session.sessionId);
+
+    const storyKeys = (await pool.query<{ key: string }>(
+      `select x.target_key as key from learning_app.event_exposures x
+         join learning_app.learning_events e on e.id = x.event_id where e.task_id = $1 and e.sealed`, [story.taskId],
+    )).rows.map((row) => row.key);
+    expect([...storyKeys].sort()).toEqual([...storySlots[0]!.revealsTargetKeys].sort());
+    const childKeys = new Set((await pool.query<{ key: string }>(
+      "select target_key as key from learning_app.event_exposures where child_id = $1", [session.childId],
+    )).rows.map((row) => row.key));
+    for (const key of storySlots[0]!.revealsTargetKeys) expect(childKeys.has(key)).toBe(true);
+    // Ćwiczenia spoza planu z budżetem 2 (luki, przekształcenie) pozostają niewidziane.
+    for (const key of [RICH_KEYS.gap, RICH_KEYS.gap2, RICH_KEYS.gap3, RICH_KEYS.transform]) expect(childKeys.has(key)).toBe(false);
+    for (const key of Object.values(RICH_KEYS)) expect(storyKeys).not.toContain(key);
+  });
+
+  it("session dto and summary exclude cards and story tasks from assessed count", async () => {
+    const { services } = buildTestServices();
+    const { lesson, session } = await storyLesson(services, { budget: 2 });
+    const tasks = await drainSession(services, session.sessionId);
+    const types = tasks.map((task) => task.exerciseType);
+    expect(types).toContain("lesson_card");
+    expect(types).toContain("lesson_story");
+    const assessed = assessedCount(types);
+    expect(assessed).toBe(2);
+
+    const resumed = await startSession(services, { childId: session.childId, deckId: lesson.deckId, microphoneEnabled: false });
+    expect(resumed).toMatchObject({ sessionId: session.sessionId, resumed: true, tasksIssued: tasks.length, assessedTasksIssued: assessed });
+    const summary = await endSession(services, session.sessionId);
+    expect(summary).toMatchObject({ tasksIssued: tasks.length, assessedTasksIssued: assessed });
+  });
+
+  it("deleting the profile removes story tasks, attempts and events but keeps the recording", async () => {
+    const { services } = buildTestServices();
+    const { lesson, session } = await storyLesson(services, { budget: 2 });
+    const tasks = await drainSession(services, session.sessionId);
+    expect(tasks.filter(isStoryTask)).toHaveLength(3);
+
+    await deleteChild(services, session.childId);
+    for (const table of ["session_tasks", "attempts", "learning_events"]) {
+      const count = (await pool.query<{ count: number }>(`select count(*)::int as count from learning_app.${table} where child_id = $1`, [session.childId])).rows[0]!.count;
+      expect(count, table).toBe(0);
+    }
+    const recording = await pool.query("select 1 from learning_app.lesson_story_assets where deck_version_id = $1", [lesson.versionId]);
+    expect(recording.rowCount).toBe(1);
+    const asset = await pool.query("select state from learning_app.media_assets where id = $1", [lesson.storyAudio!.assetId]);
+    expect(asset.rows).toEqual([{ state: "ready" }]);
+  });
+
+  it("progress rebuild ignores story attempts", async () => {
+    const { services } = buildTestServices();
+    const { lesson, session } = await storyLesson(services, { budget: 2 });
+    const tasks = await drainSession(services, session.sessionId);
+    const questions = tasks.filter((task) => task.exerciseType === "lesson_story_question");
+    expect(questions).toHaveLength(2);
+    const strip = (rows: unknown[]) => rows.map((row) => {
+      const { updated_at: _updated, ...rest } = row as Record<string, unknown>;
+      return rest;
+    });
+    await endSession(services, session.sessionId);
+    const before = strip(await progressSnapshot(session.childId));
+    expect(before.length).toBeGreaterThan(0);
+
+    await rebuildProgress(services, { childId: session.childId, apply: true });
+    expect(strip(await progressSnapshot(session.childId))).toEqual(before);
+    // Nadzór werdyktów rodzica nie pokazuje odpowiedzi na pytania historyjki.
+    const optionTexts = new Set(STORY_FIXTURE.questions.flatMap((question) => question.options.map((option) => option.text)));
+    const verdicts = await listLessonVerdicts(services, lesson.deckId);
+    expect(verdicts.filter((verdict) => optionTexts.has(verdict.childAnswer))).toEqual([]);
+    for (const question of questions) expect(await assessmentCountOf(question.taskId)).toBe(0);
+  });
+});
+
+/** Historyjka szkolna: zdania po polsku (język odpowiedzi przedmiotu `school`). */
+const SCHOOL_STORY: LessonStoryFixture = {
+  sentences: ["Ola ma w domu kwiatek.", "Kwiatek stoi przy oknie.", "Codziennie Ola go podlewa.", "Kwiatek rośnie bardzo szybko."],
+  questions: [
+    {
+      id: "q1",
+      question: "Gdzie stoi kwiatek?",
+      options: [{ id: "a", text: "przy oknie" }, { id: "b", text: "w szafie" }, { id: "c", text: "pod łóżkiem" }],
+      correctOption: "a",
+    },
+    {
+      id: "q2",
+      question: "Co robi Ola codziennie?",
+      options: [{ id: "a", text: "czyta" }, { id: "b", text: "podlewa kwiatek" }, { id: "c", text: "śpiewa" }],
+      correctOption: "b",
+    },
+  ],
+};
+
+describe("historyjka — trener precyzji przed historyjką", () => {
+  // Oba elementy trafione, ale z dygresją >200 znaków: fake grader daje precyzję verbose.
+  const verboseAnswer =
+    "Roślina wytwarza cukry, bo wykorzystuje światło. " +
+    "W ogóle rośliny są bardzo ciekawe i rosną w ogrodzie mojej babci, a wczoraj padał deszcz. " +
+    "Potem grałem w piłkę z kolegami na podwórku aż do wieczora i było super, naprawdę bardzo fajnie.";
+  const shortened = "Roślina wytwarza cukry, bo wykorzystuje światło.";
+
+  it("precision follow-up before the story", async () => {
+    const { clock } = buildTestServices();
+    const schoolWithStory = { ...schoolSubject, lessonStory: true, prompts: { ...schoolSubject.prompts, storyRules: "Krótka historyjka o roślinach." } };
+    const services = createServices({
+      db, clock,
+      grader: { provider: new FakeAnswerGrader(), maxCallsPerSession: 20, timeoutMs: 8000 },
+      subjects: createSubjectRegistry([englishGrammarSubject, schoolWithStory]),
+    });
+    const child = await createChild(services, { displayName: "Gaduła", avatarKey: "owl" });
+    const { deckId } = await seedSchoolDeck(pool, child.id, { secondObjective: true, story: SCHOOL_STORY });
+    // Odpowiedź otwarta to należne sprawdzenie celu (jak w lesson-grader-school).
+    await pool.query(
+      `insert into learning_app.child_objective_progress
+         (child_id, subject_id, objective_id, topic_id, status, streak, next_review_at, projection_version)
+       values ($1, 'school', $2, 'dynamic', 'needs_confirmation', 3, '2000-01-01T00:00:00Z', 'proj-1')`,
+      [child.id, SCHOOL_OBJECTIVE_ID],
+    );
+    const session = await startSession(services, { childId: child.id, deckId, microphoneEnabled: false });
+    const { regular, story: storySlots } = await storySlotsOf(session.sessionId);
+    expect(storySlots.map((slot) => slot.taskKind)).toEqual(["story", "story_question", "story_question"]);
+
+    const issued: TaskDto[] = [];
+    let open: TaskDto | null = null;
+    for (let guard = 0; guard < 40 && !open; guard += 1) {
+      const task = await nextTask(services, session.sessionId);
+      if (!task) throw new Error("sesja skończyła się przed odpowiedzią otwartą");
+      issued.push(task);
+      if (task.prompt.kind === "lesson_open_answer") open = task;
+      else await finishLessonTask(services, task);
+    }
+    const result = await submitAttempt(services, { taskId: open!.taskId, clientAttemptId: randomUUID(), modality: "text", text: verboseAnswer });
+    expect(result.feedback).toMatchObject({ kind: "lesson_precision_hint" });
+    const followUp = (await nextTask(services, session.sessionId))!;
+    expect(followUp.prompt.kind).toBe("lesson_shorten");
+    expect(followUp.closingStory).toBe(true);
+    await submitAttempt(services, { taskId: followUp.taskId, clientAttemptId: randomUUID(), modality: "text", text: shortened });
+
+    const rest = await drainSession(services, session.sessionId);
+    const restRegular = rest.filter((task) => !isStoryTask(task));
+    // Dalsze zadania planu po kolei, bez przesunięcia o zadanie następcze.
+    expect([...issued, ...restRegular].map((task) => task.taskId)).toEqual(regular.map((slot) => slot.taskId));
+    expect(rest.filter(isStoryTask).map((task) => task.taskId)).toEqual(storySlots.map((slot) => slot.taskId));
+    expect(rest.slice(-3).map((task) => task.exerciseType)).toEqual(["lesson_story", "lesson_story_question", "lesson_story_question"]);
   });
 });

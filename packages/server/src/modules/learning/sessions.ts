@@ -49,12 +49,18 @@ import { lockTaskWithSession, writeSealedEvent, contextOf, type SessionContextSh
 import { payloadToItem } from "../materials";
 import { summarizeSessionAssessments } from "../../domain/session-summary";
 import { computeTargetKey } from "../../domain/target-key";
-import { MeaningVisualSchema } from "@learning/contracts";
+import { LESSON_STORY_TASK_TYPES, MeaningVisualSchema } from "@learning/contracts";
 import { readUiAudio } from "../materials";
 import { getVocabularyCapabilities } from "../../domain/vocabulary-capabilities";
 import { addLegacyTaskPromptDefaults } from "./task-prompt-compat";
 import { deriveSupportStates, type SupportAttempt, type SupportTask } from "../../domain/support-cycle";
-import { readTrainingSessionPlan, type TrainingSessionPlanSnapshot, type TrainingSessionSlot } from "../../domain/training-session-plan";
+import {
+  readLessonTrainingSessionPlan,
+  readTrainingSessionPlan,
+  type LessonTrainingSessionPlanSnapshot,
+  type TrainingSessionPlanSnapshot,
+  type TrainingSessionSlot,
+} from "../../domain/training-session-plan";
 import { readLearningSnapshot, type LearningSnapshotItem } from "./learning-snapshot";
 import { createMockTestPlan, issueMockTestTask, closeMockTest } from "./mock-tests";
 import { assertVocabularyDeck, type DeckKind } from "../materials";
@@ -80,6 +86,8 @@ import { beginSessionActivityReview, readSessionActivityResult } from "./session
 import type { SessionActivityReport } from "@learning/contracts";
 import { SKILL_PROJECTION_VERSION } from "./skill-projections";
 import { RESUME_WINDOW_MS, sessionTimeLimitMs } from "../../domain/session-limits";
+import { isNonAssessedLessonTaskType, NON_ASSESSED_LESSON_TASK_TYPES } from "../../domain/lessons/session-task-types";
+import { withStoryCounters } from "./lessons/lesson-story-tasks";
 
 /** Po komunikacie „Jeszcze N” obietnica wobec dziecka waży więcej niż limit. */
 const PROMISE_REMAINING = 3;
@@ -128,11 +136,24 @@ async function lockSession(tx: Tx, sessionId: string) {
   return Object.assign(session, { deckKind: identity.deckKind as DeckKind, lessonContext: identity.lessonContext });
 }
 
+/** Lista SQL typów zadań do `in (...)`/`not in (...)`. */
+function sqlTypeList(types: readonly string[]) {
+  return sql.join(types.map((type) => sql`${type}`), sql`, `);
+}
+
+/** Typy poza budżetem ocenianych: prezentacje słówek, karty i zadania historyjki lekcji. */
+const NON_ASSESSED_TASK_TYPES: readonly string[] = ["exposure", ...NON_ASSESSED_LESSON_TASK_TYPES];
+
+/**
+ * Liczniki `SessionDto` i podsumowania: `assessed` bez prezentacji, kart i zadań
+ * historyjki (ruling 9 planu historyjki — karty lekcji przestały go zawyżać).
+ * Zadania następcze lekcji liczą się jak dotąd.
+ */
 async function taskCounts(tx: Tx, sessionId: string): Promise<{ total: number; assessed: number }> {
   const [row] = await tx
     .select({
       total: sql<number>`count(*)::int`,
-      assessed: sql<number>`(count(*) filter (where ${sessionTasks.exerciseType} <> 'exposure'))::int`,
+      assessed: sql<number>`(count(*) filter (where ${sessionTasks.exerciseType} not in (${sqlTypeList(NON_ASSESSED_TASK_TYPES)})))::int`,
     })
     .from(sessionTasks)
     .where(eq(sessionTasks.sessionId, sessionId));
@@ -168,6 +189,8 @@ interface SessionActivityCounts {
   assessed: number;
   /** Zadania z planu sesji — bez zadań następczych lekcji (`context.followUpOf`). */
   planned: number;
+  /** Wydane zadania historyjki lekcji (sufiks planu). */
+  story: number;
   lastActivity: Date;
 }
 
@@ -176,15 +199,17 @@ async function sessionActivityAndCounts(
   tx: Tx,
   sessionId: string,
   startedAt: Date,
-  nonAssessedType: "exposure" | "lesson_card" = "exposure",
+  nonAssessedTypes: readonly string[] = ["exposure"],
 ): Promise<SessionActivityCounts> {
   const rows = await tx.execute(sql`
     select
       (select count(*)::int from ${sessionTasks} where ${sessionTasks.sessionId} = ${sessionId}) as total,
-      (select (count(*) filter (where ${sessionTasks.exerciseType} <> ${nonAssessedType} and ${sessionTasks.context}->'followUpOf' is null))::int
+      (select (count(*) filter (where ${sessionTasks.exerciseType} not in (${sqlTypeList(nonAssessedTypes)}) and ${sessionTasks.context}->'followUpOf' is null))::int
          from ${sessionTasks} where ${sessionTasks.sessionId} = ${sessionId}) as assessed,
       (select (count(*) filter (where ${sessionTasks.context}->'followUpOf' is null))::int
          from ${sessionTasks} where ${sessionTasks.sessionId} = ${sessionId}) as planned,
+      (select (count(*) filter (where ${sessionTasks.exerciseType} in (${sqlTypeList(LESSON_STORY_TASK_TYPES)})))::int
+         from ${sessionTasks} where ${sessionTasks.sessionId} = ${sessionId}) as story,
       greatest(
         (select max(${sessionTasks.issuedAt}) from ${sessionTasks} where ${sessionTasks.sessionId} = ${sessionId}),
         (select max(${learningEvents.occurredAt}) from ${learningEvents}
@@ -195,12 +220,13 @@ async function sessionActivityAndCounts(
            where ${sessionTasks.sessionId} = ${sessionId})
       ) as latest
   `);
-  const row = rows.rows[0] as { total: number; assessed: number; planned: number; latest: Date | string | null };
+  const row = rows.rows[0] as { total: number; assessed: number; planned: number; story: number; latest: Date | string | null };
   const latest = row.latest === null ? null : row.latest instanceof Date ? row.latest : new Date(row.latest);
   return {
     total: row.total ?? 0,
     assessed: row.assessed ?? 0,
     planned: row.planned ?? 0,
+    story: row.story ?? 0,
     lastActivity: latest !== null && latest.getTime() > startedAt.getTime() ? latest : startedAt,
   };
 }
@@ -1073,25 +1099,30 @@ export async function nextTask(services: Services, sessionId: string): Promise<T
         // Zadanie następcze („Skróć odpowiedź”) nie należy do budżetu, ale pokazuje
         // licznik oryginału (`remainingAssessed` z bieżącym zadaniem): obietnica
         // „Jeszcze N” nie zaczyna się na poprawce przed ostatnimi zadaniami planu.
-        const assessedBefore = counts.assessed - (issuedTask.exerciseType !== "lesson_card" ? 1 : 0);
+        const assessedBefore = counts.assessed - (isNonAssessedLessonTaskType(issuedTask.exerciseType) ? 0 : 1);
         const subjectId = (session.lessonContext as { subjectId?: string } | null)?.subjectId;
         const audioAllowed = subjectId ? services.subjects.getSubject(subjectId)?.ttsForAnswers === true : false;
-        return issuedTaskDto(session, issuedTask, assessedBefore, audioAllowed);
+        // Ponowny odczyt nie rzuca na zepsutym planie: liczniki historyjki wtedy bez zmian.
+        let plan: LessonTrainingSessionPlanSnapshot | null = null;
+        try { plan = readLessonTrainingSessionPlan(session.trainingPlan); } catch { plan = null; }
+        return withStoryCounters(issuedTaskDto(session, issuedTask, assessedBefore, audioAllowed), plan);
       }
-      const activity = await sessionActivityAndCounts(tx, id, session.startedAt, "lesson_card");
+      const activity = await sessionActivityAndCounts(tx, id, session.startedAt, NON_ASSESSED_LESSON_TASK_TYPES);
       if (now.getTime() - activity.lastActivity.getTime() > RESUME_WINDOW_MS) {
         await tx.update(learningSessions).set({ state: "ended", endedAt: now }).where(eq(learningSessions.id, id));
         return null;
       }
       const counts = activity;
       const remaining = session.taskBudget - counts.assessed;
-      if (remaining <= 0) return null;
-      if (now.getTime() - session.startedAt.getTime() > sessionTimeLimitMs(session.taskBudget) && remaining > PROMISE_REMAINING) {
-        return null;
-      }
+      // Koniec sesji: budżet albo miękki limit czasu (przy obietnicy „Jeszcze N”
+      // dokończone są obiecane zadania). Plan z historyjką wydaje wtedy jej sloty
+      // zamiast `null` (design „Historyjka lekcji” §8.2).
+      const timeUp = now.getTime() - session.startedAt.getTime() > sessionTimeLimitMs(session.taskBudget) && remaining > PROMISE_REMAINING;
+      const closing = remaining <= 0 || timeUp;
       if (session.trainingPlan && "kind" in session.trainingPlan && session.trainingPlan.kind === "lesson") {
-        return issueNextLessonPlanTask(tx, session, now, counts.total, counts.planned, counts.assessed);
+        return issueNextLessonPlanTask(tx, session, now, counts, { closing });
       }
+      if (closing) return null;
       return issueNextLessonTask(services, tx, session, now, remaining, counts.total);
     }
 

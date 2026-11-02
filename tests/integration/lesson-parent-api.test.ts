@@ -9,7 +9,6 @@ import {
   endSession,
   startSession,
   nextTask,
-  completePresentation,
   submitAttempt,
   FakeAnswerGrader,
   createDatabase,
@@ -30,7 +29,7 @@ import {
   type LessonDraftDto,
   type LessonExerciseInput,
 } from "@learning/contracts";
-import { testDatabase, testDatabaseUrl, truncateCoreTables } from "./helpers";
+import { finishLessonTask, testDatabase, testDatabaseUrl, truncateCoreTables } from "./helpers";
 import { lessonWorld } from "../fixtures/lesson-world";
 import { ManualClock } from "./helpers";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
@@ -364,7 +363,12 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
         const task = await nextTask(sessionServices, sessionId);
         if (!task) break;
         TaskPromptSchema.parse(task.prompt);
-        if (task.exerciseType === "lesson_card") { await completePresentation(sessionServices, { taskId: task.taskId }); continue; }
+        // Karta i historyjka na koniec sesji (run historyjki przez workera) — wspólny pomocnik.
+        if (["lesson_card", "lesson_story", "lesson_story_question"].includes(task.exerciseType)) {
+          await finishLessonTask(sessionServices, task);
+          if (task.exerciseType !== "lesson_card") seen.add(task.exerciseType);
+          continue;
+        }
         const key = (await pool.query("select answer_key from learning_app.session_tasks where id=$1", [task.taskId])).rows[0].answer_key;
         // Odsłuch zdania przed odpowiedzią — prawdziwa autoryzacja (zapieczętowane `audio_issued`).
         if (task.exerciseType === "lesson_listen_choice") await authorizeDisclosure(sessionServices, { taskId: task.taskId, kind: "audio" });
@@ -384,6 +388,9 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
     await completeSession(nextSession.sessionId);
     expect(seen.has("lesson_choice")).toBe(true);
     expect(seen.has("lesson_transform")).toBe(true);
+    // Run historyjki przez workera: sesja kończy się historyjką i pytaniami.
+    expect(seen.has("lesson_story")).toBe(true);
+    expect(seen.has("lesson_story_question")).toBe(true);
   });
 
   it("utworzenie lekcji → 202 {runId, deckId}, idempotentny retry", async () => {

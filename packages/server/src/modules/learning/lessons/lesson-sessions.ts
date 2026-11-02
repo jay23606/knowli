@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, lte, max, sql } from "drizzle-orm";
-import type { TaskDto, TaskPrompt } from "@learning/contracts";
+import { and, asc, desc, eq, inArray, lte, max, notInArray, sql } from "drizzle-orm";
+import { LESSON_STORY_TASK_TYPES, isLessonStoryTaskType, type TaskDto, type TaskPrompt } from "@learning/contracts";
 import type { Services } from "../../../config";
 import type { Executor, Tx } from "../../../db/client";
 import {
@@ -36,6 +36,7 @@ import {
 import { DEFAULT_LESSON_POLICY } from "../../../domain/lessons/lesson-policy";
 import { renderCard } from "../../../domain/lessons/card";
 import { readStoredLessonStory, type LessonStory } from "../../../domain/lessons/story";
+import { NON_ASSESSED_LESSON_TASK_TYPES, type LessonSessionTaskType } from "../../../domain/lessons/session-task-types";
 import { computeTargetKey } from "../../../domain/target-key";
 import { isTestPreparationWindow } from "../../../domain/test-preparation";
 import type { ProgressStatus } from "../../../domain/types";
@@ -52,7 +53,15 @@ import {
   type MaterializedLessonTask,
 } from "./lesson-materialize";
 import { listenStimulusAssetId } from "./listen-stimulus";
-import { lessonStorySlots, loadLessonStoryAudio } from "./lesson-story-tasks";
+import { lessonStorySlots, loadLessonStoryAudio, unissuedPlanSlots, withStoryCounters } from "./lesson-story-tasks";
+
+/** Lista SQL typów zadań (np. `not in (...)` w filtrze licznika). */
+function sqlTypeList(types: readonly string[]) {
+  return sql.join(types.map((type) => sql`${type}`), sql`, `);
+}
+
+/** Typy zadań historyjki jako tablica dla `notInArray` (czytelnicy historii celu, ruling 9). */
+const STORY_TASK_TYPES: string[] = [...LESSON_STORY_TASK_TYPES];
 
 /**
  * Sesja lekcji po stronie serwera (zadanie 13). `sessions.ts` deleguje tu dla
@@ -148,7 +157,11 @@ async function previousObjectiveContactSnapshot(
     .from(learningEvents)
     .innerJoin(sessionTasks, eq(sessionTasks.id, learningEvents.taskId))
     .innerJoin(itemRevisions, eq(itemRevisions.id, sessionTasks.itemRevisionId))
-    .where(and(eq(learningEvents.childId, childId), eq(itemRevisions.deckVersionId, deckVersionId), lte(learningEvents.occurredAt, before)))
+    .where(and(
+      eq(learningEvents.childId, childId), eq(itemRevisions.deckVersionId, deckVersionId), lte(learningEvents.occurredAt, before),
+      // Zadania historyjki są kotwiczone w rewizji ćwiczenia, ale nie są kontaktem z celem.
+      notInArray(sessionTasks.exerciseType, STORY_TASK_TYPES),
+    ))
     .groupBy(itemRevisions.payload);
   const result: Record<string, string> = {};
   for (const row of rows) {
@@ -180,6 +193,8 @@ async function historicalSupportObjectives(
       lte(learningSessions.startedAt, args.before),
       // Poprawka po informacji zwrotnej („Skróć odpowiedź”) nie jest trudnością celu.
       sql`${sessionTasks.context}->'followUpOf' is null`,
+      // Pytania historyjki są poza cyklem wsparcia, choć kotwiczą w rewizji ćwiczenia celu.
+      notInArray(sessionTasks.exerciseType, STORY_TASK_TYPES),
       sql`${deckVersions.lessonContext}->>'subjectId' = ${args.subjectId}`,
       inArray(sql<string>`${itemRevisions.payload}->>'objectiveId'`, args.objectiveIds),
     ));
@@ -425,22 +440,24 @@ export async function loadLessonCardAudio(tx: Executor, deckVersionId: string): 
   return audio;
 }
 
-/** Liczba wydanych i ocenianych zadań (karty nie liczą się do budżetu). */
 /**
  * Liczniki zadań sesji lekcji: `total` wyznacza kolejny ordinal, a `assessed`
- * budżet — bez zadań następczych (`context.followUpOf`), które są dodatkiem
- * trenera precyzji poza planem.
+ * budżet — bez kart i zadań historyjki (`NON_ASSESSED_LESSON_TASK_TYPES`) oraz
+ * bez zadań następczych (`context.followUpOf`), które są dodatkiem trenera
+ * precyzji poza planem. `planned` = wydane zadania planu (z historyjką),
+ * `story` = wydane zadania historyjki (sufiks planu, ruling 1).
  */
-export async function lessonTaskCounts(tx: Tx, sessionId: string): Promise<{ total: number; assessed: number; planned: number }> {
+export async function lessonTaskCounts(tx: Tx, sessionId: string): Promise<{ total: number; assessed: number; planned: number; story: number }> {
   const [row] = await tx
     .select({
       total: sql<number>`count(*)::int`,
       planned: sql<number>`(count(*) filter (where ${sessionTasks.context}->'followUpOf' is null))::int`,
-      assessed: sql<number>`(count(*) filter (where ${sessionTasks.exerciseType} <> 'lesson_card' and ${sessionTasks.context}->'followUpOf' is null))::int`,
+      assessed: sql<number>`(count(*) filter (where ${sessionTasks.exerciseType} not in (${sqlTypeList(NON_ASSESSED_LESSON_TASK_TYPES)}) and ${sessionTasks.context}->'followUpOf' is null))::int`,
+      story: sql<number>`(count(*) filter (where ${sessionTasks.exerciseType} in (${sqlTypeList(LESSON_STORY_TASK_TYPES)})))::int`,
     })
     .from(sessionTasks)
     .where(eq(sessionTasks.sessionId, sessionId));
-  return { total: row?.total ?? 0, assessed: row?.assessed ?? 0, planned: row?.planned ?? 0 };
+  return { total: row?.total ?? 0, assessed: row?.assessed ?? 0, planned: row?.planned ?? 0, story: row?.story ?? 0 };
 }
 
 /** Wynik oceny per zadanie tej sesji (z `assessments` przez `attempts`). */
@@ -588,8 +605,10 @@ async function loadLessonPlanningSnapshot(
   const exerciseByRevision = new Map(exercises.map((e) => [e.revisionId, e] as const));
   const outcomeByTask = await loadSessionOutcomes(tx, session.id);
   const cardIndexByObjective = new Map<string, number>();
-  // Zadania następcze są poza planem: selektor ich nie widzi (design 6.3).
-  const plannedRows = taskRows.filter((row) => (row.context as { followUpOf?: unknown } | null)?.followUpOf === undefined);
+  // Zadania następcze są poza planem: selektor ich nie widzi (design 6.3). Zadania
+  // historyjki też nie (kończą sesję i nie są kontaktem z celem kotwicy).
+  const plannedRows = taskRows.filter((row) =>
+    (row.context as { followUpOf?: unknown } | null)?.followUpOf === undefined && !isLessonStoryTaskType(row.exerciseType));
   const sessionHistory: LessonSessionTask[] = plannedRows.map((row) => {
     const taskContext = row.context as { objectiveId?: string; cardPurpose?: string } | null;
     const exercise = exerciseByRevision.get(row.itemRevisionId);
@@ -616,7 +635,11 @@ async function loadLessonPlanningSnapshot(
     .select({ itemId: itemRevisions.itemId, latest: max(sessionTasks.issuedAt) })
     .from(sessionTasks)
     .innerJoin(itemRevisions, eq(itemRevisions.id, sessionTasks.itemRevisionId))
-    .where(and(eq(sessionTasks.childId, session.childId), inArray(itemRevisions.itemId, exercises.map((exercise) => exercise.itemId))))
+    .where(and(
+      eq(sessionTasks.childId, session.childId), inArray(itemRevisions.itemId, exercises.map((exercise) => exercise.itemId)),
+      // Historyjka kotwiczy w rewizji ćwiczenia, ale go nie pokazuje.
+      notInArray(sessionTasks.exerciseType, STORY_TASK_TYPES),
+    ))
     .groupBy(itemRevisions.itemId);
   for (const row of issuedRows) {
     if (row.latest) lastSeenAt[row.itemId] = row.latest.toISOString();
@@ -810,8 +833,13 @@ export async function createLessonTrainingSessionPlan(
   return validated;
 }
 
-function lessonTaskDto(session: typeof learningSessions.$inferSelect, task: { id: string; ordinal: number; exerciseType: LessonExerciseType; prompt: TaskPrompt }, assessedBefore: number): TaskDto {
-  return {
+function lessonTaskDto(
+  session: typeof learningSessions.$inferSelect,
+  task: { id: string; ordinal: number; exerciseType: LessonSessionTaskType; prompt: TaskPrompt },
+  assessedBefore: number,
+  plan: LessonTrainingSessionPlanSnapshot | null = null,
+): TaskDto {
+  return withStoryCounters({
     taskId: task.id,
     sessionId: session.id,
     ordinal: task.ordinal,
@@ -820,7 +848,7 @@ function lessonTaskDto(session: typeof learningSessions.$inferSelect, task: { id
     state: "issued",
     prompt: task.prompt,
     remainingAssessed: session.taskBudget - assessedBefore,
-  };
+  }, plan);
 }
 
 /**
@@ -887,25 +915,33 @@ export async function issueNextLessonTask(
   return lessonTaskDto(session, { id: taskId, ordinal: nextOrdinal, exerciseType: materialized.exerciseType, prompt: materialized.prompt }, counts.assessed);
 }
 
-/** Wydaje kolejny uprzednio przygotowany slot; legacy sessions używają selektora dynamicznego. */
+/**
+ * Wydaje kolejny uprzednio przygotowany slot; legacy sessions używają selektora
+ * dynamicznego. Zamknięcie sesji (budżet, miękki limit czasu, ruszona historyjka
+ * albo brak niewydanych slotów spoza historyjki — plan bywa krótszy niż budżet)
+ * wydaje kolejny slot historyjki zamiast `null` (design „Historyjka lekcji” §8.2);
+ * pominięte sloty oceniane już nigdy nie wychodzą. Ekspozycje slotu pieczętuje
+ * w tej samej transakcji, przed odpowiedzią.
+ */
 export async function issueNextLessonPlanTask(
   tx: Tx,
   session: typeof learningSessions.$inferSelect,
   now: Date,
-  nextOrdinal: number,
-  /** Indeks slotu planu: wydane zadania planu, bez zadań następczych. */
-  planIndex: number,
-  assessedBefore: number,
+  /** `total` = kolejny ordinal; `planned`/`story` = wydane sloty planu/historyjki; `assessed` = zużyty budżet. */
+  counts: { total: number; planned: number; assessed: number; story: number },
+  options: { closing: boolean },
 ): Promise<TaskDto | null> {
   let plan: LessonTrainingSessionPlanSnapshot | null;
   try { plan = readLessonTrainingSessionPlan(session.trainingPlan); }
   catch { throw new AppError("conflict", { message: "Ta sesja wymaga nowszej wersji aplikacji." }); }
   if (!plan) return null;
-  const slot = plan.slots[planIndex];
-  if (!slot || (slot.assessed && assessedBefore >= plan.taskBudget)) return null;
+  const unissued = unissuedPlanSlots(plan, counts);
+  const closing = options.closing || counts.story > 0 || unissued.regular.length === 0;
+  const slot = closing ? unissued.story[0] : unissued.regular[0];
+  if (!slot || (slot.assessed && counts.assessed >= plan.taskBudget)) return null;
   await tx.insert(sessionTasks).values({
     id: slot.taskId, sessionId: session.id, childId: session.childId, deckVersionId: session.deckVersionId,
-    itemRevisionId: slot.itemRevisionId, ordinal: nextOrdinal, exerciseType: slot.exerciseType,
+    itemRevisionId: slot.itemRevisionId, ordinal: counts.total, exerciseType: slot.exerciseType,
     direction: null, state: "issued", publicPrompt: slot.prompt as unknown as Record<string, unknown>,
     answerKey: slot.answerKey, context: slot.context, issuedAt: now,
   });
@@ -914,8 +950,8 @@ export async function issueNextLessonPlanTask(
     stepId: `${slot.taskId}:prompt`, occurredAt: now, exposures: slot.revealsTargetKeys,
   });
   return lessonTaskDto(session, {
-    id: slot.taskId, ordinal: nextOrdinal, exerciseType: slot.exerciseType as LessonExerciseType, prompt: slot.prompt,
-  }, assessedBefore);
+    id: slot.taskId, ordinal: counts.total, exerciseType: slot.exerciseType as LessonSessionTaskType, prompt: slot.prompt,
+  }, counts.assessed, plan);
 }
 
 /**

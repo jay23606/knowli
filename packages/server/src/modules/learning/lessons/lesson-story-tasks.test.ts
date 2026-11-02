@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { TaskPrompt } from "@learning/contracts";
+import type { TaskDto, TaskPrompt } from "@learning/contracts";
 import { lessonTextTargetKey } from "../../../domain/lessons/exposure-key";
 import type { LessonStory } from "../../../domain/lessons/story";
-import { readLessonTrainingSessionPlan, type LessonTrainingSessionSlot } from "../../../domain/training-session-plan";
+import { readLessonTrainingSessionPlan, type LessonTrainingSessionPlanSnapshot, type LessonTrainingSessionSlot } from "../../../domain/training-session-plan";
 import { seededShuffle } from "./lesson-materialize";
-import { lessonStorySlots, planHasClosingStory } from "./lesson-story-tasks";
+import { lessonStorySlots, planHasClosingStory, unissuedPlanSlots, withStoryCounters } from "./lesson-story-tasks";
 
 /**
  * Sloty historyjki na końcu planu sesji lekcji (design „Historyjka lekcji” §8.2):
@@ -179,3 +179,64 @@ function previousSlots(): LessonTrainingSessionSlot[] {
     },
   ];
 }
+
+/** Plan: `regular` slotów spoza historyjki (co drugi oceniany) i opcjonalnie historyjka z dwoma pytaniami. */
+function planWith(regular: number, story = true): LessonTrainingSessionPlanSnapshot {
+  const common = { itemId: ANCHOR.itemId, itemRevisionId: ANCHOR.revisionId, direction: null, answerKey: {}, revealsTargetKeys: [] };
+  const head: LessonTrainingSessionSlot[] = Array.from({ length: regular }, (_, ordinal) => ({
+    ...common, taskId: randomUUID(), ordinal, exerciseType: "lesson_choice", assessed: true, reason: "practice", taskKind: "exercise",
+    prompt: { kind: "lesson_choice", instructionPl: "Wybierz.", stem: "She ___.", options: [{ id: randomUUID(), text: "reads" }, { id: randomUUID(), text: "read" }] },
+    context: { objectiveId: "objective" },
+  }));
+  const tail = story ? lessonStorySlots({ story: STORY, subject: SUBJECT, anchor: ANCHOR, audioAssetId: null, firstOrdinal: regular }) : [];
+  return { version: 1, kind: "lesson", taskBudget: regular, slots: [...head, ...tail] };
+}
+
+describe("unissuedPlanSlots", () => {
+  it("unissuedPlanSlots splits regular and story suffixes", () => {
+    const plan = planWith(5);
+    const fresh = unissuedPlanSlots(plan, { planned: 2, story: 0 });
+    expect(fresh.regular.map((slot) => slot.ordinal)).toEqual([2, 3, 4]);
+    expect(fresh.story.map((slot) => slot.taskKind)).toEqual(["story", "story_question", "story_question"]);
+    // Limit czasu po 3 zadaniach: wydana historyjka (planned obejmuje zadania historyjki).
+    const closing = unissuedPlanSlots(plan, { planned: 4, story: 1 });
+    expect(closing.regular.map((slot) => slot.ordinal)).toEqual([3, 4]);
+    expect(closing.story.map((slot) => slot.ordinal)).toEqual([6, 7]);
+    expect(unissuedPlanSlots(plan, { planned: 8, story: 3 })).toEqual({ regular: [], story: [] });
+  });
+
+  it("unissuedPlanSlots counts a precision follow-up outside the plan", () => {
+    const plan = planWith(5);
+    // Trzy zadania planu i jedno zadanie następcze „Skróć”: `planned` go nie liczy,
+    // więc kolejnym slotem jest czwarty slot planu, a historyjka zostaje w całości.
+    const afterFollowUp = unissuedPlanSlots(plan, { planned: 3, story: 0 });
+    expect(afterFollowUp.regular.map((slot) => slot.ordinal)).toEqual([3, 4]);
+    expect(afterFollowUp.story.map((slot) => slot.ordinal)).toEqual([5, 6, 7]);
+  });
+});
+
+describe("withStoryCounters", () => {
+  const dto = (exerciseType: TaskDto["exerciseType"], remainingAssessed: number): TaskDto => ({
+    taskId: randomUUID(), sessionId: randomUUID(), ordinal: 0, exerciseType, direction: null, state: "issued",
+    prompt: { kind: "lesson_card", card: { title: "Czas", body: "She reads.", examples: [] } }, remainingAssessed,
+  });
+
+  it("withStoryCounters sets zero for story tasks and closingStory elsewhere", () => {
+    const plan = planWith(2);
+    for (const type of ["lesson_story", "lesson_story_question"] as const) {
+      const result = withStoryCounters(dto(type, 3), plan);
+      expect(result.remainingAssessed).toBe(0);
+      expect(result).not.toHaveProperty("closingStory");
+    }
+    for (const type of ["lesson_card", "lesson_choice"] as const) {
+      const result = withStoryCounters(dto(type, 2), plan);
+      expect(result).toMatchObject({ remainingAssessed: 2, closingStory: true });
+    }
+  });
+
+  it("withStoryCounters leaves a session without story slots unchanged", () => {
+    const task = dto("lesson_choice", 2);
+    expect(withStoryCounters(task, planWith(2, false))).toEqual(task);
+    expect(withStoryCounters(task, null)).toEqual(task);
+  });
+});

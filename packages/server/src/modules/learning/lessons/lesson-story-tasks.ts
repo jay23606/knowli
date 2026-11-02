@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
-import type { TaskPrompt } from "@learning/contracts";
+import { isLessonStoryTaskType, type TaskDto, type TaskPrompt } from "@learning/contracts";
 import type { Executor } from "../../../db/client";
 import { lessonStoryAssets, mediaAssets } from "../../../db/schema";
 import { lessonTextTargetKey } from "../../../domain/lessons/exposure-key";
@@ -124,4 +124,33 @@ export function lessonStorySlots(input: LessonStorySlotsInput): LessonTrainingSe
 /** Czy plan sesji kończy się historyjką. */
 export function planHasClosingStory(plan: LessonTrainingSessionPlanSnapshot | null): boolean {
   return plan?.slots.some((slot) => slot.taskKind === "story") ?? false;
+}
+
+const isStorySlot = (slot: LessonTrainingSessionSlot): boolean => slot.taskKind === "story" || slot.taskKind === "story_question";
+
+/**
+ * Niewydane sloty planu bez zbioru wydanych id (ruling 1 planu etapu 3): sloty
+ * spoza historyjki wychodzą wyłącznie po kolei, a sloty historyjki — po kolei
+ * i jako sufiks, więc wystarczą liczniki z gorącego zapytania `nextTask`.
+ * `planned` = wydane zadania planu (bez zadań następczych, łącznie z zadaniami
+ * historyjki), `story` = wydane zadania historyjki.
+ */
+export function unissuedPlanSlots(
+  plan: LessonTrainingSessionPlanSnapshot,
+  counts: { planned: number; story: number },
+): { regular: readonly LessonTrainingSessionSlot[]; story: readonly LessonTrainingSessionSlot[] } {
+  return {
+    regular: plan.slots.filter((slot) => !isStorySlot(slot)).slice(Math.max(0, counts.planned - counts.story)),
+    story: plan.slots.filter(isStorySlot).slice(counts.story),
+  };
+}
+
+/**
+ * Liczniki zadania w sesji z historyjką: zadania historyjki są poza budżetem
+ * (`remainingAssessed: 0`), a każde inne zadanie (także karta i zadanie
+ * następcze) niesie `closingStory`, żeby baner zapowiadał historyjkę.
+ */
+export function withStoryCounters(dto: TaskDto, plan: LessonTrainingSessionPlanSnapshot | null): TaskDto {
+  if (isLessonStoryTaskType(dto.exerciseType)) return { ...dto, remainingAssessed: 0 };
+  return planHasClosingStory(plan) ? { ...dto, closingStory: true } : dto;
 }
