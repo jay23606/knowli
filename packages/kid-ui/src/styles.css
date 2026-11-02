@@ -182,6 +182,9 @@
      zapas pod 65 także przy innym silniku tekstu. Samo 60ch dawało ok. 80 znaków
      i w kolumnie 720 px nie ograniczało wiersza. */
   --kid-reading-measure: 44ch;
+  /* Pas na linie między kolumnami „Połącz w pary” (spec 2026-11-02 §5.3): 48 px
+     w compact, od 600 px szerokości 72 px (reguła @media pod blokiem). */
+  --kid-pair-gutter: 48px;
   /* Window units. KidPage scales a large window with CSS zoom (inline
      --kid-zoom), and zoom multiplies vh/dvh/svh/vw by the scale, so every
      window-relative length is written calc(N * var(--kid-dvh)) etc. Each token
@@ -201,6 +204,14 @@
   .kid-ui {
     --kid-column-max-width: 720px;
     --kid-visual-choice-max-size: 300px;
+  }
+}
+
+@media (min-width: 600px) {
+  :root:has(.kid-ui),
+  .kid-theme,
+  .kid-ui {
+    --kid-pair-gutter: 72px;
   }
 }
 
@@ -2626,6 +2637,30 @@
   outline-offset: 3px;
 }
 
+/* Kafelki „Połącz w pary” po `.kid-ui .kid-lesson-block` (jego `overflow-wrap:
+   anywhere` ustępuje `break-word`: słowo łamie się tylko, gdy samo się nie mieści). */
+.kid-ui .kid-lesson-block.kid-lesson-pair__item {
+  width: 100%;
+  overflow-wrap: break-word;
+}
+
+/* Zaznaczony kafelek (wspólny język stanów, §3): wypełniony `primary`;
+   `:active` nie zmienia tła pod tekstem `on-primary`. */
+.kid-ui .kid-lesson-block.kid-lesson-pair__item--selected,
+.kid-ui .kid-lesson-block.kid-lesson-pair__item--selected:active {
+  border-color: var(--md-sys-color-primary);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  font-weight: var(--kid-type-answer-weight);
+}
+
+@media (max-width: 599px) {
+  .kid-ui .kid-lesson-block.kid-lesson-pair__item {
+    padding: 8px 10px;
+    font-size: var(--kid-type-title-sm-size);
+  }
+}
+
 /* Warstwa linii i kropek „Połącz w pary” (PairLines): ostatnie dziecko
    `kid-lesson-pair` (position: relative); współrzędne w pikselach wewnętrznych. */
 .kid-ui .kid-lesson-pair__lines {
@@ -2655,9 +2690,12 @@
   stroke: var(--md-sys-color-primary);
 }
 
-/* „Połącz w pary” (design szkoły §10.5): wiersz = lewy element i miejsce na
-   pasujący; compact jeden pod drugim, od 600 px obok siebie. */
-.kid-lesson-match,
+/* „Połącz w pary” (UX: spec 2026-11-02-lesson-cloze-match-ux §5.3): dwie kolumny
+   kafelków i pas na linie między nimi; podpowiedź pod siatką. Lewa kolumna węższa,
+   ale nie węższa od najdłuższego słowa (`min-content` przy `break-word`), prawa
+   szersza na opisy. Kolumny rozciągają się na wysokość wiersza, a kafelki
+   rozkładają `space-around`, więc krótsza kolumna wyrównuje się do dłuższej. */
+.kid-lesson-match-view,
 .kid-lesson-group {
   width: 100%;
   display: flex;
@@ -2665,61 +2703,41 @@
   gap: 14px;
 }
 
-.kid-lesson-match__pairs {
+.kid-lesson-pair {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(min-content, 2fr) var(--kid-pair-gutter) minmax(0, 3fr);
+  width: 100%;
+}
+
+.kid-lesson-pair__column {
   display: flex;
   flex-direction: column;
+  justify-content: space-around;
   gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  min-width: 0;
+  grid-row: 1;
 }
 
-.kid-lesson-match__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 6px;
-  align-items: center;
+.kid-lesson-pair__column--left {
+  grid-column: 1;
 }
 
-.kid-lesson-match__left {
-  font-size: var(--kid-type-title-size);
-  font-weight: var(--kid-type-answer-weight);
-  overflow-wrap: anywhere;
+.kid-lesson-pair__column--right {
+  grid-column: 3;
 }
 
-.kid-ui .kid-lesson-match__slot {
-  width: 100%;
-  border-style: dashed;
-  background: var(--kid-soft);
-  color: var(--kid-text);
+/* Wiersz podpowiedzi stoi zawsze (pusty też), więc tekst nie przesuwa kafelków. */
+.kid-lesson-pair__hint {
+  min-height: 1.5em;
 }
 
-.kid-ui .kid-lesson-match__slot.kid-lesson-block--placed {
-  border-style: solid;
-  background: var(--kid-surface);
-}
-
-.kid-ui .kid-lesson-match__slot--active {
-  border-color: var(--kid-accent);
-  border-style: solid;
-  outline: 2px solid var(--kid-accent);
-  outline-offset: 2px;
-}
-
-.kid-lesson-match__pool,
 .kid-lesson-assign__pool {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: center;
-}
-
-@media (min-width: 600px) {
-  .kid-lesson-match__row {
-    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
-    gap: 12px;
-  }
 }
 
 /* „Pogrupuj”: grupa = przełącznik + zawartość; aktywna grupa z obwódką akcentu,
