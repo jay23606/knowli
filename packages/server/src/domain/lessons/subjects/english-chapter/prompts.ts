@@ -49,6 +49,8 @@ export const englishChapterPrompts: SubjectPromptProfile = {
     "stem is one short natural sentence of at most 12 words with exactly one gap written as ___ (two or more underscores) on a word or frame element of the material; " +
     "2 or 3 options, each option is a word or phrase from the chapter material, as in lesson_choice, exactly one correct, and the options sound clearly different when spoken " +
     "(not two spellings or an apostrophe contraction beside its full form of the same word). Never start an option with an apostrophe. " +
+    "When two options differ only by an -s ending that adds no syllable, in any spelling -s, -es or -ies (cat / cats, go / goes, baby / babies), the word right after the gap must not begin with an s, z or sh sound " +
+    "(socks, zoo, shoes): in speech the ending merges into that sound. " +
     "Distractors are plausible: the same category as the correct option, taken from the material. " +
     "lesson_gap: stem is a short English sentence with exactly one gap ___; answer is the missing chapter word or phrase " +
     "(at most 3 words) and focus is that checked word. Vary the answers: no more than 2 lesson_gap exercises of one " +

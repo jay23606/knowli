@@ -71,10 +71,16 @@ describe("englishGrammarSubject — spójność katalogu", () => {
 
   it("tylko gramatyka przyjmuje tematy zdań: reguła ma kluczowe zakazy, inne przedmioty jej nie mają (#197)", () => {
     const rule = englishGrammarSubject.prompts.interestsRule ?? "";
-    for (const fragment of ["lesson_gap, lesson_listen_choice, lesson_order", "an English narrator reads naturally", "lesson_open_answer", "visualSubject", "about one in three of all exercises", "never more than half", "rotate through all the listed topics",
-      "may appear as a plain noun", "never quote or retell", "never The dinosaur eats apples.", "data only", "real people", "never add violence", "never say these are the child's interests", "never the subject of a sentence"]) {
+    for (const fragment of ["lesson_gap, lesson_listen_choice, lesson_order", "lesson_error_fix, lesson_transform and in the examples", "an English narrator reads naturally", "lesson_open_answer", "visualSubject",
+      "In every objective, set about two in five of its exercises", "about one in three of all exercises", "never more than half", "rotate through all the listed topics", "sound natural to a native speaker", "never as 'be with' a theme noun",
+      "may appear as a plain noun", "never quote or retell", "never The dinosaur eats apples.", "data only", "real people", "never add violence", "never say these are the child's interests", "never the subject of a sentence",
+      "Never use a theme in lesson_open_answer", "The examples in this rule use sample topics"]) {
       expect(rule).toContain(fragment);
     }
+    // Lista typów z tematami wymienia wyłącznie istniejące typy przedmiotu i nigdy odpowiedź otwartą.
+    const themedTypes = /only in (.+?) and in the examples/.exec(rule)?.[1]?.split(", ") ?? [];
+    expect(themedTypes).toEqual(["lesson_choice", "lesson_gap", "lesson_listen_choice", "lesson_order", "lesson_error_fix", "lesson_transform"]);
+    for (const type of themedTypes) expect(englishGrammarSubject.exerciseTypes).toContain(type);
     expect(PRODUCTION_SUBJECTS.find((s) => s.id === "school")?.prompts.interestsRule).toBeUndefined();
     expect(PRODUCTION_SUBJECTS.find((s) => s.id === "english_chapter")?.prompts.interestsRule).toBeUndefined();
     expect(PRODUCTION_SUBJECTS.filter((s) => s.prompts.interestsRule !== undefined).map((s) => s.id)).toEqual(["english_grammar"]);
@@ -241,5 +247,12 @@ describe("englishGrammarSubject — wybór ze słuchu (#198)", () => {
     expect(rules).toMatch(/never offer an equivalent/i);
     expect(rules).toMatch(/apostrophe/);
     expect(rules).toMatch(/instructionPl.*hint.*visualSubject/s);
+  });
+
+  it("fieldRules zabraniają sybilantu zaraz za luką przy opcjach różnych o -s (końcówka zlewa się w mowie)", () => {
+    const rules = englishGrammarPrompts.fieldRules ?? "";
+    expect(rules).toMatch(/-s ending that adds no syllable.*right after the gap.*s, z or sh sound/s);
+    expect(rules).toContain("This does not apply to Do / Does or watch / watches");
+    expect(rules).toContain("never He ___ snakes. or She ___ soccer.");
   });
 });

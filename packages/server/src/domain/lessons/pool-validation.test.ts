@@ -1004,6 +1004,26 @@ describe("lesson_listen_choice — walidacja", () => {
     expect(errors.some((e) => e.includes("zdania z opcjami"))).toBe(true);
   });
 
+  /** Błędy reguły sybilantu dla zdania i opcji (poprawna jest pierwsza). */
+  function sibilantErrorsOf(stem: string, texts: readonly string[]): string[] {
+    const errors = errorsOf(listen({
+      stem,
+      options: texts.map((text, index) => ({ id: String.fromCharCode(97 + index), text })),
+      correctOption: "a",
+      answer: texts[0]!,
+      focus: [texts[0]!],
+    }));
+    return errors.filter((e) => e.includes("różnica niesłyszalna"));
+  }
+
+  // Reguła wymowy angielskiej (`subjects/english/listen-audibility.ts`); tu — że gramatyka ją deleguje.
+  it("gramatyka odrzuca sybilant za luką; komunikat wskazuje parę opcji i wyraz, także przy trzech opcjach", () => {
+    const sibilant = sibilantErrorsOf("He ___ snakes.", ["likes", "like", "is"]);
+    expect(sibilant).toHaveLength(1);
+    expect(sibilant[0]).toContain("„likes” i „like”");
+    expect(sibilant[0]).toContain("„snakes”");
+  });
+
   it("wymaga dokładnie jednej luki", () => {
     expect(errorsOf(listen({ stem: `He ${GAP_MARKER} football ${GAP_MARKER}.` })).some((e) => e.includes("luk"))).toBe(true);
     expect(errorsOf(listen({ stem: "He plays football." })).some((e) => e.includes("luk"))).toBe(true);
