@@ -292,20 +292,44 @@ describe("lesson exercise views", () => {
     expect(props.handlers.onAnswerSequence).toHaveBeenCalledWith([id(4), id(3)]);
   });
 
-  it("match: miejsca przyjmują elementy z puli, „Sprawdź” dopiero po komplecie, przypisania lewy → prawy", () => {
-    const props = makeExerciseProps(task({
-      kind: "lesson_match", instructionPl: "Połącz",
-      left: [{ id: id(3), text: "równik" }, { id: id(4), text: "południk" }, { id: id(5), text: "biegun" }],
-      right: [{ id: id(6), text: "łączy bieguny" }, { id: id(7), text: "dzieli półkule" }, { id: id(8), text: "koniec osi" }, { id: id(9), text: "nad morzem" }],
-    }));
+  const matchTask = () => task({
+    kind: "lesson_match", instructionPl: "Połącz",
+    left: [{ id: id(3), text: "równik" }, { id: id(4), text: "południk" }, { id: id(5), text: "biegun" }],
+    right: [{ id: id(6), text: "łączy bieguny" }, { id: id(7), text: "dzieli półkule" }, { id: id(8), text: "koniec osi" }, { id: id(9), text: "nad morzem" }],
+  });
+  const leftTile = (i: number) => screen.getAllByTestId("kid-lesson-match-left")[i]! as HTMLButtonElement;
+  const rightTile = (i: number) => screen.getAllByTestId("kid-lesson-match-right")[i]! as HTMLButtonElement;
+  const matchHint = () => screen.getByTestId("kid-lesson-match-hint");
+  const matchLines = () => screen.queryAllByTestId("kid-lesson-match-line");
+  const pressedTiles = () => document.querySelectorAll("[data-testid^='kid-lesson-match-'][aria-pressed='true']");
+
+  it("match: łączenie od lewej i od prawej, „Sprawdź” przy komplecie z wolnym dystraktorem", () => {
+    const props = makeExerciseProps(matchTask());
     renderKid(<LessonMatchView {...props} />);
     const check = screen.getByTestId("kid-lesson-check") as HTMLButtonElement;
-    expect(screen.getAllByTestId("kid-lesson-match-slot")[0]!.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByText("dzieli półkule"));
-    fireEvent.click(screen.getByText("łączy bieguny"));
+    expect(pressedTiles()).toHaveLength(0);
+    expect(matchHint().textContent).toBe("");
+    expect(leftTile(0).getAttribute("data-item-id")).toBe(id(3));
+    expect(rightTile(3).getAttribute("data-item-id")).toBe(id(9));
+    fireEvent.click(leftTile(0));
+    expect(leftTile(0).getAttribute("aria-pressed")).toBe("true");
+    expect(leftTile(0).classList.contains("kid-lesson-pair__item--selected")).toBe(true);
+    expect(matchHint().textContent).toBe("Teraz dotknij tego, co pasuje.");
+    expect(props.handlers.onEdit).toHaveBeenCalled();
+    fireEvent.click(rightTile(1));
+    expect(matchLines()).toHaveLength(1);
+    expect(matchHint().textContent).toBe("");
+    expect(leftTile(0).classList.contains("kid-lesson-block--placed")).toBe(true);
+    expect(rightTile(1).classList.contains("kid-lesson-block--placed")).toBe(true);
+    // Od prawej: najpierw odpowiedź, potem pojęcie.
+    fireEvent.click(rightTile(0));
+    fireEvent.click(leftTile(1));
+    expect(matchLines()).toHaveLength(2);
     expect(check.disabled).toBe(true);
-    fireEvent.click(screen.getByText("koniec osi"));
-    expect(screen.getAllByTestId("kid-lesson-match-option").map((el) => el.textContent)).toEqual(["nad morzem"]);
+    fireEvent.click(leftTile(2));
+    fireEvent.click(rightTile(2));
+    expect(matchLines()).toHaveLength(3);
+    expect(rightTile(3).classList.contains("kid-lesson-block--placed")).toBe(false);
     expect(check.disabled).toBe(false);
     fireEvent.click(check);
     expect(props.handlers.onAnswerAssignment).toHaveBeenCalledWith([
@@ -313,17 +337,163 @@ describe("lesson exercise views", () => {
     ]);
   });
 
-  it("match: dotknięcie zajętego miejsca oddaje element do puli", () => {
-    const props = makeExerciseProps(task({
+  it("match: zaznaczenie przez kliknięcia — zdjęcie i przeniesienie w kolumnie", () => {
+    renderKid(<LessonMatchView {...makeExerciseProps(matchTask())} />);
+    fireEvent.click(leftTile(0));
+    fireEvent.click(leftTile(0));
+    expect(pressedTiles()).toHaveLength(0);
+    fireEvent.click(leftTile(0));
+    fireEvent.click(leftTile(1));
+    expect([...pressedTiles()]).toEqual([leftTile(1)]);
+    expect(leftTile(0).classList.contains("kid-lesson-pair__item--selected")).toBe(false);
+    expect(matchLines()).toHaveLength(0);
+  });
+
+  it("match: nowa para zastępuje stare pary obu kafelków", () => {
+    renderKid(<LessonMatchView {...makeExerciseProps(task({
       kind: "lesson_match", instructionPl: "Połącz",
       left: [{ id: id(3), text: "a" }, { id: id(4), text: "b" }, { id: id(5), text: "c" }],
       right: [{ id: id(6), text: "x" }, { id: id(7), text: "y" }, { id: id(8), text: "z" }],
-    }));
-    renderKid(<LessonMatchView {...props} />);
-    fireEvent.click(screen.getByText("x"));
-    expect(screen.getAllByTestId("kid-lesson-match-option")).toHaveLength(2);
-    fireEvent.click(screen.getAllByTestId("kid-lesson-match-slot")[0]!);
-    expect(screen.getAllByTestId("kid-lesson-match-option")).toHaveLength(3);
+    }))} />);
+    fireEvent.click(leftTile(0));
+    fireEvent.click(rightTile(0));
+    fireEvent.click(leftTile(1));
+    fireEvent.click(rightTile(1));
+    expect(matchLines()).toHaveLength(2);
+    fireEvent.click(leftTile(0));
+    fireEvent.click(rightTile(1));
+    expect(matchLines().map((line) => [line.getAttribute("data-left-id"), line.getAttribute("data-right-id")])).toEqual([[id(3), id(7)]]);
+    expect(leftTile(1).classList.contains("kid-lesson-block--placed")).toBe(false);
+    expect(rightTile(0).classList.contains("kid-lesson-block--placed")).toBe(false);
+  });
+
+  it("match: zaznaczony kafelek w parze wyróżnia swoją linię i odpowiednik (obie strony)", () => {
+    renderKid(<LessonMatchView {...makeExerciseProps(matchTask())} />);
+    const partners = () => [...document.querySelectorAll(".kid-lesson-pair__item--partner")];
+    const selectedLines = () => [...document.querySelectorAll(".kid-lesson-pair__line--selected")]
+      .map((line) => [line.getAttribute("data-left-id"), line.getAttribute("data-right-id")]);
+    fireEvent.click(leftTile(0));
+    fireEvent.click(rightTile(1));
+    fireEvent.click(leftTile(1));
+    fireEvent.click(rightTile(0));
+    expect(partners()).toHaveLength(0);
+    expect(selectedLines()).toEqual([]);
+    // Zaznaczenie lewego kafelka w parze: obwódka na prawym odpowiedniku, grubsza linia.
+    fireEvent.click(leftTile(0));
+    expect(partners()).toEqual([rightTile(1)]);
+    expect(selectedLines()).toEqual([[id(3), id(7)]]);
+    expect(leftTile(0).classList.contains("kid-lesson-pair__item--partner")).toBe(false);
+    // Przeniesienie zaznaczenia na prawy kafelek drugiej pary (najpierw zdjęcie zaznaczenia).
+    fireEvent.click(leftTile(0));
+    fireEvent.click(rightTile(0));
+    expect(partners()).toEqual([leftTile(1)]);
+    expect(selectedLines()).toEqual([[id(4), id(6)]]);
+    // Wolny kafelek nie ma odpowiednika.
+    fireEvent.click(rightTile(0));
+    fireEvent.click(rightTile(3));
+    expect(partners()).toHaveLength(0);
+    expect(selectedLines()).toEqual([]);
+  });
+
+  it("match: nazwy dostępne z treści", () => {
+    const en = "en-GB" as const;
+    // Kafelek z dopowiedzeniem: cała nazwa w jednym ukrytym spanie, a widoczny tekst
+    // aria-hidden (inaczej blokowy `kid-visually-hidden` daje spację przed przecinkiem).
+    const hiddenName = (tile: HTMLElement) => {
+      expect(tile.hasAttribute("aria-label")).toBe(false);
+      expect(tile.hasAttribute("lang")).toBe(false);
+      const [visible, hidden, ...rest] = [...tile.children];
+      expect(rest).toHaveLength(0);
+      expect(visible!.getAttribute("aria-hidden")).toBe("true");
+      expect(hidden!.className).toBe("kid-visually-hidden");
+      expect(visible!.textContent).toBe(hidden!.firstElementChild!.textContent);
+      return hidden as HTMLElement;
+    };
+    const plain = (tile: HTMLElement) => {
+      expect(tile.hasAttribute("aria-label")).toBe(false);
+      expect(tile.querySelectorAll("span")).toHaveLength(1);
+      expect(tile.querySelector("[aria-hidden]")).toBeNull();
+      expect(tile.querySelector(".kid-visually-hidden")).toBeNull();
+    };
+    renderKid(<LessonMatchView {...makeExerciseProps(task({
+      kind: "lesson_match", instructionPl: "Połącz", contentLocale: en,
+      left: [{ id: id(3), text: "dog" }, { id: id(4), text: "cat" }, { id: id(5), text: "fish" }],
+      right: [{ id: id(6), text: "pies" }, { id: id(7), text: "kot" }, { id: id(8), text: "ryba" }],
+    }))} />);
+    for (const tile of screen.getAllByTestId("kid-lesson-match-left")) {
+      expect(tile.tagName).toBe("BUTTON");
+      expect(tile.hasAttribute("lang")).toBe(false);
+      plain(tile);
+      expect(tile.querySelector("span")!.getAttribute("lang")).toBe(en);
+    }
+    for (const tile of screen.getAllByTestId("kid-lesson-match-right")) {
+      expect(tile.tagName).toBe("BUTTON");
+      plain(tile);
+      expect(tile.querySelectorAll("[lang]")).toHaveLength(0);
+    }
+
+    fireEvent.click(leftTile(0));
+    plain(leftTile(0));
+    expect(screen.getByRole("button", { name: "dog" })).toBe(leftTile(0));
+    const connect = hiddenName(rightTile(0));
+    expect(connect.textContent).toBe("pies, połącz z: dog");
+    expect(rightTile(0).firstElementChild!.hasAttribute("lang")).toBe(false);
+    expect([...connect.children].map((span) => span.getAttribute("lang"))).toEqual([null, en]);
+
+    fireEvent.click(rightTile(0));
+    const paired = hiddenName(leftTile(0));
+    expect(paired.textContent).toBe("dog, połączone z: pies");
+    expect(leftTile(0).firstElementChild!.getAttribute("lang")).toBe(en);
+    expect([...paired.children].map((span) => span.getAttribute("lang"))).toEqual([en, null]);
+    const pairedRight = hiddenName(rightTile(0));
+    expect(pairedRight.textContent).toBe("pies, połączone z: dog");
+    expect([...pairedRight.children].map((span) => span.getAttribute("lang"))).toEqual([null, en]);
+    plain(leftTile(1));
+    expect(screen.getByRole("button", { name: "cat" })).toBe(leftTile(1));
+    expect(screen.getByRole("list", { name: "Słowa do połączenia" }).contains(leftTile(0))).toBe(true);
+    expect(screen.getByRole("list", { name: "Odpowiedzi do połączenia" }).contains(rightTile(0))).toBe(true);
+  });
+
+  it("match: wysłanie czyści zaznaczenie; dok i busy wyłączają kafelki i podpowiedź", () => {
+    const props = makeExerciseProps(matchTask());
+    const view = renderKid(<LessonMatchView {...props} />);
+    for (const i of [0, 1, 2]) {
+      fireEvent.click(leftTile(i));
+      fireEvent.click(rightTile(i));
+    }
+    fireEvent.click(rightTile(3));
+    expect(rightTile(3).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByTestId("kid-lesson-check"));
+    expect(props.handlers.onAnswerAssignment).toHaveBeenCalledOnce();
+    expect(pressedTiles()).toHaveLength(0);
+    expect(matchHint().textContent).toBe("");
+    view.rerender(<LessonMatchView {...props} dock={<span>wynik</span>} />);
+    const tiles = [...screen.getAllByTestId("kid-lesson-match-left"), ...screen.getAllByTestId("kid-lesson-match-right")];
+    expect(tiles.every((tile) => (tile as HTMLButtonElement).disabled)).toBe(true);
+    expect(matchLines()).toHaveLength(3);
+    view.unmount();
+
+    const busyView = renderKid(<LessonMatchView {...props} />);
+    fireEvent.click(leftTile(0));
+    expect(matchHint().textContent).toBe("Teraz dotknij tego, co pasuje.");
+    busyView.rerender(<LessonMatchView {...props} busy />);
+    expect(matchHint().textContent).toBe("");
+    expect(leftTile(0).disabled).toBe(true);
+  });
+
+  it("match: po retry pary i linie znikają, a fokus stoi na pierwszym kafelku", () => {
+    const props = makeExerciseProps(matchTask());
+    const view = renderKid(<LessonMatchView {...props} />);
+    fireEvent.click(leftTile(0));
+    fireEvent.click(rightTile(0));
+    fireEvent.click(rightTile(1));
+    expect(matchLines()).toHaveLength(1);
+    view.rerender(<LessonMatchView {...props} dock={<span>wynik</span>} />);
+    view.rerender(<LessonMatchView {...props} />);
+    expect(matchLines()).toHaveLength(0);
+    expect(pressedTiles()).toHaveLength(0);
+    expect(document.querySelectorAll(".kid-lesson-block--placed")).toHaveLength(0);
+    expect(document.activeElement).toBe(leftTile(0));
   });
 
   it("group: elementy trafiają do aktywnej grupy, a „Sprawdź” wysyła przypisania element → grupa", () => {
@@ -363,38 +533,120 @@ describe("lesson exercise views", () => {
     words: [{ id: id(5), text: "wodę" }, { id: id(6), text: "tlen" }, { id: id(7), text: "dwutlenek węgla" }],
   });
 
-  it("cloze: luki w tekście nie są przyciskami, miejsca przyjmują słowa z banku, przypisania luka → słowo", () => {
+  it("cloze: luki są przyciskami w tekście; słowo trafia do aktywnej luki, a aktywna przechodzi dalej", () => {
     const props = makeExerciseProps(clozeTask());
     renderKid(<LessonClozeView {...props} />);
     const text = screen.getByTestId("kid-lesson-cloze-text");
-    expect(text.querySelectorAll("button")).toHaveLength(0);
-    expect(text.textContent).toContain("luka 1, pusta");
+    expect(text.querySelectorAll("button")).toHaveLength(2);
+    // Dawny test id miejsca na słowo (`kid-lesson-cloze-` + `slot`) nie wraca; zapis prefiks/sufiks, bo sloty ExerciseFrame też kończą się na „-slot”.
+    expect(document.querySelectorAll("[data-testid^='kid-lesson-cloze-'][data-testid$='-slot']")).toHaveLength(0);
     const check = screen.getByTestId("kid-lesson-check") as HTMLButtonElement;
-    const slots = screen.getAllByTestId("kid-lesson-cloze-slot");
-    expect(slots).toHaveLength(2);
-    expect(slots[0]!.getAttribute("aria-pressed")).toBe("true");
+    const [first, second] = screen.getAllByTestId("kid-lesson-cloze-gap");
+    expect(first!.getAttribute("aria-pressed")).toBe("true");
+    expect(first!.classList.contains("kid-lesson-cloze__gap--active")).toBe(true);
+    expect(first!.querySelector(".kid-lesson-cloze__gap-mark")!.textContent).toBe("?");
+    expect(second!.classList.contains("kid-lesson-cloze__gap--empty")).toBe(true);
+    expect(screen.getByRole("button", { name: "Luka 2: pusta, wybierz słowo" })).toBe(second);
     fireEvent.click(screen.getByText("dwutlenek węgla"));
-    expect(screen.getAllByTestId("kid-lesson-cloze-slot")[1]!.getAttribute("aria-pressed")).toBe("true");
+    const filled = screen.getByRole("button", { name: "Luka 1: dwutlenek węgla" });
+    expect(filled.classList.contains("kid-lesson-cloze__gap--filled")).toBe(true);
+    expect(filled.classList.contains("kid-lesson-cloze__gap--empty")).toBe(false);
+    expect(screen.getAllByTestId("kid-lesson-cloze-gap")[1]!.getAttribute("aria-pressed")).toBe("true");
+    for (const gap of screen.getAllByTestId("kid-lesson-cloze-gap")) expect(gap.hasAttribute("aria-label")).toBe(false);
     expect(check.disabled).toBe(true);
     fireEvent.click(screen.getByText("wodę"));
-    expect(text.textContent).toContain("luka 2: wodę");
-    expect(screen.getAllByTestId("kid-lesson-cloze-option").map((el) => el.textContent)).toEqual(["tlen"]);
-    expect(check.disabled).toBe(false);
     fireEvent.click(check);
     expect(props.handlers.onAnswerAssignment).toHaveBeenCalledWith([
       { itemId: id(3), targetId: id(7) }, { itemId: id(4), targetId: id(5) },
     ]);
   });
 
-  it("cloze: dotknięcie zajętego miejsca oddaje słowo do banku, a po wyniku przyciski są wyłączone", () => {
+  it("cloze: stuknięcie pustej, nieaktywnej luki czyni ją aktywną", () => {
+    const props = makeExerciseProps(clozeTask());
+    renderKid(<LessonClozeView {...props} />);
+    fireEvent.click(screen.getAllByTestId("kid-lesson-cloze-gap")[1]!);
+    const [first, second] = screen.getAllByTestId("kid-lesson-cloze-gap");
+    expect(first!.getAttribute("aria-pressed")).toBe("false");
+    expect(second!.getAttribute("aria-pressed")).toBe("true");
+    expect(second!.querySelector(".kid-lesson-cloze__gap-mark")).not.toBeNull();
+    expect(first!.querySelector(".kid-lesson-cloze__gap-mark")).toBeNull();
+    expect(props.handlers.onEdit).toHaveBeenCalled();
+  });
+
+  it("cloze: wiersz podpowiedzi jest zawsze w DOM; tekst tylko przy komplecie z wolnymi słowami i bez blokady", () => {
+    const props = makeExerciseProps(clozeTask());
+    const view = renderKid(<LessonClozeView {...props} />);
+    expect(screen.getByTestId("kid-lesson-cloze-hint").textContent).toBe("");
+    fireEvent.click(screen.getByText("dwutlenek węgla"));
+    fireEvent.click(screen.getByText("wodę"));
+    expect(screen.getByTestId("kid-lesson-cloze-hint").textContent).toBe("Dotknij luki, żeby zmienić słowo.");
+    const [tlen] = screen.getAllByTestId("kid-lesson-cloze-option");
+    expect((tlen as HTMLButtonElement).disabled).toBe(true);
+    view.rerender(<LessonClozeView {...props} dock={<span>wynik</span>} />);
+    expect(screen.getByTestId("kid-lesson-cloze-hint").textContent).toBe("");
+    view.rerender(<LessonClozeView {...props} busy />);
+    expect(screen.getByTestId("kid-lesson-cloze-hint").textContent).toBe("");
+  });
+
+  it("cloze: stuknięcie wypełnionej luki oddaje słowo; dok i busy wyłączają luki i bank", () => {
     const props = makeExerciseProps(clozeTask());
     const view = renderKid(<LessonClozeView {...props} />);
     fireEvent.click(screen.getByText("tlen"));
     expect(screen.getAllByTestId("kid-lesson-cloze-option")).toHaveLength(2);
-    fireEvent.click(screen.getAllByTestId("kid-lesson-cloze-slot")[0]!);
+    fireEvent.click(screen.getAllByTestId("kid-lesson-cloze-gap")[0]!);
     expect(screen.getAllByTestId("kid-lesson-cloze-option")).toHaveLength(3);
+    const disabledAll = () => [...screen.getAllByTestId("kid-lesson-cloze-gap"), ...screen.getAllByTestId("kid-lesson-cloze-option")]
+      .every((el) => (el as HTMLButtonElement).disabled);
+    expect(disabledAll()).toBe(false);
     view.rerender(<LessonClozeView {...props} dock={<span>wynik</span>} />);
-    expect(screen.getAllByTestId("kid-lesson-cloze-option").every((el) => (el as HTMLButtonElement).disabled)).toBe(true);
+    expect(disabledAll()).toBe(true);
+    view.rerender(<LessonClozeView {...props} busy />);
+    expect(disabledAll()).toBe(true);
+  });
+
+  it("cloze: po retry luki są puste, a fokus stoi na pierwszej luce", () => {
+    const props = makeExerciseProps(clozeTask());
+    const view = renderKid(<LessonClozeView {...props} />);
+    fireEvent.click(screen.getByText("tlen"));
+    fireEvent.click(screen.getByText("wodę"));
+    expect(screen.getAllByTestId("kid-lesson-cloze-gap").every((gap) => gap.classList.contains("kid-lesson-cloze__gap--filled"))).toBe(true);
+    view.rerender(<LessonClozeView {...props} dock={<span>wynik</span>} />);
+    view.rerender(<LessonClozeView {...props} />);
+    const gaps = screen.getAllByTestId("kid-lesson-cloze-gap");
+    expect(gaps.some((gap) => gap.classList.contains("kid-lesson-cloze__gap--filled"))).toBe(false);
+    expect(gaps[0]!.getAttribute("aria-pressed")).toBe("true");
+    expect(document.activeElement).toBe(gaps[0]);
+  });
+
+  it("cloze keeps filled gaps when the same task arrives as a fresh prompt object", () => {
+    const props = makeExerciseProps(clozeTask());
+    const view = renderKid(<LessonClozeView {...props} />);
+    fireEvent.click(screen.getByText("tlen"));
+    const filled = () => screen.getAllByTestId("kid-lesson-cloze-gap").map((gap) => gap.classList.contains("kid-lesson-cloze__gap--filled"));
+    expect(filled()).toEqual([true, false]);
+    const refreshed = makeExerciseProps(clozeTask());
+    view.rerender(<LessonClozeView {...refreshed} handlers={props.handlers} />);
+    expect(filled()).toEqual([true, false]);
+    expect(screen.getByRole("button", { name: "Luka 1: tlen" })).toBeTruthy();
+    expect(screen.getAllByTestId("kid-lesson-cloze-gap")[1]!.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("match keeps pairs, lines and the selection when the same task arrives as a fresh prompt object", () => {
+    const props = makeExerciseProps(matchTask());
+    const view = renderKid(<LessonMatchView {...props} />);
+    fireEvent.click(leftTile(0));
+    fireEvent.click(rightTile(1));
+    fireEvent.click(leftTile(1));
+    expect(matchLines()).toHaveLength(1);
+    const refreshed = makeExerciseProps(matchTask());
+    view.rerender(<LessonMatchView {...refreshed} handlers={props.handlers} />);
+    expect(matchLines().map((line) => [line.getAttribute("data-left-id"), line.getAttribute("data-right-id")])).toEqual([[id(3), id(7)]]);
+    expect(leftTile(0).classList.contains("kid-lesson-block--placed")).toBe(true);
+    expect(rightTile(1).classList.contains("kid-lesson-block--placed")).toBe(true);
+    expect([...pressedTiles()]).toEqual([leftTile(1)]);
+    // Kafelki po odświeżeniu nadal łączą się w pary (refy przepięte na nowe elementy).
+    fireEvent.click(rightTile(0));
+    expect(matchLines()).toHaveLength(2);
   });
 
   it("order keeps placed blocks when the same task arrives as a fresh prompt object", () => {
@@ -530,19 +782,6 @@ describe("lesson content language (lang attributes)", () => {
     expect(screen.getAllByTestId("kid-lesson-order-block").map(langOf)).toEqual([en]);
   });
 
-  it("match marks the left column only; the right column (meaning or answer) stays unmarked", () => {
-    const props = makeExerciseProps(task({
-      kind: "lesson_match", instructionPl: "Połącz", contentLocale: en,
-      left: [{ id: id(3), text: "dog" }, { id: id(4), text: "cat" }, { id: id(5), text: "fish" }],
-      right: [{ id: id(6), text: "pies" }, { id: id(7), text: "kot" }, { id: id(8), text: "ryba" }],
-    }));
-    renderKid(<LessonMatchView {...props} />);
-    expect(screen.getAllByTestId("kid-lesson-match-left").map(langOf)).toEqual([en, en, en]);
-    for (const option of screen.getAllByTestId("kid-lesson-match-option")) expect(option.hasAttribute("lang")).toBe(false);
-    fireEvent.click(screen.getByText("pies"));
-    for (const slot of screen.getAllByTestId("kid-lesson-match-slot")) expect(slot.hasAttribute("lang")).toBe(false);
-  });
-
   it("group marks pool and placed items; group labels stay unmarked", () => {
     const props = makeExerciseProps(task({
       kind: "lesson_group", instructionPl: "Pogrupuj", contentLocale: en,
@@ -557,7 +796,7 @@ describe("lesson content language (lang attributes)", () => {
     for (const bin of screen.getAllByTestId("kid-lesson-group-bin")) expect(bin.hasAttribute("lang")).toBe(false);
   });
 
-  it("cloze marks text segments, filled gaps, filled slots and the word bank", () => {
+  it("cloze marks text segments, the word inside a filled gap and the word bank; gap buttons stay unmarked", () => {
     const props = makeExerciseProps(task({
       kind: "lesson_cloze", instructionPl: "Uzupełnij tekst", contentLocale: en,
       segments: [{ text: "I " }, { gapId: id(3) }, { text: " a dog and " }, { gapId: id(4) }, { text: " a cat." }],
@@ -567,12 +806,12 @@ describe("lesson content language (lang attributes)", () => {
     expect(screen.getAllByTestId("kid-lesson-cloze-segment").map(langOf)).toEqual([en, en, en]);
     expect(screen.getAllByTestId("kid-lesson-cloze-option").map(langOf)).toEqual([en, en, en]);
     fireEvent.click(screen.getByText("have"));
-    const [firstGap] = screen.getAllByTestId("kid-lesson-cloze-gap");
-    const visibleGap = firstGap!.querySelector("[aria-hidden='true']")!;
-    expect(visibleGap.textContent).toContain("have");
-    expect(langOf(visibleGap)).toBe(en);
-    expect(langOf(screen.getAllByTestId("kid-lesson-cloze-slot")[0]!)).toBe(en);
-    expect(screen.getAllByTestId("kid-lesson-cloze-slot")[1]!.hasAttribute("lang")).toBe(false);
+    const [firstGap, secondGap] = screen.getAllByTestId("kid-lesson-cloze-gap");
+    const word = firstGap!.querySelector("span[lang]")!;
+    expect(word.textContent).toBe("have");
+    expect(langOf(word)).toBe(en);
+    expect(firstGap!.hasAttribute("lang")).toBe(false);
+    expect(secondGap!.hasAttribute("lang")).toBe(false);
   });
 
   it("gap marks the sentence parts around the field and the field itself (answer language)", () => {

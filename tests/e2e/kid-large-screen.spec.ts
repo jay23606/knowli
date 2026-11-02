@@ -1,8 +1,8 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { FeedbackDto, TaskDto } from "@learning/contracts";
 import {
-  clozeTask, clozeUid, completedRecallFixture, completedTextChoiceFixture, letterTask, lessonCardFixture, longSpellingHintFeedback,
-  makeDeck, mediumSpellingHintFeedback, openDeckScreen, overflowingRecallFixture, recallFixture, sessionId, taskFor,
+  clozeTask, clozeUid, completedRecallFixture, completedTextChoiceFixture, letterTask, lessonCardFixture, longClozeTask,
+  longSpellingHintFeedback, makeDeck, mediumSpellingHintFeedback, openDeckScreen, overflowingRecallFixture, recallFixture, sessionId, taskFor,
 } from "./helpers/kid-fixtures";
 import {
   boxes, dockRevealCalls, emulatePinchZoom, expectFrameFillsViewport, expectInteractiveTargets, expectRectsUnchanged, installDockOverlapProbe,
@@ -849,8 +849,8 @@ function clozeFixture(): KidUiFixture {
 }
 
 /** "Uzupełnij tekst" answered with the first bank word in every gap: a lesson hint with the child's text, the hint, the solution and its recording. */
-function clozeHintFixture(): KidUiFixture {
-  const { prompt } = clozeTask;
+function clozeHintFixture(task: TaskDto = clozeTask): KidUiFixture {
+  const { prompt } = task;
   if (prompt.kind !== "lesson_cloze") throw new Error("cloze fixture expected");
   // Tapping the first bank word four times fills the gaps in this order.
   const given = ["światła słonecznego", "tlen", "dwutlenek węgla", "azot"];
@@ -866,12 +866,12 @@ function clozeHintFixture(): KidUiFixture {
     correctText: filled(solution).map(({ text }) => text).join(""),
     correctAudioAssetId: clozeUid(60),
   };
-  return lessonTaskFixture(CLOZE_IDS, CLOZE_DECK, [clozeTask], [assignmentAttempt(clozeUid(90), clozeTask.taskId, feedback)]);
+  return lessonTaskFixture(CLOZE_IDS, CLOZE_DECK, [task], [assignmentAttempt(clozeUid(90), task.taskId, feedback)]);
 }
 
 /** Opens "Uzupełnij tekst" (`clozeHintFixture`) and fills the four gaps, ready for "Sprawdź" (`kid-lesson-check`). */
-async function openAnsweredCloze(page: Page, viewport: Viewport) {
-  await installKidUiFixture(page, clozeHintFixture());
+async function openAnsweredCloze(page: Page, viewport: Viewport, task: TaskDto = clozeTask) {
+  await installKidUiFixture(page, clozeHintFixture(task));
   await openLessonTask(page, viewport, "kid-lesson-cloze");
   for (let gap = 0; gap < 4; gap += 1) await page.getByTestId("kid-lesson-cloze-option").first().click();
 }
@@ -892,7 +892,8 @@ async function insetsInParent(page: Page, selector: string): Promise<{ left: num
 
 // Reading measure (spec 2026-10-31 §3.6): in the 720 px column the longest line of the card body and of the cloze text
 // is about 60 characters, and the narrower block sits in the middle of the column. The text is the long card body
-// (1200 characters) and the four-gap cloze text (about 225 characters, gap numbers not counted).
+// (1200 characters) and the four-gap cloze text (about 225 characters; the empty gaps hold only the "?" of the active
+// gap and the screen-reader prefixes, none of them counted).
 const READING_MEASURE_CASES = [
   {
     name: "lesson card", text: ".kid-lesson-card__body", exclude: undefined, blocks: [".kid-lesson-card__body", ".kid-lesson-card__examples"],
@@ -903,7 +904,7 @@ const READING_MEASURE_CASES = [
     },
   },
   {
-    name: "cloze text", text: ".kid-lesson-cloze__text", exclude: ".kid-lesson-cloze__gap-number", blocks: [".kid-lesson-cloze__text"],
+    name: "cloze text", text: ".kid-lesson-cloze__text", exclude: ".kid-lesson-cloze__gap-mark, .kid-visually-hidden", blocks: [".kid-lesson-cloze__text"],
     open: async (page: Page) => {
       await installKidUiFixture(page, clozeFixture());
       await openLessonTask(page, LAPTOP, "kid-lesson-cloze");
@@ -960,9 +961,11 @@ const SCROLLING_MATERIAL_CASES = [
       await page.getByTestId("kid-material").evaluate((element) => { element.scrollTop = 0; });
     },
   },
-  ...[SMALL_LAPTOP, LAPTOP].map((viewport) => ({
+  // With the gaps in the sentence the four-gap text still scrolls at 1280x600, but not at 1536x730: there the text is
+  // longer after the last gap (`longClozeTask`).
+  ...[{ viewport: SMALL_LAPTOP, task: clozeTask }, { viewport: LAPTOP, task: longClozeTask }].map(({ viewport, task }) => ({
     name: "cloze with a lesson hint", viewport, submit: "kid-lesson-check",
-    open: (page: Page) => openAnsweredCloze(page, viewport),
+    open: (page: Page) => openAnsweredCloze(page, viewport, task),
   })),
 ];
 
@@ -1314,8 +1317,9 @@ test.describe("touch tablet in portrait", () => {
   const tablet = { width: 1024, height: 1366 };
   const TOUCH_CARD_SPACE_CASES: CardSpaceCase[] = [
     { name: "long hint", viewport: tablet, scale: 1, frame: "compact", fits: "whole", open: shortPromptHint(longSpellingHintFeedback) },
-    // The lesson panel (the child's text, the hint, the solution and its recording) is about 1100 px: the free space
-    // limits it, with another overhead than the spelling card.
+    // The lesson card (the child's text, the hint, the solution and its recording) is about 1140 px (measured
+    // 2026-11-02, gaps in the sentence): the free space under the text (about 690 px) limits it, with another overhead
+    // than the spelling card. The panel does not depend on the cloze view, so the short `clozeTask` is enough here.
     {
       name: "cloze with a lesson hint", viewport: tablet, scale: 1, frame: "compact", fits: "space", submit: "kid-lesson-check",
       open: async (page, viewport) => {

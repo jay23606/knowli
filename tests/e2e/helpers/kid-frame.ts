@@ -336,8 +336,9 @@ export async function readDockOverlapProbe(page: Page): Promise<{
  * Characters per rendered line of the first element matching `selector`, top line first (spec 2026-10-31 §3.6).
  * Every character of its text nodes gets a rectangle from a `Range`; characters without one (collapsed white space) are
  * skipped, and a character joins the current line while its vertical centre stays within half a line height of the
- * line's first character (a `vertical-align: super` gap number sits about 2 px higher, so grouping by `top` would
- * break its line). Text inside `exclude` (a selector list, e.g. `.kid-lesson-cloze__gap-number`) and screen-reader-only
+ * line's first character (text in an inline box with its own line height, like a cloze gap centred with
+ * `vertical-align: middle`, sits a few px off the line's text, so grouping by `top` would break its line). Text inside
+ * `exclude` (a selector list, e.g. `.kid-lesson-cloze__gap-mark`) and screen-reader-only
  * text (`.kid-visually-hidden`, laid out in a 1 px box) is not counted.
  */
 export async function lineLengths(page: Page, selector: string, exclude?: string): Promise<number[]> {

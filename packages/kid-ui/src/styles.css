@@ -182,6 +182,9 @@
      zapas pod 65 także przy innym silniku tekstu. Samo 60ch dawało ok. 80 znaków
      i w kolumnie 720 px nie ograniczało wiersza. */
   --kid-reading-measure: 44ch;
+  /* Pas na linie między kolumnami „Połącz w pary” (spec 2026-11-02 §5.3): 48 px
+     w compact, od 600 px szerokości 72 px (reguła @media pod blokiem). */
+  --kid-pair-gutter: 48px;
   /* Window units. KidPage scales a large window with CSS zoom (inline
      --kid-zoom), and zoom multiplies vh/dvh/svh/vw by the scale, so every
      window-relative length is written calc(N * var(--kid-dvh)) etc. Each token
@@ -201,6 +204,14 @@
   .kid-ui {
     --kid-column-max-width: 720px;
     --kid-visual-choice-max-size: 300px;
+  }
+}
+
+@media (min-width: 600px) {
+  :root:has(.kid-ui),
+  .kid-theme,
+  .kid-ui {
+    --kid-pair-gutter: 72px;
   }
 }
 
@@ -1390,8 +1401,11 @@
 /* Dwa komunikaty naraz (instrukcja + nagranie zadania) zjadają budżet
    pionowy ramy — zwłaszcza nad progiem very-short, np. 480 px. Cała rama
    przewija się wtedy jak przy flow-layout, zamiast trwale przycinać
-   stopkę akcji (wzorzec .root[data-feedback-layout="flow"]). */
-.kid-learning[data-action-notice="true"] .kid-exercise-frame {
+   stopkę akcji (wzorzec .root[data-feedback-layout="flow"]). Nie w trybie
+   przewijanej strony (powiększenie gestem, bardzo niskie okno): tam przewija
+   strona, a rama jako nieprzewijany kontener przewijania odcięłaby `position:
+   sticky` od strony (bank słów luk w niskim landscape by się nie przyklejał). */
+.kid-page:not([data-zoomed="true"], [data-viewport-very-short="true"]) .kid-learning[data-action-notice="true"] .kid-exercise-frame {
   overflow-y: auto;
 }
 
@@ -2626,9 +2640,87 @@
   outline-offset: 3px;
 }
 
-/* „Połącz w pary” (design szkoły §10.5): wiersz = lewy element i miejsce na
-   pasujący; compact jeden pod drugim, od 600 px obok siebie. */
-.kid-lesson-match,
+/* Kafelki „Połącz w pary” po `.kid-ui .kid-lesson-block` (jego `overflow-wrap:
+   anywhere` ustępuje `break-word`: słowo łamie się tylko, gdy samo się nie mieści).
+   `hyphens: auto` dzieli długie słowo z łącznikiem w języku tekstu (`lang` dokumentu
+   pl-PL, lewa kolumna z `lang` materiału), zanim zadziała `break-word`. */
+.kid-ui .kid-lesson-block.kid-lesson-pair__item {
+  width: 100%;
+  overflow-wrap: break-word;
+  hyphens: auto;
+}
+
+/* Zaznaczony kafelek (wspólny język stanów, §3): wypełniony `primary`;
+   `:active` nie zmienia tła pod tekstem `on-primary`. */
+.kid-ui .kid-lesson-block.kid-lesson-pair__item--selected,
+.kid-ui .kid-lesson-block.kid-lesson-pair__item--selected:active {
+  border-color: var(--md-sys-color-primary);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  font-weight: var(--kid-type-answer-weight);
+}
+
+/* Odpowiednik zaznaczonego kafelka w parze (§5.4): obwódka `primary` poza kafelkiem,
+   bez zmiany wymiarów; razem z grubszą linią pokazuje, z czym kafelek jest połączony. */
+.kid-ui .kid-lesson-block.kid-lesson-pair__item--partner {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+@media (max-width: 599px) {
+  .kid-ui .kid-lesson-block.kid-lesson-pair__item {
+    padding: 8px 10px;
+    font-size: var(--kid-type-title-sm-size);
+  }
+}
+
+/* Najwęższe telefony (320 px): mniej poziomego paddingu, więcej miejsca na słowa. */
+@media (max-width: 359px) {
+  .kid-ui .kid-lesson-block.kid-lesson-pair__item {
+    padding-inline: 6px;
+  }
+}
+
+/* Warstwa linii i kropek „Połącz w pary” (PairLines): ostatnie dziecko
+   `kid-lesson-pair` (position: relative); współrzędne w pikselach wewnętrznych. */
+.kid-ui .kid-lesson-pair__lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.kid-ui .kid-lesson-pair__line {
+  stroke: var(--md-sys-color-primary);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+/* Linia zaznaczonego kafelka w parze (§5.4). */
+.kid-ui .kid-lesson-pair__line.kid-lesson-pair__line--selected {
+  stroke-width: 6;
+}
+
+.kid-ui .kid-lesson-pair__dot {
+  fill: var(--md-sys-color-surface);
+  stroke: var(--md-sys-color-outline);
+  stroke-width: 2;
+}
+
+.kid-ui .kid-lesson-pair__dot--paired,
+.kid-ui .kid-lesson-pair__dot--selected {
+  fill: var(--md-sys-color-primary);
+  stroke: var(--md-sys-color-primary);
+}
+
+/* „Połącz w pary” (UX: spec 2026-11-02-lesson-cloze-match-ux §5.3): dwie kolumny
+   kafelków i pas na linie między nimi; podpowiedź pod siatką. Lewa kolumna węższa,
+   ale nie węższa od najdłuższego słowa (`min-content` przy `break-word`), prawa
+   szersza na opisy. Kolumny rozciągają się na wysokość wiersza, a kafelki
+   rozkładają `space-around`, więc krótsza kolumna wyrównuje się do dłuższej. */
+.kid-lesson-match-view,
 .kid-lesson-group {
   width: 100%;
   display: flex;
@@ -2636,61 +2728,41 @@
   gap: 14px;
 }
 
-.kid-lesson-match__pairs {
+.kid-lesson-pair {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(min-content, 2fr) var(--kid-pair-gutter) minmax(0, 3fr);
+  width: 100%;
+}
+
+.kid-lesson-pair__column {
   display: flex;
   flex-direction: column;
+  justify-content: space-around;
   gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  min-width: 0;
+  grid-row: 1;
 }
 
-.kid-lesson-match__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 6px;
-  align-items: center;
+.kid-lesson-pair__column--left {
+  grid-column: 1;
 }
 
-.kid-lesson-match__left {
-  font-size: var(--kid-type-title-size);
-  font-weight: var(--kid-type-answer-weight);
-  overflow-wrap: anywhere;
+.kid-lesson-pair__column--right {
+  grid-column: 3;
 }
 
-.kid-ui .kid-lesson-match__slot {
-  width: 100%;
-  border-style: dashed;
-  background: var(--kid-soft);
-  color: var(--kid-text);
+/* Wiersz podpowiedzi stoi zawsze (pusty też), więc tekst nie przesuwa kafelków. */
+.kid-lesson-pair__hint {
+  min-height: 1.5em;
 }
 
-.kid-ui .kid-lesson-match__slot.kid-lesson-block--placed {
-  border-style: solid;
-  background: var(--kid-surface);
-}
-
-.kid-ui .kid-lesson-match__slot--active {
-  border-color: var(--kid-accent);
-  border-style: solid;
-  outline: 2px solid var(--kid-accent);
-  outline-offset: 2px;
-}
-
-.kid-lesson-match__pool,
-.kid-lesson-group__pool {
+.kid-lesson-assign__pool {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: center;
-}
-
-@media (min-width: 600px) {
-  .kid-lesson-match__row {
-    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
-    gap: 12px;
-  }
 }
 
 /* „Pogrupuj”: grupa = przełącznik + zawartość; aktywna grupa z obwódką akcentu,
@@ -2751,10 +2823,11 @@
   }
 }
 
-/* „Uzupełnij tekst” (design szkoły §13.5): luka w tekście to znacznik z numerem
-   (nie przycisk), miejsca luk i bank pod tekstem w jednej kolumnie — kontener
-   materiału ma ok. 530 px na telefonie i do ok. 690 px od szerokości expanded
-   (kolumna 720 px bez marginesów), a bank ma stać tuż pod miejscami. */
+/* „Uzupełnij tekst” (design szkoły §13.5; UX: spec 2026-11-02-lesson-cloze-match-ux
+   §4): luka w zdaniu to przycisk (`kid-lesson-block`), jedyny cel stukania; bank
+   słów stoi pod tekstem w jednej kolumnie (kontener materiału ma ok. 530 px na
+   telefonie i do ok. 690 px od szerokości expanded), a w niskim landscape obok,
+   przyklejony. */
 .kid-lesson-cloze {
   width: 100%;
   display: grid;
@@ -2771,58 +2844,85 @@
 }
 
 /* Wiersz ok. 60 znaków jak na karcie (`--kid-reading-measure`); węższy blok stoi na
-   środku kolumny nad miejscami luk i bankiem słów, wiersze od początku. Selektor
-   z `.kid-ui`, bo `.kid-theme p { margin: 0 }` ma wyższą specyficzność niż sama klasa. */
+   środku kolumny nad bankiem słów, wiersze od początku. Selektor z `.kid-ui`, bo
+   `.kid-theme p { margin: 0 }` ma wyższą specyficzność niż sama klasa. Luka jest
+   `inline-flex` i sama powiększa swój wiersz, więc interlinia 2 tylko wyrównuje
+   odstęp wierszy z luką i bez niej. */
 .kid-ui .kid-lesson-cloze__text {
   margin-block: 0;
   margin-inline: auto;
   inline-size: 100%;
   max-inline-size: var(--kid-reading-measure);
   font-size: var(--kid-type-title-size);
-  line-height: 1.6;
+  line-height: 2;
   overflow-wrap: anywhere;
 }
 
-.kid-lesson-cloze__gap {
-  display: inline;
-  padding: 0 4px;
+/* Reguły luki po `.kid-ui .kid-lesson-block` (jego `overflow-wrap: anywhere`
+   ustępuje `break-word`) i na równej specyficzności z `…:active`, który ustępuje
+   miejscem, bo stany luk są później w pliku. Luka jest blokiem zawierającym swój
+   ukryty przedrostek (`.kid-visually-hidden`, `position: absolute`): bez tego
+   jego blok zawierający leży poza przewijanym materiałem, więc przedrostek nie
+   przewija się z tekstem i wystaje poza koniec treści. Pionowy margines 3 px
+   wchodzi do wiersza (`inline-flex`), więc luki w sąsiednich wierszach się nie
+   stykają. */
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  min-inline-size: 4.5em;
+  max-inline-size: 100%;
+  margin: 3px 2px;
+  padding: 4px 12px;
+  font: inherit;
+  font-weight: var(--kid-type-answer-weight);
+  line-height: 1.2;
+  overflow-wrap: break-word;
+  text-align: center;
+}
+
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap--empty {
   border-bottom: 2px dashed var(--md-sys-color-outline);
-  font-weight: var(--kid-type-title-weight);
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
+  background: var(--md-sys-color-surface-container-high);
 }
 
-.kid-lesson-cloze__gap--filled {
-  border-bottom-style: solid;
-  color: var(--md-sys-color-primary);
-}
-
-.kid-lesson-cloze__gap--active {
-  border-bottom-color: var(--kid-accent);
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap--filled {
+  border-color: var(--md-sys-color-primary);
   background: var(--md-sys-color-secondary-container);
   color: var(--md-sys-color-on-secondary-container);
 }
 
-.kid-lesson-cloze__gap-number {
-  margin-inline-end: 4px;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--kid-type-label-xs-size);
-  font-weight: var(--kid-type-label-weight);
-  vertical-align: super;
+/* Aktywna luka (wspólny język stanów, §3): wypełniona `primary`, pełna obwódka;
+   `:active` nie zmienia tła pod tekstem `on-primary`. */
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap--active,
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap--active:active {
+  border: 1px solid var(--md-sys-color-primary);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
 }
 
-.kid-lesson-cloze__slots {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.kid-lesson-cloze__gap-mark {
+  color: var(--md-sys-color-on-primary);
 }
 
-.kid-lesson-cloze__slot-row {
-  display: flex;
-  min-width: 0;
+/* Wiersz podpowiedzi stoi zawsze (pusty też), więc tekst nie zmienia wysokości treści. */
+.kid-lesson-cloze__hint {
+  min-height: 1.5em;
+}
+
+@media (max-height: 479px) and (min-width: 600px) {
+  .kid-lesson-cloze {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    align-items: start;
+  }
+
+  .kid-lesson-cloze__bank {
+    position: sticky;
+    top: 0;
+  }
 }
 
 /* Luka: zdanie z polem edycji dokładnie w miejscu luki. */

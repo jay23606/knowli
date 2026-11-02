@@ -7,13 +7,15 @@ import { expectButtonsNotClipped, expectTargetsReachable } from "./helpers/lesso
 
 /**
  * Geometria „Uzupełnij tekst” (`lesson_cloze`) w interfejsie dziecka (API
- * zaślepione w przeglądarce, design szkoły §13.5). Na wąskim telefonie
- * (320 px), w portrecie, niskim landscape (<480 px), na tablecie i desktopie:
- * tekst z czterema lukami zawija się w kontenerze materiału, miejsca luk, bank
- * słów i „Sprawdź” są osiągalne (w viewporcie po przewinięciu), bez poziomego
- * przepełnienia, z celami ≥48 px i główną akcją ≥54 px; bank stoi tuż pod
- * miejscami luk na każdym ekranie. Symulacja nie zastępuje odbioru na
- * fizycznym urządzeniu.
+ * zaślepione w przeglądarce, design szkoły §13.5; UX: spec
+ * 2026-11-02-lesson-cloze-match-ux §4 i §8). Na wąskim telefonie (320 px,
+ * także 320×568), w portrecie, niskim landscape (<480 px), na tablecie
+ * i desktopie: tekst z czterema lukami zawija się w kontenerze materiału, luki
+ * w zdaniu (jedyne cele stukania), bank słów i „Sprawdź” są osiągalne
+ * (w viewporcie po przewinięciu), bez poziomego przepełnienia, z celami ≥48 px
+ * i główną akcją ≥54 px. Luka nie nachodzi na tekst sąsiednich wierszy. Bank
+ * stoi pod tekstem, a w niskim landscape (<480 × ≥600) obok niego. Symulacja
+ * nie zastępuje odbioru na fizycznym urządzeniu.
  */
 
 const childId = "10000000-0000-4000-8000-000000000801";
@@ -31,6 +33,7 @@ const VIEWPORTS = [
   { width: 844, height: 390 },
   { width: 768, height: 1024 },
   { width: 1280, height: 800 },
+  { width: 320, height: 568 },
 ];
 
 /**
@@ -68,6 +71,56 @@ const chapterClozeTask: TaskDto = {
   },
 };
 
+interface Rect { left: number; top: number; right: number; bottom: number }
+interface Box { x: number; y: number; width: number; height: number }
+
+/** Prostokąty (piksele ekranu) elementów o podanych selektorach, zmierzone w jednej chwili. */
+async function boxesNow(page: Page, selectors: readonly string[]): Promise<Box[]> {
+  return page.evaluate((list) => list.map((selector) => {
+    const { x, y, width, height } = document.querySelector(selector)!.getBoundingClientRect();
+    return { x, y, width, height };
+  }), selectors);
+}
+
+/**
+ * Luka powiększa swój wiersz zamiast nachodzić na sąsiednie: prostokąty tekstu
+ * akapitu (z `Range`, bez luk i `.kid-visually-hidden`) nie przecinają żadnej
+ * luki, a przynajmniej jedna luka ma tekst w wierszu nad i pod sobą (inaczej
+ * sprawdzenie niczego by nie dowodziło).
+ */
+async function expectGapsClearOfText(page: Page, label: string): Promise<void> {
+  const { gaps, texts } = await page.getByTestId("kid-lesson-cloze-text").evaluate((root) => {
+    const rect = ({ left, top, right, bottom }: DOMRect) => ({ left, top, right, bottom });
+    const range = document.createRange();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const rects: { left: number; top: number; right: number; bottom: number }[] = [];
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      if (node.parentElement?.closest("[data-testid='kid-lesson-cloze-gap'], .kid-visually-hidden")) continue;
+      range.selectNodeContents(node);
+      for (const line of range.getClientRects()) if (line.width > 0 && line.height > 0) rects.push(rect(line));
+    }
+    const gapRects = [...root.querySelectorAll("[data-testid='kid-lesson-cloze-gap']")].map((gap) => rect(gap.getBoundingClientRect()));
+    return { gaps: gapRects, texts: rects };
+  }) as { gaps: Rect[]; texts: Rect[] };
+  const details = `gaps ${JSON.stringify(gaps)}, text ${JSON.stringify(texts)} at ${label}`;
+  expect(texts.length, `text rectangles: ${details}`).toBeGreaterThan(0);
+  for (const gap of gaps) {
+    const crossing = texts.filter((text) =>
+      text.left < gap.right - 1 && text.right > gap.left + 1 && text.top < gap.bottom - 1 && text.bottom > gap.top + 1);
+    expect(crossing, `text crossing the gap ${JSON.stringify(gap)}: ${details}`).toEqual([]);
+  }
+  const framed = gaps.some((gap) => texts.some((text) => text.bottom <= gap.top + 1) && texts.some((text) => text.top >= gap.bottom - 1));
+  expect(framed, `a gap with text in the line above and below: ${details}`).toBe(true);
+}
+
+/** Prostokąt `inner` mieści się w `outer` z tolerancją 1 px. */
+function expectBoxWithin(inner: Box, outer: Box, name: string): void {
+  expect(inner.x, name).toBeGreaterThanOrEqual(outer.x - 1);
+  expect(inner.y, name).toBeGreaterThanOrEqual(outer.y - 1);
+  expect(inner.x + inner.width, name).toBeLessThanOrEqual(outer.x + outer.width + 1);
+  expect(inner.y + inner.height, name).toBeLessThanOrEqual(outer.y + outer.height + 1);
+}
+
 /** Geometria tekstu z lukami na każdym ekranie (po wypełnieniu dwóch luk przez wywołującego). */
 async function expectClozeGeometry(page: Page, testInfo: TestInfo, shotPrefix: string): Promise<void> {
   for (const viewport of VIEWPORTS) {
@@ -75,11 +128,11 @@ async function expectClozeGeometry(page: Page, testInfo: TestInfo, shotPrefix: s
     const label = `${viewport.width}x${viewport.height}`;
     await expectTargetsReachable(page, viewport, [
       { testId: "kid-lesson-cloze-text", tall: true },
-      ...Array.from({ length: 4 }, (_, nth) => ({ testId: "kid-lesson-cloze-slot", nth, minHeight: 48 })),
+      ...Array.from({ length: 4 }, (_, nth) => ({ testId: "kid-lesson-cloze-gap", nth, minHeight: 48 })),
       ...Array.from({ length: 4 }, (_, nth) => ({ testId: "kid-lesson-cloze-option", nth, minHeight: 48 })),
       { testId: "kid-lesson-check", minHeight: 54 },
     ]);
-    await expectButtonsNotClipped(page, "kid-lesson-cloze-slot", label);
+    await expectButtonsNotClipped(page, "kid-lesson-cloze-gap", label);
     await expectButtonsNotClipped(page, "kid-lesson-cloze-option", label);
     // Luka w tekście nie wystaje poza akapit (zawija się razem z tekstem).
     const text = (await page.getByTestId("kid-lesson-cloze-text").boundingBox())!;
@@ -88,51 +141,101 @@ async function expectClozeGeometry(page: Page, testInfo: TestInfo, shotPrefix: s
       expect(bounds.x, `gap inside text at ${label}`).toBeGreaterThanOrEqual(text.x - 1);
       expect(bounds.x + bounds.width, `gap inside text at ${label}`).toBeLessThanOrEqual(text.x + text.width + 1);
     }
-    // Jedna kolumna: tekst, pod nim miejsca luk, tuż pod nimi bank (także w niskim landscape).
-    const lastSlot = (await page.getByTestId("kid-lesson-cloze-slot").last().boundingBox())!;
-    const pool = (await page.getByTestId("kid-lesson-cloze-pool").boundingBox())!;
-    const firstSlot = (await page.getByTestId("kid-lesson-cloze-slot").first().boundingBox())!;
-    expect(firstSlot.y, `slots below text at ${label}`).toBeGreaterThanOrEqual(text.y + text.height - 1);
-    expect(pool.y, `bank below slots at ${label}`).toBeGreaterThanOrEqual(lastSlot.y + lastSlot.height - 1);
-    expect(pool.y - (lastSlot.y + lastSlot.height), `bank right under slots at ${label}`).toBeLessThan(80);
+    // Bank pod tekstem, a w niskim landscape (<480 × ≥600) obok niego (przyklejony).
+    const [textNow, pool] = await boxesNow(page, ["[data-testid='kid-lesson-cloze-text']", "[data-testid='kid-lesson-cloze-pool']"]);
+    const placed = `text ${JSON.stringify(textNow)}, bank ${JSON.stringify(pool)} at ${label}`;
+    if (viewport.height < 480 && viewport.width >= 600) {
+      expect(pool!.x, `bank beside the text: ${placed}`).toBeGreaterThanOrEqual(textNow!.x + textNow!.width - 1);
+    } else {
+      // Pod tekstem i blisko niego (odstęp siatki), nie zepchnięty na dół ekranu.
+      expect(pool!.y, `bank below the text: ${placed}`).toBeGreaterThanOrEqual(textNow!.y + textNow!.height - 1);
+      expect(pool!.y - (textNow!.y + textNow!.height), `bank right below the text: ${placed}`).toBeLessThan(120);
+    }
+    await expectGapsClearOfText(page, label);
     await page.screenshot({ path: testInfo.outputPath(`${shotPrefix}-${label}.png`) });
   }
 }
 
-test("cloze: text with four gaps, slots, word bank and check fit every form factor", async ({ page }, testInfo) => {
+test("cloze: text with four gaps, word bank and check fit every form factor", async ({ page }, testInfo) => {
   await installKidUiFixture(page, lessonTaskFixture(ids, deck, [clozeTask]));
   await openLessonTask(page, VIEWPORTS[1]!, "kid-lesson-cloze");
   await expect(page.getByTestId("kid-instruction")).toContainText("Uzupełnij tekst.");
   await expect(page.getByTestId("kid-lesson-cloze-gap")).toHaveCount(4);
-  await expect(page.getByTestId("kid-lesson-cloze-text").locator("button")).toHaveCount(0);
-  await expect(page.getByTestId("kid-lesson-cloze-slot")).toHaveCount(4);
+  // Luki są przyciskami w zdaniu — jedynymi celami stukania w tekście.
+  await expect(page.getByTestId("kid-lesson-cloze-text").locator("button")).toHaveCount(4);
   // Bez contentLocale tekst nie jest dzielony na fragmenty z `lang`.
   await expect(page.getByTestId("kid-lesson-cloze-segment")).toHaveCount(0);
-  // Dwie luki wypełnione przed pomiarem: najdłuższe słowo stoi w tekście i w miejscu, reszta w banku.
-  await page.getByTestId("kid-lesson-cloze-option").filter({ hasText: "dwutlenek węgla" }).click();
+  // Dwie luki wypełnione przed pomiarem: najdłuższe słowo banku w pierwszej luce, reszta w banku.
   await page.getByTestId("kid-lesson-cloze-option").filter({ hasText: "światła słonecznego" }).click();
+  // Nazwa dostępna luki: ukryty polski przedrostek i słowo (albo „pusta”), bez dodatkowych spacji.
+  await expect(page.getByRole("button", { name: "Luka 1: światła słonecznego", exact: true })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Luka 2: pusta, wybierz słowo", exact: true })).toHaveCount(1);
+  await page.getByTestId("kid-lesson-cloze-option").filter({ hasText: "dwutlenek węgla" }).click();
   await expect(page.getByTestId("kid-lesson-cloze-option")).toHaveCount(4);
   await expect(page.getByTestId("kid-lesson-cloze-text")).toContainText("światła słonecznego");
+  // Luka z najdłuższym słowem zawija się w akapicie także na najmniejszym telefonie.
+  await page.setViewportSize({ width: 320, height: 568 });
+  const longGap = page.getByTestId("kid-lesson-cloze-gap").first();
+  await expect(longGap).toContainText("światła słonecznego");
+  await longGap.scrollIntoViewIfNeeded();
+  const [gapBox, textBox] = await boxesNow(page, ["[data-testid='kid-lesson-cloze-gap']", "[data-testid='kid-lesson-cloze-text']"]);
+  expectBoxWithin(gapBox!, textBox!, `long gap inside the text at 320x568: gap ${JSON.stringify(gapBox)}, text ${JSON.stringify(textBox)}`);
   await expectClozeGeometry(page, testInfo, "cloze");
 });
 
-test("cloze (English chapter, contentLocale en-GB): lang-wrapped text, slots and bank fit every form factor", async ({ page }, testInfo) => {
+test("cloze in low landscape: the active gap and the word bank are on screen together", async ({ page }) => {
+  const viewport = { width: 844, height: 390 };
+  await installKidUiFixture(page, lessonTaskFixture(ids, deck, [clozeTask]));
+  await openLessonTask(page, viewport, "kid-lesson-cloze");
+  for (let gap = 0; gap < 3; gap += 1) await page.getByTestId("kid-lesson-cloze-option").first().click();
+  const active = page.getByTestId("kid-lesson-cloze-gap").nth(3);
+  await expect(active).toHaveAttribute("aria-pressed", "true");
+  const expectBankBesideActiveGap = async (state: string) => {
+    await page.evaluate(() => {
+      document.querySelector(".kid-page")!.scrollTop = 0;
+    });
+    await active.scrollIntoViewIfNeeded();
+    // Prostokąty w jednej chwili: przyklejony bank stoi obok tekstu, gdziekolwiek jest aktywna luka.
+    const [gapBox, poolBox, textBox] = await boxesNow(page, [
+      "[data-testid='kid-lesson-cloze-gap'][aria-pressed='true']", "[data-testid='kid-lesson-cloze-pool']",
+      "[data-testid='kid-lesson-cloze-text']",
+    ]);
+    const screen = { x: 0, y: 0, ...viewport };
+    const details = `gap ${JSON.stringify(gapBox)}, bank ${JSON.stringify(poolBox)}, text ${JSON.stringify(textBox)} at 844x390 ${state}`;
+    expectBoxWithin(gapBox!, screen, `active gap in the viewport: ${details}`);
+    expectBoxWithin(poolBox!, screen, `bank in the viewport: ${details}`);
+    // Strona przewinęła się za początek tekstu, a bank został na ekranie (przyklejony), nie przy początku tekstu.
+    expect(textBox!.y, `text scrolled past its start: ${details}`).toBeLessThan(0);
+    expect(poolBox!.y - textBox!.y, `bank stuck below the text start: ${details}`).toBeGreaterThan(1);
+  };
+  await expectBankBesideActiveGap("without a notice");
+  // Komunikat z akcjami (`data-action-notice`, np. błąd odsłuchu) nie robi z ramy kontenera przewijania
+  // w trybie przewijanej strony — inaczej `position: sticky` banku wiązałby się z nieprzewijaną ramą.
+  // Atrybut ustawiony wprost: lekcja luk w fixture nie ma nagrania, którego błąd pokazałby komunikat.
+  await page.evaluate(() => document.querySelector("main.kid-learning")!.setAttribute("data-action-notice", "true"));
+  await expect(page.locator("main.kid-learning")).toHaveAttribute("data-action-notice", "true");
+  await expectBankBesideActiveGap("with an action notice");
+});
+
+test("cloze (English chapter, contentLocale en-GB): lang-wrapped text, gaps and bank fit every form factor", async ({ page }, testInfo) => {
   await installKidUiFixture(page, lessonTaskFixture(ids, chapterDeck, [chapterClozeTask]));
   await openLessonTask(page, VIEWPORTS[1]!, "kid-lesson-cloze");
   await expect(page.getByTestId("kid-instruction")).toContainText("Uzupełnij tekst.");
   await expect(page.getByTestId("kid-lesson-cloze-gap")).toHaveCount(4);
-  await expect(page.getByTestId("kid-lesson-cloze-slot")).toHaveCount(4);
   // Ścieżka z językiem treści: każdy fragment tekstu w osobnym `<span lang="en-GB">`, bank też z `lang`.
   const segments = page.getByTestId("kid-lesson-cloze-segment");
   await expect(segments).toHaveCount(5);
   for (const segment of await segments.all()) await expect(segment).toHaveAttribute("lang", "en-GB");
   for (const option of await page.getByTestId("kid-lesson-cloze-option").all()) await expect(option).toHaveAttribute("lang", "en-GB");
-  // Dwie luki wypełnione przed pomiarem (najdłuższe słowo banku w tekście i w miejscu luki).
+  // Dwie luki wypełnione przed pomiarem (najdłuższe słowo banku w drugiej luce).
   await page.getByTestId("kid-lesson-cloze-option").filter({ hasText: "raining" }).click();
   await page.getByTestId("kid-lesson-cloze-option").filter({ hasText: "wellington boots" }).click();
   await expect(page.getByTestId("kid-lesson-cloze-option")).toHaveCount(4);
   await expect(page.getByTestId("kid-lesson-cloze-text")).toContainText("wellington boots");
-  await expect(page.getByTestId("kid-lesson-cloze-slot").first()).toHaveAttribute("lang", "en-GB");
+  // Słowo w luce niesie `lang` materiału, a przycisk luki (z ukrytym polskim przedrostkiem) — nie.
+  const firstGap = page.getByTestId("kid-lesson-cloze-gap").first();
+  await expect(firstGap.locator("span[lang]")).toHaveAttribute("lang", "en-GB");
+  await expect(firstGap).not.toHaveAttribute("lang");
   await expectClozeGeometry(page, testInfo, "chapter-cloze");
 });
 

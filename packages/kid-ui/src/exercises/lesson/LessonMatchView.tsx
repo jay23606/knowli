@@ -1,80 +1,143 @@
-import { useRef, useState } from "react";
-import { messages } from "@learning/contracts";
-import { format } from "../../format";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { messages, type LessonItem } from "@learning/contracts";
+import { LessonBlockButton } from "../../components/LessonBlockButton";
 import { ExerciseFrame } from "../ExerciseFrame";
 import { useRetryReset } from "../useRetryReset";
 import type { ExerciseProps } from "../types";
-import { AssignmentCheckButton, AssignmentPool, AssignmentSlot } from "./AssignmentPool";
-import { matchAssignments, matchComplete, matchPool, matchState, placeRight, rightOf, selectSlot } from "./assignment-state";
+import { AssignmentCheckButton } from "./AssignmentPool";
+import { PairLines } from "./PairLines";
+import {
+  clearPairSelection,
+  pairAssignments,
+  pairComplete,
+  pairOf,
+  pairState,
+  tapPairItem,
+  type PairSide,
+} from "./assignment-state";
 
 /**
- * „Połącz w pary” (`lesson_match`, design szkoły §10.5): każdy lewy element ma
- * pod sobą miejsce. Aktywne miejsce (domyślnie pierwsze puste) przyjmuje
- * dotknięty element z puli; dotknięcie zajętego miejsca oddaje element do puli
- * i czyni miejsce aktywnym. Tylko stukanie — przyciski działają z klawiatury.
- * „Sprawdź” wysyła przypisania po zapełnieniu wszystkich miejsc.
+ * „Połącz w pary” (`lesson_match`, design szkoły §10.5; UX: spec
+ * 2026-11-02-lesson-cloze-match-ux §5): dwie kolumny kafelków, pary łączy linia
+ * (`PairLines`). Stuknięcie zaznacza kafelek; stuknięcie w drugiej kolumnie łączy
+ * parę, zastępując dotychczasowe pary obu kafelków (reguły w `tapPairItem`).
+ * Kierunek dowolny, tylko stukanie — kafelki to przyciski, działają z klawiatury.
+ * Nazwa dostępna z treści (tekst + ukryte polskie dopowiedzenie), bez `aria-label`;
+ * `lang` materiału tylko na tekście lewej kolumny (prawa bywa polska).
+ * Zaznaczony kafelek w parze wyróżnia też swoją linię i odpowiednik (obwódka).
+ * „Sprawdź” wysyła przypisania, gdy każdy lewy kafelek ma parę.
  */
 export function LessonMatchView({ task, busy, dock, handlers }: ExerciseProps) {
   const prompt = task.prompt.kind === "lesson_match" ? task.prompt : null;
-  const [state, setState] = useState(() => matchState(prompt?.left ?? [], prompt?.right ?? []));
-  const containerRef = useRef<HTMLDivElement>(null);
+  const left = prompt?.left;
+  const right = prompt?.right;
+  const [state, setState] = useState(() => pairState(left ?? [], right ?? []));
+  const pairRef = useRef<HTMLDivElement>(null);
+  const tilesRef = useRef(new Map<string, HTMLElement>());
+  // Stabilne dla PairLines: jeden odczyt mapy refów kafelków.
+  const tileOf = useCallback((side: PairSide, id: string) => tilesRef.current.get(`${side}:${id}`) ?? null, []);
+  // Stabilny ref callback na kafelek; przy odpięciu usuwa wpis tylko, gdy wskazuje jego element.
+  const tileRefs = useMemo(() => {
+    const callbacks = new Map<string, (element: HTMLElement | null) => void>();
+    for (const [side, items] of [["left", left ?? []], ["right", right ?? []]] as const) {
+      for (const item of items) {
+        const key = `${side}:${item.id}`;
+        let attached: HTMLElement | null = null;
+        callbacks.set(key, (element) => {
+          if (element !== null) {
+            attached = element;
+            tilesRef.current.set(key, element);
+          } else {
+            if (tilesRef.current.get(key) === attached) tilesRef.current.delete(key);
+            attached = null;
+          }
+        });
+      }
+    }
+    return callbacks;
+  }, [left, right]);
   useRetryReset(dock, () => {
-    if (prompt) setState(matchState(prompt.left, prompt.right));
-  }, () => containerRef.current?.querySelector("button")?.focus({ preventScroll: true }));
+    if (prompt) setState(pairState(prompt.left, prompt.right));
+  }, () => pairRef.current?.querySelector("button")?.focus({ preventScroll: true }));
   if (prompt === null) return null;
   const disabled = busy || dock !== undefined;
-  const complete = matchComplete(state);
-  const pool = matchPool(state);
-  const activeLeft = prompt.left.find((item) => item.id === state.active) ?? null;
+  const complete = pairComplete(state);
+  const { selected } = state;
+  const selectedItem = selected === null
+    ? null
+    : (selected.side === "left" ? state.left : state.right).find((item) => item.id === selected.id) ?? null;
+  // Odpowiednik zaznaczonego kafelka w parze: obwódka pokazuje, z czym jest teraz połączony (spec §5.4).
+  const selectedPartner = selected === null ? null : pairOf(state, selected.side, selected.id);
+  const langOf = (side: PairSide) => (side === "left" ? prompt.contentLocale : undefined);
+
+  const renderTile = (side: PairSide, item: LessonItem) => {
+    const partner = pairOf(state, side, item.id);
+    const isSelected = selected?.side === side && selected.id === item.id;
+    const isPartner = selected !== null && selected.side !== side && selectedPartner?.id === item.id;
+    const other: PairSide = side === "left" ? "right" : "left";
+    const connectTo = partner === null && selected !== null && selected.side !== side ? selectedItem : null;
+    const suffix = partner !== null
+      ? { label: messages.kid.lessonMatchPairedWith, other: partner }
+      : connectTo !== null ? { label: messages.kid.lessonMatchConnectWith, other: connectTo } : null;
+    return (
+      <div key={item.id} role="listitem">
+        <LessonBlockButton
+          ref={tileRefs.get(`${side}:${item.id}`)}
+          type="button"
+          className={`kid-lesson-block kid-lesson-pair__item${partner ? " kid-lesson-block--placed" : ""}${isSelected ? " kid-lesson-pair__item--selected" : ""}${isPartner ? " kid-lesson-pair__item--partner" : ""}`}
+          data-testid={side === "left" ? "kid-lesson-match-left" : "kid-lesson-match-right"}
+          data-item-id={item.id}
+          aria-pressed={isSelected}
+          disabled={disabled}
+          onClick={() => { setState((current) => tapPairItem(current, side, item.id)); handlers.onEdit(); }}
+        >
+          {suffix === null ? (
+            <span lang={langOf(side)}>{item.text}</span>
+          ) : (
+            <>
+              {/* Cała nazwa w jednym ukrytym spanie: `kid-visually-hidden` jest
+                  `position: absolute` (blok), więc tekst widoczny obok niego dostałby
+                  w nazwie spację przed przecinkiem („dog , połączone z: pies”). */}
+              <span aria-hidden="true" lang={langOf(side)}>{item.text}</span>
+              <span className="kid-visually-hidden">
+                <span lang={langOf(side)}>{item.text}</span>{suffix.label} <span lang={langOf(other)}>{suffix.other.text}</span>
+              </span>
+            </>
+          )}
+        </LessonBlockButton>
+      </div>
+    );
+  };
 
   return (
     <ExerciseFrame
       dock={dock}
       task={task}
       content={(
-        <div ref={containerRef} className="kid-lesson-match" data-testid="kid-lesson-match">
-          <ul className="kid-lesson-match__pairs" aria-label={messages.kid.lessonMatchPairs}>
-            {prompt.left.map((item) => {
-              const right = rightOf(state, item.id);
-              const active = state.active === item.id;
-              return (
-                <li key={item.id} className="kid-lesson-match__row" data-testid="kid-lesson-match-row">
-                  <span className="kid-lesson-match__left" data-testid="kid-lesson-match-left" lang={prompt.contentLocale}>{item.text}</span>
-                  <AssignmentSlot
-                    filled={right !== null}
-                    active={active}
-                    disabled={disabled}
-                    testId="kid-lesson-match-slot"
-                    label={right
-                      ? format(messages.kid.lessonMatchRemove, { item: item.text, answer: right.text })
-                      : format(messages.kid.lessonMatchChooseSlot, { item: item.text })}
-                    onSelect={() => { setState((current) => selectSlot(current, item.id)); handlers.onEdit(); }}
-                  >
-                    {right ? right.text : messages.kid.lessonMatchEmptySlot}
-                  </AssignmentSlot>
-                </li>
-              );
-            })}
-          </ul>
-          {activeLeft && pool.length > 0 && (
-            <p className="kid-hint" data-testid="kid-lesson-match-hint" aria-live="polite">
-              {format(messages.kid.lessonMatchActiveHint, { item: activeLeft.text })}
-            </p>
-          )}
-          <AssignmentPool
-            items={pool}
-            className="kid-lesson-match__pool"
-            testId="kid-lesson-match-pool"
-            optionTestId="kid-lesson-match-option"
-            label={messages.kid.lessonMatchPool}
-            disabled={disabled || state.active === null}
-            labelOf={(item) => (activeLeft ? format(messages.kid.lessonMatchPlace, { item: activeLeft.text, answer: item.text }) : item.text)}
-            onPick={(itemId) => { setState((current) => placeRight(current, itemId)); handlers.onEdit(); }}
-          />
+        <div className="kid-lesson-match-view">
+          <div ref={pairRef} className="kid-lesson-pair" data-testid="kid-lesson-match">
+            <div className="kid-lesson-pair__column kid-lesson-pair__column--left" role="list" aria-label={messages.kid.lessonMatchLeft}>
+              {state.left.map((item) => renderTile("left", item))}
+            </div>
+            <div className="kid-lesson-pair__column kid-lesson-pair__column--right" role="list" aria-label={messages.kid.lessonMatchPool}>
+              {state.right.map((item) => renderTile("right", item))}
+            </div>
+            <PairLines state={state} containerRef={pairRef} tileOf={tileOf} />
+          </div>
+          <p className="kid-hint kid-lesson-pair__hint" data-testid="kid-lesson-match-hint" aria-live="polite">
+            {selected !== null && !disabled ? messages.kid.lessonMatchPickOther : ""}
+          </p>
         </div>
       )}
       actions={(
-        <AssignmentCheckButton disabled={disabled} complete={complete} onCheck={() => handlers.onAnswerAssignment(matchAssignments(state))} />
+        <AssignmentCheckButton
+          disabled={disabled}
+          complete={complete}
+          onCheck={() => {
+            setState(clearPairSelection);
+            handlers.onAnswerAssignment(pairAssignments(state));
+          }}
+        />
       )}
     />
   );
