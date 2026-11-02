@@ -17,9 +17,11 @@ import {
   rebuildProgress,
   schoolSubject,
   startSession,
+  schema,
   submitAttempt,
   type Services,
 } from "@learning/server";
+import { loadLessonPlanningSnapshot } from "../../packages/server/src/modules/learning/lessons/lesson-sessions";
 import { lessonWorld, RICH_KEYS, STORY_FIXTURE, type LessonStoryFixture, type LessonWorldOptions } from "../fixtures/lesson-world";
 import { SCHOOL_OBJECTIVE_ID, seedSchoolDeck } from "../fixtures/school-world";
 import {
@@ -296,6 +298,23 @@ describe("historyjka — odpowiedź na pytanie, routing prób i ujawnienia", () 
     expect(await attemptsOf(question.taskId)).toHaveLength(1);
   });
 
+  it("concurrent double submit of the same story answer creates one attempt", async () => {
+    const { services } = buildTestServices();
+    const { session } = await storyLesson(services);
+    const question = await issueStoryQuestion(services, session.sessionId);
+    const key = await storyKeyOf(question.taskId);
+    const input = { taskId: question.taskId, clientAttemptId: randomUUID(), modality: "choice" as const, optionId: key.correctOptionId };
+
+    // Dwa równoczesne POST tego samego klucza (podwójne dotknięcie, ponowienie sieci).
+    const [first, second] = await Promise.all([submitAttempt(services, input), submitAttempt(services, input)]);
+    expect(second.attemptId).toBe(first.attemptId);
+    expect(first.feedback).toEqual({ kind: "great" });
+    expect(second.feedback).toEqual(first.feedback);
+    expect(await attemptsOf(question.taskId)).toHaveLength(1);
+    expect(await taskStateOf(question.taskId)).toBe("answered");
+    expect(await assessmentCountOf(question.taskId)).toBe(0);
+  });
+
   it("reading a story answer re-discloses without exposures", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services);
@@ -488,7 +507,7 @@ describe("historyjka — wydanie na koniec sesji", () => {
     expect(await nextTask(services, session.sessionId)).toBeNull();
   });
 
-  it("plan shorter than session budget still ends with the story", async () => {
+  it("guard when session and plan budgets diverge", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services, { budget: 20 });
     const { regular, story: storySlots, taskBudget } = await storySlotsOf(session.sessionId);
@@ -585,6 +604,32 @@ describe("historyjka — wydanie na koniec sesji", () => {
     expect((await sessionTaskTypes(session.sessionId)).filter((type) => type.startsWith("lesson_story"))).toEqual([]);
   });
 
+  it("time limit before any task ends the session without the story", async () => {
+    const { services, clock } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 8, dueMastery: true });
+    // Pierwsze `nextTask` po miękkim limicie, ale w oknie wznowienia (liczonym od startu).
+    clock.advanceMs(11 * MINUTE);
+    expect(await nextTask(services, session.sessionId)).toBeNull();
+    expect(await nextTask(services, session.sessionId)).toBeNull();
+    expect(await sessionTaskTypes(session.sessionId)).toEqual([]);
+  });
+
+  it("manually ended session never issues the story", async () => {
+    const { services } = buildTestServices();
+    const { session } = await storyLesson(services, { budget: 8, dueMastery: true });
+    await finishLessonTask(services, (await nextTask(services, session.sessionId))!);
+
+    await endSession(services, session.sessionId);
+    expect(await nextTask(services, session.sessionId)).toBeNull();
+    expect((await sessionTaskTypes(session.sessionId)).filter((type) => type.startsWith("lesson_story"))).toEqual([]);
+    const storyEvents = (await pool.query<{ count: number }>(
+      `select count(*)::int as count from learning_app.learning_events e
+         join learning_app.session_tasks t on t.id = e.task_id
+        where t.session_id = $1 and t.exercise_type in ('lesson_story', 'lesson_story_question')`, [session.sessionId],
+    )).rows[0]!.count;
+    expect(storyEvents).toBe(0);
+  });
+
   it("legacy session without a plan never issues the story", async () => {
     const { services } = buildTestServices();
     const { session } = await storyLesson(services, { budget: 2 });
@@ -620,6 +665,40 @@ describe("historyjka — wydanie na koniec sesji", () => {
     )).rows[0]!.context;
     expect(context.previousObjectiveContact[lesson.objectiveId]).toBeDefined();
     expect(context.previousObjectiveContact[lesson.objectiveId]! <= assessedAt).toBe(true);
+  });
+
+  it("lastSeenAt of the anchor item ignores story tasks", async () => {
+    const { services, clock } = buildTestServices();
+    const { lesson, session } = await storyLesson(services, { budget: 2 });
+    const plan = (await storedPlans(session.sessionId)).training as unknown as { slots: (StoredSlot & { itemId: string })[] };
+    const anchorItemId = plan.slots.find((slot) => slot.taskKind === "story")!.itemId;
+    // Każde zadanie wydane sekundę później: historyjka jest najpóźniejszym zadaniem na kotwicy.
+    for (let guard = 0; ; guard += 1) {
+      if (guard > 40) throw new Error("sesja nie skończyła się");
+      clock.advanceMs(1000);
+      const task = await nextTask(services, session.sessionId);
+      if (!task) break;
+      await finishLessonTask(services, task);
+    }
+    const onAnchor = (await pool.query<{ type: string; issuedAt: Date }>(
+      `select t.exercise_type as type, t.issued_at as "issuedAt" from learning_app.session_tasks t
+         join learning_app.item_revisions r on r.id = t.item_revision_id
+        where t.session_id = $1 and r.item_id = $2 order by t.ordinal`, [session.sessionId, anchorItemId],
+    )).rows;
+    const regular = onAnchor.filter((row) => !row.type.startsWith("lesson_story"));
+    const story = onAnchor.filter((row) => row.type.startsWith("lesson_story"));
+    expect(regular.length).toBeGreaterThan(0);
+    expect(story).toHaveLength(3);
+    const lastRegular = regular.at(-1)!.issuedAt.toISOString();
+    expect(story[0]!.issuedAt.toISOString() > lastRegular).toBe(true);
+    await endSession(services, session.sessionId);
+
+    clock.advanceMs(13 * 60 * MINUTE);
+    const next = await startSession(services, { childId: session.childId, deckId: lesson.deckId, microphoneEnabled: false });
+    expect(next.sessionId).not.toBe(session.sessionId);
+    const row = (await db.select().from(schema.learningSessions)).find((session) => session.id === next.sessionId)!;
+    const snapshot = await db.transaction((tx) => loadLessonPlanningSnapshot(services, tx, row, clock.now()));
+    expect(snapshot!.lastSeenAt[anchorItemId]).toBe(lastRegular);
   });
 
   it("story exposures do not mark exercises as seen", async () => {

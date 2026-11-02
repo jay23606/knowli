@@ -236,6 +236,23 @@ describe("przejście między ćwiczeniami — liczba sekwencyjnych SQL", () => {
     expect(summarize("nextTask (lekcja, historyjka)", next.queries)).toBeLessThanOrEqual(12);
   });
 
+  it("answering a story question stays within the lesson submit budget", async () => {
+    const { services, sessionId } = await lessonBeforeStory();
+    const story = (await nextTask(services, sessionId))!;
+    expect(story.exerciseType).toBe("lesson_story");
+    await finishLessonTask(services, story);
+    const question = (await nextTask(services, sessionId))!;
+    expect(question.exerciseType).toBe("lesson_story_question");
+
+    const input = await correctInput(question);
+    expect(input.modality).toBe("choice");
+    const submitted = await capturePoolQueries(pool, () => submitAttempt(services, input));
+    expect(submitted.value.taskState).toBe("answered");
+    // Odpowiedź bez oceny i projekcji: zmierzone 12 zapytań (2026-11-02), wyraźnie
+    // poniżej budżetu zwykłej odpowiedzi lekcji (≤ 21); zapas na drobne zmiany.
+    expect(summarize("submitAttempt (pytanie historyjki)", submitted.queries)).toBeLessThanOrEqual(14);
+  });
+
   it("re-reading an issued story stays within the lesson budget", async () => {
     const { services, sessionId } = await lessonBeforeStory();
     const story = await nextTask(services, sessionId);

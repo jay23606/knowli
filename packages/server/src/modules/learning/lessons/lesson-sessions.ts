@@ -555,8 +555,11 @@ async function objectivePrecisionHistory(
   return result;
 }
 
-/** Odczytuje raz stan potrzebny do zaplanowania całej sesji lekcji. */
-async function loadLessonPlanningSnapshot(
+/**
+ * Odczytuje raz stan potrzebny do zaplanowania całej sesji lekcji. Eksport służy
+ * także testom integracyjnym czytelników historii (np. `lastSeenAt`).
+ */
+export async function loadLessonPlanningSnapshot(
   services: Services,
   tx: Tx,
   session: typeof learningSessions.$inferSelect,
@@ -919,8 +922,10 @@ export async function issueNextLessonTask(
  * Wydaje kolejny uprzednio przygotowany slot; legacy sessions używają selektora
  * dynamicznego. Zamknięcie sesji (budżet, miękki limit czasu, ruszona historyjka
  * albo brak niewydanych slotów spoza historyjki — plan bywa krótszy niż budżet)
- * wydaje kolejny slot historyjki zamiast `null` (design „Historyjka lekcji” §8.2);
- * pominięte sloty oceniane już nigdy nie wychodzą. Ekspozycje slotu pieczętuje
+ * wydaje kolejny slot historyjki zamiast `null` (design „Historyjka lekcji” §8.2),
+ * o ile wyszedł już co najmniej jeden slot spoza historyjki — historyjka nigdy
+ * nie jest pierwszą ani jedyną treścią sesji; pominięte sloty oceniane już
+ * nigdy nie wychodzą. Ekspozycje slotu pieczętuje
  * w tej samej transakcji, przed odpowiedzią.
  */
 export async function issueNextLessonPlanTask(
@@ -940,6 +945,10 @@ export async function issueNextLessonPlanTask(
   // Wyczerpany budżet planu też zamyka sesję (gdyby budżet sesji i planu się rozjechały,
   // historyjka nie może zniknąć); karty bez budżetu wychodzą jak dotąd.
   const closing = options.closing || counts.story > 0 || !nextRegular || (nextRegular.assessed && counts.assessed >= plan.taskBudget);
+  // Historyjka zamyka naukę, nie zastępuje jej: bez żadnego wydanego slotu spoza
+  // historyjki (np. pierwsze `nextTask` po miękkim limicie czasu, jeszcze w oknie
+  // wznowienia) sesja kończy się bez historyjki.
+  if (closing && counts.planned - counts.story === 0) return null;
   const slot = closing ? unissued.story[0] : nextRegular;
   if (!slot) return null;
   await tx.insert(sessionTasks).values({

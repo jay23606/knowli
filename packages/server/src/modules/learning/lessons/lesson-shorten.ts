@@ -17,6 +17,7 @@ import { readLessonTrainingSessionPlan } from "../../../domain/training-session-
 import { writeSealedEvent } from "../events";
 import { lessonSessionContextOf, lessonTaskCounts } from "./lesson-sessions";
 import { speechInputFor } from "./lesson-materialize";
+import { unissuedPlanSlots } from "./lesson-story-tasks";
 
 /**
  * Trener precyzji — zadanie następcze „Skróć swoją odpowiedź” (design 6.3).
@@ -132,7 +133,9 @@ export async function offerShortenFollowUp(
   let reservedForPlan = 0;
   try {
     const plan = readLessonTrainingSessionPlan(session.trainingPlan);
-    reservedForPlan = plan ? plan.slots.slice(counts.planned).filter((slot) => GRADER_TYPES.has(slot.exerciseType)).length : 0;
+    // Tylko niewydane sloty spoza historyjki: indeks `counts.planned` obejmuje też
+    // wydane zadania historyjki, więc liczymy z `unissuedPlanSlots` (ruling 1).
+    reservedForPlan = plan ? unissuedPlanSlots(plan, counts).regular.filter((slot) => GRADER_TYPES.has(slot.exerciseType)).length : 0;
   } catch {
     reservedForPlan = 0;
   }
