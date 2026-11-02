@@ -168,7 +168,7 @@ export async function lessonWorld(sourcePool: Pool, options: LessonWorldOptions 
       topicVersion: 1,
       objectiveIds: options.unschedulableDailyRound ? [] : [objectiveId],
       poolSize: 20,
-      examples: { [objectiveId]: ["He plays football."] },
+      examples: { [objectiveId]: [EDITOR_CARD_EXAMPLE] },
       material: "Present simple: trzecia osoba liczby pojedynczej dodaje -s.",
       instruction: "Ćwicz -s w 3. osobie.",
       ...(options.story ? { story: options.story.value } : {}),
@@ -589,8 +589,19 @@ async function seedListenChoice(
   };
 }
 
+/**
+ * Przykład karty zagadnienia -s w fixture lekcji. Celowo inny niż odpowiedzi
+ * samodzielne puli edytora — przykład równy odpowiedzi to ujawnione rozwiązanie
+ * (spec etapu przeglądu lekcji); do testów takiego ujawnienia służy `seedEditorPoolWithLeak`.
+ */
+export const EDITOR_CARD_EXAMPLE = "She plays tennis.";
+
 /** Valid full editor pool for third-person -s: 3 guided, 4 productive, 2 independent. */
-async function seedEditorPool(pool: Pool, version: { deckId: string; versionId: string }): Promise<void> {
+async function seedEditorPool(
+  pool: Pool,
+  version: { deckId: string; versionId: string },
+  options: { leakCardExample?: boolean; spareIndependent?: boolean } = {},
+): Promise<void> {
   const objectiveId = "english_grammar.present_simple.third_person_s";
   const exercises = [
     { type: "lesson_choice", prompt: "He ___ football.", answer: "plays", focus: "plays" },
@@ -600,8 +611,16 @@ async function seedEditorPool(pool: Pool, version: { deckId: string; versionId: 
     { type: "lesson_gap", prompt: "She ___ TV.", answer: "watches", focus: "watches" },
     { type: "lesson_gap", prompt: "It ___ dinner.", answer: "cooks", focus: "cooks" },
     { type: "lesson_gap", prompt: "He ___ books.", answer: "reads", focus: "reads" },
-    { type: "lesson_open_answer", prompt: "What does he do?", answer: "He plays football.", focus: "plays" },
+    {
+      type: "lesson_open_answer",
+      prompt: "What does he do?",
+      answer: options.leakCardExample === true ? EDITOR_CARD_EXAMPLE : "He plays football.",
+      focus: "plays",
+    },
     { type: "lesson_open_answer", prompt: "What does she do?", answer: "She works at home.", focus: "works" },
+    ...(options.spareIndependent === true
+      ? [{ type: "lesson_open_answer", prompt: "What does it do?", answer: "It runs fast.", focus: "runs" } as const]
+      : []),
   ] as const;
   for (const [index, exercise] of exercises.entries()) {
     const itemId = randomUUID();
@@ -643,6 +662,20 @@ async function seedEditorPool(pool: Pool, version: { deckId: string; versionId: 
       [revisionId, itemId, skillVersionId],
     );
   }
+}
+
+/**
+ * Jak pula edytora z `editorReady`, ale jedno `lesson_open_answer` ma odpowiedź równą
+ * przykładowi karty swojego zagadnienia (`EDITOR_CARD_EXAMPLE`) — ujawnione rozwiązanie
+ * ćwiczenia samodzielnego. `spareIndependent` dodaje trzecie, nieujawnione ćwiczenie samodzielne
+ * (pokrycie wystarcza mimo ujawnienia). Wywołaj na szkicu bez `editorReady` (pula nie może się podwoić).
+ */
+export async function seedEditorPoolWithLeak(
+  pool: Pool,
+  version: { deckId: string; versionId: string },
+  options: { spareIndependent?: boolean } = {},
+): Promise<void> {
+  await seedEditorPool(pool, version, { leakCardExample: true, ...options });
 }
 
 /**

@@ -21,7 +21,7 @@ import DeckSessionTaskBudgetSettings from "../DeckSessionTaskBudgetSettings";
 import type { EditorLeaveState } from "../useParentLeaveGuard";
 import { orpc } from "../query-client";
 import LessonSupervisionPanel from "./LessonSupervisionPanel";
-import LessonExerciseCard, { type CalculationControls } from "./LessonExerciseCard";
+import LessonExerciseCard, { leakNoticeFor, type CalculationControls, type LeakNotice } from "./LessonExerciseCard";
 import ArchiveLessonDialog from "./ArchiveLessonDialog";
 import LessonSourceNote from "./LessonSourceNote";
 import LessonStorySection from "./LessonStorySection";
@@ -161,15 +161,19 @@ export default function LessonEditor({
     mutate: (clientKey: string, patch: Partial<EditableLessonExercise>) => void;
     remove: (clientKey: string) => void;
     play: (assetId: string) => void;
+    showSource: (sourceKey: string) => void;
   } | null>(null);
   const cardActions = useMemo(() => ({
     onToggle: (cardKey: string) => cardActionsRef.current?.toggle(cardKey),
     onMutate: (clientKey: string, patch: Partial<EditableLessonExercise>) => cardActionsRef.current?.mutate(clientKey, patch),
     onRemove: (clientKey: string) => cardActionsRef.current?.remove(clientKey),
     onPlay: (assetId: string) => cardActionsRef.current?.play(assetId),
+    onShowSource: (sourceKey: string) => cardActionsRef.current?.showSource(sourceKey),
   }), []);
   const [openObjectives, setOpenObjectives] = useState<string[] | null>(null);
   const [openStages, setOpenStages] = useState<string[] | null>(null);
+  // „Pokaż ćwiczenie {n}” (ujawnione rozwiązanie): indeks ćwiczenia-źródła do przewinięcia po rozwinięciu jego grupy.
+  const [revealIndex, setRevealIndex] = useState<number | null>(null);
   const [regenTarget, setRegenTarget] = useState<string | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveBusy, setArchiveBusy] = useState(false);
@@ -713,6 +717,20 @@ export default function LessonEditor({
     return () => cancelAnimationFrame(frame);
   }, [exerciseErrors]);
 
+  // Źródło ujawnionego rozwiązania trafia na ekran i dostaje fokus (karta ma tabIndex=-1);
+  // druga próba po animacji rozwijania zagadnienia.
+  useEffect(() => {
+    if (revealIndex === null) return;
+    const scroll = () => {
+      const card = document.querySelector<HTMLElement>(`[data-testid="exercise-${revealIndex}"]`);
+      card?.scrollIntoView({ block: "center" });
+      card?.focus({ preventScroll: true });
+    };
+    const frame = requestAnimationFrame(scroll);
+    const later = window.setTimeout(() => { scroll(); setRevealIndex(null); }, 300);
+    return () => { cancelAnimationFrame(frame); window.clearTimeout(later); };
+  }, [revealIndex]);
+
   // Błędy samej historyjki (bez błędów ćwiczeń): sekcja historyjki trafia na ekran.
   useEffect(() => {
     if (storyErrors.length === 0 || Object.keys(exerciseErrors).length > 0) return;
@@ -813,7 +831,32 @@ export default function LessonEditor({
     };
   };
 
-  cardActionsRef.current = { toggle: toggleCard, mutate: mutateExercise, remove: removeExercise, play: playAsset };
+  // Pokaż źródło ujawnienia: rozwija jego zagadnienie i etap (wybór rodzica, można zwinąć) i przewija do karty.
+  const showSource = (sourceKey: string) => {
+    const group = groups.find((g) => g.stages.some((s) => s.exercises.some((candidate) => candidate.id === sourceKey)));
+    const stage = group?.stages.find((s) => s.exercises.some((candidate) => candidate.id === sourceKey));
+    const source = stage?.exercises.find((candidate) => candidate.id === sourceKey);
+    if (!group || !stage || !source) return;
+    setOpenObjectives([...new Set([...objectivesOpen, group.objectiveId])]);
+    setOpenStages([...new Set([...stagesOpen, stageKey(group.objectiveId, stage.stage)])]);
+    setRevealIndex(indexByClientKey.get(source.clientKey) ?? null);
+  };
+
+  cardActionsRef.current = { toggle: toggleCard, mutate: mutateExercise, remove: removeExercise, play: playAsset, showSource };
+
+  const leakByExercise = new Map((active?.exposureLeaks ?? []).map((leak) => [leak.exerciseId, leak]));
+  /** Ostrzeżenie o ujawnionym rozwiązaniu ćwiczenia; źródło spoza formularza (usunięte) → prośba o zapis. */
+  const leakNotice = (ex: EditableLessonExercise): LeakNotice | null => {
+    const leak = ex.id === undefined ? undefined : leakByExercise.get(ex.id);
+    if (!leak) return null;
+    return leakNoticeFor(leak, {
+      objectiveTitle: (objectiveId) => objectiveMeta(objectiveId)?.titlePl ?? objectiveId,
+      sourceIndex: (exerciseId) => {
+        const source = form?.exercises.find((candidate) => candidate.id === exerciseId);
+        return source ? indexByClientKey.get(source.clientKey) : undefined;
+      },
+    });
+  };
 
   const exerciseCard = (ex: EditableLessonExercise) => {
     const index = indexByClientKey.get(ex.clientKey)!;
@@ -840,6 +883,7 @@ export default function LessonEditor({
         busy={busy}
         open={openCards.has(ex.id ?? ex.clientKey) || changed || errors !== undefined}
         changed={changed}
+        leak={leakNotice(ex)}
         hadAudio={savedAudio !== null}
         errors={errors}
         audio={asset ? { state: asset.state, assetId: asset.assetId ?? null } : null}
@@ -1076,7 +1120,7 @@ export default function LessonEditor({
           {active.coverage.map((gap, i) => (
             <li key={i} data-testid={`coverage-gap-${i}`}>
               <Text size="sm">
-                {messages.lessons.coverageGap
+                {(gap.excluded ? messages.lessons.coverageGapExcluded.replace("{excluded}", String(gap.excluded)) : messages.lessons.coverageGap)
                   .replace("{objective}", objectiveMeta(gap.objectiveId)?.titlePl ?? gap.objectiveId)
                   .replace("{stage}", messages.lessons.stages[gap.stage] ?? gap.stage)
                   .replace("{actual}", String(gap.actual))

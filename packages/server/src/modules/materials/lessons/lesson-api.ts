@@ -9,6 +9,7 @@ import {
   LessonStorySchema,
   type AssignmentDto,
   type CoverageGapDto,
+  type ExposureLeakDto,
   type GenerationDto,
   type LessonDeckDto,
   type LessonDraftDto,
@@ -32,7 +33,8 @@ import {
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
-import { DEFAULT_LESSON_POLICY } from "../../../domain/lessons/lesson-policy";
+import { findExposureLeaks } from "../../../domain/lessons/exposure-leaks";
+import { lessonCoverageGaps, lessonPoolMinimums } from "../../../domain/lessons/lesson-coverage";
 import { materialCreationMode, requiresParentSubjectTitle } from "../../../domain/lessons/material-creation";
 import { poolCoverage, validatePool, withoutRedundantAcceptedVariants } from "../../../domain/lessons/pool-validation";
 import { solvedSentencesOf, validateLessonStory, type LessonStory } from "../../../domain/lessons/story";
@@ -82,7 +84,7 @@ interface LessonContextView {
   interests?: string[];
 }
 
-function readLessonContext(raw: Record<string, unknown> | null): LessonContextView {
+export function readLessonContext(raw: Record<string, unknown> | null): LessonContextView {
   const ctx = (raw ?? {}) as Partial<LessonContextView>;
   return {
     subjectId: ctx.subjectId ?? "",
@@ -237,39 +239,6 @@ function exerciseDtoFromPayload(
   };
 }
 
-/** Minima pokrycia publikacji przedmiotu (fallback: polityka domyślna lekcji). */
-function poolMinimumsOf(services: Services, subjectId: string) {
-  return services.subjects.getSubject(subjectId)?.poolMinimums ?? DEFAULT_LESSON_POLICY.poolMinimums;
-}
-
-/**
- * Dodatkowa reguła szkoły: zagadnienie potrzebuje co najmniej dwóch RÓŻNYCH
- * pytań otwartych (różne odpowiedzi wzorcowe), nie jednej rodziny sformułowań.
- * Zwraca braki w kształcie CoverageGap (etap independent).
- */
-function distinctOpenAnswerGaps(
-  subject: SubjectModule,
-  drafts: readonly LessonExerciseDraft[],
-  objectiveIds: readonly string[],
-): CoverageGapDto[] {
-  if (subject.usesV3Payload !== true) return [];
-  const gaps: CoverageGapDto[] = [];
-  for (const objectiveId of objectiveIds) {
-    const distinct = new Set(
-      drafts
-        .filter((d) => d.objectiveId === objectiveId && d.exerciseType === "lesson_open_answer")
-        .map((d) => (subject.normalizer.normalize(d.answer)[0] ?? []).join(" ")),
-    );
-    if (distinct.size < 2) {
-      gaps.push({ objectiveId, stage: "independent", required: 2, actual: distinct.size });
-    }
-  }
-  return gaps;
-}
-/** Łączy braki pokrycia etapów z brakami reguły różnych pytań otwartych bez duplikatów per cel+etap. */
-function mergeCoverage(base: CoverageGapDto[], extra: CoverageGapDto[]): CoverageGapDto[] {
-  return [...base, ...extra.filter((g) => !base.some((b) => b.objectiveId === g.objectiveId && b.stage === g.stage))];
-}
 /** Buduje `LessonDraftDto` wersji (szkic lub opublikowana): ćwiczenia, pokrycie, media. */
 async function readLessonDraftDto(
   db: Executor,
@@ -319,10 +288,42 @@ async function readLessonDraftDto(
   });
   const drafts: LessonExerciseDraft[] = revisions.map((r) => toExerciseDraft(r.payload));
   const draftSubject = services.subjects.getSubject(context.subjectId);
-  const coverage: CoverageGapDto[] = mergeCoverage(
-    poolCoverage(drafts, context.objectiveIds, poolMinimumsOf(services, context.subjectId)),
-    draftSubject ? distinctOpenAnswerGaps(draftSubject, drafts, context.objectiveIds) : [],
-  );
+  // Wersja opublikowana jest niezmienna: jej pokrycie liczymy jak przed regułą ujawnień
+  // (bez wykluczeń i nowych braków), a publikacja szkicu nadal wyklucza ujawnione ćwiczenia.
+  const published = version.state === "published";
+  // Nieznany przedmiot: pokrycie z minimami domyślnymi, bez ujawnień (brak normalizatora do ich oceny).
+  const coverage: CoverageGapDto[] = draftSubject
+    ? lessonCoverageGaps({
+        subject: draftSubject,
+        exercises: drafts,
+        examples: context.examples,
+        objectiveIds: context.objectiveIds,
+        ...(published ? { ignoreExposure: true } : {}),
+      })
+    : poolCoverage(drafts, context.objectiveIds, lessonPoolMinimums({}));
+  // Ujawnione rozwiązania (spec etapu przeglądu lekcji §8): tylko edytowalny szkic — wersja opublikowana
+  // jest niezmienna, więc rodzic nie ma czego poprawić; indeksy z domeny mapujemy na id ćwiczeń.
+  // Miękkie powtórzenie w rodzinie pytań szkoły (ta sama rodzina w tym samym zagadnieniu) to zamierzona
+  // struktura, nie błąd rodzica: bez ostrzeżenia, choć pokrycie nadal liczy rodzinę raz.
+  const sameFamily = (a: LessonExerciseDraft, b: LessonExerciseDraft) =>
+    a.objectiveId === b.objectiveId && a.familyId !== undefined && a.familyId.trim() !== "" && a.familyId === b.familyId;
+  const exposureLeaks: ExposureLeakDto[] = draftSubject && !published
+    ? findExposureLeaks({
+        exercises: drafts,
+        examples: context.examples,
+        objectiveOrder: context.objectiveIds,
+        subject: draftSubject,
+        mode: "coverage",
+      })
+        .filter((leak) => !(leak.kind === "soft" && leak.source.kind === "exercise" && sameFamily(drafts[leak.index]!, drafts[leak.source.index]!)))
+        .map((leak) => ({
+          exerciseId: revisions[leak.index]!.itemId,
+          kind: leak.kind,
+          source: leak.source.kind === "card_example"
+            ? { kind: "card_example" as const, objectiveId: leak.source.objectiveId }
+            : { kind: "exercise" as const, exerciseId: revisions[leak.source.index]!.itemId },
+        }))
+    : [];
 
   return {
     id: version.id,
@@ -380,6 +381,7 @@ async function readLessonDraftDto(
     ...(context.rejectedReasons ? { rejectedReasons: context.rejectedReasons } : {}),
     ...(context.droppedObjectiveCount ? { droppedObjectiveCount: context.droppedObjectiveCount } : {}),
     coverage,
+    ...(exposureLeaks.length > 0 ? { exposureLeaks } : {}),
   };
 }
 
@@ -851,8 +853,8 @@ export async function editLessonDraft(
 
 /**
  * Publikacja szkicu lekcji. Wymaga pokrycia etapów ocenianych per cel
- * (`poolCoverage` z `DEFAULT_LESSON_POLICY.poolMinimums`); braki → 409 z listą
- * `{objectiveId, stage, required, actual}` w `details.coverage`. Jak dla słówek
+ * (`lessonCoverageGaps`: bez ujawnionych ćwiczeń samodzielnych); braki → 409 z listą
+ * `{objectiveId, stage, required, actual, excluded?}` w `details.coverage`. Jak dla słówek
  * uzgadnia media i wymaga gotowego `target_audio`, gdy przedmiot go wymaga.
  * Stan review/draft → published; ustawia `decks.published_version_id`.
  */
@@ -893,10 +895,7 @@ export async function publishLessonDraft(
     if (invalid.length > 0) throw new AppError("validation", { details: { exercises: invalid.map((rejection) => ({ index: drafts.indexOf(rejection.exercise), errors: rejection.errors })) } });
     // Historyjka (np. ze starych danych) też przechodzi barierę ekspozycji wobec publikowanej puli.
     if (context.story) assertStoryValid(subject, context.story, drafts);
-    const gaps = mergeCoverage(
-      poolCoverage(drafts, context.objectiveIds, poolMinimumsOf(services, context.subjectId)),
-      distinctOpenAnswerGaps(subject, drafts, context.objectiveIds),
-    );
+    const gaps = lessonCoverageGaps({ subject, exercises: drafts, examples: context.examples, objectiveIds: context.objectiveIds });
     if (gaps.length > 0) {
       throw new AppError("conflict", {
         message: "lesson coverage incomplete",

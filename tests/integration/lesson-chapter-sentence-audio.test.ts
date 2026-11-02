@@ -18,6 +18,7 @@ import {
 } from "@learning/server";
 import type { AttemptDto, AttemptInput, TaskDto } from "@learning/contracts";
 import { lessonTextTargetKey } from "../../packages/server/src/domain/lessons/exposure-key";
+import { DEFAULT_LESSON_GENERATION_POLICY } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
 import { ManualClock, testDatabase } from "./helpers";
 
@@ -31,6 +32,9 @@ import { ManualClock, testDatabase } from "./helpers";
  */
 
 const { db, pool } = testDatabase();
+
+/** Bez rundy pod brakujący etap: pule sterowane zbyt małe do pokrycia, test dotyczy samej partii głównej. */
+const MAIN_BATCH_ONLY = { ...DEFAULT_LESSON_GENERATION_POLICY, stageTopUp: false };
 
 async function query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
   return (await pool.query(sql, params)).rows as T[];
@@ -148,6 +152,7 @@ describe("lekcja Angielski — rozdział: odczyt zdania po odpowiedzi (integracj
   async function chapterWorld() {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
+    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const clock = new ManualClock();
     const services = createServices({ db, clock, media: mediaSettings(fakes), generation: fakes.deps });
     fakes.deps.llm.generateLessonPool = async (input) => {

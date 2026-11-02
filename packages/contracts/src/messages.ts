@@ -839,8 +839,10 @@ export const messages = {
     gradingProviderNone: "Ocena dowolnych odpowiedzi jest wyłączona (brak modelu oceniającego).",
     coverageIncomplete: "Brak pokrycia — uzupełnij ćwiczenia brakujących etapów przed publikacją.",
     rejectedCount: "Odrzucono ćwiczeń przy generowaniu: {n}",
-    // Powody zlicza tylko sprawdzanie słów z materiału; resztę odrzuceń zbiera „inne powody”.
-    rejectedReasonsLabel: "Powody odrzuceń przy sprawdzaniu słów z materiału",
+    // Powody pochodzą z trzech źródeł: sprawdzania słów z materiału (słownik rozdziału), rozwiązań
+    // widocznych wcześniej (ćwiczenia samodzielne) i słów kluczowych bez rodziny pytań otwartych
+    // (szkoła); resztę odrzuceń zbiera „inne powody”.
+    rejectedReasonsLabel: "Powody odrzuceń przy generowaniu",
     rejectedReason: "{reason} ×{n}",
     rejectedOtherReasons: "inne powody: {n}",
     droppedObjectiveCount: "Pominięto zagadnień z modelu: {n}",
@@ -1117,6 +1119,12 @@ export const messages = {
     coverageTitle: "Pokrycie etapów",
     coverageOk: "Wszystkie etapy mają wymagane ćwiczenia.",
     coverageGap: "{objective} · {stage}: jest {actual}, trzeba {required}",
+    coverageGapExcluded: "{objective} · {stage}: jest {actual}, trzeba {required} (nie liczy się {excluded} z rozwiązaniem widocznym wcześniej)",
+    exposureLeakCard: "Rozwiązanie tego ćwiczenia jest na karcie zagadnienia „{objective}”, więc nie liczy się ono jako samodzielne. Zmień rozwiązanie albo usuń ćwiczenie; brakujące ćwiczenia możesz dogenerować.",
+    exposureLeakExercise: "To samo rozwiązanie dziecko poznaje w ćwiczeniu {n}, więc to ćwiczenie nie liczy się jako samodzielne. Zmień rozwiązanie jednego z nich albo usuń ćwiczenie; brakujące ćwiczenia możesz dogenerować.",
+    exposureLeakSoft: "Tę samą odpowiedź ma ćwiczenie {n} — jako sprawdzenie samodzielne liczy się tylko jedno z nich.",
+    exposureLeakShow: "Pokaż ćwiczenie {n}",
+    exposureLeakStale: "Zapisz zmiany, aby sprawdzić to ponownie.",
     regenerateObjectiveLabel: "Dogeneruj ćwiczenia dla tej reguły",
     regenerateCount: "Ile dogenerować",
     regenerateSubmit: "Dogeneruj",

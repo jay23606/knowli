@@ -6,7 +6,7 @@ import { validatePool } from "../../../domain/lessons/pool-validation";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
 import { validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
-import { buildDynamicTopicData, buildPoolInput, capListenChoiceOverflow, buildLessonPayload, createLessonFromMaterial, createMaterialLesson, buildObjectiveCriteria, collectBatchExerciseMetadata, filterExercisesToRequestedObjective, minimumCountPerObjective, objectiveBatchCounts, isWellShapedRawExercise, lessonPayloadVersion, poolStageCounts, refineGeneratedDrafts, scopeFamiliesToRun, splitStages, stripParentAddedFlags, sumRejectedReasons, summarizeLessonPoolValidation, toExerciseDraft, withoutEmptyOptionalArrays, withoutInvalidExplanation, withoutVoiceToneUnlessAllowed, withSubjectObjectiveKinds } from "./lesson-drafts";
+import { buildDynamicTopicData, buildPoolInput, capListenChoiceOverflow, buildLessonPayload, createLessonFromMaterial, createMaterialLesson, buildObjectiveCriteria, collectBatchExerciseMetadata, filterExercisesToRequestedObjective, minimumCountPerObjective, objectiveBatchCounts, isWellShapedRawExercise, lessonPayloadVersion, poolStageCounts, refineGeneratedDrafts, scopeFamiliesToRun, splitStages, stripParentAddedFlags, sumRejectedReasons, summarizeLessonPoolValidation, toExerciseDraft, trimToStageDeficits, withoutEmptyOptionalArrays, withoutOrphanKeywords, withoutInvalidExplanation, withoutVoiceToneUnlessAllowed, withSubjectObjectiveKinds } from "./lesson-drafts";
 
 describe("calculation persistence and grading criteria", () => {
   const calculation = { kind: "scale_distance" as const, params: { scaleDenominator: 25000, mapDistanceCm: 3 }, unit: "m" as const, templateFamilyId: "scale" };
@@ -508,6 +508,78 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
       expect(input).not.toHaveProperty("interests");
       expect(input.promptProfile).not.toHaveProperty("interestsRule");
     });
+  });
+});
+
+describe("buildPoolInput — opcje zdań do unikania i celu rundy", () => {
+  const resolved = englishGrammarSubject.topics[0]!;
+  const build = (options?: Parameters<typeof buildPoolInput>[10]) =>
+    buildPoolInput(englishGrammarSubject, resolved, resolved.objectives[0]!.id, 4, "material", undefined, true, [], [], undefined, options);
+
+  it("niepusta lista i cel trafiają do wejścia", () => {
+    const input = build({ avoidSentences: ["He plays football."], purpose: "stage_top_up" });
+    expect(input.avoidSentences).toEqual(["He plays football."]);
+    expect(input.purpose).toBe("stage_top_up");
+  });
+
+  it("brak opcji albo pusta lista: bez pól", () => {
+    for (const input of [build(), build({}), build({ avoidSentences: [] })]) {
+      expect(input).not.toHaveProperty("avoidSentences");
+      expect(input).not.toHaveProperty("purpose");
+    }
+  });
+});
+
+describe("trimToStageDeficits (runda pod etap: najwyżej brak każdego etapu)", () => {
+  const exercise = (exerciseType: LessonExerciseDraft["exerciseType"], answer: string): LessonExerciseDraft => ({
+    exerciseType, objectiveId: "o1", answer, acceptedAnswers: [], focus: [],
+  });
+
+  it("zachowuje ćwiczenia do braku etapu w kolejności wejścia, nadwyżkę i etapy bez braku odrzuca z powodem", () => {
+    const input = [
+      exercise("lesson_open_answer", "a"),
+      exercise("lesson_choice", "b"),
+      exercise("lesson_open_answer", "c"),
+      exercise("lesson_gap", "d"),
+      exercise("lesson_open_answer", "e"),
+    ];
+    const result = trimToStageDeficits(input, { guided: 0, productive: 1, independent: 2 });
+    expect(result.kept.map((item) => item.answer)).toEqual(["a", "c", "d"]);
+    expect(result.rejected.map((item) => item.exercise.answer)).toEqual(["b", "e"]);
+    for (const item of result.rejected) expect(item.errors).toEqual(["exerciseType: ponad brak etapu"]);
+  });
+
+  it("typy spoza ścieżki etapów (słowa kluczowe, wybór ze słuchu) nie zajmują miejsca etapu i zawsze odpadają", () => {
+    const input = [
+      exercise("lesson_keywords", "k"),
+      exercise("lesson_listen_choice", "l"),
+      exercise("lesson_choice", "g"),
+    ];
+    const result = trimToStageDeficits(input, { guided: 1, productive: 0, independent: 0 });
+    expect(result.kept.map((item) => item.answer)).toEqual(["g"]);
+    expect(result.rejected.map((item) => item.exercise.answer)).toEqual(["k", "l"]);
+    for (const item of result.rejected) expect(item.errors).toEqual(["exerciseType: poza ścieżką etapów w dogenerowaniu"]);
+  });
+});
+
+describe("withoutOrphanKeywords (słowa kluczowe bez rodziny pytań otwartych)", () => {
+  const exercise = (exerciseType: LessonExerciseDraft["exerciseType"], answer: string, familyId?: string, objectiveId = "o1"): LessonExerciseDraft => ({
+    exerciseType, objectiveId, answer, acceptedAnswers: [], focus: [], ...(familyId === undefined ? {} : { familyId }),
+  });
+
+  it("odrzuca świeże słowa kluczowe bez pytania otwartego tej rodziny w tym zagadnieniu", () => {
+    const fresh = [
+      exercise("lesson_keywords", "k-orphan", "f1"),
+      exercise("lesson_keywords", "k-fresh-family", "f2"),
+      exercise("lesson_open_answer", "open-f2", "f2"),
+      exercise("lesson_keywords", "k-existing-family", "f3"),
+      exercise("lesson_keywords", "k-other-objective", "f3", "o2"),
+      exercise("lesson_keywords", "k-no-family"),
+    ];
+    const existing = [exercise("lesson_open_answer", "open-f3", "f3"), exercise("lesson_keywords", "k-old-orphan", "f9")];
+    const result = withoutOrphanKeywords(existing, fresh);
+    expect(result.kept.map((item) => item.answer)).toEqual(["k-fresh-family", "open-f2", "k-existing-family", "k-no-family"]);
+    expect(result.dropped).toBe(2);
   });
 });
 

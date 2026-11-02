@@ -9,7 +9,10 @@ import { englishGrammarSubject } from "../domain/lessons/subjects/english-gramma
 import { presentSimpleV1 } from "../domain/lessons/subjects/english-grammar/topics/present-simple";
 import { toBeV1 } from "../domain/lessons/subjects/english-grammar/topics/to-be";
 import type { LessonPoolInput } from "../ports/ai";
-import { toExerciseDraft } from "../modules/materials/lessons/lesson-drafts";
+import { findExposureLeaks } from "../domain/lessons/exposure-leaks";
+import { schoolSubject } from "../domain/lessons/subjects/school/module";
+import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../domain/lessons/types";
+import { objectiveBatchCounts, poolStageCounts, toExerciseDraft } from "../modules/materials/lessons/lesson-drafts";
 import { isMaterialVocabularyTarget, materialPhraseIndex } from "../domain/lessons/subjects/english/material-phrase";
 import { DEFAULT_FAKE_DECK_ITEMS, FakeLlmProvider, FakeTtsProvider } from "./fake";
 
@@ -440,5 +443,132 @@ describe("FakeTtsProvider", () => {
     const first = await tts.synthesize(base);
     const second = await tts.synthesize({ ...base });
     expect(second.bytes).toEqual(first.bytes);
+  });
+});
+
+/** Materiał rozdziału w trzech zagadnieniach (jak w teście integracyjnym rozdziału). */
+const LEAK_CHAPTER_MATERIAL = [
+  "Zagadnienie 1: Ubrania",
+  "coat, boots, dress, skirt, t-shirt",
+  "Zagadnienie 2: Pogoda",
+  "It's raining. It's snowing. What's the weather like?",
+  "Zagadnienie 3: Co mam na sobie",
+  "I'm wearing a coat. I'm wearing boots.",
+].join("\n");
+
+function poolInputFor(subject: SubjectModule, topic: LessonTopic, objectiveIndex: number, count: number, overrides: Partial<LessonPoolInput> = {}): LessonPoolInput {
+  const objective = topic.objectives[objectiveIndex]!;
+  return {
+    subjectId: subject.id,
+    subjectTitle: subject.titlePl,
+    answerLocale: subject.answerLocale,
+    promptLocale: subject.promptLocale,
+    promptProfile: { generationRole: "lesson", gradingRole: "grammar", almostDefinition: "close" },
+    exerciseTypes: subject.exerciseTypes,
+    transforms: [],
+    objectives: [{ id: objective.id, descriptionEn: objective.descriptionEn, exerciseTypes: objective.exerciseTypes, errorCategories: [] }],
+    material: LEAK_CHAPTER_MATERIAL,
+    countPerObjective: count,
+    stageCounts: poolStageCounts(subject, objective.exerciseTypes, count),
+    graderAvailable: false,
+    deduplication: "exercise",
+    ...overrides,
+  };
+}
+
+describe("FakeLlmProvider — domyślna pula bez ujawnionych rozwiązań", () => {
+  const chapterTopic = englishChapterSubject.buildDynamicTopic!({
+    titlePl: "Unit 1",
+    objectives: [
+      { id: "english_chapter.ddeck.a", titlePl: "Ubrania", descriptionEn: "Clothes", kind: "words", cards: [{ title: "Słówka", body: "coat — płaszcz" }] },
+      { id: "english_chapter.ddeck.b", titlePl: "Pogoda", descriptionEn: "Weather", kind: "words", cards: [{ title: "Słówka", body: "rain — deszcz" }] },
+      { id: "english_chapter.ddeck.c", titlePl: "Co mam na sobie", descriptionEn: "Wearing", kind: "frame", cards: [{ title: "Rama", body: "I'm wearing" }] },
+    ],
+  });
+
+  it("rozdział (3 zagadnienia, pula 40): suma partii z narastającym existingExercises nie ma ujawnień (coverage i generation)", async () => {
+    const counts = objectiveBatchCounts(40, chapterTopic.objectives.length, englishChapterSubject);
+    const llm = new FakeLlmProvider();
+    const drafts: LessonExerciseDraft[] = [];
+    const examples: Record<string, string[]> = {};
+    for (const [index, count] of counts.entries()) {
+      const existingExercises = drafts.map((draft) => lessonExerciseStimulusRecord(draft, { instructionIsStimulus: true }));
+      const raw = await llm.generateLessonPool(poolInputFor(englishChapterSubject, chapterTopic, index, count, {
+        existingExercises,
+        listenChoicePerObjective: 2,
+      }));
+      drafts.push(...raw.exercises.map(toExerciseDraft));
+      Object.assign(examples, raw.examples);
+    }
+    expect(drafts.length).toBeGreaterThanOrEqual(40);
+    const objectiveOrder = chapterTopic.objectives.map((objective) => objective.id);
+    for (const mode of ["coverage", "generation"] as const) {
+      expect(findExposureLeaks({ exercises: drafts, examples, objectiveOrder, subject: englishChapterSubject, mode })).toEqual([]);
+    }
+  });
+
+  it("gramatyka i szkoła: domyślna pula nie ma ujawnień twardych z przykładami kart", async () => {
+    const llm = new FakeLlmProvider();
+    const grammarObjective = presentSimpleV1.objectives.find((item) => item.id.endsWith("third_person_s"))!;
+    const grammarRaw = await llm.generateLessonPool(poolInputFor(englishGrammarSubject, presentSimpleV1, presentSimpleV1.objectives.indexOf(grammarObjective), 20, {
+      material: "play football school music pets",
+    }));
+    expect(findExposureLeaks({
+      exercises: grammarRaw.exercises.map(toExerciseDraft),
+      examples: grammarRaw.examples,
+      objectiveOrder: [grammarObjective.id],
+      subject: englishGrammarSubject,
+      mode: "generation",
+    }).filter((leak) => leak.kind === "hard")).toEqual([]);
+
+    const schoolTopic = schoolSubject.buildDynamicTopic!({
+      titlePl: "Historia",
+      objectives: [{ id: "school.ddeck.a", titlePl: "Piastowie", descriptionEn: "Piasts", cards: [{ title: "Piastowie", body: "Mieszko I przyjął chrzest w 966 roku." }] }],
+    });
+    const schoolRaw = await llm.generateLessonPool(poolInputFor(schoolSubject, schoolTopic, 0, 14, {
+      material: "Mieszko I przyjął chrzest w 966 roku. Bolesław Chrobry został koronowany w 1025 roku.",
+    }));
+    expect(findExposureLeaks({
+      exercises: schoolRaw.exercises.map(toExerciseDraft),
+      examples: schoolRaw.examples,
+      objectiveOrder: ["school.ddeck.a"],
+      subject: schoolSubject,
+      mode: "generation",
+    }).filter((leak) => leak.kind === "hard")).toEqual([]);
+  });
+
+  it("avoidSentences: zdanie z listy zastąpione innym, liczba ćwiczeń bez zmian", async () => {
+    const llm = new FakeLlmProvider();
+    const base = await llm.generateLessonPool(poolInputFor(englishChapterSubject, chapterTopic, 0, 14));
+    const answers = (raw: { exercises: unknown[] }): string[] =>
+      raw.exercises.map(toExerciseDraft).filter((draft) => draft.exerciseType === "lesson_open_answer").map((draft) => draft.answer);
+    const baseAnswers = answers(base);
+    expect(baseAnswers.length).toBeGreaterThan(0);
+    const avoided = baseAnswers[0]!;
+    const replaced = await llm.generateLessonPool(poolInputFor(englishChapterSubject, chapterTopic, 0, 14, {
+      avoidSentences: [`  ${avoided.toUpperCase()}.  `],
+    }));
+    const replacedAnswers = answers(replaced);
+    expect(replaced.exercises).toHaveLength(base.exercises.length);
+    expect(replacedAnswers).toHaveLength(baseAnswers.length);
+    const normalise = (text: string): string => text.toLowerCase().trim().replace(/\.$/u, "");
+    expect(replacedAnswers.map(normalise)).not.toContain(normalise(avoided));
+    expect(new Set(replacedAnswers.map(normalise)).size).toBe(replacedAnswers.length);
+  });
+
+  it("queueLesson nie dotyczy purpose=stage_top_up; queueLessonTopUp dotyczy tylko rundy", async () => {
+    const llm = new FakeLlmProvider();
+    llm.queueLesson({ error: "pool boom", retryable: false });
+    llm.queueLessonTopUp({ error: "top-up boom", retryable: false });
+    // Runda nie zjada kolejki puli i odwrotnie.
+    await expect(llm.generateLessonPool(poolInputFor(englishChapterSubject, chapterTopic, 0, 14, { purpose: "stage_top_up" }))).rejects.toThrow("top-up boom");
+    await expect(llm.generateLessonPool(poolInputFor(englishChapterSubject, chapterTopic, 0, 14, { purpose: "pool" }))).rejects.toThrow("pool boom");
+    await expect(llm.generateLessonPool(poolInputFor(englishChapterSubject, chapterTopic, 0, 14))).rejects.toThrow("pool boom");
+
+    // Bez kolejki rundy — domyślna deterministyczna pula, mimo kolejki puli.
+    const onlyPool = new FakeLlmProvider();
+    onlyPool.queueLesson({ error: "pool boom", retryable: false });
+    const topUp = await onlyPool.generateLessonPool(poolInputFor(englishChapterSubject, chapterTopic, 0, 14, { purpose: "stage_top_up" }));
+    expect(topUp.exercises.length).toBeGreaterThan(0);
   });
 });

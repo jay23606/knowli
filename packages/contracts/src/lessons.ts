@@ -452,8 +452,28 @@ export const CoverageGapDtoSchema = z.object({
   stage: LessonStageSchema,
   required: z.number().int().nonnegative(),
   actual: z.number().int().nonnegative(),
+  /** Liczba ujawnionych ćwiczeń samodzielnych wykluczonych z etapu (brak pola = 0). */
+  excluded: z.number().int().positive().optional(),
 });
 export type CoverageGapDto = z.infer<typeof CoverageGapDtoSchema>;
+
+/**
+ * Ćwiczenie samodzielne, którego rozwiązanie dziecko widzi wcześniej (spec etapu
+ * przeglądu lekcji §8): w przykładzie karty zagadnienia albo w innym ćwiczeniu.
+ * `hard` — ćwiczenie nie liczy się do pokrycia etapu samodzielnego; `soft` —
+ * powtórzenie wśród ćwiczeń samodzielnych (liczy się tylko jedno z nich).
+ * Etykietę dla rodzica składa panel z katalogu komunikatów; DTO niesie tylko identyfikatory.
+ */
+export const ExposureLeakDtoSchema = z.object({
+  /** Ćwiczenie „ofiara”: to, które nie sprawdza samodzielnej odpowiedzi. */
+  exerciseId: UuidSchema,
+  kind: z.enum(["hard", "soft"]),
+  source: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("card_example"), objectiveId: z.string().min(1) }).strict(),
+    z.object({ kind: z.literal("exercise"), exerciseId: UuidSchema }).strict(),
+  ]),
+}).strict();
+export type ExposureLeakDto = z.infer<typeof ExposureLeakDtoSchema>;
 
 /**
  * Historyjka na koniec sesji lekcji (spec 2026-11-01): zdania do przeczytania
@@ -520,6 +540,8 @@ export const LessonDraftDtoSchema = z.object({
   /** Zagadnienia odrzucone/pominięte na etapie generowania tematu (zestawy szkolne). */
   droppedObjectiveCount: z.number().int().nonnegative().optional(),
   coverage: z.array(CoverageGapDtoSchema),
+  /** Ujawnione rozwiązania ćwiczeń samodzielnych; brak pola = brak ujawnień albo wersja tylko do odczytu (opublikowana). */
+  exposureLeaks: z.array(ExposureLeakDtoSchema).optional(),
   /** Historyjka na koniec sesji; brak pola = lekcja bez historyjki. */
   story: LessonStorySchema.optional(),
   /** Przedmiot obsługuje historyjkę (flaga przedmiotu); brak pola = nie wiadomo/nie dotyczy. */

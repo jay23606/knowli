@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MAX_LESSON_TEXT_LENGTH, messages, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
-import LessonExerciseCard from "./LessonExerciseCard";
+import LessonExerciseCard, { leakNoticeFor, type LeakNotice } from "./LessonExerciseCard";
 import { createLessonSnapshot } from "./lesson-editor-state";
 import { renderParentMarkup } from "../test-render";
 
@@ -24,7 +24,7 @@ function listenExercise(): LessonDraftDto["exercises"][number] {
 
 function render(
   sentenceAudio: LessonPromptAudioDto | null,
-  { open = false, editable = true, explanations = false, errors = undefined as string[] | undefined } = {},
+  { open = false, editable = true, explanations = false, errors = undefined as string[] | undefined, changed = false, leak = null as LeakNotice | null } = {},
 ): string {
   const draft = {
     id: "00000000-0000-4000-8000-000000000001", deckId: "00000000-0000-4000-8000-000000000002", editNumber: 1, status: "review",
@@ -33,7 +33,7 @@ function render(
   } as unknown as LessonDraftDto;
   const ex = createLessonSnapshot(draft, () => "k").form.exercises[0]!;
   return renderParentMarkup(
-    <LessonExerciseCard ex={ex} index={0} editable={editable} busy={false} open={open} changed={false} hadAudio={false} errors={errors}
+    <LessonExerciseCard ex={ex} index={0} editable={editable} busy={false} open={open} changed={changed} leak={leak} onShowSource={vi.fn()} hadAudio={false} errors={errors}
       audio={null} voiceTones={{ styleEnabled: true }} promptAudio={null} explanations={explanations} explanationAudio={null} sentenceAudio={sentenceAudio} lessonDraftId={draft.id} deckId={draft.deckId}
       itemRevisionId="rev" audioLocked={false} calculation={null} onToggle={vi.fn()} onMutate={vi.fn()} onRemove={vi.fn()} onPlay={vi.fn()} />,
   );
@@ -106,5 +106,94 @@ describe("LessonExerciseCard: wyjaśnienie błędu", () => {
     const markup = render(null, { open: true, explanations: true, errors: ["Odpowiedź nie może być pusta."] });
     const field = markup.slice(markup.indexOf(messages.lessons.explanationLabel));
     expect(field).not.toContain("aria-invalid=\"true\"");
+  });
+});
+
+describe("LessonExerciseCard: ujawnione rozwiązanie", () => {
+  const cardLeak: LeakNotice = { kind: "hard", message: messages.lessons.exposureLeakCard.replace("{objective}", "Trzecia osoba -s"), show: null };
+  const exerciseLeak: LeakNotice = {
+    kind: "hard",
+    message: messages.lessons.exposureLeakExercise.replace("{n}", "4"),
+    show: { label: messages.lessons.exposureLeakShow.replace("{n}", "4"), sourceKey: "src" },
+  };
+  const softLeak: LeakNotice = {
+    kind: "soft",
+    message: messages.lessons.exposureLeakSoft.replace("{n}", "4"),
+    show: { label: messages.lessons.exposureLeakShow.replace("{n}", "4"), sourceKey: "src" },
+  };
+
+  it("karta zagadnienia: ostrzeżenie z tytułem zagadnienia, bez przycisku i bez role=alert", () => {
+    const markup = render(null, { leak: cardLeak });
+    expect(markup).toContain('data-testid="exercise-leak-0"');
+    expect(markup).toContain("Trzecia osoba -s");
+    expect(markup).toContain("Rozwiązanie tego ćwiczenia jest na karcie zagadnienia");
+    expect(markup).not.toContain('data-testid="exercise-leak-0-show"');
+    expect(markup).not.toContain('role="alert"');
+    expect(markup).toContain('data-leak-kind="hard"');
+  });
+
+  it("aria-describedby karty wskazuje sam tekst ostrzeżenia (nie alert z przyciskiem); karta przyjmuje fokus programowo", () => {
+    const markup = render(null, { leak: exerciseLeak });
+    expect(markup).toContain('aria-describedby="exercise-leak-0-text"');
+    const target = new RegExp('<[^>]*id="exercise-leak-0-text"[^>]*>([^<]*)<').exec(markup);
+    expect(target?.[1]).toBe(messages.lessons.exposureLeakExercise.replace("{n}", "4"));
+    expect(markup).toMatch(/<article[^>]*tabindex="-1"/);
+  });
+
+  it("inne ćwiczenie: ostrzeżenie z numerem i przycisk „Pokaż ćwiczenie”", () => {
+    const markup = render(null, { leak: exerciseLeak });
+    expect(markup).toContain(messages.lessons.exposureLeakExercise.replace("{n}", "4"));
+    expect(markup).toContain('data-testid="exercise-leak-0-show"');
+    expect(markup).toContain(`>${messages.lessons.exposureLeakShow.replace("{n}", "4")}<`);
+    expect(markup).not.toContain('role="alert"');
+  });
+
+  it("ostrzeżenie miękkie: tekst o tym samym wyniku, kolor szary, poza zwiniętym ciałem karty", () => {
+    const collapsed = render(null, { leak: softLeak, open: false });
+    const expanded = render(null, { leak: softLeak, open: true });
+    for (const markup of [collapsed, expanded]) {
+      expect(markup).toContain(messages.lessons.exposureLeakSoft.replace("{n}", "4"));
+      expect(markup).toContain('data-leak-kind="soft"');
+      expect(markup).toContain("--alert-bg:var(--mantine-color-gray-light)");
+    }
+  });
+
+  it("ostrzeżenie twarde jest żółte", () => {
+    expect(render(null, { leak: cardLeak })).toContain("--alert-bg:var(--mantine-color-yellow-light)");
+  });
+
+  it("karta zmieniona od zapisu: zamiast treści prośba o zapis, bez przycisku", () => {
+    const markup = render(null, { leak: exerciseLeak, changed: true, open: true });
+    expect(markup).toContain(messages.lessons.exposureLeakStale);
+    expect(markup).not.toContain(messages.lessons.exposureLeakExercise.replace("{n}", "4"));
+    expect(markup).not.toContain('data-testid="exercise-leak-0-show"');
+  });
+
+  describe("leakNoticeFor", () => {
+    const lookup = (index: number | undefined) => ({ objectiveTitle: () => "Trzecia osoba -s", sourceIndex: () => index });
+    const leak = { exerciseId: "victim", kind: "hard" as const, source: { kind: "exercise" as const, exerciseId: "src" } };
+
+    it("źródło z numerem: ostrzeżenie z numerem i przycisk", () => {
+      expect(leakNoticeFor(leak, lookup(3))).toEqual(exerciseLeak);
+    });
+
+    it("źródło bez numeru: prośba o zapis bez przycisku (bez domyślnego „ćwiczenie 1”)", () => {
+      const notice = leakNoticeFor(leak, lookup(undefined));
+      expect(notice).toEqual({ kind: "hard", message: messages.lessons.exposureLeakStale, show: null });
+      const markup = render(null, { leak: notice });
+      expect(markup).toContain(messages.lessons.exposureLeakStale);
+      expect(markup).not.toContain('data-testid="exercise-leak-0-show"');
+      expect(markup).not.toContain(messages.lessons.exposureLeakShow.replace("{n}", "1"));
+    });
+
+    it("karta zagadnienia: tytuł zagadnienia, bez przycisku", () => {
+      const notice = leakNoticeFor({ ...leak, source: { kind: "card_example", objectiveId: OBJ } }, lookup(0));
+      expect(notice).toEqual(cardLeak);
+    });
+  });
+
+  it("bez ujawnienia: brak ostrzeżenia i powiązania aria-describedby", () => {
+    const markup = render(null);
+    expect(markup).not.toContain("exercise-leak-0");
   });
 });

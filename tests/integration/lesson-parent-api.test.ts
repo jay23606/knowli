@@ -30,7 +30,7 @@ import {
   type LessonExerciseInput,
 } from "@learning/contracts";
 import { finishLessonTask, testDatabase, testDatabaseUrl, truncateCoreTables } from "./helpers";
-import { lessonWorld } from "../fixtures/lesson-world";
+import { EDITOR_CARD_EXAMPLE, lessonWorld, seedEditorPoolWithLeak } from "../fixtures/lesson-world";
 import { ManualClock } from "./helpers";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
 import { handleParentApi } from "./helpers";
@@ -652,6 +652,102 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
     expect(dto.published!.status).toBe("published");
   });
 
+  describe("ujawnione rozwiązania ćwiczeń samodzielnych", () => {
+    const rawDraft = async (services: Services, cookie: string, deckId: string): Promise<Record<string, unknown>> => {
+      const body = (await (await call(services, "GET", `lessons/${deckId}`, { cookie })).json()) as { draft: Record<string, unknown> };
+      return body.draft;
+    };
+    /** Szkic z jednym ćwiczeniem samodzielnym ujawnionym na karcie zagadnienia. */
+    const leakedDraft = async (fakes: FakeGeneration): Promise<{ services: Services; cookie: string; deckId: string; versionId: string }> => {
+      const { services, cookie } = await freshParent(fakes);
+      const lesson = await lessonWorld(pool, { publish: false });
+      await seedEditorPoolWithLeak(pool, lesson);
+      return { services, cookie, deckId: lesson.deckId, versionId: lesson.versionId };
+    };
+
+    it("GET: exposureLeaks ze źródłem card_example i brak etapu samodzielnego z excluded", async () => {
+      const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
+      const { services, cookie, deckId } = await leakedDraft(fakes);
+      const draft = LessonDraftDtoSchema.parse(await rawDraft(services, cookie, deckId));
+      const victim = draft.exercises.find((ex) => ex.exerciseType === "lesson_open_answer" && ex.answer === EDITOR_CARD_EXAMPLE)!;
+      expect(draft.exposureLeaks).toEqual([{ exerciseId: victim.id, kind: "hard", source: { kind: "card_example", objectiveId: OBJECTIVE } }]);
+      expect(draft.coverage).toContainEqual({ objectiveId: OBJECTIVE, stage: "independent", required: 2, actual: 1, excluded: 1 });
+    });
+
+    it("PATCH samego tytułu zachowuje exposureLeaks; publikacja → 409 z brakami pokrycia", async () => {
+      const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
+      const { services, cookie, deckId, versionId } = await leakedDraft(fakes);
+      const draft = LessonDraftDtoSchema.parse(await rawDraft(services, cookie, deckId));
+      const patched = await call(services, "PATCH", `lesson-drafts/${versionId}`, { cookie, body: { expectedEditNumber: draft.editNumber, title: "Inny tytuł" } });
+      expect(patched.status).toBe(200);
+      const after = LessonDraftDtoSchema.parse(await patched.json());
+      expect(after.exposureLeaks).toEqual(draft.exposureLeaks);
+
+      const blocked = await call(services, "POST", `lesson-drafts/${versionId}/publish`, { cookie, body: { expectedEditNumber: after.editNumber } });
+      expect(blocked.status).toBe(409);
+      // Komunikat „lesson coverage incomplete” zostaje w logu; odpowiedź niesie kod i listę braków.
+      const body = (await blocked.json()) as { code: string; details?: { coverage?: unknown[] } };
+      expect(body.code).toBe("conflict");
+      expect(body.details?.coverage).toContainEqual(expect.objectContaining({ stage: "independent", excluded: 1 }));
+    });
+
+    it("PATCH zdania ćwiczenia usuwa ujawnienie i odblokowuje publikację", async () => {
+      const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
+      const { services, cookie, deckId, versionId } = await leakedDraft(fakes);
+      const draft = LessonDraftDtoSchema.parse(await rawDraft(services, cookie, deckId));
+      const exercises = draft.exercises.map((ex) => ex.id === draft.exposureLeaks![0]!.exerciseId
+        ? { ...stripToInput(ex), answer: "He plays chess." }
+        : stripToInput(ex));
+      const patched = await call(services, "PATCH", `lesson-drafts/${versionId}`, { cookie, body: { expectedEditNumber: draft.editNumber, exercises } });
+      expect(patched.status).toBe(200);
+      const after = (await patched.json()) as Record<string, unknown>;
+      expect(after).not.toHaveProperty("exposureLeaks");
+      expect(LessonDraftDtoSchema.parse(after).coverage).toEqual([]);
+
+      const published = await call(services, "POST", `lesson-drafts/${versionId}/publish`, { cookie, body: { expectedEditNumber: LessonDraftDtoSchema.parse(after).editNumber } });
+      expect(published.status).toBe(200);
+    });
+
+    it("wersja opublikowana nie ma exposureLeaks ani wykluczeń w pokryciu, nawet gdy jej ćwiczenia pokrywają się z kartą", async () => {
+      const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
+      const { services, cookie, deckId, versionId } = await leakedDraft(fakes);
+      expect(await rawDraft(services, cookie, deckId)).toHaveProperty("exposureLeaks");
+      // Szkic z zapasem (pokrycie bez reguły ujawnień pełne): po regule brakuje etapu samodzielnego.
+      expect(LessonDraftDtoSchema.parse(await rawDraft(services, cookie, deckId)).coverage)
+        .toContainEqual(expect.objectContaining({ stage: "independent", excluded: 1 }));
+      await pool.query("update learning_app.deck_versions set state = 'published', published_at = now() where id = $1", [versionId]);
+      await pool.query("update learning_app.decks set published_version_id = $1 where id = $2", [versionId, deckId]);
+      const body = (await (await call(services, "GET", `lessons/${deckId}`, { cookie })).json()) as { published: Record<string, unknown> };
+      expect(body.published).toBeTruthy();
+      expect(body.published).not.toHaveProperty("exposureLeaks");
+      // Opublikowane wersje bez zmian: pokrycie jak przed regułą ujawnień (bez `excluded` i nowych braków).
+      expect(LessonDraftDtoSchema.parse(body.published).coverage).toEqual([]);
+    });
+
+    it("świeżo wygenerowany szkic gramatyki i rozdziału z fake'a nie ma exposureLeaks", async () => {
+      const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
+      const { services, cookie } = await freshParent(fakes);
+      const { deckId } = await createAndGenerate(services, cookie);
+      const grammar = await rawDraft(services, cookie, deckId);
+      expect((grammar.exercises as unknown[]).length).toBeGreaterThan(0);
+      expect(grammar).not.toHaveProperty("exposureLeaks");
+
+      const created = await call(services, "POST", "lessons/material", {
+        cookie, body: {
+          subjectId: "english_chapter", topicTitlePl: "Unit 1", clientRequestId: randomUUID(),
+          // Dość słów, by fałszywy generator rozdziału nie musiał powtarzać zdań samodzielnych.
+          material: "I like pizza. What do you like? The cat sleeps on the red sofa. We play football and tennis at school every day.",
+        },
+      });
+      expect(created.status).toBe(202);
+      const chapterDeckId = ((await created.json()) as { deckId: string }).deckId;
+      await drainWork(services);
+      const chapter = await rawDraft(services, cookie, chapterDeckId);
+      expect((chapter.exercises as unknown[]).length).toBeGreaterThan(0);
+      expect(chapter).not.toHaveProperty("exposureLeaks");
+    });
+  });
+
   it("dogenerowanie: 202 z regenerate", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
@@ -711,6 +807,14 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
       expect(response.status).toBe(200);
       return LessonDraftDtoSchema.parse(await response.json());
     }
+
+    it("świeżo wygenerowany szkic szkolny z fake'a nie ma exposureLeaks", async () => {
+      const fakes = await fakeGeneration();
+      disposers.push(fakes.dispose);
+      const { draft } = await schoolDraft(fakes);
+      expect(draft.exercises.length).toBeGreaterThan(0);
+      expect(draft.exposureLeaks).toBeUndefined();
+    });
 
     it("edycja samej treści pytania zachowuje ton w DTO i w payloadzie", async () => {
       const fakes = await fakeGeneration();

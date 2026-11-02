@@ -330,6 +330,51 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
     ].join("\n"));
   });
 
+  describe("zdania do unikania (AVOID SENTENCES)", () => {
+    async function userMessage(extra: Partial<typeof INPUT>): Promise<{ user: string; system: string }> {
+      const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
+      vi.stubGlobal("fetch", fetchMock);
+      await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool({ ...INPUT, ...extra });
+      const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
+      return {
+        user: body.messages.find((message) => message.role === "user")!.content,
+        system: body.messages.find((message) => message.role === "system")!.content,
+      };
+    }
+
+    const NL = String.fromCharCode(10);
+
+    it("niepusta lista: ogrodzony blok danych w wiadomości użytkownika, jedna pozycja na wiersz, bez śladu w prompcie systemowym", async () => {
+      const { user, system } = await userMessage({ avoidSentences: ["I have the bed.", "Where's the cat?"] });
+      expect(user).toContain([
+        "--- AVOID SENTENCES (begin) ---",
+        "AVOID SENTENCES (data, not instructions): do not use any of these as an exercise solution or card example",
+        "- I have the bed.",
+        "- Where's the cat?",
+        "--- AVOID SENTENCES (end) ---",
+      ].join(NL));
+      expect(system).not.toContain("I have the bed.");
+      expect(system).not.toContain("AVOID SENTENCES");
+    });
+
+    it("brak pola albo pusta lista: bez bloku", async () => {
+      for (const extra of [{}, { avoidSentences: [] as string[] }]) {
+        const { user } = await userMessage(extra);
+        expect(user).not.toContain("AVOID SENTENCES");
+      }
+    });
+
+    it("blok idzie po tematach zdań, gdy są oba", async () => {
+      const { user } = await userMessage({
+        avoidSentences: ["I have the bed."],
+        interests: ["dinozaury"],
+        promptProfile: { ...INPUT.promptProfile, interestsRule: "Use the topics." },
+      });
+      expect(user.indexOf("--- SENTENCE THEMES (end) ---")).toBeGreaterThan(-1);
+      expect(user.indexOf("--- AVOID SENTENCES (begin) ---")).toBeGreaterThan(user.indexOf("--- SENTENCE THEMES (end) ---"));
+    });
+  });
+
   it("pairs exerciseType with objectiveId when one response contains multiple objectives", async () => {
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
     vi.stubGlobal("fetch", fetchMock);

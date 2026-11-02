@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useRef, type ReactNode } from "react";
 import { ActionIcon, Alert, Button, Checkbox, Group, Menu, NativeSelect, Paper, Radio, Stack, Text, TextInput, Textarea } from "@mantine/core";
-import { MAX_LESSON_TEXT_LENGTH, messages, type CalculationSpec, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
+import { MAX_LESSON_TEXT_LENGTH, messages, type CalculationSpec, type ExposureLeakDto, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
 import { ParentIcon } from "../ParentIcon";
 import AssignmentFields from "./AssignmentFields";
 import ClozeFields from "./ClozeFields";
@@ -27,6 +27,40 @@ export function exercisePreview(ex: EditableLessonExercise): { text: string; ans
   const option = ex.options?.find((candidate) => candidate.id === ex.correctOption)?.text;
   const answer = ex.exerciseType === "lesson_notice" ? ex.correctOption : option ?? ex.answer;
   return { text, answer };
+}
+
+/**
+ * Ostrzeżenie o ujawnionym rozwiązaniu ćwiczenia samodzielnego (spec etapu przeglądu lekcji §8):
+ * treść składa edytor z katalogu komunikatów; `show` (tylko źródło-ćwiczenie) rozwija jego grupę i etap.
+ */
+export interface LeakNotice {
+  kind: "hard" | "soft";
+  message: string;
+  show: { label: string; sourceKey: string } | null;
+}
+
+/**
+ * Ostrzeżenie dla ujawnienia z DTO: karta zagadnienia z tytułem; źródło-ćwiczenie z numerem
+ * i przyciskiem „Pokaż ćwiczenie”. Źródła nie ma w formularzu (usunięte) albo nie ma ono numeru →
+ * prośba o zapis bez przycisku (nigdy domyślny numer).
+ */
+export function leakNoticeFor(
+  leak: ExposureLeakDto,
+  lookup: { objectiveTitle: (objectiveId: string) => string; sourceIndex: (exerciseId: string) => number | undefined },
+): LeakNotice {
+  if (leak.source.kind === "card_example") {
+    const title = lookup.objectiveTitle(leak.source.objectiveId);
+    return { kind: leak.kind, message: messages.lessons.exposureLeakCard.replace("{objective}", () => title), show: null };
+  }
+  const sourceId = leak.source.exerciseId;
+  const index = lookup.sourceIndex(sourceId);
+  if (index === undefined) return { kind: leak.kind, message: messages.lessons.exposureLeakStale, show: null };
+  const n = String(index + 1);
+  return {
+    kind: leak.kind,
+    message: (leak.kind === "hard" ? messages.lessons.exposureLeakExercise : messages.lessons.exposureLeakSoft).replace("{n}", n),
+    show: { label: messages.lessons.exposureLeakShow.replace("{n}", n), sourceKey: sourceId },
+  };
 }
 
 export interface CalculationControls {
@@ -55,6 +89,10 @@ interface LessonExerciseCardProps {
   busy: boolean;
   open: boolean;
   changed: boolean;
+  /** Ujawnione rozwiązanie tego ćwiczenia (z zapisanego szkicu); po zmianie karty zastępuje je prośba o zapis. */
+  leak: LeakNotice | null;
+  /** Klucz źródła (id ćwiczenia) do pokazania: rozwija jego zagadnienie i etap oraz przewija do niego. */
+  onShowSource: (sourceKey: string) => void;
   /** Zapisana wersja ćwiczenia ma audio — zmiana oznacza nowe media po zapisie. */
   hadAudio: boolean;
   errors: string[] | undefined;
@@ -92,6 +130,8 @@ interface LessonExerciseCardProps {
  */
 function sameCardProps(prev: LessonExerciseCardProps, next: LessonExerciseCardProps): boolean {
   if (prev.calculation !== null || next.calculation !== null) return false;
+  if (prev.leak?.kind !== next.leak?.kind || prev.leak?.message !== next.leak?.message
+    || prev.leak?.show?.label !== next.leak?.show?.label || prev.leak?.show?.sourceKey !== next.leak?.show?.sourceKey) return false;
   if (prev.audio?.state !== next.audio?.state || prev.audio?.assetId !== next.audio?.assetId) return false;
   if (prev.promptAudio?.state !== next.promptAudio?.state || prev.promptAudio?.assetId !== next.promptAudio?.assetId
     || prev.promptAudio?.previousAssetId !== next.promptAudio?.previousAssetId) return false;
@@ -100,7 +140,7 @@ function sameCardProps(prev: LessonExerciseCardProps, next: LessonExerciseCardPr
   if (prev.sentenceAudio?.state !== next.sentenceAudio?.state || prev.sentenceAudio?.assetId !== next.sentenceAudio?.assetId
     || prev.sentenceAudio?.previousAssetId !== next.sentenceAudio?.previousAssetId) return false;
   return (Object.keys(next) as (keyof LessonExerciseCardProps)[])
-    .every((key) => key === "audio" || key === "promptAudio" || key === "explanationAudio" || key === "sentenceAudio" || key === "calculation" || Object.is(prev[key], next[key]));
+    .every((key) => key === "audio" || key === "leak" || key === "promptAudio" || key === "explanationAudio" || key === "sentenceAudio" || key === "calculation" || Object.is(prev[key], next[key]));
 }
 
 function LessonExerciseCard({
@@ -110,6 +150,8 @@ function LessonExerciseCard({
   busy,
   open,
   changed,
+  leak,
+  onShowSource,
   hadAudio,
   errors,
   audio,
@@ -148,6 +190,8 @@ function LessonExerciseCard({
   // odpowiedź wyliczana z pól typu (rachunek, słowa kluczowe, pary, grupy, luki) — rodzic jej nie wpisuje
   const derived = ["lesson_calculation", "lesson_keywords", "lesson_match", "lesson_group", "lesson_cloze"].includes(ex.exerciseType);
   const errId = `exercise-errors-${index}`;
+  const leakId = `exercise-leak-${index}`;
+  const leakTextId = `${leakId}-text`;
   const described = errors ? { "aria-describedby": errId } : {};
   const forcedOpen = changed || errors !== undefined;
   const preview = exercisePreview(ex);
@@ -173,7 +217,9 @@ function LessonExerciseCard({
   const audioText = audio ? messages.decks.audioState[audio.state === "approved" ? "ready" : audio.state] ?? "" : "";
 
   return (
-    <Paper ref={rootRef} component="article" withBorder radius="md" p="sm" className="pp-lesson-ex" data-error={errors ? "true" : undefined} data-testid={`exercise-${index}`}>
+    // tabIndex=-1: „Pokaż ćwiczenie” przenosi fokus na kartę źródła (bez miejsca w kolejności Tab).
+    <Paper ref={rootRef} component="article" withBorder radius="md" p="sm" className="pp-lesson-ex" data-error={errors ? "true" : undefined}
+      tabIndex={-1} aria-describedby={leak ? leakTextId : undefined} data-testid={`exercise-${index}`}>
       <Group gap="xs" wrap="nowrap" className="pp-lesson-ex-head">
         <span className="pp-status-badge" data-tone="info" data-testid={`exercise-type-${index}`}>{messages.lessons.exerciseTypes[ex.exerciseType]}</span>
         <Text size="sm" className="pp-editor-muted pp-lesson-ex-num">
@@ -228,6 +274,21 @@ function LessonExerciseCard({
             <Text size="sm" c="red" role="status" data-testid={`exercise-sentence-audio-failed-${index}`}>{messages.lessons.listenChoiceAudioFailed}</Text>
           )}
         </div>
+      )}
+
+      {leak && (
+        // Bez role="alert" (Mantine domyślnie je dodaje): to wskazówka, nie błąd walidacji; poza ciałem karty,
+        // więc widoczna także przy zwiniętej. Artykuł wskazuje przez aria-describedby sam tekst (bez przycisku).
+        <Alert color={leak.kind === "hard" ? "yellow" : "gray"} variant="light" id={leakId} role="note" data-leak-kind={leak.kind} data-testid={leakId} mb="sm"
+          icon={<ParentIcon name="alert-triangle" />}>
+          <Text size="sm" id={leakTextId}>{changed ? messages.lessons.exposureLeakStale : leak.message}</Text>
+          {!changed && leak.show && (
+            <Button size="md" variant="light" color={leak.kind === "hard" ? "yellow" : "gray"} className="pp-lesson-leak-show" mt="xs"
+              data-testid={`${leakId}-show`} onClick={() => onShowSource(leak.show!.sourceKey)}>
+              {leak.show.label}
+            </Button>
+          )}
+        </Alert>
       )}
 
       {errors && (

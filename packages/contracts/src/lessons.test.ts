@@ -342,6 +342,49 @@ describe("LessonDraftDtoSchema — powody odrzuceń", () => {
   });
 });
 
+describe("LessonDraftDtoSchema — ujawnione rozwiązania", () => {
+  const draft = {
+    id: UUID, deckId: UUID2, editNumber: 1, status: "draft", title: "Present Simple",
+    subjectId: "english_grammar", topicId: "present_simple", topicVersion: 1,
+    objectiveIds: ["o1"], examples: {}, exercises: [], assets: [], rejectedCount: 0, coverage: [],
+  };
+
+  it("exposureLeaks jest opcjonalne", () => {
+    expect(LessonDraftDtoSchema.parse(draft).exposureLeaks).toBeUndefined();
+  });
+
+  it("przyjmuje oba warianty źródła ujawnienia", () => {
+    const parsed = LessonDraftDtoSchema.parse({
+      ...draft,
+      exposureLeaks: [
+        { exerciseId: UUID, kind: "hard", source: { kind: "card_example", objectiveId: "o1" } },
+        { exerciseId: UUID2, kind: "soft", source: { kind: "exercise", exerciseId: UUID3 } },
+      ],
+    });
+    expect(parsed.exposureLeaks).toHaveLength(2);
+  });
+
+  it("odrzuca nieznane pole, zły rodzaj i źródło bez identyfikatora", () => {
+    const leak = { exerciseId: UUID, kind: "hard", source: { kind: "card_example", objectiveId: "o1" } };
+    for (const bad of [
+      { ...leak, extra: 1 },
+      { ...leak, source: { ...leak.source, text: "She plays." } },
+      { ...leak, kind: "medium" },
+      { ...leak, source: { kind: "exercise", exerciseId: "nie-uuid" } },
+      { ...leak, source: { kind: "card_example", objectiveId: "" } },
+    ]) {
+      expect(LessonDraftDtoSchema.safeParse({ ...draft, exposureLeaks: [bad] }).success).toBe(false);
+    }
+  });
+
+  it("brak etapu może nieść liczbę wykluczonych ćwiczeń", () => {
+    const parsed = LessonDraftDtoSchema.parse({
+      ...draft, coverage: [{ objectiveId: "o1", stage: "independent", required: 2, actual: 1, excluded: 1 }],
+    });
+    expect(parsed.coverage[0]!.excluded).toBe(1);
+  });
+});
+
 describe("historyjka lekcji (kontrakty)", () => {
   const story = {
     sentences: ["Tom has a red ball.", "He plays in the park."],
