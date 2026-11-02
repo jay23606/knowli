@@ -214,6 +214,12 @@ zapisu do tabeli:
   wywołania) ponawia `INSERT` raz z `child_id`/`session_id`/`deck_id`/
   `generation_run_id` = NULL; wiersz traci przypisanie, ale suma miesiąca się
   zgadza;
+  *Errata 2026-11-02 (implementacja):* ponowienie obejmuje też zakleszczenie
+  (SQLSTATE 40P01 — insert trzyma `KEY SHARE` na sesji i czeka na profil, który
+  usuwa `deleteChild`); jeśli pierwotny wiersz miał `session_id` lub `child_id`,
+  ponowienie zeruje także pola szczegółowe (`operation`, `model`, `http_status`,
+  `input_tokens`, `output_tokens`, `characters`, `audio_ms`, `images`) jak
+  zgrubienie z §5.4; `occurred_at` zostaje;
 - inny błąd trafia do logu jako `usage_record_failed` z samym kodem błędu, bez
   treści i identyfikatorów dziecka;
 - `flush()` czeka na zaległe zapisy. Nigdy nie wolno go awaitować wewnątrz
@@ -231,6 +237,11 @@ zamknięcia w `apps/worker/src/main.ts`: `loop.stop()` → `usage.flush()` →
 `pool.end()`. Web składa recorder razem z providerami; `disposeServerServices`
 (`apps/web/src/composition.ts`) woła `usage.flush()` przed `pool.end()`. Zapisy w
 locie przy nagłym zabiciu procesu web mogą przepaść — przyjęte.
+*Errata 2026-11-02 (implementacja):* `disposeServerServices` nie ma wywołującego
+w produkcji (służy testom), więc web nie robi `flush()` przy zamknięciu —
+zapisy w locie mogą przepaść przy każdym restarcie procesu web, nie tylko przy
+nagłym zabiciu. Przyjęte jak wyżej. Worker przy błędzie kroku zamknięcia loguje
+`[worker] shutdown step failed` z nazwą kroku i samym kodem błędu.
 
 Cały `record` jest w `try/catch`: wyjątek recordera (np. w wycenie) nigdy nie
 dociera do adaptera, bo zmieniłby wynik (ponowienie runu lekcji, „nieocenione”
@@ -346,6 +357,14 @@ Wiersz zapisany po usunięciu profilu (zapis w locie, §4.3) ma przypisanie
 wyzerowane przez ponowienie po 23503; ma dokładny czas, ale nie da się go
 powiązać z dzieckiem.
 
+*Errata 2026-11-02 (implementacja):* kolejność blokad w `deleteChild` to
+najpierw sesje dziecka (`learning_sessions … FOR UPDATE`, po `id`), potem wiersz
+profilu — tak jak sprawdzanie FK insertu kosztu (sesja, potem profil), żeby
+równoległy zapis nie zakleszczył się z kaskadą usunięcia. Wiersze przypisane
+tylko przez sesję dziecka (`child_id` puste) też są zgrubiane. Strefa rodziny
+przechodzi przez walidację (`validRewardTimezone`); nieprawidłowa wartość w
+`family_settings.timezone` daje strefę domyślną, a usunięcie profilu się udaje.
+
 ## 6. Panel rodzica
 
 Nowa sekcja `costs` w `PARENT_SECTIONS` (`/parent/costs`). Decyzja właściciela
@@ -360,10 +379,10 @@ Przełącznik miesiąca (← nazwa miesiąca →, domyślnie bieżący, bez przy
 karta z sumą: „Listopad 2026: 4,12 USD”. Pod nią, gdy niezerowe:
 
 - „w tym ≈ 0,85 USD szacunkowo” (`price_table`);
-- „N wywołań bez znanej ceny” (`unknown`);
+- „N wywołań bez znanej ceny — suma jest zaniżona” (`unknown`);
 - „N nieudanych wywołań” (`failed`);
-- „N wywołań bez przypisania” (funkcje nauki z `scope_kind: none` — sygnał
-  błędu w kodzie).
+- „N wywołań bez przypisania — to błąd aplikacji, zgłoś go” (funkcje nauki z
+  `scope_kind: none` — sygnał błędu w kodzie).
 
 Zawsze: „Ceny netto usług, bez VAT i opłat za doładowanie.”
 
@@ -371,8 +390,9 @@ Zawsze: „Ceny netto usług, bez VAT i opłat za doładowanie.”
 
 1. **Funkcje** (wybrany miesiąc) — funkcja (polska nazwa: „Generowanie
    zestawów”, „Generowanie lekcji”, „Lektor (TTS)”, „Ilustracje”, „Okładki”,
-   „Ocena odpowiedzi”, „Ocena aktywności”, „Rozpoznawanie mowy (OpenRouter)”,
-   „Rozpoznawanie mowy (Azure)”, „Ocena wymowy”), liczba wywołań, jednostki
+   „Ocena odpowiedzi”, „Ocena aktywności”, „Dyktowanie i odpowiedzi ustne
+   (lekcje)”, „Rozpoznawanie mowy (słówka)”, „Ocena wymowy” — bez nazw
+   dostawców, bo hosty mogą się zmienić), liczba wywołań, jednostki
    („1,2 mln tokenów”, „38 min audio”, „12 obrazów”, „4 300 znaków”), koszt,
    udział %.
 2. **Materiały** — talie z kolumnami: nazwa, typ (lekcja/słówka), generowanie,
@@ -399,6 +419,13 @@ Jedna procedura w `apps/web/src/parent/orpc-contract.ts`, wzorem `workCard`:
 nadmiarowe klucze, jak `ParentWorkCardQuerySchema`), `noStoreOutput`,
 `parentOs` z `parentSessionMiddleware`. Zwraca nagłówek, Funkcje i Dzieci dla
 miesiąca oraz Materiały z obiema kolumnami kwot.
+
+*Errata 2026-11-02 (implementacja):* `month` jest opcjonalny — bez niego serwer
+bierze bieżący miesiąc w strefie rodziny wg własnego zegara, a DTO zawsze niesie
+`currentMonth` (`YYYY-MM`, bieżący miesiąc serwera). Panel pierwszy raz pyta bez
+`month`, a strzałkę „dalej” wyłącza, gdy wybrany miesiąc to `currentMonth` —
+zegar przeglądarki w innej strefie nie daje błędu ani nie blokuje nowego
+miesiąca. Nieprawidłowa strefa rodziny daje strefę domyślną zamiast błędu 500.
 
 DTO (Zod) w `packages/contracts`. Kwoty jako stringi dziesiętne, liczby
 wywołań i jednostki jako liczby całkowite (`bigint` z SQL zamieniany na liczbę
