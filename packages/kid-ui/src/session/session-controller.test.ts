@@ -4552,6 +4552,19 @@ describe("LearningSessionController — historyjka lekcji (lesson_story)", () =>
     expect(card.media.playUrls).toEqual([]);
   });
 
+  it("autoplay waits while the end confirmation is open and does not latch", async () => {
+    const harness = await startAtTask(baseState(), storyTask());
+    harness.controller.holdForEndConfirm();
+    await harness.controller.autoPlayStoryAudio("ts");
+    expect(harness.media.playUrls).toEqual([]);
+    expect(harness.controller.getScreen()).toMatchObject({ storyAudioPlaying: null });
+    // Po zamknięciu potwierdzenia kolejne zamontowanie panelu nadal odtwarza — raz.
+    harness.controller.releaseEndConfirm();
+    await harness.controller.autoPlayStoryAudio("ts");
+    await harness.controller.autoPlayStoryAudio("ts");
+    expect(harness.media.playUrls).toEqual(["https://media.test/asset-story"]);
+  });
+
   it("story playback state is set while autoplay runs and cleared after it", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

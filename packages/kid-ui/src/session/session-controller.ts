@@ -1870,12 +1870,15 @@ export class LearningSessionController {
    * koniec albo błąd tego przebiegu (ta sama kontrola generacji co odczyt zdania)
    * i każde `#stopPlayback` („Dalej”, ręczny odsłuch, nowe zadanie). Każdy błąd —
    * zablokowany autoplay, plik, sieć — jest cichy: bez `questionAudioError`
-   * i bez trybu offline; zostaje przycisk „Posłuchaj historyjki”.
+   * i bez trybu offline; zostaje przycisk „Posłuchaj historyjki”. Przy otwartym
+   * potwierdzeniu „Koniec” nic nie gra i zatrzask się nie ustawia (jak auto-start
+   * nagrywania), więc kolejne zamontowanie panelu po powrocie nadal odtworzy.
    */
   async autoPlayStoryAudio(taskId: string): Promise<void> {
     const screen = this.#learning();
     const task = screen?.task;
     if (this.#disposed || !screen || !task || task.taskId !== taskId || task.prompt.kind !== "lesson_story") return;
+    if (this.#endConfirmSessionId !== null) return;
     if (this.#storyAutoPlayTaskId === taskId) return;
     const assetId = questionAudioOf(task);
     if (assetId === null || screen.offline || screen.busy || screen.processing || screen.recordingPhase !== "idle") return;

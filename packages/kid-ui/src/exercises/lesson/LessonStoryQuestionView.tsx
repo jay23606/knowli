@@ -42,7 +42,7 @@ export function LessonStoryQuestionView({ task, busy, optionOutcomes, dock, hand
         />
         <section className="kid-lesson-story kid-lesson-story--reread" data-testid="kid-lesson-story-reread" aria-labelledby={titleId}>
           <div className="kid-lesson-story__header" data-testid="kid-lesson-story-header">
-            <h2 className="kid-lesson-story__title" id={titleId} data-testid="kid-lesson-story-title">{messages.kid.lessonStoryTitle}</h2>
+            <h2 className="kid-lesson-story__title" id={titleId} data-testid="kid-lesson-story-title">{messages.kid.lessonStoryRereadTitle}</h2>
             <div className="kid-lesson-story__listen" data-testid="kid-lesson-story-listen">{listen}</div>
           </div>
           <p className="kid-lesson-story__text" data-testid="kid-lesson-story-text" lang={prompt.contentLocale}>

@@ -525,6 +525,7 @@ export const messages = {
     lessonStoryInstructionListen: "Przeczytaj i posłuchaj historyjki.",
     lessonStoryInstruction: "Przeczytaj historyjkę.",
     lessonStoryTitle: "Historyjka",
+    lessonStoryRereadTitle: "Historyjka — przeczytaj jeszcze raz",
     lessonStoryQuestionsNext: "Potem odpowiesz na pytania.",
     lessonListenGap: "luka",
     listenStimulusBlocked: "Dotknij głośnika, aby posłuchać.",
@@ -1110,7 +1111,7 @@ export const messages = {
     // Historyjka na koniec sesji (edytor lekcji rodzica).
     story: {
       title: "Historyjka na koniec sesji",
-      info: "Dziecko przeczyta i posłucha historyjki na koniec każdej sesji, a potem odpowie na pytania. Pytania nie liczą się do postępu.",
+      info: "Dziecko przeczyta i posłucha historyjki na koniec każdej sesji nauki (nie w kartkówce), a potem odpowie na pytania. Pytania nie liczą się do postępu.",
       sentenceLabel: "Zdanie {n}",
       addSentence: "Dodaj zdanie",
       removeSentence: "Usuń zdanie",

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, renderKid, screen } from "../../test/render-kid";
+import { act, cleanup, fireEvent, renderKid, screen } from "../../test/render-kid";
 import type { TaskDto, TaskPrompt } from "@learning/contracts";
 import { makeExerciseProps } from "../../test/exercise-fixtures";
 import { ExerciseGuidanceProvider } from "../exercise-guidance";
@@ -62,8 +62,12 @@ describe("lesson exercise views", () => {
 
   it("story view renders the title, sentences with lang, the questions lead-in and next", () => {
     renderKid(<LessonStoryView {...makeExerciseProps(task(story()))} />);
-    expect(screen.getByTestId("kid-lesson-story").tagName).toBe("ARTICLE");
-    expect(screen.getByTestId("kid-lesson-story-title").textContent).toBe("Historyjka");
+    const article = screen.getByTestId("kid-lesson-story");
+    expect(article.tagName).toBe("ARTICLE");
+    const title = screen.getByTestId("kid-lesson-story-title");
+    expect(title.textContent).toBe("Historyjka");
+    expect(title.id).not.toBe("");
+    expect(article.getAttribute("aria-labelledby")).toBe(title.id);
     const text = screen.getByTestId("kid-lesson-story-text");
     expect(text.textContent).toBe("Sam has a red bike. He rides it to school.");
     expect(text.getAttribute("lang")).toBe("en-GB");
@@ -99,11 +103,40 @@ describe("lesson exercise views", () => {
   });
 
   it("story view next completes the presentation", () => {
-    const props = makeExerciseProps(task(story("asset-story")));
-    renderKid(<LessonStoryView {...props} />);
-    fireEvent.click(screen.getByTestId("kid-lesson-next"));
-    expect(props.handlers.onComplete).toHaveBeenCalledOnce();
-    expect(props.handlers.onAnswerChoice).not.toHaveBeenCalled();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const props = makeExerciseProps(task(story("asset-story")));
+      renderKid(<LessonStoryView {...props} />);
+      act(() => { vi.advanceTimersByTime(300); });
+      fireEvent.click(screen.getByTestId("kid-lesson-next"));
+      expect(props.handlers.onComplete).toHaveBeenCalledOnce();
+      expect(props.handlers.onAnswerChoice).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("story view next ignores activation during the cooldown after mount", () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const props = makeExerciseProps(task(story()));
+      renderKid(<LessonStoryView {...props} />);
+      const next = screen.getByTestId("kid-lesson-next");
+      // Drugie dotknięcie podwójnego dotyku „Dalej” poprzedniego wyniku trafia w nowy przycisk.
+      expect(next.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(next);
+      fireEvent.keyDown(next, { key: "Enter" });
+      act(() => { vi.advanceTimersByTime(200); });
+      fireEvent.click(next);
+      expect(props.handlers.onComplete).not.toHaveBeenCalled();
+
+      act(() => { vi.advanceTimersByTime(100); });
+      expect(next.getAttribute("aria-disabled")).toBeNull();
+      fireEvent.click(next);
+      expect(props.handlers.onComplete).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   const storyQuestion = (): TaskPrompt => ({
@@ -175,7 +208,7 @@ describe("lesson exercise views", () => {
     );
     const reread = screen.getByTestId("kid-lesson-story-reread");
     const title = screen.getByTestId("kid-lesson-story-title");
-    expect(title.textContent).toBe("Historyjka");
+    expect(title.textContent).toBe("Historyjka — przeczytaj jeszcze raz");
     expect(title.id).not.toBe("");
     expect(reread.getAttribute("aria-labelledby")).toBe(title.id);
     // Odsłuch historyjki w nagłówku bloku, nie drugi raz w wierszu pytania.

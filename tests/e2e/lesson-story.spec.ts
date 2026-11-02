@@ -3,6 +3,7 @@ import { messages, type AttemptDto, type PresentationCompletionDto, type Session
 import { kidStreakLength } from "../../packages/kid-ui/src/motion/kid-motion";
 import { expectFrameFillsViewport, expectInteractiveTargets, lineLengths, nextFrames, waitForKidScale } from "./helpers/kid-frame";
 import { installKidUiFixture, type KidUiFixture } from "./helpers/kid-ui-fixture";
+import { expectInsideRoot, measure } from "./helpers/kid-layout";
 import {
   endListenPlayback,
   expectReachableOnSmallPhone,
@@ -27,7 +28,9 @@ import {
  * ręcznego odsłuchu, pytania z wynikiem (dobra i zła odpowiedź), bez wpływu
  * na serię, a potem podsumowanie. Geometria najgorszego przypadku (700 znaków
  * historyjki, pytanie 160 znaków, opcje po 80) w portrecie, niskim landscape,
- * na tablecie, desktopie i przy skali 1,2. `HTMLMediaElement.play` jest
+ * na tablecie, desktopie i przy skali 1,2, pytanie i wynik także przy 320×480
+ * (wynik w oknie, tekst historyjki nie skacze, jeden głośnik), baner przy
+ * 320×480 i 390×844 oraz dotykowy tablet 1180×820. `HTMLMediaElement.play` jest
  * podmienione — test liczy wywołania, nie słyszy dźwięku: autoodtwarzanie na
  * fizycznym iPhonie/iPadzie (polityka Safari) zostaje niezweryfikowane.
  */
@@ -116,6 +119,19 @@ function mediaRequests(page: Page): string[] {
   return requests;
 }
 
+/**
+ * Licznik `play()` trzyma `expected` przez `ms` (próbki co 50 ms) — zamiast
+ * jednego odczytu po klatce, który przepuściłby spóźnione odtworzenie.
+ */
+async function expectPlaysStay(page: Page, expected: number, message: string, ms = 500): Promise<void> {
+  const started = Date.now();
+  await expect.poll(async () => {
+    const plays = await listenAudioPlays(page);
+    if (plays !== expected) return `plays=${plays}`;
+    return Date.now() - started >= ms ? "stable" : "waiting";
+  }, { message, intervals: [50], timeout: ms + 5_000 }).toBe("stable");
+}
+
 async function pageOverflows(page: Page): Promise<{ page: boolean; material: boolean }> {
   return page.evaluate(() => {
     const material = document.querySelector<HTMLElement>("[data-testid='kid-material']");
@@ -147,6 +163,27 @@ const GEOMETRY_VIEWPORTS: readonly { width: number; height: number; scale: numbe
   { width: 1920, height: 1080, scale: 1.2 },
 ];
 
+/** Najmniejszy telefon: ekran pytania i wyniku także tu. */
+const SMALL_PHONE = { width: 320, height: 480, scale: 1 } as const;
+const QUESTION_VIEWPORTS: readonly { width: number; height: number; scale: number }[] = [SMALL_PHONE, ...GEOMETRY_VIEWPORTS];
+
+/** Tryb przewijanej strony (powiększenie gestem, bardzo niskie okno): treść może się przesuwać. */
+async function pageScrollMode(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const frame = document.querySelector("[data-zoomed]");
+    return frame?.getAttribute("data-zoomed") === "true" || document.querySelector("[data-viewport-very-short='true']") !== null;
+  });
+}
+
+/** Prostokąt elementu (piksele ekranu) mieści się w oknie w całości. */
+async function expectInViewport(page: Page, testId: string, viewport: { width: number; height: number }, label: string): Promise<void> {
+  const box = (await page.getByTestId(testId).boundingBox())!;
+  expect(box.y, `${testId} top at ${label}`).toBeGreaterThanOrEqual(-1);
+  expect(box.y + box.height, `${testId} bottom at ${label}`).toBeLessThanOrEqual(viewport.height + 1);
+  expect(box.x, `${testId} left at ${label}`).toBeGreaterThanOrEqual(-1);
+  expect(box.x + box.width, `${testId} right at ${label}`).toBeLessThanOrEqual(viewport.width + 1);
+}
+
 async function resizeTo(page: Page, viewport: { width: number; height: number; scale: number }): Promise<void> {
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
   await waitForKidScale(page, viewport.scale);
@@ -173,8 +210,7 @@ test("story autoplays once after the last task and replays on demand", async ({ 
   await expect(listen).toHaveAttribute("data-sound-active", "true");
   await endListenPlayback(page);
   await expect(listen).not.toHaveAttribute("data-sound-active");
-  await nextFrames(page);
-  expect(await listenAudioPlays(page), "autoplay runs once").toBe(1);
+  await expectPlaysStay(page, 1, "autoplay runs once");
 
   await listen.click();
   await expect.poll(() => listenAudioPlays(page)).toBe(2);
@@ -192,8 +228,7 @@ test("next stops the story playback", async ({ page }) => {
   await expect(page.locator(`main[data-task-id="${firstQuestionId}"]`)).toBeVisible();
   expect(await listenAudioPausedCurrent(page), "story playback paused by next").toBe(true);
   // Pytanie historyjki nie gra samo.
-  await nextFrames(page);
-  expect(await listenAudioPlays(page)).toBe(1);
+  await expectPlaysStay(page, 1, "story question does not autoplay");
 });
 
 test("story without a recording has no listen button and plays nothing", async ({ page }) => {
@@ -202,8 +237,7 @@ test("story without a recording has no listen button and plays nothing", async (
   await expect(page.getByTestId("kid-instruction")).toContainText("Przeczytaj historyjkę.");
   await expect(page.getByTestId("kid-lesson-story-lead")).toHaveText("Potem odpowiesz na pytania.");
   await expect(page.getByTestId("kid-question-audio")).toHaveCount(0);
-  await nextFrames(page);
-  expect(await listenAudioPlays(page)).toBe(0);
+  await expectPlaysStay(page, 0, "story without a recording plays nothing");
   expect(media).toEqual([]);
 });
 
@@ -257,8 +291,8 @@ test("blocked story autoplay stays silent and keeps the listen button", async ({
   // Przeglądarka blokuje autoodtwarzanie (`NotAllowedError`): bez komunikatu, przycisk zostaje.
   await open(page, fixture([story(), null], []), "kid-lesson-story", "reject");
   await expect.poll(() => listenAudioPlays(page)).toBe(1);
-  await nextFrames(page);
-  await nextFrames(page);
+  // Odrzucone play() nie ponawia się samo; po odczekaniu wciąż bez komunikatu.
+  await expectPlaysStay(page, 1, "blocked autoplay is not retried");
   await expect(page.getByTestId("kid-question-audio-error")).toHaveCount(0);
   await expect(page.getByTestId("kid-question-audio")).toBeEnabled();
   await expect(page.getByTestId("kid-question-audio")).not.toHaveAttribute("data-sound-active");
@@ -307,7 +341,7 @@ test.describe("geometry", () => {
     await open(page, fixture([firstQuestion(), null], [
       attempt(1, firstQuestionId, { kind: "incorrect", correctText: STORY_WORST_CASE.options[0] }),
     ]), "kid-lesson-story-reread");
-    for (const viewport of GEOMETRY_VIEWPORTS) {
+    for (const viewport of QUESTION_VIEWPORTS) {
       const label = `${viewport.width}x${viewport.height}`;
       await resizeTo(page, viewport);
       await expectFrameFillsViewport(page, viewport);
@@ -326,12 +360,127 @@ test.describe("geometry", () => {
     await resizeTo(page, PHONE_LANDSCAPE);
     await page.getByTestId("kid-option").nth(1).click();
     await expect(page.getByTestId("kid-feedback-correct-answer")).toHaveText(STORY_WORST_CASE.options[0]);
-    for (const viewport of GEOMETRY_VIEWPORTS) {
+    for (const viewport of QUESTION_VIEWPORTS) {
       const label = `${viewport.width}x${viewport.height}`;
       await resizeTo(page, viewport);
       await expectReachable(page, "kid-next", viewport, 48);
       expect(await pageOverflows(page), `horizontal overflow with the result at ${label}`).toEqual({ page: false, material: false });
       await page.screenshot({ path: testInfo.outputPath(`story-question-result-${label}.png`) });
     }
+  });
+
+  for (const viewport of QUESTION_VIEWPORTS) {
+    const label = `${viewport.width}x${viewport.height}`;
+    test(`story question result stays in view and keeps the story in place at ${label}`, async ({ page }, testInfo) => {
+      await open(page, fixture([firstQuestion(), null], [
+        attempt(1, firstQuestionId, { kind: "incorrect", correctText: STORY_WORST_CASE.options[0] }),
+      ]), "kid-lesson-story-reread");
+      await resizeTo(page, viewport);
+      const scrollMode = await pageScrollMode(page);
+      await expect(page.getByTestId("kid-question-audio")).toHaveCount(1);
+
+      const wrong = page.getByTestId("kid-option").nth(1);
+      await wrong.scrollIntoViewIfNeeded();
+      // Pomiar tuż przed odpowiedzią — po ewentualnym przewinięciu do opcji.
+      const textTop = (await page.getByTestId("kid-lesson-story-text").boundingBox())!.y;
+      await wrong.click();
+      await expect(page.getByTestId("kid-feedback-correct-answer")).toHaveText(STORY_WORST_CASE.options[0]);
+      await nextFrames(page);
+      // Jeden głośnik przy wyniku: odsłuch polecenia zostaje, odsłuch historyjki znika.
+      await expect(page.getByTestId("kid-guidance-play")).toHaveCount(1);
+      await expect(page.getByTestId("kid-question-audio")).toHaveCount(0);
+      expect(await pageOverflows(page), `horizontal overflow with the result at ${label}`).toEqual({ page: false, material: false });
+      // Przy 320×480 tekst historyjki leży przed werdyktem pod dolną krawędzią okna
+      // (materiał się przewija), a dok wyniku zajmuje wtedy całą wysokość pod poleceniem —
+      // przesunięcie niewidocznego tekstu nie jest skokiem treści.
+      const textVisibleBefore = textTop < viewport.height;
+      if (!scrollMode && textVisibleBefore) {
+        // Wynik w doku nie przesuwa tekstu historyjki, a karta wyniku mieści się w oknie bez przewijania.
+        const after = (await page.getByTestId("kid-lesson-story-text").boundingBox())!.y;
+        expect(Math.abs(after - textTop), `story text top before/after the verdict at ${label}`).toBeLessThanOrEqual(1);
+      } else {
+        await page.getByTestId("kid-feedback").scrollIntoViewIfNeeded();
+      }
+      await expectInViewport(page, "kid-feedback", viewport, label);
+      const correct = page.getByTestId("kid-feedback-correct-answer");
+      await correct.scrollIntoViewIfNeeded();
+      const card = (await page.getByTestId("kid-feedback").boundingBox())!;
+      const answer = (await correct.boundingBox())!;
+      if (answer.height <= card.height) {
+        await expectInViewport(page, "kid-feedback-correct-answer", viewport, label);
+      } else {
+        // Przy 320×480 poprawna odpowiedź jest wyższa niż karta wyniku: karta się przewija
+        // (`kid-feedback-content`), więc w oknie musi być jej początek, nie cały prostokąt.
+        expect(answer.y, `correct answer top at ${label}`).toBeGreaterThanOrEqual(card.y - 1);
+        expect(answer.y, `correct answer top inside the card at ${label}`).toBeLessThan(card.y + card.height);
+        expect(answer.x + answer.width, `correct answer right at ${label}`).toBeLessThanOrEqual(viewport.width + 1);
+      }
+      await page.screenshot({ path: testInfo.outputPath(`story-question-verdict-${label}.png`) });
+    });
+  }
+
+  for (const viewport of [SMALL_PHONE, { width: 390, height: 844, scale: 1 }]) {
+    const label = `${viewport.width}x${viewport.height}`;
+    test(`closing story banner fits the session header at ${label}`, async ({ page }) => {
+      await open(page, closingSessionFixture(), "kid-instruction");
+      await resizeTo(page, viewport);
+      const pill = page.getByTestId("kid-remaining");
+      await expect(pill).toHaveText("Jeszcze 1 i historyjka!");
+      const layout = await measure(page, {
+        root: ".kid-learning",
+        header: ".kid-header",
+        pebbles: "[data-testid='kid-progress-pebbles']",
+        pill: "[data-testid='kid-remaining']",
+      });
+      expectInsideRoot(layout.pill, layout.root, `pill: ${label}`);
+      expect(layout.pill.left, `pill left in viewport: ${label}`).toBeGreaterThanOrEqual(0);
+      expect(layout.pill.right, `pill right in viewport: ${label}`).toBeLessThanOrEqual(layout.innerWidth);
+      expect(layout.pill.top, `pill inside header: ${label}`).toBeGreaterThanOrEqual(layout.header.top - 1);
+      expect(layout.pill.bottom, `pill inside header: ${label}`).toBeLessThanOrEqual(layout.header.bottom + 1);
+      expect(layout.pill.top, `pill under pebbles: ${label}`).toBeGreaterThanOrEqual(layout.pebbles.bottom - 1);
+      expect(layout.scrollWidth, `horizontal overflow: ${label}`).toBeLessThanOrEqual(layout.innerWidth);
+      const clipped = await pill.evaluate((element) =>
+        element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
+      expect(clipped, `banner text clipped: ${label}`).toBe(false);
+    });
+  }
+});
+
+test.describe("touch tablet", () => {
+  // Dotykowy tablet w poziomie (`pointer: coarse`): skala 1 i zwarta rama zadania.
+  const TABLET = { width: 1180, height: 820, scale: 1 } as const;
+  test.use({ viewport: { width: TABLET.width, height: TABLET.height }, isMobile: true, hasTouch: true });
+
+  test("story and question stay reachable with full-size targets", async ({ page }) => {
+    await stubListenAudio(page, "end");
+    await installKidUiFixture(page, fixture([story(), firstQuestion(), null], [attempt(1, firstQuestionId, { kind: "great" })]));
+    await page.goto("/");
+    await page.getByTestId("kid-profile").click();
+    await page.getByTestId("kid-deck").click();
+    await expect(page.getByTestId("kid-lesson-story")).toBeVisible();
+    await waitForKidScale(page, 1);
+    await nextFrames(page);
+
+    expect(await pageOverflows(page), "horizontal overflow on the story").toEqual({ page: false, material: false });
+    await expectFrameFillsViewport(page, TABLET);
+    await expectInteractiveTargets(page, ['[data-testid="kid-lesson-next"]', '[data-testid="kid-question-audio"]']);
+    await expectReachable(page, "kid-lesson-next", TABLET, 54);
+    await expectReachable(page, "kid-question-audio", TABLET, 48);
+
+    await page.getByTestId("kid-lesson-next").click();
+    await expect(page.locator(`main[data-task-id="${firstQuestionId}"]`)).toBeVisible();
+    await nextFrames(page);
+    expect(await pageOverflows(page), "horizontal overflow on the question").toEqual({ page: false, material: false });
+    await expectFrameFillsViewport(page, TABLET);
+    await expectInteractiveTargets(page, ['[data-testid="kid-option"]', '[data-testid="kid-question-audio"]']);
+    for (const index of [0, 1, 2]) {
+      const option = page.getByTestId("kid-option").nth(index);
+      await option.scrollIntoViewIfNeeded();
+      const box = (await option.boundingBox())!;
+      expect(box.y, `option ${index} top`).toBeGreaterThanOrEqual(-1);
+      expect(box.y + box.height, `option ${index} bottom`).toBeLessThanOrEqual(TABLET.height + 1);
+      expect(box.x + box.width, `option ${index} right`).toBeLessThanOrEqual(TABLET.width + 1);
+    }
+    await expectReachable(page, "kid-lesson-story-text", TABLET, 1);
   });
 });
