@@ -71,6 +71,7 @@ import {
   issueNextLessonTask,
   buildLessonSummaryObjectives,
   lessonTaskCounts,
+  sqlTypeList,
 } from "./lessons/lesson-sessions";
 import {
   createLessonMockTestPlan,
@@ -134,11 +135,6 @@ async function lockSession(tx: Tx, sessionId: string) {
     throw new AppError("not_found");
   }
   return Object.assign(session, { deckKind: identity.deckKind as DeckKind, lessonContext: identity.lessonContext });
-}
-
-/** Lista SQL typów zadań do `in (...)`/`not in (...)`. */
-function sqlTypeList(types: readonly string[]) {
-  return sql.join(types.map((type) => sql`${type}`), sql`, `);
 }
 
 /** Typy poza budżetem ocenianych: prezentacje słówek, karty i zadania historyjki lekcji. */

@@ -55,8 +55,8 @@ import {
 import { listenStimulusAssetId } from "./listen-stimulus";
 import { lessonStorySlots, loadLessonStoryAudio, unissuedPlanSlots, withStoryCounters } from "./lesson-story-tasks";
 
-/** Lista SQL typów zadań (np. `not in (...)` w filtrze licznika). */
-function sqlTypeList(types: readonly string[]) {
+/** Lista SQL typów zadań do `in (...)`/`not in (...)` (liczniki sesji lekcji i `sessions.ts`). */
+export function sqlTypeList(types: readonly string[]) {
   return sql.join(types.map((type) => sql`${type}`), sql`, `);
 }
 
@@ -936,9 +936,12 @@ export async function issueNextLessonPlanTask(
   catch { throw new AppError("conflict", { message: "Ta sesja wymaga nowszej wersji aplikacji." }); }
   if (!plan) return null;
   const unissued = unissuedPlanSlots(plan, counts);
-  const closing = options.closing || counts.story > 0 || unissued.regular.length === 0;
-  const slot = closing ? unissued.story[0] : unissued.regular[0];
-  if (!slot || (slot.assessed && counts.assessed >= plan.taskBudget)) return null;
+  const nextRegular = unissued.regular[0];
+  // Wyczerpany budżet planu też zamyka sesję (gdyby budżet sesji i planu się rozjechały,
+  // historyjka nie może zniknąć); karty bez budżetu wychodzą jak dotąd.
+  const closing = options.closing || counts.story > 0 || !nextRegular || (nextRegular.assessed && counts.assessed >= plan.taskBudget);
+  const slot = closing ? unissued.story[0] : nextRegular;
+  if (!slot) return null;
   await tx.insert(sessionTasks).values({
     id: slot.taskId, sessionId: session.id, childId: session.childId, deckVersionId: session.deckVersionId,
     itemRevisionId: slot.itemRevisionId, ordinal: counts.total, exerciseType: slot.exerciseType,

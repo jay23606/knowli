@@ -472,6 +472,15 @@ describe("historyjka — wydanie na koniec sesji", () => {
     await finishLessonTask(services, story);
     const first = await nextTask(services, session.sessionId);
     expect(first).toMatchObject({ taskId: storySlots[1]!.taskId, exerciseType: "lesson_story_question", prompt: { question: STORY_FIXTURE.questions[0]!.question } });
+    // Wydanie pytania pieczętuje `prompt_issued` z kluczami zdań historyjki przed odpowiedzią.
+    expect((await eventsOf(first!.taskId)).map(({ kind, sealed }) => ({ kind, sealed }))).toEqual([{ kind: "prompt_issued", sealed: true }]);
+    const questionKeys = (await pool.query<{ key: string }>(
+      `select x.target_key as key from learning_app.event_exposures x
+         join learning_app.learning_events e on e.id = x.event_id where e.task_id = $1 and e.kind = 'prompt_issued'`, [first!.taskId],
+    )).rows.map((row) => row.key);
+    expect(questionKeys.length).toBeGreaterThan(0);
+    expect([...questionKeys].sort()).toEqual([...storySlots[1]!.revealsTargetKeys].sort());
+    expect([...questionKeys].sort()).toEqual([...storySlots[0]!.revealsTargetKeys].sort());
     await finishLessonTask(services, first!);
     const second = await nextTask(services, session.sessionId);
     expect(second).toMatchObject({ taskId: storySlots[2]!.taskId, exerciseType: "lesson_story_question", prompt: { question: STORY_FIXTURE.questions[1]!.question } });
