@@ -1454,7 +1454,13 @@ export async function executeLessonGeneration(services: Services, runId: string,
           : [],
         input.interests,
       );
-      objectiveLimits.set(batch.objectiveId, { count: batch.count, listen: poolInput.listenChoicePerObjective ?? 0, stages: poolInput.stageCounts });
+      // Kwoty etapów tylko przy pełnej generacji: przy dogenerowaniu `stageCounts` dzieli same nowe
+      // ćwiczenia i nie zna braków szkicu, więc mogłyby odrzucić akurat brakujący etap — tam decyduje kolejność.
+      objectiveLimits.set(batch.objectiveId, {
+        count: batch.count,
+        listen: poolInput.listenChoicePerObjective ?? 0,
+        ...(input.regenerate ? {} : { stages: poolInput.stageCounts }),
+      });
       const result = await control.call((signal) => deps.llm.generateLessonPool(poolInput, signal));
       await control.assertCurrent();
       console.log(`[lesson] run=${runId} partia=${batch.objectiveId} durationMs=${Date.now() - batchStartedAtMs}`);
