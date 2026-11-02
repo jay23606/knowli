@@ -27,7 +27,8 @@ export const REVIEW_REPORT_LIST_LIMIT = 200;
 
 const SNIPPET_LIMIT = 80;
 
-function statusFromObjectives(objectives: LessonReviewReport["objectives"]): LessonReviewReport["status"] {
+/** Status raportu z zagadnień (`suspicious` liczy się jak `reviewed`). */
+export function statusFromObjectives(objectives: LessonReviewReport["objectives"]): LessonReviewReport["status"] {
   const reviewed = objectives.filter((o) => o.status === "reviewed" || o.status === "suspicious").length;
   if (reviewed === 0) return "unreviewed";
   return reviewed === objectives.length ? "reviewed" : "partial";
