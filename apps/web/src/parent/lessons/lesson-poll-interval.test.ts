@@ -11,16 +11,18 @@ function lesson(overrides: {
   publishedAssets?: string[];
   draftPromptAudio?: string[];
   draftCardAudio?: string[];
+  draftStoryAudio?: string;
 }): LessonDeckDto {
-  const version = (states: string[], promptAudio: string[] = [], cardAudio: string[] = []) => ({
+  const version = (states: string[], promptAudio: string[] = [], cardAudio: string[] = [], storyAudio?: string) => ({
     assets: states.map((state) => ({ state })),
     exercises: [{}, ...promptAudio.map((state) => ({ promptAudio: { state } }))],
     cardAudio: cardAudio.map((state) => ({ audio: { state } })),
+    ...(storyAudio ? { storyAudio: { state: storyAudio } } : {}),
   }) as unknown as Version;
   return {
     generation: overrides.generation ?? null,
     storyGeneration: overrides.storyGeneration ?? null,
-    draft: overrides.draftAssets ? version(overrides.draftAssets, overrides.draftPromptAudio, overrides.draftCardAudio) : null,
+    draft: overrides.draftAssets ? version(overrides.draftAssets, overrides.draftPromptAudio, overrides.draftCardAudio, overrides.draftStoryAudio) : null,
     published: overrides.publishedAssets ? version(overrides.publishedAssets) : null,
   } as unknown as LessonDeckDto;
 }
@@ -64,5 +66,18 @@ describe("lessonPollInterval", () => {
     const failed = { draft: { assets: [], exercises: [{ sentenceAudio: { state: "failed" } }] } } as unknown as LessonDeckDto;
     expect(lessonPollInterval(pending)).toBe(3000);
     expect(lessonPollInterval(failed)).toBe(false);
+  });
+
+  it("polls every 3 s while only the story recording is pending", () => {
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftStoryAudio: "pending" }))).toBe(3000);
+  });
+
+  it("stops polling when the story recording is ready", () => {
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftStoryAudio: "ready" }))).toBe(false);
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftStoryAudio: "failed" }))).toBe(false);
+  });
+
+  it("does not poll for a draft without storyAudio", () => {
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"] }))).toBe(false);
   });
 });

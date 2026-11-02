@@ -11,6 +11,7 @@ import {
   setQuestionText,
   setSentence,
   storyEquals,
+  storySentencesUnchanged,
 } from "./lesson-story-form";
 
 const story = (): LessonStoryDto => ({
@@ -96,5 +97,34 @@ describe("lesson-story-form", () => {
     expect(storyEquals(story(), setOptionText(story(), "q1", "c", "żółty"))).toBe(false);
     expect(storyEquals(story(), addQuestion(story()))).toBe(false);
     expect(storyEquals(story(), addSentence(story()))).toBe(false);
+  });
+});
+
+describe("storySentencesUnchanged", () => {
+  it("is true when there is no form (undefined)", () => {
+    expect(storySentencesUnchanged(story(), undefined)).toBe(true);
+    expect(storySentencesUnchanged(undefined, undefined)).toBe(true);
+  });
+
+  it("is true when only a question changes", () => {
+    expect(storySentencesUnchanged(story(), setQuestionText(story(), "q1", "Inne pytanie?"))).toBe(true);
+  });
+
+  it("is true when only whitespace in a sentence changes", () => {
+    expect(storySentencesUnchanged(story(), setSentence(story(), 0, "  Sam   has a	red bike. "))).toBe(true);
+  });
+
+  it("is false when a sentence changes", () => {
+    expect(storySentencesUnchanged(story(), setSentence(story(), 1, "He walks to the park."))).toBe(false);
+  });
+
+  it("is false when the number of sentences changes", () => {
+    expect(storySentencesUnchanged(story(), addSentence(story()))).toBe(false);
+    expect(storySentencesUnchanged(story(), removeSentence(story(), 3))).toBe(false);
+  });
+
+  it("is false for null when a story is saved", () => {
+    expect(storySentencesUnchanged(story(), null)).toBe(false);
+    expect(storySentencesUnchanged(undefined, null)).toBe(true);
   });
 });

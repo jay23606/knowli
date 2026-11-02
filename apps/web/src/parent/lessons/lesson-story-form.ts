@@ -83,3 +83,20 @@ export function storyEquals(a?: LessonStoryDto | null, b?: LessonStoryDto | null
       && question.options.every((option, j) => option.id === other.options[j]!.id && option.text === other.options[j]!.text);
   });
 }
+
+const squashWhitespace = (text: string) => text.trim().replace(/\s+/g, " ");
+
+/**
+ * Czy zdania formularza odpowiadają zapisanym (po tej samej normalizacji białych
+ * znaków co tekst nagrania, `storyReadText`) — wtedy zapisane nagranie dotyczy
+ * tego, co rodzic widzi. Pytania i odpowiedzi nie wpływają na nagranie.
+ * `form === undefined` (formularz niezainicjowany) = bez zmian; `null` (usunięta
+ * historyjka) przy zapisanej historyjce = zmiana.
+ */
+export function storySentencesUnchanged(saved: LessonStoryDto | undefined, form: LessonStoryDto | null | undefined): boolean {
+  if (form === undefined) return true;
+  const savedSentences = saved?.sentences ?? [];
+  const formSentences = form?.sentences ?? [];
+  if (savedSentences.length !== formSentences.length) return false;
+  return savedSentences.every((sentence, i) => squashWhitespace(sentence) === squashWhitespace(formSentences[i]!));
+}

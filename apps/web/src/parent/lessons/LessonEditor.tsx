@@ -25,7 +25,7 @@ import LessonExerciseCard, { type CalculationControls } from "./LessonExerciseCa
 import ArchiveLessonDialog from "./ArchiveLessonDialog";
 import LessonSourceNote from "./LessonSourceNote";
 import LessonStorySection from "./LessonStorySection";
-import { storyEquals } from "./lesson-story-form";
+import { storyEquals, storySentencesUnchanged } from "./lesson-story-form";
 import PromptAudioControls, { cardAudioTargetLabel, VoiceToneSelect } from "./PromptAudioControls";
 import { EditorActionBar, EditorAssignments, EditorErrorText } from "../EditorAssignments";
 import { ParentIcon } from "../ParentIcon";
@@ -88,8 +88,9 @@ export function lessonPollInterval(deck: LessonDeckDto | undefined): number | fa
   // (zdanie „Posłuchaj i wybierz” — `sentenceAudio` — jest tak samo poza `assets`)
   const promptAudioPending = visible?.exercises.some((exercise) => exercise.promptAudio?.state === "pending" || exercise.sentenceAudio?.state === "pending") ?? false;
   const cardAudioPending = visible?.cardAudio?.some((card) => card.audio.state === "pending") ?? false;
+  const storyAudioPending = visible?.storyAudio?.state === "pending";
   if (generating || storyGenerating || assetsPending) return 1000;
-  return promptAudioPending || cardAudioPending ? 3000 : false;
+  return promptAudioPending || cardAudioPending || storyAudioPending ? 3000 : false;
 }
 
 /**
@@ -1135,6 +1136,22 @@ export default function LessonEditor({
   const errorAlert = <EditorErrorText error={error ?? ""} />;
 
   // Historyjka: szkic edytowalny przy przedmiocie z historyjką; wersja opublikowana tylko do odczytu.
+  // Nagranie: w szkicu tylko, gdy zdania formularza są zapisanymi i żaden run historyjki nie przepnie go za chwilę.
+  const storyAudio = active?.storyAudio;
+  const storyAudioShown = storyAudio !== undefined
+    && (!editable || (storySentencesUnchanged(draft?.story, storyForm) && !storyGenerating));
+  const storyAudioControls = storyAudioShown && storyAudio && (
+    <div className="pp-lesson-prompt-audio">
+      <PromptAudioControls audio={storyAudio} target={{ kind: "story" }} targetLabel={messages.lessons.story.audioTarget}
+        lessonDraftId={active?.id ?? ""} deckId={deckId} canRegenerate={editable} locked={busy || isDirty || conflict}
+        testId="lesson-story-audio" onPlay={playAsset} />
+      {!editable && storyAudio.state === "failed" && (
+        <Text size="sm" className="pp-editor-muted" data-testid="lesson-story-audio-published-failed">
+          {messages.lessons.story.publishedAudioFailed}
+        </Text>
+      )}
+    </div>
+  );
   const storyVisible = editable ? draft?.storyEnabled === true : deck?.published?.storyEnabled === true;
   const storySection = storyVisible && (
     <LessonStorySection
@@ -1145,6 +1162,7 @@ export default function LessonEditor({
       busy={busy || generating}
       locked={isDirty || conflict}
       hasExercises={(draft?.exercises.length ?? 0) > 0}
+      audio={storyAudioControls || undefined}
       onChange={changeStory}
       onGenerate={() => void generateStory()}
       onRetry={() => void retryStory()}
