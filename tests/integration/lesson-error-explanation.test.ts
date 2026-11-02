@@ -77,7 +77,7 @@ async function drainWorker(services: ReturnType<typeof createServices>) {
 
 function inputs(draft: LessonDraftDto, edit: (exercise: Record<string, unknown>, index: number) => Record<string, unknown> = (exercise) => exercise) {
   return draft.exercises.map((exercise, index) => {
-    const { revisionId: _revision, promptAudio: _prompt, explanationAudio: _explanation, ...rest } = exercise;
+    const { revisionId: _revision, promptAudio: _prompt, explanationAudio: _explanation, sentenceAudio: _sentence, ...rest } = exercise;
     return edit(rest as Record<string, unknown>, index);
   });
 }

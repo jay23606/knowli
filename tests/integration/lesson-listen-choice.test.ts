@@ -382,6 +382,40 @@ describe("sesja — wydanie i ocena zadania słuchowego", () => {
     expect(await sessionSupportObjectives(second.sessionId)).toEqual([]);
   });
 
+  it("błędna odpowiedź po odsłuchu niesie wyjaśnienie ćwiczenia (#196) i jego nagranie obok odczytu zdania", async () => {
+    const services = buildTestServices().services;
+    const explanation = "Po she dodajemy -s, więc słychać plays.";
+    const { child, lesson, listen } = await listenWorld(services, { audio: "ready" }, { withExplanations: { text: explanation, audio: "ready" } });
+    const explanationAssetId = (await pool.query<{ asset_id: string }>(
+      "select asset_id from learning_app.revision_assets where item_revision_id = $1 and role = 'explanation_audio'",
+      [listen.revisionId],
+    )).rows[0]!.asset_id;
+    const session = await startSession(services, { childId: child.id, deckId: lesson.deckId, microphoneEnabled: false });
+    const task = (await skipUntil(services, session.sessionId, "lesson_listen_choice"))!;
+    const key = await answerKeyOf(task.taskId);
+    expect(key).toMatchObject({ explanationPl: explanation, explanationAudioAssetId: explanationAssetId });
+    expect(JSON.stringify(task)).not.toContain(explanation);
+    await listenToSentence(services, task);
+
+    const attempt = await submitAttempt(services, { taskId: task.taskId, clientAttemptId: randomUUID(), modality: "choice", optionId: wrongOptionOf(task, key) });
+    expect(attempt.feedback).toEqual({
+      kind: "incorrect", correctText: "plays", hintPl: explanation,
+      explanationAudioAssetId: explanationAssetId, correctAudioAssetId: listen.assetId,
+    });
+  });
+
+  it("odpowiedź bez odsłuchu (no_stimulus) nie ujawnia wyjaśnienia", async () => {
+    const services = buildTestServices().services;
+    const explanation = "Po she dodajemy -s, więc słychać plays.";
+    const { child, lesson } = await listenWorld(services, { audio: "ready" }, { withExplanations: { text: explanation, audio: "ready" } });
+    const session = await startSession(services, { childId: child.id, deckId: lesson.deckId, microphoneEnabled: false });
+    const task = (await skipUntil(services, session.sessionId, "lesson_listen_choice"))!;
+    const key = await answerKeyOf(task.taskId);
+
+    const attempt = await submitAttempt(services, { taskId: task.taskId, clientAttemptId: randomUUID(), modality: "choice", optionId: wrongOptionOf(task, key) });
+    expect(attempt.feedback).toEqual({ kind: "not_assessed" });
+  });
+
   it("poprawna odpowiedź słuchowa po prawdziwym błędzie luki nie kasuje wsparcia celu", async () => {
     const services = buildTestServices().services;
     // Wcześniejszy sukces celu: luka (etap produktywny) jest w planie pierwszej sesji.
