@@ -10,6 +10,7 @@ import type {
   TtsProvider,
 } from "./ports/ai";
 import type { MediaStore } from "./ports/media";
+import type { UsageRecorder } from "./ports/usage";
 import { createAzurePronunciationProvider } from "./providers/azure/pronunciation";
 import { createAzureSttProvider } from "./providers/azure/stt";
 import { createOpenAiCompatibleGrader } from "./providers/openai-compatible/grader";
@@ -229,6 +230,11 @@ export interface Services {
    */
   generationService?: string;
   /**
+   * Recorder kosztów usług AI (spec llm-cost-tracking §4). Nieobecny = brak
+   * zapisu kosztów; `flush()` przy zamykaniu procesu i w testach.
+   */
+  usage?: UsageRecorder;
+  /**
    * Rejestr przedmiotów lekcji (zadanie 9). Wstrzykiwany jako wartość, nie
    * importowany globalnie w modułach — `createServices` nadaje mu produkcyjną
    * domyślkę `createProductionSubjectRegistry()`, więc żaden wywołujący nie
@@ -251,6 +257,7 @@ export function createServices(
     grader?: GraderDeps;
     sessionActivity?: SessionActivityDeps;
     generationService?: string;
+    usage?: UsageRecorder;
     subjects?: SubjectRegistry;
   },
 ): Services {
@@ -267,6 +274,7 @@ export function createServices(
     ...(input.grader ? { grader: input.grader } : {}),
     ...(input.sessionActivity ? { sessionActivity: input.sessionActivity } : {}),
     ...(input.generationService ? { generationService: input.generationService } : {}),
+    ...(input.usage ? { usage: input.usage } : {}),
   };
 }
 

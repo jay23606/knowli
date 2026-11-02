@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import {
   ChildInputSchema,
   ChildPatchSchema,
@@ -9,9 +9,12 @@ import {
   type ChildInput,
   type ChildPatch,
 } from "@learning/contracts";
-import { childProfiles } from "../../db/schema";
+import { childProfiles, familySettings } from "../../db/schema";
 import { AppError } from "../../errors";
 import type { Services } from "../../config";
+import { anonymizeChildUsage } from "../../providers/usage/anonymize";
+
+const DEFAULT_TIMEZONE = "Europe/Warsaw";
 
 export async function listChildren(services: Services): Promise<ChildDto[]> {
   const rows = await services.db
@@ -57,11 +60,16 @@ export async function updateChild(services: Services, childId: string, input: Ch
  */
 export async function deleteChild(services: Services, childId: string): Promise<void> {
   const id = UuidSchema.parse(childId);
-  const deleted = await services.db
-    .delete(childProfiles)
-    .where(eq(childProfiles.id, id))
-    .returning({ id: childProfiles.id });
-  if (deleted.length === 0) {
-    throw new AppError("not_found");
-  }
+  await services.db.transaction(async (tx) => {
+    // Blokada wiersza profilu: równoległe inserty kosztów z kluczem obcym czekają
+    // na KEY SHARE, a po commicie dostają 23503 i zapisują się bez przypisania —
+    // żaden wiersz kosztu nie ominie zgrubienia.
+    const locked = await tx.execute(sql`select id from learning_app.child_profiles where id = ${id} for update`);
+    if (locked.rows.length === 0) {
+      throw new AppError("not_found");
+    }
+    const timezoneRow = (await tx.select({ timezone: familySettings.timezone }).from(familySettings).limit(1))[0];
+    await anonymizeChildUsage(tx, id, timezoneRow?.timezone ?? DEFAULT_TIMEZONE);
+    await tx.delete(childProfiles).where(eq(childProfiles.id, id));
+  });
 }

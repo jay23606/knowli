@@ -1,6 +1,9 @@
 export { computeCalculationAnswer, renderCalculationPrompt } from "./domain/lessons/calculation";
 export * from "./config";
 export { CONFIG_DEFAULTS, withConfigDefaults } from "./config-defaults";
+export { withUsageScope, type UsageEvent, type UsageFeature, type UsageRecorder, type UsageScope } from "./ports/usage";
+export { createDrizzleUsageRecorder } from "./providers/usage/drizzle-recorder";
+export { pricesFromEnv, type UsagePrices } from "./providers/usage/prices-env";
 export { createProductionSubjectRegistry } from "./domain/lessons/subjects";
 export { createSubjectRegistry, type SubjectRegistry } from "./domain/lessons/registry";
 export { englishGrammarSubject } from "./domain/lessons/subjects/english-grammar/module";

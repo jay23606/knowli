@@ -1,0 +1,115 @@
+import { randomUUID } from "node:crypto";
+import type { Clock } from "../../config";
+import type { Database } from "../../db/client";
+import { providerUsageEvents } from "../../db/schema";
+import { currentUsageScope, scopeKindOf, type UsageEvent, type UsageRecorder, type UsageScope } from "../../ports/usage";
+import { priceUsage } from "./pricing";
+import type { UsagePrices } from "./prices-env";
+
+const FOREIGN_KEY_VIOLATION = "23503";
+
+/** Kod SQLSTATE błędu bazy; Drizzle opakowuje błąd sterownika w `cause`. */
+function sqlState(error: unknown): string | undefined {
+  for (let current: unknown = error, depth = 0; current && depth < 3; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+function defaultLog(code: string): void {
+  console.error("[usage] usage_record_failed", { code });
+}
+
+/**
+ * Recorder kosztów zapisujący do `provider_usage_events` przez pulę, poza
+ * transakcją biznesową (rollback operacji nie cofa kosztu, który już powstał u
+ * dostawcy). `record` nigdy nie rzuca — wyjątek zmieniłby wynik biznesowy
+ * adaptera (ponowienie runu, „nieocenione") — i nie czeka na zapis; zaległe
+ * inserty kończy `flush`. Do logu trafia wyłącznie kod błędu, bez treści.
+ */
+export function createDrizzleUsageRecorder(input: {
+  db: Database;
+  clock: Clock;
+  prices: UsagePrices;
+  log?: (code: string) => void;
+}): UsageRecorder {
+  const { db, clock, prices } = input;
+  const log = input.log ?? defaultLog;
+  const pending = new Set<Promise<void>>();
+
+  function safeLog(code: string): void {
+    try {
+      log(code);
+    } catch {
+      // Log nie może zmienić wyniku wywołującego.
+    }
+  }
+
+  async function insert(row: typeof providerUsageEvents.$inferInsert): Promise<void> {
+    try {
+      await db.insert(providerUsageEvents).values(row);
+    } catch (error) {
+      const code = sqlState(error);
+      if (code !== FOREIGN_KEY_VIOLATION) {
+        safeLog("usage_record_failed");
+        return;
+      }
+      // Zakres wskazuje wiersz, który zniknął (np. usunięty profil): koszt zostaje bez przypisania.
+      try {
+        await db.insert(providerUsageEvents).values({
+          ...row,
+          generationRunId: null,
+          deckId: null,
+          sessionId: null,
+          childId: null,
+        });
+      } catch {
+        safeLog("usage_record_failed");
+      }
+    }
+  }
+
+  function buildRow(event: UsageEvent, scope: UsageScope | undefined, at: Date): typeof providerUsageEvents.$inferInsert {
+    const priced = priceUsage(event, prices);
+    return {
+      id: randomUUID(),
+      occurredAt: at,
+      feature: event.feature,
+      operation: event.operation ?? null,
+      provider: event.provider,
+      model: event.model ?? null,
+      outcome: event.outcome,
+      httpStatus: event.httpStatus ?? null,
+      inputTokens: event.inputTokens ?? null,
+      outputTokens: event.outputTokens ?? null,
+      characters: event.characters ?? null,
+      audioMs: event.audioMs ?? null,
+      images: event.images ?? null,
+      costUsd: priced.costUsd,
+      costSource: priced.costSource,
+      priceRef: priced.priceRef,
+      scopeKind: scopeKindOf(scope),
+      generationRunId: scope?.generationRunId ?? null,
+      deckId: scope?.deckId ?? null,
+      sessionId: scope?.sessionId ?? null,
+      childId: scope?.childId ?? null,
+    };
+  }
+
+  return {
+    record(event) {
+      try {
+        const row = buildRow(event, currentUsageScope(), clock.now());
+        const task = insert(row).finally(() => pending.delete(task));
+        pending.add(task);
+      } catch {
+        safeLog("usage_record_failed");
+      }
+    },
+    async flush() {
+      await Promise.allSettled([...pending]);
+    },
+  };
+}

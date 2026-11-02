@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { testDatabase } from "./helpers";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createDrizzleUsageRecorder, createServices, deleteChild, withUsageScope, type UsageEvent, type UsagePrices } from "@learning/server";
+import { ManualClock, testDatabase } from "./helpers";
 
 /**
  * Migracja 0035_provider_usage_events: tabela dziennika kosztów usług AI
@@ -9,7 +10,7 @@ import { testDatabase } from "./helpers";
  * od recordera.
  */
 
-const { pool } = testDatabase();
+const { db, pool } = testDatabase();
 
 afterAll(async () => {
   await pool.end();
@@ -232,3 +233,168 @@ async function insertDeck(): Promise<{ deckId: string; versionId: string }> {
   );
   return { deckId, versionId };
 }
+
+describe("usage recorder", () => {
+  const clock = new ManualClock("2026-11-02T10:00:00.000Z");
+  const logged: string[] = [];
+  const prices = { imageUsd: "0.04" };
+  const recorder = createDrizzleUsageRecorder({ db, clock, prices, log: (code) => logged.push(code) });
+  const services = createServices({ db, clock, usage: recorder });
+
+  beforeEach(async () => {
+    logged.length = 0;
+    await pool.query(
+      `truncate learning_app.provider_usage_events, learning_app.generation_runs, learning_app.media_assets,
+                learning_app.learning_sessions, learning_app.assignments,
+                learning_app.deck_versions, learning_app.decks,
+                learning_app.child_profiles cascade`,
+    );
+  });
+
+  // Zaległy insert nie może wpaść do następnego testu (truncate w beforeEach).
+  afterEach(() => recorder.flush());
+
+  const imageEvent: UsageEvent = { feature: "illustration", provider: "openrouter", outcome: "ok", images: 1 };
+
+  async function usageRows(): Promise<UsageRow[]> {
+    return query("select * from learning_app.provider_usage_events order by occurred_at, id");
+  }
+
+  async function insertChild(): Promise<string> {
+    const childId = randomUUID();
+    await pool.query("insert into learning_app.child_profiles (id, display_name, avatar_key) values ($1, 'Ola', 'fox')", [childId]);
+    return childId;
+  }
+
+  it("record never throws", async () => {
+    const throwingPrices = {
+      get imageUsd(): string {
+        throw new Error("boom");
+      },
+    } as unknown as UsagePrices;
+    const broken = createDrizzleUsageRecorder({ db, clock, prices: throwingPrices, log: (code) => logged.push(code) });
+
+    expect(() => broken.record(imageEvent)).not.toThrow();
+    await broken.flush();
+
+    expect(logged).toEqual(["usage_record_failed"]);
+    expect(await usageRows()).toEqual([]);
+  });
+
+  it("writes a session row with the clock time and the priced cost", async () => {
+    const { deckId, versionId } = await insertDeck();
+    const childId = await insertChild();
+    const assignmentId = randomUUID();
+    await pool.query("insert into learning_app.assignments (id, child_id, deck_id) values ($1, $2, $3)", [assignmentId, childId, deckId]);
+    await pool.query("insert into learning_app.learning_policies (id, config) values ('default', '{}') on conflict do nothing");
+    const sessionId = randomUUID();
+    await pool.query(
+      `insert into learning_app.learning_sessions
+         (id, child_id, assignment_id, deck_id, deck_version_id, policy_id, microphone_enabled, state, ended_at, task_budget)
+       values ($1, $2, $3, $4, $5, 'default', false, 'ended', now(), 10)`,
+      [sessionId, childId, assignmentId, deckId, versionId],
+    );
+
+    withUsageScope({ sessionId, childId }, () => recorder.record(imageEvent));
+    await recorder.flush();
+
+    const rows = await usageRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      scope_kind: "session",
+      session_id: sessionId,
+      child_id: childId,
+      feature: "illustration",
+      cost_usd: "0.040000",
+      cost_source: "price_table",
+      price_ref: "UMIEM_PRICE_IMAGE_USD=0.04",
+    });
+    expect((rows[0]!.occurred_at as Date).toISOString()).toBe("2026-11-02T10:00:00.000Z");
+    expect(logged).toEqual([]);
+  });
+
+  it("cost row survives business rollback", async () => {
+    await expect(
+      services.db.transaction(async () => {
+        recorder.record(imageEvent);
+        throw new Error("business failure");
+      }),
+    ).rejects.toThrow("business failure");
+    await recorder.flush();
+
+    expect(await usageRows()).toHaveLength(1);
+  });
+
+  it("retries insert without scope ids on foreign key violation", async () => {
+    withUsageScope({ sessionId: randomUUID(), childId: randomUUID() }, () => recorder.record(imageEvent));
+    await recorder.flush();
+
+    const rows = await usageRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      scope_kind: "session",
+      session_id: null,
+      child_id: null,
+      deck_id: null,
+      generation_run_id: null,
+    });
+    expect(logged).toEqual([]);
+  });
+
+  it("logs a failure of another kind and keeps flush quiet", async () => {
+    recorder.record({ ...imageEvent, feature: "unknown_feature" as unknown as UsageEvent["feature"] });
+    await expect(recorder.flush()).resolves.toBeUndefined();
+
+    expect(logged).toEqual(["usage_record_failed"]);
+    expect(await usageRows()).toEqual([]);
+  });
+
+  it("deleteChild anonymizes usage rows", async () => {
+    const childId = await insertChild();
+    const otherChildId = await insertChild();
+    const at = new Date("2026-10-15T12:34:00.000Z");
+    const detailed = {
+      operation: "grade",
+      model: "google/gemini-3.8-flash",
+      http_status: 200,
+      input_tokens: 10,
+      output_tokens: 5,
+      characters: 3,
+      audio_ms: 1000,
+      images: 1,
+    };
+    await insertUsage(validRow({ ...detailed, occurred_at: at, scope_kind: "session", child_id: childId, cost_usd: "0.001000" }));
+    await insertUsage(validRow({ ...detailed, occurred_at: at, scope_kind: "session", child_id: childId, cost_usd: "0.002000" }));
+    await insertUsage(validRow({ ...detailed, occurred_at: at, scope_kind: "session", child_id: otherChildId, cost_usd: "0.003000" }));
+
+    await deleteChild(services, childId);
+
+    const anonymized = await query("select * from learning_app.provider_usage_events where cost_usd in (0.001, 0.002) order by cost_usd");
+    expect(anonymized).toHaveLength(2);
+    for (const row of anonymized) {
+      expect((row.occurred_at as Date).toISOString()).toBe("2026-09-30T22:00:00.000Z");
+      expect(row).toMatchObject({
+        operation: null,
+        model: null,
+        http_status: null,
+        input_tokens: null,
+        output_tokens: null,
+        characters: null,
+        audio_ms: null,
+        images: null,
+        session_id: null,
+        child_id: null,
+        scope_kind: "session",
+      });
+    }
+    expect(anonymized.map((row) => row.cost_usd)).toEqual(["0.001000", "0.002000"]);
+
+    const untouched = await query("select * from learning_app.provider_usage_events where cost_usd = 0.003");
+    expect(untouched[0]).toMatchObject({ child_id: otherChildId, operation: "grade", model: "google/gemini-3.8-flash", images: 1 });
+    expect((untouched[0]!.occurred_at as Date).toISOString()).toBe(at.toISOString());
+  });
+
+  it("deleteChild of a missing profile is not found", async () => {
+    await expect(deleteChild(services, randomUUID())).rejects.toMatchObject({ code: "not_found" });
+  });
+});
