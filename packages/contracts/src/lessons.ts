@@ -452,6 +452,8 @@ export const CoverageGapDtoSchema = z.object({
   stage: LessonStageSchema,
   required: z.number().int().nonnegative(),
   actual: z.number().int().nonnegative(),
+  /** Liczba ujawnionych ćwiczeń samodzielnych wykluczonych z etapu (brak pola = 0). */
+  excluded: z.number().int().positive().optional(),
 });
 export type CoverageGapDto = z.infer<typeof CoverageGapDtoSchema>;
 

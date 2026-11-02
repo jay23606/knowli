@@ -25,6 +25,7 @@ import {
 import { AppError } from "../../../errors";
 import { explanationTextErrors } from "../../../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
+import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE } from "../../../domain/lessons/lesson-coverage";
 import {
   DEFAULT_LESSON_POLICY,
   defaultPoolSize,
@@ -430,9 +431,6 @@ export function splitStages(count: number, mix: StageMix = DEFAULT_LESSON_POLICY
   const productive = Math.max(0, count - guided - independent);
   return { guided, productive, independent };
 }
-
-/** Publikacja zestawu v3 wymaga tylu różnych pytań otwartych na zagadnienie. */
-export const DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE = 2;
 
 /**
  * Podział partii na etapy dla jednego celu. Rachunek dzieli etap samodzielny
