@@ -968,7 +968,7 @@ export const messages = {
     commonErrorsLabel: "Typowe błędy (każdy w osobnym wierszu)",
     explanationLabel: "Wyjaśnienie dla dziecka (po błędzie)",
     explanationHint: "Jedno krótkie zdanie po polsku. Dziecko zobaczy je po błędnej odpowiedzi albo po „Nie pamiętam”.",
-    explanationCounter: "{n}/120",
+    explanationCounter: "{n}/{max}",
     explanationAudioTarget: "wyjaśnienie — {exercise}",
     explanationAudioLabel: "Nagranie wyjaśnienia",
     explanationPreview: "Wyjaśnienie: {text}",

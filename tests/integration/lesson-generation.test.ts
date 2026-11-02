@@ -1153,11 +1153,19 @@ describe("generowanie puli lekcji (integracja)", () => {
     const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
     const services = lessonServices(fakes);
     const generate = fakes.llm.generateLessonPool.bind(fakes.llm);
+    // Złe wyjaśnienie dostaje ćwiczenie ze środka puli; test szuka go potem po treści,
+    // nie po pozycji, więc kolejność rewizji szkicu nie ma znaczenia.
+    const identity = (exercise: { exerciseType: string; answer: string; stem?: string; prompt?: string }) =>
+      JSON.stringify([exercise.exerciseType, exercise.stem ?? null, exercise.prompt ?? null, exercise.answer]);
+    let broken: string | undefined;
     fakes.llm.generateLessonPool = async (...args) => {
       const result = await generate(...args);
-      const exercises = result.exercises.map((exercise, index) => (
-        index === 0 ? { ...exercise as Record<string, unknown>, explanationPl: "Pierwsze zdanie. Drugie zdanie." } : exercise
-      ));
+      const target = Math.floor(result.exercises.length / 2);
+      const exercises = result.exercises.map((exercise, index) => {
+        if (index !== target) return exercise;
+        broken = identity(exercise as unknown as Parameters<typeof identity>[0]);
+        return { ...exercise as Record<string, unknown>, explanationPl: "Pierwsze zdanie. Drugie zdanie." };
+      });
       return { ...result, exercises };
     };
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -1168,8 +1176,12 @@ describe("generowanie puli lekcji (integracja)", () => {
       expect(run.state).toBe("succeeded");
       const exercises = (await readLessonDeck(services, deckId)).draft!.exercises;
       expect(exercises.length).toBeGreaterThan(1);
-      expect(exercises.filter((exercise) => exercise.explanationPl === undefined)).toHaveLength(1);
-      expect(exercises.filter((exercise) => exercise.explanationPl !== undefined).length).toBe(exercises.length - 1);
+      expect(broken).toBeDefined();
+      const matching = exercises.filter((exercise) => identity(exercise) === broken);
+      expect(matching).toHaveLength(1);
+      expect(matching[0]!.explanationPl).toBeUndefined();
+      const others = exercises.filter((exercise) => identity(exercise) !== broken);
+      for (const exercise of others) expect(exercise.explanationPl).toBe("Ta reguła mówi, jak zbudować poprawne zdanie.");
       expect(log.mock.calls.map((call) => String(call[0]))).toContain(`[lesson] run=${runId} porzucone wyjaśnienia=1`);
       const [version] = await query<{ lesson_context: { rejectedCount: number } }>(
         "select lesson_context from learning_app.deck_versions where id = $1", [run.deckVersionId!]);

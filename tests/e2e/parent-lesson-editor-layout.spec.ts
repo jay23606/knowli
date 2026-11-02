@@ -513,9 +513,9 @@ test("szkic gramatyki: pole wyjaśnienia z licznikiem, kontrolki nagrania i patc
   const card = page.getByTestId("exercise-0");
   // nagranie wyjaśnienia jest w karcie także zwiniętej, z nazwą odrębną od nagrania pytania,
   // z widoczną etykietą i pod podglądem wyjaśnienia (nie na górze karty)
-  await expect(card.getByTestId("lesson-explanation-audio")).toHaveAttribute("data-audio-state", "ready");
-  await expect(card.getByTestId("lesson-explanation-audio-listen")).toHaveAccessibleName("Posłuchaj: wyjaśnienie — Ćwiczenie 1");
-  await expect(card.getByTestId("lesson-explanation-audio-regenerate")).toHaveAccessibleName("Nagraj ponownie: wyjaśnienie — Ćwiczenie 1");
+  await expect(card.getByTestId("lesson-explanation-audio-0")).toHaveAttribute("data-audio-state", "ready");
+  await expect(card.getByTestId("lesson-explanation-audio-0-listen")).toHaveAccessibleName("Posłuchaj: wyjaśnienie — Ćwiczenie 1");
+  await expect(card.getByTestId("lesson-explanation-audio-0-regenerate")).toHaveAccessibleName("Nagraj ponownie: wyjaśnienie — Ćwiczenie 1");
   const collapsedBlock = card.getByTestId("exercise-explanation-audio-0");
   await expect(collapsedBlock).toContainText(messages.lessons.explanationAudioLabel);
   await expect(card.getByRole("group", { name: messages.lessons.explanationAudioLabel })).toBeVisible();
@@ -531,7 +531,7 @@ test("szkic gramatyki: pole wyjaśnienia z licznikiem, kontrolki nagrania i patc
   const fieldBox = (await field.boundingBox())!;
   const expandedBox = (await expandedBlock.boundingBox())!;
   expect(expandedBox.y, `controls under the explanation field: ${JSON.stringify({ fieldBox, expandedBox })}`).toBeGreaterThanOrEqual(fieldBox.y + fieldBox.height - 1);
-  await expect(card.getByTestId("lesson-explanation-audio")).toHaveCount(1);
+  await expect(card.getByTestId("lesson-explanation-audio-0")).toHaveCount(1);
   await expect(card.getByText(messages.lessons.explanationLabel)).toBeVisible();
   await expect(field).toHaveValue(EXPLANATION);
   await expect(field).toHaveAttribute("maxlength", "120");
@@ -545,7 +545,7 @@ test("szkic gramatyki: pole wyjaśnienia z licznikiem, kontrolki nagrania i patc
   await field.fill("  Dodaj -s do czasownika.  ");
   await expect(page.getByTestId("exercise-explanation-count-0")).toHaveText("27/120");
   // zmiana tekstu unieważnia nagranie wyjaśnienia do zapisu
-  await expect(card.getByTestId("lesson-explanation-audio")).toHaveCount(0);
+  await expect(card.getByTestId("lesson-explanation-audio-0")).toHaveCount(0);
   await page.getByTestId("save-lesson").click();
   await expect.poll(() => calls.requests.filter((request) => request.method === "PATCH").length).toBe(1);
   const patch = calls.requests.find((request) => request.method === "PATCH")!.body as { exercises: Array<{ explanationPl?: string }> };
@@ -561,7 +561,7 @@ test("szkic szkoły (bez flagi wyjaśnień): brak pola wyjaśnienia", async ({ p
   await expect(page.getByTestId("exercise-instruction-0")).toBeVisible();
   await expect(page.getByTestId("exercise-explanation-0")).toHaveCount(0);
   await expect(page.getByText(messages.lessons.explanationLabel)).toHaveCount(0);
-  await expect(page.getByTestId("lesson-explanation-audio")).toHaveCount(0);
+  await expect(page.locator('[data-testid^="lesson-explanation-audio-"]')).toHaveCount(0);
 });
 
 test("opublikowana lekcja: zwinięty podgląd pokazuje wyjaśnienie i odsłuch", async ({ page }) => {
@@ -570,10 +570,10 @@ test("opublikowana lekcja: zwinięty podgląd pokazuje wyjaśnienie i odsłuch",
   await openLesson(page, { data: { ...data, draft: null } as unknown as typeof lesson });
   const card = page.getByTestId("exercise-0");
   await expect(page.getByTestId("exercise-explanation-preview-0")).toHaveText(messages.lessons.explanationPreview.replace("{text}", EXPLANATION));
-  await expect(card.getByTestId("lesson-explanation-audio-listen")).toBeVisible();
+  await expect(card.getByTestId("lesson-explanation-audio-0-listen")).toBeVisible();
   await expect(card.getByTestId("exercise-explanation-audio-0")).toContainText(messages.lessons.explanationAudioLabel);
   // wersja tylko do odczytu: bez „Nagraj ponownie”
-  await expect(card.getByTestId("lesson-explanation-audio-regenerate")).toHaveCount(0);
+  await expect(card.getByTestId("lesson-explanation-audio-0-regenerate")).toHaveCount(0);
   await expect(page.getByTestId("exercise-explanation-preview-1")).toHaveCount(0);
 });
 
@@ -585,7 +585,7 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 1280, height: 800 
     await page.getByTestId("exercise-edit-0").click();
     await expect(page.getByTestId("exercise-explanation-0")).toBeVisible();
     await expectNoHorizontalOverflow(page);
-    for (const id of ["exercise-explanation-0", "lesson-explanation-audio-listen", "lesson-explanation-audio-regenerate"]) {
+    for (const id of ["exercise-explanation-0", "lesson-explanation-audio-0-listen", "lesson-explanation-audio-0-regenerate"]) {
       const box = (await page.getByTestId("exercise-0").getByTestId(id).boundingBox())!;
       expect(box.x, id).toBeGreaterThanOrEqual(-0.5);
       expect(box.x + box.width, id).toBeLessThanOrEqual(viewport.width + 0.5);

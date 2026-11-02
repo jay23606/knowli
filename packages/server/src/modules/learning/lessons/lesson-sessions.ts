@@ -18,7 +18,7 @@ import {
   sessionTasks,
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
-import type { DynamicTopicData, LearningObjective, LessonExerciseDraft, LessonExerciseType, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
+import type { DynamicTopicData, LearningObjective, LessonExerciseType, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { explanationExposureKeyFinder } from "../../../domain/lessons/exercise-explanation";
 import { exerciseExposureText } from "../../../domain/lessons/exposure-key";
 import { resolveLessonTopic } from "../../../domain/lessons/topic-resolution";
@@ -381,7 +381,7 @@ export async function loadExercises(
   if (!subject?.exerciseExplanations || !loaded.some((exercise) => exercise.payload.explanationPl)) return loaded;
   // Ekspozycje cytatów (spec §4.4): tekst ekspozycji każdego ćwiczenia tej wersji.
   const targets = loaded.map((exercise) => ({
-    exposureText: exerciseExposureText(subject, exercise.payload as unknown as LessonExerciseDraft),
+    exposureText: exerciseExposureText(subject, exercise.payload),
     targetKey: exercise.targetKey,
   }));
   // Wyrażenie każdego celu budowane raz na wywołanie (blokada sesji, spec §4.4).

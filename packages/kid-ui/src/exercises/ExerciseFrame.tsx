@@ -326,8 +326,7 @@ const PINNED_HEIGHT_PROPERTY = "--kid-feedback-pinned-height";
  * materiału. Tylko w panelu-nakładce; w trybie przewijanej strony przewija strona. Wysokość wiersza
  * zależy od szerokości, nie od karty, więc zapis nie wywołuje pętli pomiarów. Px wewnętrzne.
  */
-function syncPinnedHeight(overlay: HTMLElement, pageScroll: boolean): void {
-  const pinned = pageScroll ? null : overlay.querySelector<HTMLElement>(".kid-feedback-pinned");
+function syncPinnedHeight(overlay: HTMLElement, pinned: HTMLElement | null): void {
   if (!pinned || !pinned.parentElement) {
     overlay.style.removeProperty(PINNED_HEIGHT_PROPERTY);
     return;
@@ -335,6 +334,17 @@ function syncPinnedHeight(overlay: HTMLElement, pageScroll: boolean): void {
   const gap = Number.parseFloat(getComputedStyle(pinned.parentElement).rowGap) || 0;
   const value = `${Math.ceil(pinned.offsetHeight + gap)}px`;
   if (overlay.style.getPropertyValue(PINNED_HEIGHT_PROPERTY) !== value) overlay.style.setProperty(PINNED_HEIGHT_PROPERTY, value);
+}
+
+/**
+ * Karta wyniku panelu: pierwsza karta odpowiedzi albo mowy poza przypiętym wierszem — wynik nie
+ * zależy od tego, czy wiersz stoi w DOM przed kartą, ani od tego, co w nim jest.
+ */
+function feedbackCardOf(overlay: HTMLElement, pinned: HTMLElement | null): HTMLElement | null {
+  for (const candidate of overlay.querySelectorAll<HTMLElement>(".kid-answer-feedback, .kid-speech-feedback")) {
+    if (!pinned?.contains(candidate)) return candidate;
+  }
+  return null;
 }
 
 /** Panel i klucz, dla którego policzono limit jego karty. */
@@ -352,12 +362,14 @@ type CardSpaceLatch = { overlay: HTMLElement; key: string };
  */
 function syncCardSpace(latch: CardSpaceLatch | null, overlay: HTMLElement, material: HTMLElement): CardSpaceLatch | null {
   const frame = overlay.closest<HTMLElement>(".kid-exercise-frame");
-  const card = overlay.querySelector<HTMLElement>(".kid-answer-feedback, .kid-speech-feedback");
   const page = overlay.closest<HTMLElement>(".kid-page");
   const pageScroll = page?.dataset.zoomed === "true" || page?.dataset.viewportVeryShort === "true";
+  // Najpierw przypięty wiersz, potem karta poza nim.
+  const pinned = overlay.querySelector<HTMLElement>(".kid-feedback-pinned");
+  const card = feedbackCardOf(overlay, pinned);
   // Przypięty wiersz wyjaśnienia jest częścią „reszty panelu” (`overlayHeight − cardHeight`
   // w `feedbackCardMax` i w kluczu niżej); tu dodatkowo zmniejsza dotychczasowy limit karty.
-  syncPinnedHeight(overlay, pageScroll || !frame || !card);
+  syncPinnedHeight(overlay, pageScroll || !frame || !card ? null : pinned);
   if (!frame || !card) {
     overlay.style.removeProperty(CARD_MAX_PROPERTY);
     return null;

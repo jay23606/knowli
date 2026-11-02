@@ -4,27 +4,22 @@
  * bez bazy, sieci i zegara.
  */
 
+import { MAX_LESSON_TEXT_LENGTH } from "@learning/contracts";
 import { sentenceCount } from "../tts-style";
 import { normalizeTargetText } from "../target-key";
 import type { SubjectModule } from "./types";
 
 /**
- * Maksymalna długość wyjaśnienia (znaki) — jak pozostałe pola tekstowe ćwiczenia
- * (`MAX_TEXT_LENGTH` w `pool-validation.ts`, tu osobno, by uniknąć cyklu importów).
- */
-export const MAX_EXPLANATION_LENGTH = 120;
-
-/**
  * Błędy treści wyjaśnienia (pusta lista = poprawne). Tekst jest zwykły i czytany głosem:
- * po przycięciu niepusty, ≤ 120 znaków, bez łamania wiersza i znaczników `*`/`_`, dokładnie
+ * po przycięciu niepusty, ≤ `MAX_LESSON_TEXT_LENGTH` znaków (jak pozostałe pola tekstowe ćwiczenia), bez łamania wiersza i znaczników `*`/`_`, dokładnie
  * jedno zdanie. Komunikaty (po polsku, dla rodzica) mają prefiks `explanationPl:`.
  */
 export function explanationTextErrors(text: string): string[] {
   const trimmed = text.trim();
   if (trimmed === "") return ["explanationPl: wyjaśnienie nie może być puste"];
   const errors: string[] = [];
-  if ([...trimmed].length > MAX_EXPLANATION_LENGTH) {
-    errors.push(`explanationPl: przekracza ${MAX_EXPLANATION_LENGTH} znaków`);
+  if ([...trimmed].length > MAX_LESSON_TEXT_LENGTH) {
+    errors.push(`explanationPl: przekracza ${MAX_LESSON_TEXT_LENGTH} znaków`);
   }
   if (/[\r\n]/u.test(trimmed)) {
     errors.push("explanationPl: wyjaśnienie nie może zawierać łamania wiersza");

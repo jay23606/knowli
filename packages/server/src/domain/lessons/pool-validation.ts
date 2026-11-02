@@ -17,6 +17,7 @@ import {
   MAX_GROUPS,
   MAX_KEY_OPTIONS,
   MAX_KEYWORD_OPTIONS,
+  MAX_LESSON_TEXT_LENGTH,
   MAX_MATCH_EXTRA,
   MAX_MATCH_PAIRS,
   MIN_CLOZE_EXTRA,
@@ -47,8 +48,8 @@ import type { PoolMinimums } from "./lesson-policy";
 /** Znacznik luki w `stem` ćwiczenia `lesson_gap`. */
 export const GAP_MARKER = "___";
 
-/** Maksymalna długość pojedynczego pola tekstowego ćwiczenia (znaki). */
-export const MAX_TEXT_LENGTH = 120;
+/** Maksymalna długość pojedynczego pola tekstowego ćwiczenia (znaki), także wyjaśnienia błędu — limit z kontraktów. */
+export const MAX_TEXT_LENGTH = MAX_LESSON_TEXT_LENGTH;
 
 /** Maksymalna liczba wariantów `acceptedAnswers`. */
 export const MAX_ACCEPTED_ANSWERS = 40;

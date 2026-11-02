@@ -3,7 +3,15 @@ import { messages, type AttemptDto, type FeedbackDto, type TaskDto } from "@lear
 import { expectFrameFillsViewport } from "./helpers/kid-frame";
 import { installKidUiFixture } from "./helpers/kid-ui-fixture";
 import { recordAttemptPosts, tapPoolAndCheck } from "./helpers/lesson-assignment-task";
-import { lessonAudioFixture, openLessonTask } from "./helpers/lesson-audio";
+import {
+  lessonAudioFixture,
+  listenAudioPausedWatched,
+  listenChoiceTask,
+  openLessonTask,
+  setListenAudioMode,
+  stubListenAudio,
+  watchListenPlayback,
+} from "./helpers/lesson-audio";
 
 /**
  * Odczyt pełnego zdania po odpowiedzi w lekcji (design odczytu zdania §7, API
@@ -416,38 +424,42 @@ test("going offline replaces the dock, so the explanation cannot be played", asy
   await context.setOffline(false);
 });
 
-test("the explanation row fits the feedback dock on every form factor", async ({ page }, testInfo) => {
-  await open(page, [attempt({ kind: "incorrect", correctText: "He goes to school.", hintPl: EXPLANATION,
-    correctAudioAssetId: sentenceAssetId, explanationAudioAssetId: explanationAssetId })]);
-  await answer(page);
-  const measured: Record<string, unknown> = {};
-  for (const viewport of [
-    { width: 375, height: 812 },
-    { width: 812, height: 375 },
-    { width: 768, height: 1024 },
-    { width: 1280, height: 800 },
-  ]) {
+const EXPLANATION_VIEWPORTS = [
+  { width: 375, height: 812 },
+  { width: 812, height: 375 },
+  { width: 768, height: 1024 },
+  { width: 1280, height: 800 },
+];
+
+interface ExplanationRowBoxes { label: string; width: number; viewportBox: Box; listen: Box; text: Box }
+
+/**
+ * Dla każdego formatu: rama wypełnia okno, „Posłuchaj wyjaśnienia” (≥ 48 px) i tekst
+ * wyjaśnienia mieszczą się w doku i w oknie pod wynikiem, „Dalej” (≥ 54 px) jest osiągalne,
+ * bez poziomego przepełnienia strony i doku. `extra` dokłada sprawdzenia danego testu.
+ */
+async function expectExplanationRowFits(page: Page, extra: (boxes: ExplanationRowBoxes) => Promise<void>): Promise<void> {
+  for (const viewport of EXPLANATION_VIEWPORTS) {
     await page.setViewportSize(viewport);
     const label = `${viewport.width}x${viewport.height}`;
     await expectFrameFillsViewport(page, viewport);
     const viewportBox: Box = { x: 0, y: 0, width: viewport.width, height: viewport.height };
     const dock = page.getByTestId("kid-feedback-dock");
     const listen = dock.getByTestId("kid-explanation-audio");
-    const text = dock.getByTestId("kid-explanation-text");
     await listen.scrollIntoViewIfNeeded();
-    const [dockBox, listenBox, textBox, result] = await Promise.all([boxOf(dock), boxOf(listen), boxOf(text), boxOf(dock.getByTestId("kid-feedback"))]);
-    measured[label] = { dock: dockBox, listen: listenBox, text: textBox, result };
-    const details = JSON.stringify(measured[label]);
+    const [dockBox, listenBox, textBox, result] = await Promise.all([
+      boxOf(dock), boxOf(listen), boxOf(dock.getByTestId("kid-explanation-text")), boxOf(dock.getByTestId("kid-feedback")),
+    ]);
+    const details = JSON.stringify({ dock: dockBox, listen: listenBox, text: textBox, result });
     expect(listenBox.width, `listen width at ${label}: ${details}`).toBeGreaterThanOrEqual(48);
     expect(listenBox.height, `listen height at ${label}: ${details}`).toBeGreaterThanOrEqual(48);
     expect(within(listenBox, dockBox), `listen inside dock at ${label}: ${details}`).toBe(true);
     expect(within(listenBox, viewportBox), `listen inside viewport at ${label}: ${details}`).toBe(true);
-    expect(within(textBox, dockBox), `text inside dock at ${label}: ${JSON.stringify(textBox)}`).toBe(true);
-    expect(within(textBox, viewportBox), `text inside viewport at ${label}: ${JSON.stringify(measured[label])}`).toBe(true);
-    // Wiersz wyjaśnienia stoi pod wynikiem, a przycisk na jego początku.
-    expect(textBox.y, `text below the result at ${label}`).toBeGreaterThanOrEqual(result.y + result.height - 1);
-    expect(listenBox.x + listenBox.width, `listen before the text at ${label}`).toBeLessThanOrEqual(textBox.x + 1);
-    if (viewport.width === 375) expect(textBox.width, `text width at ${label}`).toBeGreaterThanOrEqual(220);
+    expect(within(textBox, dockBox), `text inside dock at ${label}: ${details}`).toBe(true);
+    expect(within(textBox, viewportBox), `text inside viewport at ${label}: ${details}`).toBe(true);
+    // Wiersz wyjaśnienia stoi pod wynikiem.
+    expect(textBox.y, `text below the result at ${label}: ${details}`).toBeGreaterThanOrEqual(result.y + result.height - 1);
+    await extra({ label, width: viewport.width, viewportBox, listen: listenBox, text: textBox });
     // „Dalej” osiągalne w viewporcie.
     const next = page.getByTestId("kid-next");
     await next.scrollIntoViewIfNeeded();
@@ -456,8 +468,84 @@ test("the explanation row fits the feedback dock on every form factor", async ({
     expect(nextBox.height, `next height at ${label}`).toBeGreaterThanOrEqual(54);
     expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), `page overflow at ${label}`).toBe(false);
     expect(await dock.evaluate((element) => element.scrollWidth > element.clientWidth + 1), `dock overflow at ${label}`).toBe(false);
-    await page.screenshot({ path: testInfo.outputPath(`explanation-${label}.png`) });
   }
+}
+
+test("the explanation row fits the feedback dock on every form factor", async ({ page }, testInfo) => {
+  await open(page, [attempt({ kind: "incorrect", correctText: "He goes to school.", hintPl: EXPLANATION,
+    correctAudioAssetId: sentenceAssetId, explanationAudioAssetId: explanationAssetId })]);
+  await answer(page);
+  await expectExplanationRowFits(page, async ({ label, width, listen, text }) => {
+    // Przycisk na początku wiersza.
+    expect(listen.x + listen.width, `listen before the text at ${label}`).toBeLessThanOrEqual(text.x + 1);
+    if (width === 375) expect(text.width, `text width at ${label}`).toBeGreaterThanOrEqual(220);
+    await page.screenshot({ path: testInfo.outputPath(`explanation-${label}.png`) });
+  });
+});
+
+/**
+ * Dok „Posłuchaj i wybierz” (`lesson_listen_choice`) z wyjaśnieniem: dok nie ma przycisków
+ * zdania (odczyt gra przycisk polecenia `kid-play`), wiersz wyjaśnienia mieści się w doku na
+ * każdym formacie i nie zasłania przycisku polecenia, „Posłuchaj wyjaśnienia” odtwarza
+ * nagranie dopiero po kliknięciu, a odsłuch zdania z polecenia je przerywa.
+ */
+const listenStimulusId = "10000000-0000-4000-8000-000000000923";
+const listenOptionIds = ["10000000-0000-4000-8000-000000000924", "10000000-0000-4000-8000-000000000925"];
+const listenTask = listenChoiceTask(ids.sessionId, "10000000-0000-4000-8000-000000000918", listenOptionIds,
+  { stem: "He ___ to school every day.", options: ["goes", "go"] });
+const wrongListen: AttemptDto = {
+  ...attempt({ kind: "incorrect", correctText: "He goes to school every day.", hintPl: EXPLANATION,
+    correctAudioAssetId: sentenceAssetId, explanationAudioAssetId: explanationAssetId }),
+  taskId: listenTask.taskId, modality: "choice",
+};
+
+test("„Posłuchaj i wybierz”: the explanation row fits the dock, keeps the instruction play button clear and plays only on demand", async ({ page }) => {
+  await stubListenAudio(page, "end");
+  const media = trackMedia(page);
+  await installKidUiFixture(page, {
+    ...lessonAudioFixture(ids, [listenTask, second]), attempts: [wrongListen],
+    disclosure: { taskId: listenTask.taskId, stepId: "d1", kind: "audio", reveal: null, audioAssetId: listenStimulusId },
+  });
+  await openLessonTask(page, "kid-lesson-stem");
+  const wrong = page.getByTestId("kid-option").filter({ hasText: /^go$/ });
+  // Opcje odblokowuje koniec odsłuchu bodźca.
+  await expect(wrong).toBeEnabled();
+  await wrong.click();
+  const dock = page.getByTestId("kid-feedback-dock");
+  await expect(dock).toHaveAttribute("data-tone", "incorrect");
+  await expect(dock.getByTestId("kid-explanation-text")).toHaveText(EXPLANATION);
+  await expect(dock.getByTestId("kid-sentence-audio")).toHaveCount(0);
+  await expect(dock.getByTestId("kid-explanation-audio")).toBeVisible();
+  // Samo gra tylko odczyt zdania, nie wyjaśnienie.
+  await expect.poll(() => media).toEqual([`/api/v1/media/${listenStimulusId}`, sentencePath]);
+
+  await expectExplanationRowFits(page, async ({ label, viewportBox }) => {
+    // Przycisk polecenia (odczyt zdania) zostaje osiągalny i dok go nie zasłania.
+    const play = page.getByTestId("kid-play");
+    await play.scrollIntoViewIfNeeded();
+    const [playBox, dockBox] = await Promise.all([boxOf(play), boxOf(dock)]);
+    expect(within(playBox, viewportBox), `play inside viewport at ${label}: ${JSON.stringify({ playBox, dockBox })}`).toBe(true);
+    expect(overlaps(playBox, dockBox), `dock clear of the play button at ${label}: ${JSON.stringify({ playBox, dockBox })}`).toBe(false);
+  });
+
+  // Od teraz nagrania grają do `pause()`: wyjaśnienie trwa, gdy dziecko sięga po zdanie.
+  await setListenAudioMode(page, "hold");
+  const explanationButton = dock.getByTestId("kid-explanation-audio");
+  await explanationButton.click();
+  await expect.poll(() => media.at(-1)).toBe(explanationPath);
+  await expect(explanationButton).toHaveAttribute("data-sound-active", "true");
+  expect(await watchListenPlayback(page), "the explanation is playing").toBe(true);
+  // Odsłuch zdania z polecenia przerywa wyjaśnienie: pauza elementu wyjaśnienia, jego
+  // wskaźnik gaśnie, a nagranie zdania gra bez nowej autoryzacji bodźca.
+  await page.getByTestId("kid-play").click();
+  await expect.poll(() => media.at(-1)).toBe(sentencePath);
+  await expect.poll(() => listenAudioPausedWatched(page), "explanation element paused").toBe(true);
+  await expect(explanationButton).not.toHaveAttribute("data-sound-active", "true");
+  await expect(page.getByTestId("kid-play")).toHaveAttribute("data-sound-active", "true");
+  expect(media.filter((path) => path === `/api/v1/media/${listenStimulusId}`)).toHaveLength(1);
+  await page.getByTestId("kid-next").click();
+  await expect(page.getByTestId("kid-lesson-gap")).toContainText("She");
+  await expect(page.getByTestId("kid-explanation-text")).toHaveCount(0);
 });
 
 test("the sentence button shows the playing ring during readback", async ({ page }) => {

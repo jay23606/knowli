@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useRef, type ReactNode } from "react";
 import { ActionIcon, Alert, Button, Checkbox, Group, Menu, NativeSelect, Paper, Radio, Stack, Text, TextInput, Textarea } from "@mantine/core";
-import { messages, type CalculationSpec, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
+import { MAX_LESSON_TEXT_LENGTH, messages, type CalculationSpec, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
 import { ParentIcon } from "../ParentIcon";
 import AssignmentFields from "./AssignmentFields";
 import ClozeFields from "./ClozeFields";
@@ -11,8 +11,10 @@ import { clozeWordsOf, filledClozeOf, keywordsAnswerOf, nextRequiredElementId, t
 
 /** Typy z polem „Zdanie” (stem) w edycji. */
 const STEM_LABEL_TYPES = new Set(["lesson_choice", "lesson_listen_choice", "lesson_gap"]);
-/** Najdłuższe wyjaśnienie (jak `MAX_TEXT_LENGTH` serwera). */
-const EXPLANATION_MAX_LENGTH = 120;
+/** Najdłuższe wyjaśnienie (limit pól tekstowych ćwiczenia z kontraktów). */
+const EXPLANATION_MAX_LENGTH = MAX_LESSON_TEXT_LENGTH;
+/** Prefiks błędów walidacji wyjaśnienia z serwera (`explanationTextErrors`). */
+const EXPLANATION_ERROR_PREFIX = "explanationPl:";
 const UNITS = ["cm", "m", "km"].map((unit) => ({ value: unit, label: unit }));
 
 /** Treść i odpowiedź karty w podglądzie (bez pól edycji). */
@@ -150,6 +152,9 @@ function LessonExerciseCard({
   const forcedOpen = changed || errors !== undefined;
   const preview = exercisePreview(ex);
   const explanationText = explanations ? ex.explanationPl?.trim() ?? "" : "";
+  // Błędy wyjaśnienia także przy polu (pełna lista zostaje w alercie karty).
+  const explanationErrors = errors?.filter((message) => message.startsWith(EXPLANATION_ERROR_PREFIX))
+    .map((message) => message.slice(EXPLANATION_ERROR_PREFIX.length).trim()) ?? [];
   // Nagranie wyjaśnienia z widoczną etykietą — przy podglądzie wyjaśnienia (zwinięta karta)
   // albo pod jego polem (rozwinięta), nie na górze karty, gdzie wyglądałoby na nagranie pytania.
   const explanationAudioLabelId = `exercise-explanation-audio-label-${index}`;
@@ -157,7 +162,7 @@ function LessonExerciseCard({
     <div className="pp-lesson-explanation-audio" role="group" aria-labelledby={explanationAudioLabelId} data-testid={`exercise-explanation-audio-${index}`}>
       <Text size="sm" fw={600} id={explanationAudioLabelId}>{messages.lessons.explanationAudioLabel}</Text>
       <PromptAudioControls audio={explanationAudio} target={{ kind: "prompt", itemRevisionId }} role="explanation_audio" lessonDraftId={lessonDraftId} deckId={deckId}
-        canRegenerate={editable} locked={busy || audioLocked} testId="lesson-explanation-audio" onPlay={onPlay}
+        canRegenerate={editable} locked={busy || audioLocked} testId={`lesson-explanation-audio-${index}`} onPlay={onPlay}
         targetLabel={messages.lessons.explanationAudioTarget.replace("{exercise}", messages.lessons.exerciseNumber.replace("{n}", number))} />
     </div>
   ) : null;
@@ -520,9 +525,10 @@ function LessonExerciseCard({
                   description={<>
                     {messages.lessons.explanationHint}{" "}
                     <span data-testid={`exercise-explanation-count-${index}`}>
-                      {messages.lessons.explanationCounter.replace("{n}", String((ex.explanationPl ?? "").length))}
+                      {messages.lessons.explanationCounter.replace("{n}", String((ex.explanationPl ?? "").length)).replace("{max}", String(EXPLANATION_MAX_LENGTH))}
                     </span>
                   </>}
+                  error={explanationErrors.length > 0 ? explanationErrors.join(" ") : undefined}
                   data-testid={`exercise-explanation-${index}`} value={ex.explanationPl ?? ""} disabled={disabled} {...described}
                   onChange={(e) => onMutate({ explanationPl: e.currentTarget.value })} />
                 {explanationAudioBlock}
