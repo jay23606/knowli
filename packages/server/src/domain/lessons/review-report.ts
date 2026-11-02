@@ -1,7 +1,9 @@
 import type { ReviewCategory } from "./review-criteria";
 import type { LessonExerciseDraft } from "./types";
 
-export type ReviewReason = "disabled" | "not_configured" | "failed" | "timeout" | "limit";
+/** Powody, dla których kontrola nie sprawdziła zagadnienia (lustro w kontraktach: `ReviewReasonSchema`). */
+export const REVIEW_REASONS = ["disabled", "not_configured", "failed", "timeout", "limit"] as const;
+export type ReviewReason = (typeof REVIEW_REASONS)[number];
 
 /** Raport przeglądu krytyka zapisywany przy wersji szkicu (bez danych dziecka). */
 export interface LessonReviewReport {

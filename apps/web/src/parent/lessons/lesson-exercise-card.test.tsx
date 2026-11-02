@@ -251,6 +251,14 @@ describe("LessonExerciseCard: automatyczna kontrola jakości", () => {
     expect(markup).toContain('aria-describedby="exercise-leak-0-text exercise-review-0-text"');
   });
 
+  it("powód z „{snippet}” i „{reason}” trafia do notki bez ponownego podstawiania", () => {
+    const notice = reviewNoticeFor({ ...changedEntry, reasonPl: "Patrz {reason} {snippet}.", beforePl: "{variants}", addedVariants: [] }, undefined)!;
+    expect(notice.lines).toEqual([
+      "Uwaga kontroli (niejednoznaczne): Patrz {reason} {snippet}.",
+      "Było: {variants}",
+    ]);
+  });
+
   it("bez raportu: brak plakietki i notki", () => {
     const markup = render(null);
     expect(markup).not.toContain("exercise-review-");

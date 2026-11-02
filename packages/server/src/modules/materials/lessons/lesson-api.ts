@@ -377,13 +377,15 @@ async function readLessonDraftDto(
         }))
     : [];
   // Raport kontroli jakości: tylko edytowalny szkic (wersja opublikowana jest niezmienna, rodzic nie ma czego poprawić).
-  const review = context.review && !published
-    ? reviewDto(
-        context.review,
-        new Map(revisions.map((r) => [r.itemId, exerciseFingerprint(r.payload)])),
-        (objectiveId) => resolveLessonTopic(services.subjects, context)?.topic.objectives.find((o) => o.id === objectiveId)?.titlePl ?? objectiveId,
-      )
-    : undefined;
+  let review: LessonReviewDto | undefined;
+  if (context.review && !published) {
+    const titles = new Map((resolveLessonTopic(services.subjects, context)?.topic.objectives ?? []).map((o) => [o.id, o.titlePl] as const));
+    review = reviewDto(
+      context.review,
+      new Map(revisions.map((r) => [r.itemId, exerciseFingerprint(r.payload)])),
+      (objectiveId) => titles.get(objectiveId) ?? objectiveId,
+    );
+  }
 
   return {
     id: version.id,

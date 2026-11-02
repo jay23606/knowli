@@ -10,8 +10,10 @@ import {
   type LessonDraftDto,
   type LessonPromptAudioDto,
   type LessonReviewDto,
+  type ReviewCategoryDto,
 } from "@learning/contracts";
 import { ParentIcon } from "../ParentIcon";
+import { fillTemplate, reviewCategoryLabel } from "./LessonReviewBanner";
 import AssignmentFields from "./AssignmentFields";
 import ClozeFields from "./ClozeFields";
 import PromptAudioControls, { VoiceToneSelect } from "./PromptAudioControls";
@@ -86,15 +88,14 @@ export function reviewNoticeFor(
   note: LessonReviewDto["notes"][number] | undefined,
 ): ExerciseReviewNotice | null {
   if (!changed && !note) return null;
-  const finding = (category: string, reason: string) => messages.lessons.reviewNote
-    .replace("{category}", () => messages.lessons.reviewCategory[category] ?? category)
-    .replace("{reason}", () => reason);
+  const finding = (category: ReviewCategoryDto, reason: string) =>
+    fillTemplate(messages.lessons.reviewNote, { category: reviewCategoryLabel(category), reason });
   const lines: string[] = [];
   if (changed) {
     lines.push(finding(changed.category, changed.reasonPl));
-    lines.push(messages.lessons.reviewChangedBefore.replace("{before}", () => changed.beforePl));
+    lines.push(fillTemplate(messages.lessons.reviewChangedBefore, { before: changed.beforePl }));
     if (changed.addedVariants.length > 0) {
-      lines.push(messages.lessons.reviewAddedVariants.replace("{variants}", () => changed.addedVariants.join(", ")));
+      lines.push(fillTemplate(messages.lessons.reviewAddedVariants, { variants: changed.addedVariants.join(", ") }));
     }
   }
   if (note) {

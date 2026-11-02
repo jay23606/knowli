@@ -839,8 +839,9 @@ test("kontrola jakości: wariant bez zmian, część niesprawdzona, lekcja niesp
       status: "unreviewed", color: "yellow", summary: messages.lessons.reviewUnreviewed.replace("{reason}", "błąd usługi"), partial: null, suspicious: null,
     },
     {
+      // jedynym ustaleniem jest zagadnienie podejrzane: żółty baner bez podsumowania (nigdy „nie znalazła problemów”)
       review: { ...reviewed, changed: [], dropped: [], notes: [], toppedUp: 0, objectives: [{ objectiveId: OBJ_A, title: TITLE_A, status: "suspicious" }, reviewed.objectives[1]] },
-      status: "reviewed", color: "blue", summary: messages.lessons.reviewBannerClean, partial: null,
+      status: "reviewed", color: "yellow", summary: null, partial: null,
       suspicious: messages.lessons.reviewSuspicious.replace("{objective}", TITLE_A),
     },
   ];
@@ -849,12 +850,15 @@ test("kontrola jakości: wariant bez zmian, część niesprawdzona, lekcja niesp
     const banner = page.getByTestId("lesson-review-banner");
     await expect(banner).toHaveAttribute("data-review-status", item.status);
     expect(await alertBackgroundIs(banner, item.color)).toBe(true);
-    await expect(page.getByTestId("lesson-review-summary")).toHaveText(item.summary);
+    if (item.summary) await expect(page.getByTestId("lesson-review-summary")).toHaveText(item.summary);
+    else await expect(page.getByTestId("lesson-review-summary")).toHaveCount(0);
+    if (item.summary !== messages.lessons.reviewBannerClean) await expect(banner).not.toContainText(messages.lessons.reviewBannerClean);
     if (item.partial) await expect(page.getByTestId("lesson-review-partial")).toHaveText(item.partial);
     else await expect(page.getByTestId("lesson-review-partial")).toHaveCount(0);
     if (item.suspicious) await expect(page.getByTestId("lesson-review-suspicious-0")).toHaveText(item.suspicious);
     else await expect(page.getByTestId("lesson-review-suspicious-0")).toHaveCount(0);
-    if (item.summary === messages.lessons.reviewBannerClean || item.status === "unreviewed") {
+    // zastrzeżenie o zakresie tylko przy liczbach zmian (tu: wariant „część niesprawdzona”)
+    if (item.status !== "partial") {
       await expect(page.getByTestId("lesson-review-scope")).toHaveCount(0);
     }
     // bez modelu i usuniętych ćwiczeń nie ma czego rozwijać

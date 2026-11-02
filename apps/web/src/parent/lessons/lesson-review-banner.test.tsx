@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { messages, type LessonReviewDto } from "@learning/contracts";
-import LessonReviewBanner, { reviewBannerContent } from "./LessonReviewBanner";
+import LessonReviewBanner, { fillTemplate, reviewBannerContent } from "./LessonReviewBanner";
 import { renderParentMarkup } from "../test-render";
 
 const EX = "00000000-0000-4000-8000-000000000001";
@@ -60,9 +60,34 @@ describe("reviewBannerContent", () => {
       summary: "Automatyczna kontrola nie sprawdziła tej lekcji (kontrola nie jest skonfigurowana). Przejrzyj ćwiczenia uważniej.",
       scope: null, partial: null, model: null,
     });
-    const suspicious = reviewBannerContent({ ...base, objectives: [{ objectiveId: "o1", title: "Ubrania", status: "suspicious" }] });
-    expect(suspicious.tone).toBe("reviewed");
-    expect(suspicious.suspicious).toEqual([messages.lessons.reviewSuspicious.replace("{objective}", "Ubrania")]);
+  });
+
+  it("zagadnienie podejrzane bez innych ustaleń: żółty ton, sama linia o zagadnieniu, nigdy „nie znalazła problemów”", () => {
+    const objectives = [{ objectiveId: "o1", title: "Ubrania", status: "suspicious" as const }, base.objectives[1]!];
+    const suspicious = reviewBannerContent({ ...base, objectives });
+    expect(suspicious).toMatchObject({
+      tone: "attention", summary: null, scope: null,
+      suspicious: [messages.lessons.reviewSuspicious.replace("{objective}", "Ubrania")],
+    });
+    // z liczbami > 0: liczby z zastrzeżeniem zakresu i linia o zagadnieniu
+    const withCounts = reviewBannerContent({ ...base, objectives, toppedUp: 2 });
+    expect(withCounts.tone).toBe("attention");
+    expect(withCounts.summary).toBe("Automatyczna kontrola jakości — poprawione: 0 · usunięte: 0 · dogenerowane: 2 · uwagi: 0.");
+    expect(withCounts.scope).toBe(messages.lessons.reviewBannerScope);
+    expect(withCounts.suspicious).toHaveLength(1);
+    const markup = renderParentMarkup(<LessonReviewBanner review={{ ...base, objectives }} />);
+    expect(markup).not.toContain(messages.lessons.reviewBannerClean);
+    expect(markup).not.toContain('data-testid="lesson-review-summary"');
+    expect(markup).toContain("--alert-bg:var(--mantine-color-yellow-light)");
+  });
+
+  it("szablony podstawiane jednym przebiegiem: tekst modelu z „{snippet}” nie jest podstawiany ponownie", () => {
+    expect(fillTemplate("{a} i {b} {c}", { a: "{b}", b: "x" })).toBe("{b} i x {c}");
+    const content = reviewBannerContent({
+      ...base,
+      dropped: [{ objectiveTitle: "{reason}", category: "other", reasonPl: "Zobacz {snippet} i {category}.", snippet: "S" }],
+    });
+    expect(content.dropped).toEqual(["{reason} — inne: Zobacz {snippet} i {category}. (było: S)"]);
   });
 });
 

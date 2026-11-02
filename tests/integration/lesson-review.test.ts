@@ -688,6 +688,9 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
     expect(counts.guided + counts.productive + counts.independent).toBeGreaterThan(0);
     expect(report.changed).toEqual([expect.objectContaining({ exerciseId: draft.exercises.find((exercise) => exercise.instructionPl === FIXED)!.id })]);
     expect(report.objectives).toEqual([{ objectiveId, status: "reviewed" }]);
+    // DTO panelu rodzica: suma dogenerowanych ćwiczeń rundy pod etap
+    expect(draft.review!.toppedUp).toBe(counts.guided + counts.productive + counts.independent);
+    expect(draft.review!.toppedUp).toBeGreaterThan(0);
   });
 
   it("prywatność: krytyk nie dostaje tematów zdań, imienia ani polecenia rodzica", async () => {
@@ -836,7 +839,7 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       expect(b.draft.review).not.toHaveProperty("model");
     });
 
-    it("usunięte ćwiczenia i dogenerowanie: tytuł zagadnienia zamiast identyfikatora, suma dogenerowanych", async () => {
+    it("usunięte ćwiczenia: tytuł zagadnienia zamiast identyfikatora", async () => {
       const { services, reviewer } = await world();
       reviewer.behavior = (input) => {
         if (reviewer.inputs.length !== 1) return verdictsFor(input, {});
@@ -851,8 +854,6 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
         objectiveTitle: draft.dynamicTopic!.objectives[objectiveIndex]!.titlePl,
         category: "wrong_answer", reasonPl: "Błędny klucz.", snippet: report.dropped[0]!.snippet,
       }]);
-      const toppedUp = report.toppedUp.reduce((sum, entry) => sum + entry.guided + entry.productive + entry.independent, 0);
-      expect(draft.review!.toppedUp).toBe(toppedUp);
     });
 
     it("reviewService w katalogu i w zestawie tylko, gdy usługa jest znana", async () => {

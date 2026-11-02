@@ -2,13 +2,22 @@
 
 import { useId, useState } from "react";
 import { Alert, Button, Stack, Text } from "@mantine/core";
-import { messages, type LessonReviewDto } from "@learning/contracts";
+import { messages, type LessonReviewDto, type ReviewCategoryDto, type ReviewReasonDto } from "@learning/contracts";
 import { ParentIcon } from "../ParentIcon";
+
+/**
+ * Podstawia `{klucz}` w szablonie jednym przebiegiem: tekst wstawiony z raportu (np. powód modelu
+ * zawierający „{snippet}”) nie jest ponownie podstawiany. Nieznany klucz zostaje bez zmian.
+ */
+export function fillTemplate(template: string, values: Readonly<Record<string, string | number>>): string {
+  return template.replace(/\{(\w+)\}/g, (match, key: string) => (Object.hasOwn(values, key) ? String(values[key]) : match));
+}
 
 /** Teksty banera kontroli jakości złożone z katalogu komunikatów (bez Reacta — do testów). */
 export interface ReviewBannerContent {
   tone: "reviewed" | "attention";
-  summary: string;
+  /** Podsumowanie; null, gdy jedynym ustaleniem są zagadnienia podejrzane (liczby same zera). */
+  summary: string | null;
   /** Zastrzeżenie o zakresie liczb (tylko przy liczbach zmian). */
   scope: string | null;
   partial: string | null;
@@ -17,49 +26,59 @@ export interface ReviewBannerContent {
   dropped: string[];
 }
 
-const reasonLabel = (reason: string | undefined) =>
-  reason === undefined ? "" : messages.lessons.reviewReason[reason] ?? reason;
-const categoryLabel = (category: string) => messages.lessons.reviewCategory[category] ?? category;
+export const reviewReasonLabel = (reason: ReviewReasonDto) => messages.lessons.reviewReason[reason];
+export const reviewCategoryLabel = (category: ReviewCategoryDto) => messages.lessons.reviewCategory[category];
 
 export function reviewBannerContent(review: LessonReviewDto): ReviewBannerContent {
   const unreviewed = review.objectives.filter((objective) => objective.status === "unreviewed");
   // Grupy po powodzie w kolejności pierwszego wystąpienia: „{tytuły} ({powód})”, oddzielone „; ”.
-  const byReason = new Map<string, string[]>();
+  const byReason = new Map<ReviewReasonDto | undefined, string[]>();
   for (const objective of unreviewed) {
-    const key = objective.reason ?? "";
-    byReason.set(key, [...(byReason.get(key) ?? []), objective.title]);
+    byReason.set(objective.reason, [...(byReason.get(objective.reason) ?? []), objective.title]);
   }
+  const suspicious = review.objectives
+    .filter((objective) => objective.status === "suspicious")
+    .map((objective) => fillTemplate(messages.lessons.reviewSuspicious, { objective: objective.title }));
   const counts = { changed: review.changed.length, dropped: review.dropped.length, toppedUp: review.toppedUp, notes: review.notes.length };
-  const clean = review.status === "reviewed" && Object.values(counts).every((n) => n === 0);
+  const anyCount = Object.values(counts).some((n) => n > 0);
+  // „Nie znalazła problemów” tylko przy pełnej kontroli bez zmian i bez zagadnień podejrzanych.
+  const clean = review.status === "reviewed" && !anyCount && suspicious.length === 0;
   const summary = review.status === "unreviewed"
-    ? messages.lessons.reviewUnreviewed.replace("{reason}", () => [...byReason.keys()].map(reasonLabel).filter(Boolean).join(", "))
+    ? fillTemplate(messages.lessons.reviewUnreviewed, {
+        reason: [...byReason.keys()].flatMap((reason) => (reason === undefined ? [] : [reviewReasonLabel(reason)])).join(", "),
+      })
     : clean
       ? messages.lessons.reviewBannerClean
-      : messages.lessons.reviewBanner.replace(/\{(changed|dropped|toppedUp|notes)\}/g, (_match, key: keyof typeof counts) => String(counts[key]));
+      : anyCount || review.status === "partial"
+        ? fillTemplate(messages.lessons.reviewBanner, counts)
+        : null;
   return {
-    tone: review.status === "reviewed" ? "reviewed" : "attention",
+    tone: review.status === "reviewed" && suspicious.length === 0 ? "reviewed" : "attention",
     summary,
-    scope: review.status !== "unreviewed" && !clean ? messages.lessons.reviewBannerScope : null,
+    scope: summary !== null && review.status !== "unreviewed" && !clean ? messages.lessons.reviewBannerScope : null,
     partial: review.status === "partial"
-      ? messages.lessons.reviewPartial.replace("{list}", () =>
-          [...byReason.entries()].map(([reason, titles]) => `${titles.join(", ")} (${reasonLabel(reason || undefined)})`).join("; "))
+      ? fillTemplate(messages.lessons.reviewPartial, {
+          list: [...byReason.entries()]
+            .map(([reason, titles]) => (reason === undefined ? titles.join(", ") : `${titles.join(", ")} (${reviewReasonLabel(reason)})`))
+            .join("; "),
+        })
       : null,
-    suspicious: review.objectives
-      .filter((objective) => objective.status === "suspicious")
-      .map((objective) => messages.lessons.reviewSuspicious.replace("{objective}", () => objective.title)),
-    model: review.model ? messages.lessons.reviewModel.replace("{model}", () => review.model!) : null,
-    dropped: review.dropped.map((entry) => messages.lessons.reviewDroppedItem
-      .replace("{objective}", () => entry.objectiveTitle)
-      .replace("{category}", () => categoryLabel(entry.category))
-      .replace("{reason}", () => entry.reasonPl)
-      .replace("{snippet}", () => entry.snippet)),
+    suspicious,
+    model: review.model ? fillTemplate(messages.lessons.reviewModel, { model: review.model }) : null,
+    dropped: review.dropped.map((entry) => fillTemplate(messages.lessons.reviewDroppedItem, {
+      objective: entry.objectiveTitle,
+      category: reviewCategoryLabel(entry.category),
+      reason: entry.reasonPl,
+      snippet: entry.snippet,
+    })),
   };
 }
 
 /**
  * Baner automatycznej kontroli jakości szkicu lekcji (PR 2 etapu przeglądu): liczby zmian, zagadnienia
  * niesprawdzone i podejrzane, a w „Szczegółach kontroli” model i usunięte ćwiczenia. Wskazówka, nie błąd —
- * bez `role="alert"`; niebieski dla pełnej kontroli, żółty, gdy część lekcji wymaga uważniejszego przejrzenia.
+ * bez `role="alert"`; niebieski dla pełnej kontroli, żółty, gdy część lekcji (zagadnienia niesprawdzone
+ * albo podejrzane) wymaga uważniejszego przejrzenia.
  */
 export default function LessonReviewBanner({ review }: { review: LessonReviewDto }) {
   const content = reviewBannerContent(review);
@@ -70,7 +89,7 @@ export default function LessonReviewBanner({ review }: { review: LessonReviewDto
     <Alert color={content.tone === "reviewed" ? "blue" : "yellow"} variant="light" role="note" data-testid="lesson-review-banner"
       data-review-status={review.status} icon={<ParentIcon name={content.tone === "reviewed" ? "info" : "alert-triangle"} />}>
       <Stack gap={6} align="flex-start">
-        <Text size="sm" data-testid="lesson-review-summary">{content.summary}</Text>
+        {content.summary && <Text size="sm" data-testid="lesson-review-summary">{content.summary}</Text>}
         {content.scope && <Text size="sm" className="pp-editor-muted" data-testid="lesson-review-scope">{content.scope}</Text>}
         {content.partial && <Text size="sm" data-testid="lesson-review-partial">{content.partial}</Text>}
         {content.suspicious.map((line, i) => <Text key={i} size="sm" data-testid={`lesson-review-suspicious-${i}`}>{line}</Text>)}

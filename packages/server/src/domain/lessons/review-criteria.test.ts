@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { REVIEW_CATEGORY_VALUES, messages } from "@learning/contracts";
+import { REVIEW_CATEGORY_VALUES, ReviewReasonSchema, messages, type ReviewReasonDto } from "@learning/contracts";
+import { REVIEW_REASONS, type ReviewReason } from "./review-report";
 import {
   HARD_REVIEW_CATEGORIES,
   NOTE_ONLY_REVIEW_CATEGORIES,
@@ -104,5 +105,14 @@ describe("kategorie kontroli w kontraktach", () => {
   it("lustro kategorii w kontraktach i etykiety panelu rodzica odpowiadają domenie", () => {
     expect([...REVIEW_CATEGORY_VALUES]).toEqual([...REVIEW_CATEGORIES]);
     expect(Object.keys(messages.lessons.reviewCategory).sort()).toEqual([...REVIEW_CATEGORIES].sort());
+  });
+
+  it("powody braku kontroli w kontraktach i etykiety panelu rodzica odpowiadają domenie", () => {
+    expect([...ReviewReasonSchema.options]).toEqual([...REVIEW_REASONS]);
+    expect(Object.keys(messages.lessons.reviewReason).sort()).toEqual([...REVIEW_REASONS].sort());
+    // Zgodność typów w obie strony (błąd kompilacji przy rozjeździe unii).
+    const toDto = (reason: ReviewReason): ReviewReasonDto => reason;
+    const toDomain = (reason: ReviewReasonDto): ReviewReason => reason;
+    expect(toDomain(toDto("limit"))).toBe("limit");
   });
 });

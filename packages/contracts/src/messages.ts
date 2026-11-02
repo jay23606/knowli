@@ -4,6 +4,7 @@
  * domenę (feedback) trafiają do klienta w DTO — tutaj tylko stałe etykiety.
  */
 import type { TestGoal } from "./mock-tests";
+import type { ReviewCategoryDto, ReviewReasonDto } from "./lessons";
 
 export const messages = {
   app: {
@@ -1139,7 +1140,7 @@ export const messages = {
       failed: "błąd usługi",
       timeout: "przekroczony czas",
       limit: "osiągnięto limit wywołań",
-    } as Record<string, string>,
+    } satisfies Record<ReviewReasonDto, string>,
     reviewCategory: {
       ambiguous: "niejednoznaczne",
       wrong_answer: "błędna odpowiedź",
@@ -1151,7 +1152,7 @@ export const messages = {
       off_material: "spoza materiału",
       too_hard: "może być za trudne",
       other: "inne",
-    } as Record<string, string>,
+    } satisfies Record<ReviewCategoryDto, string>,
     reviewChangedBadge: "Poprawione automatycznie",
     reviewChangedBefore: "Było: {before}",
     reviewAddedVariants: "Dodane warianty: {variants}",
