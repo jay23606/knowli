@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MAX_LESSON_TEXT_LENGTH, messages, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
-import LessonExerciseCard, { type LeakNotice } from "./LessonExerciseCard";
+import LessonExerciseCard, { leakNoticeFor, type LeakNotice } from "./LessonExerciseCard";
 import { createLessonSnapshot } from "./lesson-editor-state";
 import { renderParentMarkup } from "../test-render";
 
@@ -126,11 +126,18 @@ describe("LessonExerciseCard: ujawnione rozwiązanie", () => {
     const markup = render(null, { leak: cardLeak });
     expect(markup).toContain('data-testid="exercise-leak-0"');
     expect(markup).toContain("Trzecia osoba -s");
-    expect(markup).toContain("Rozwiązanie widać wcześniej na karcie zagadnienia");
+    expect(markup).toContain("Rozwiązanie tego ćwiczenia jest na karcie zagadnienia");
     expect(markup).not.toContain('data-testid="exercise-leak-0-show"');
     expect(markup).not.toContain('role="alert"');
-    expect(markup).toContain('aria-describedby="exercise-leak-0"');
     expect(markup).toContain('data-leak-kind="hard"');
+  });
+
+  it("aria-describedby karty wskazuje sam tekst ostrzeżenia (nie alert z przyciskiem); karta przyjmuje fokus programowo", () => {
+    const markup = render(null, { leak: exerciseLeak });
+    expect(markup).toContain('aria-describedby="exercise-leak-0-text"');
+    const target = new RegExp('<[^>]*id="exercise-leak-0-text"[^>]*>([^<]*)<').exec(markup);
+    expect(target?.[1]).toBe(messages.lessons.exposureLeakExercise.replace("{n}", "4"));
+    expect(markup).toMatch(/<article[^>]*tabindex="-1"/);
   });
 
   it("inne ćwiczenie: ostrzeżenie z numerem i przycisk „Pokaż ćwiczenie”", () => {
@@ -160,6 +167,29 @@ describe("LessonExerciseCard: ujawnione rozwiązanie", () => {
     expect(markup).toContain(messages.lessons.exposureLeakStale);
     expect(markup).not.toContain(messages.lessons.exposureLeakExercise.replace("{n}", "4"));
     expect(markup).not.toContain('data-testid="exercise-leak-0-show"');
+  });
+
+  describe("leakNoticeFor", () => {
+    const lookup = (index: number | undefined) => ({ objectiveTitle: () => "Trzecia osoba -s", sourceIndex: () => index });
+    const leak = { exerciseId: "victim", kind: "hard" as const, source: { kind: "exercise" as const, exerciseId: "src" } };
+
+    it("źródło z numerem: ostrzeżenie z numerem i przycisk", () => {
+      expect(leakNoticeFor(leak, lookup(3))).toEqual(exerciseLeak);
+    });
+
+    it("źródło bez numeru: prośba o zapis bez przycisku (bez domyślnego „ćwiczenie 1”)", () => {
+      const notice = leakNoticeFor(leak, lookup(undefined));
+      expect(notice).toEqual({ kind: "hard", message: messages.lessons.exposureLeakStale, show: null });
+      const markup = render(null, { leak: notice });
+      expect(markup).toContain(messages.lessons.exposureLeakStale);
+      expect(markup).not.toContain('data-testid="exercise-leak-0-show"');
+      expect(markup).not.toContain(messages.lessons.exposureLeakShow.replace("{n}", "1"));
+    });
+
+    it("karta zagadnienia: tytuł zagadnienia, bez przycisku", () => {
+      const notice = leakNoticeFor({ ...leak, source: { kind: "card_example", objectiveId: OBJ } }, lookup(0));
+      expect(notice).toEqual(cardLeak);
+    });
   });
 
   it("bez ujawnienia: brak ostrzeżenia i powiązania aria-describedby", () => {

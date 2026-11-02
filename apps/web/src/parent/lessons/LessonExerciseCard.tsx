@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useRef, type ReactNode } from "react";
 import { ActionIcon, Alert, Button, Checkbox, Group, Menu, NativeSelect, Paper, Radio, Stack, Text, TextInput, Textarea } from "@mantine/core";
-import { MAX_LESSON_TEXT_LENGTH, messages, type CalculationSpec, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
+import { MAX_LESSON_TEXT_LENGTH, messages, type CalculationSpec, type ExposureLeakDto, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
 import { ParentIcon } from "../ParentIcon";
 import AssignmentFields from "./AssignmentFields";
 import ClozeFields from "./ClozeFields";
@@ -37,6 +37,30 @@ export interface LeakNotice {
   kind: "hard" | "soft";
   message: string;
   show: { label: string; sourceKey: string } | null;
+}
+
+/**
+ * Ostrzeżenie dla ujawnienia z DTO: karta zagadnienia z tytułem; źródło-ćwiczenie z numerem
+ * i przyciskiem „Pokaż ćwiczenie”. Źródła nie ma w formularzu (usunięte) albo nie ma ono numeru →
+ * prośba o zapis bez przycisku (nigdy domyślny numer).
+ */
+export function leakNoticeFor(
+  leak: ExposureLeakDto,
+  lookup: { objectiveTitle: (objectiveId: string) => string; sourceIndex: (exerciseId: string) => number | undefined },
+): LeakNotice {
+  if (leak.source.kind === "card_example") {
+    const title = lookup.objectiveTitle(leak.source.objectiveId);
+    return { kind: leak.kind, message: messages.lessons.exposureLeakCard.replace("{objective}", () => title), show: null };
+  }
+  const sourceId = leak.source.exerciseId;
+  const index = lookup.sourceIndex(sourceId);
+  if (index === undefined) return { kind: leak.kind, message: messages.lessons.exposureLeakStale, show: null };
+  const n = String(index + 1);
+  return {
+    kind: leak.kind,
+    message: (leak.kind === "hard" ? messages.lessons.exposureLeakExercise : messages.lessons.exposureLeakSoft).replace("{n}", n),
+    show: { label: messages.lessons.exposureLeakShow.replace("{n}", n), sourceKey: sourceId },
+  };
 }
 
 export interface CalculationControls {
@@ -167,6 +191,7 @@ function LessonExerciseCard({
   const derived = ["lesson_calculation", "lesson_keywords", "lesson_match", "lesson_group", "lesson_cloze"].includes(ex.exerciseType);
   const errId = `exercise-errors-${index}`;
   const leakId = `exercise-leak-${index}`;
+  const leakTextId = `${leakId}-text`;
   const described = errors ? { "aria-describedby": errId } : {};
   const forcedOpen = changed || errors !== undefined;
   const preview = exercisePreview(ex);
@@ -192,8 +217,9 @@ function LessonExerciseCard({
   const audioText = audio ? messages.decks.audioState[audio.state === "approved" ? "ready" : audio.state] ?? "" : "";
 
   return (
+    // tabIndex=-1: „Pokaż ćwiczenie” przenosi fokus na kartę źródła (bez miejsca w kolejności Tab).
     <Paper ref={rootRef} component="article" withBorder radius="md" p="sm" className="pp-lesson-ex" data-error={errors ? "true" : undefined}
-      aria-describedby={leak ? leakId : undefined} data-testid={`exercise-${index}`}>
+      tabIndex={-1} aria-describedby={leak ? leakTextId : undefined} data-testid={`exercise-${index}`}>
       <Group gap="xs" wrap="nowrap" className="pp-lesson-ex-head">
         <span className="pp-status-badge" data-tone="info" data-testid={`exercise-type-${index}`}>{messages.lessons.exerciseTypes[ex.exerciseType]}</span>
         <Text size="sm" className="pp-editor-muted pp-lesson-ex-num">
@@ -252,10 +278,10 @@ function LessonExerciseCard({
 
       {leak && (
         // Bez role="alert" (Mantine domyślnie je dodaje): to wskazówka, nie błąd walidacji; poza ciałem karty,
-        // więc widoczna także przy zwiniętej. Artykuł wskazuje ją przez aria-describedby.
+        // więc widoczna także przy zwiniętej. Artykuł wskazuje przez aria-describedby sam tekst (bez przycisku).
         <Alert color={leak.kind === "hard" ? "yellow" : "gray"} variant="light" id={leakId} role="note" data-leak-kind={leak.kind} data-testid={leakId} mb="sm"
           icon={<ParentIcon name="alert-triangle" />}>
-          <Text size="sm">{changed ? messages.lessons.exposureLeakStale : leak.message}</Text>
+          <Text size="sm" id={leakTextId}>{changed ? messages.lessons.exposureLeakStale : leak.message}</Text>
           {!changed && leak.show && (
             <Button size="md" variant="light" color={leak.kind === "hard" ? "yellow" : "gray"} className="pp-lesson-leak-show" mt="xs"
               data-testid={`${leakId}-show`} onClick={() => onShowSource(leak.show!.sourceKey)}>

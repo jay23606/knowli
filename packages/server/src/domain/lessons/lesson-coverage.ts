@@ -32,7 +32,12 @@ export interface LessonCoverageInput {
   readonly ignoreExposure?: boolean;
 }
 
-export type LessonCoverageGap = CoverageGap & { readonly excluded?: number };
+/** Braki etapów jednego zagadnienia (wynik `stageDeficits`); runda pod etap zamawia dokładnie je. */
+export interface StageDeficits {
+  readonly guided: number;
+  readonly productive: number;
+  readonly independent: number;
+}
 
 /**
  * Dodatkowa reguła szkoły: zagadnienie potrzebuje co najmniej dwóch RÓŻNYCH
@@ -82,7 +87,7 @@ function mergeGaps(base: readonly CoverageGap[], extra: readonly CoverageGap[]):
  * `excluded` = liczba wykluczonych ujawnionych ćwiczeń zagadnienia w etapie
  * samodzielnym — tylko gdy > 0.
  */
-export function lessonCoverageGaps(input: LessonCoverageInput): LessonCoverageGap[] {
+export function lessonCoverageGaps(input: LessonCoverageInput): (CoverageGap & { readonly excluded?: number })[] {
   const { subject, exercises, examples, objectiveIds } = input;
   const leaks = input.ignoreExposure === true
     ? []
@@ -105,10 +110,7 @@ export function lessonCoverageGaps(input: LessonCoverageInput): LessonCoverageGa
 }
 
 /** Brak per etap zagadnienia = max(required − actual) po obu źródłach braków; 0 gdy pokryte. */
-export function stageDeficits(
-  input: LessonCoverageInput,
-  objectiveId: string,
-): { guided: number; productive: number; independent: number } {
+export function stageDeficits(input: LessonCoverageInput, objectiveId: string): StageDeficits {
   const deficits = { guided: 0, productive: 0, independent: 0 };
   for (const gap of lessonCoverageGaps(input)) {
     if (gap.objectiveId === objectiveId && (gap.stage === "guided" || gap.stage === "productive" || gap.stage === "independent")) {

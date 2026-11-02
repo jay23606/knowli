@@ -645,7 +645,9 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     await expect(cardLeak).toHaveAttribute("data-leak-kind", "hard");
     await expect(cardLeak).not.toHaveAttribute("role", "alert");
     await expect(page.getByTestId("exercise-leak-4-show")).toHaveCount(0);
-    await expect(page.getByTestId("exercise-4")).toHaveAttribute("aria-describedby", "exercise-leak-4");
+    // opis karty wskazuje sam tekst ostrzeżenia (bez przycisku „Pokaż ćwiczenie”)
+    await expect(page.getByTestId("exercise-4")).toHaveAttribute("aria-describedby", "exercise-leak-4-text");
+    await expect(page.locator("#exercise-leak-4-text")).toHaveText(messages.lessons.exposureLeakCard.replace("{objective}", "Końcówka -s w 3. osobie"));
     // ostrzeżenie jest w nagłówku karty: nad podglądem treści (karta zwinięta)
     const alertBox = (await cardLeak.boundingBox())!;
     const previewBox = (await page.getByTestId("exercise-4").locator(".pp-lesson-ex-preview").boundingBox())!;
@@ -664,11 +666,13 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     expect(showBox.x + showBox.width).toBeLessThanOrEqual(viewport.width + 0.5);
     await expectNoHorizontalOverflow(page);
 
-    // „Pokaż ćwiczenie 3”: rozwija zagadnienie i etap źródła (telefon: oba były zwinięte) i pokazuje jego kartę
+    // „Pokaż ćwiczenie 3”: rozwija zagadnienie i etap źródła (telefon: oba były zwinięte), pokazuje jego kartę
+    // i przenosi na nią fokus
     if (phone) await expect(page.getByTestId("exercise-2")).toBeHidden();
     await show.click();
     await expect(page.getByTestId("exercise-2")).toBeVisible();
     await expect(page.getByTestId("exercise-2")).toBeInViewport();
+    await expect(page.getByTestId("exercise-2")).toBeFocused();
     await expectNoHorizontalOverflow(page);
   });
 }
@@ -685,6 +689,17 @@ test("ujawnione rozwiązanie: zmiana ćwiczenia zamienia treść ostrzeżenia na
 
 test("opublikowana lekcja bez szkicu nie pokazuje ostrzeżeń o ujawnionych rozwiązaniach", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await openLesson(page, { data: { ...lesson, draft: null } as unknown as typeof lesson });
+  // Wersja opublikowana z ćwiczeniami samodzielnymi równymi przykładowi karty (ujawnienie), tak jak zwraca ją
+  // serwer: bez `exposureLeaks` i z pokryciem sprzed reguły (bez `excluded`) — opublikowane wersje bez zmian.
+  const published = {
+    ...version(publishedId, "published", 1),
+    exercises: [...leakyLesson.draft!.exercises],
+    coverage: [],
+  };
+  expect(published.examples[OBJ_A]).toContain(published.exercises[4]!.answer);
+  await openLesson(page, { data: { ...lesson, draft: null, published } as unknown as typeof lesson });
+  await expect(page.getByTestId("exercise-4")).toBeVisible();
   await expect(page.locator('[data-testid^="exercise-leak-"]')).toHaveCount(0);
+  await expect(page.getByTestId("coverage-ok")).toBeVisible();
+  await expect(page.getByText("z rozwiązaniem widocznym wcześniej")).toHaveCount(0);
 });

@@ -22,7 +22,7 @@ import {
 } from "@learning/server";
 import { LessonExerciseInputSchema, type LessonDraftDto, type TaskDto } from "@learning/contracts";
 import { stageOf } from "../../packages/server/src/domain/lessons/stages";
-import { fakeGeneration, FakeLlmProvider, type FakeGeneration } from "./fakes";
+import { fakeGeneration, FakeLlmProvider, routeLessonRound, type FakeGeneration } from "./fakes";
 import { ManualClock, testDatabase } from "./helpers";
 import { mockTestDeck } from "./mock-test-helpers";
 import { DEFAULT_LESSON_GENERATION_POLICY } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
@@ -326,16 +326,18 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
       const { fakes, services } = await chapterWorld();
       const LEAK = "The coat and the dress";
       let batch = 0;
-      fakes.deps.llm.generateLessonPool = async (input) => {
+      // Runda pod etap (domyślnie włączona) idzie do fakes.llm, więc nie przesuwa licznika partii.
+      routeLessonRound(fakes, async (input) => {
         const regular = await new FakeLlmProvider().generateLessonPool(input);
         const objectiveId = input.objectives[0]!.id;
         batch += 1;
         return batch === 1
           ? { ...regular, examples: { [objectiveId]: [`${LEAK}.`] } }
           : { ...regular, exercises: withTranslation(regular.exercises, { prompt: "Płaszcz i sukienka.", answer: LEAK, focus: ["coat"] }) };
-      };
+      });
 
       const { draft } = await generateChapter(services, CHAPTER_MATERIAL.split("Zagadnienie 3")[0]!);
+      expect(fakes.llm.lessonRequests.filter((request) => request.purpose === "stage_top_up")).toHaveLength(0);
       const [first, second] = draft.objectiveIds;
       expect(draft.exercises.some((exercise) => exercise.answer === LEAK)).toBe(false);
       expect(draft.exercises.some((exercise) => exercise.objectiveId === second && exercise.exerciseType === "lesson_open_answer")).toBe(true);
@@ -346,16 +348,17 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
 
     it("pełna generacja: wariant „Where is the box?” tłumaczenia wobec przykładu „Where's the box?” → poza szkicem", async () => {
       const { fakes, services } = await chapterWorld();
-      fakes.deps.llm.generateLessonPool = async (input) => {
+      routeLessonRound(fakes, async (input) => {
         const regular = await new FakeLlmProvider().generateLessonPool(input);
         const objectiveId = input.objectives[0]!.id;
         return {
           exercises: withTranslation(regular.exercises, { prompt: "Gdzie jest pudełko?", answer: "Where is the box?", focus: ["box"] }),
           examples: { [objectiveId]: ["Where's the box?"] },
         };
-      };
+      });
 
       const { draft } = await generateChapter(services, "Where is the box? Where's the box? The box is on the bed.", "Pudełko");
+      expect(fakes.llm.lessonRequests.filter((request) => request.purpose === "stage_top_up")).toHaveLength(0);
       expect(draft.exercises.some((exercise) => exercise.answer === "Where is the box?")).toBe(false);
       expect(draft.rejectedCount).toBe(1);
       expect(draft.rejectedReasons).toEqual({ [EXPOSURE_REASON]: 1 });
@@ -392,6 +395,50 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
       expect(after.exercises.filter((exercise) => exercise.answer === WEAR_TRANSLATION)).toHaveLength(1);
       expect(after.exercises).toHaveLength(draft.exercises.length + 1);
       expect(after.rejectedCount).toBe(1);
+      expect(after.rejectedReasons).toEqual({ [EXPOSURE_REASON]: 1 });
+    });
+
+    it("dogenerowanie z rundą pod etap: runda uzupełnia etap produktywny bez rozwiązania tłumaczenia ze szkicu", async () => {
+      const { fakes, services } = await chapterWorld();
+      // Szkic z partii głównej bez rundy (braki wszystkich etapów), dogenerowanie już z rundą (domyślna polityka).
+      fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
+      let call = 0;
+      routeLessonRound(fakes, async (input) => {
+        const objectiveId = input.objectives[0]!.id;
+        call += 1;
+        if (call === 1) return { exercises: wearPool(objectiveId), examples: { [objectiveId]: ["I wear a coat."] } };
+        return {
+          exercises: [
+            gap(objectiveId, "Mamy płaszcz i buty. Wpisz brakujące słowo.", "We have the ___ and the boots.", "coat"),
+            gap(objectiveId, "Ona ma sukienkę. Wpisz brakujące słowo.", "She wears a ___.", "dress"),
+          ],
+          examples: {},
+        };
+      });
+      const { deckId, draft } = await generateChapter(services, WEAR_MATERIAL, "Ubrania");
+      const objectiveId = draft.objectiveIds[0]!;
+      expect(stageCounts(draft, objectiveId)).toEqual({ guided: 1, productive: 1, independent: 1 });
+
+      fakes.deps.lessonExecution = DEFAULT_LESSON_GENERATION_POLICY;
+      const regen = await regenerateObjective(services, {
+        deckId, objectiveId, count: 2, expectedEditNumber: draft.editNumber, clientRequestId: randomUUID(),
+      });
+      await executeLessonGeneration(services, regen.runId);
+      expect((await readGeneration(services, regen.runId)).state).toBe("succeeded");
+
+      // Po partii głównej (luka „dress”) brakuje: guided 3−1, productive 3−2, independent 2−1.
+      const rounds = fakes.llm.lessonRequests.filter((request) => request.purpose === "stage_top_up");
+      expect(rounds).toHaveLength(1);
+      expect(rounds[0]!.stageCounts).toEqual({ guided: 2, productive: 1, independent: 1 });
+      expect(rounds[0]!.avoidSentences).toContain(WEAR_TRANSLATION);
+
+      const after = (await readLessonDeck(services, deckId)).draft!;
+      expect(after.coverage).toEqual([]);
+      expect(stageCounts(after, objectiveId).productive).toBe(3);
+      expect(after.exercises.some((exercise) => exercise.stem === "We have the ___ and the boots.")).toBe(false);
+      // Tłumaczenie ze szkicu zostaje i nie jest ujawnione przez żadne nowe ćwiczenie.
+      expect(after.exercises.filter((exercise) => exercise.answer === WEAR_TRANSLATION)).toHaveLength(1);
+      expect(after.exposureLeaks).toBeUndefined();
       expect(after.rejectedReasons).toEqual({ [EXPOSURE_REASON]: 1 });
     });
 

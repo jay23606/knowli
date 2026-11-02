@@ -31,12 +31,12 @@ import {
 import type { LessonCommand } from "@learning/contracts";
 import { countRows, testDatabase, testDatabaseUrl } from "./helpers";
 import { ManualClock } from "./helpers";
-import { fakeGeneration, FakeLlmProvider, type FakeGeneration } from "./fakes";
+import { fakeGeneration, FakeLlmProvider, routeLessonRound, type FakeGeneration } from "./fakes";
 
 import { GenerationProviderError } from "../../packages/server/src/ports/generation-error";
 import { lessonExerciseIdentity, lessonExerciseStimulusRecord } from "../../packages/server/src/domain/lessons/exercise-identity";
 import type { LessonExerciseDraft } from "../../packages/server/src/domain/lessons/types";
-import { DEFAULT_LESSON_GENERATION_POLICY } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
+import { DEFAULT_LESSON_GENERATION_POLICY, type LessonGenerationPolicy } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
 
 /** Bez rundy pod brakujący etap: testy z pulami za małymi do pokrycia sprawdzają samą partię główną. */
 const MAIN_BATCH_ONLY = { ...DEFAULT_LESSON_GENERATION_POLICY, stageTopUp: false };
@@ -1614,6 +1614,71 @@ describe("generowanie puli lekcji (integracja)", () => {
       expect(new Set(family.map((exercise) => exercise.answer)).size).toBe(1);
       expect(draft.rejectedReasons?.[EXPOSURE_REASON]).toBeUndefined();
       expect(draft.coverage).toContainEqual(expect.objectContaining({ objectiveId: familyObjectiveId, stage: "independent", actual: 1, required: 2 }));
+      // Miękkie powtórzenia wewnątrz rodziny są zamierzone: bez ostrzeżeń, choć pokrycie liczy rodzinę raz.
+      expect(draft.exposureLeaks).toBeUndefined();
+    });
+
+    it("szkoła: reguła twarda usuwa całą rodzinę pytań otwartych → jej słowa kluczowe poza szkicem, publikacja bez błędu rodziny", async () => {
+      const fakes = await fakeGeneration();
+      disposers.push(fakes.dispose);
+      const services = schoolServices(fakes);
+      const ORPHAN_REASON = "ćwiczenie bez rodziny pytań otwartych";
+      const FAMILY = "fotosynteza-rodzina";
+      const isOpen = (exercise: unknown) => (exercise as { exerciseType?: string }).exerciseType === "lesson_open_answer";
+      let familyObjectiveId: string | undefined;
+      routeLessonRound(fakes, async (input) => {
+        const result = await new FakeLlmProvider().generateLessonPool(input);
+        if (familyObjectiveId !== undefined) return result;
+        familyObjectiveId = input.objectives[0]!.id;
+        const base = result.exercises.find(isOpen) as Record<string, unknown>;
+        const family = [1, 2].map((n) => ({ ...base, familyId: FAMILY, prompt: `Pytanie rodziny numer ${n}: czym jest fotosynteza?` }));
+        const keywords = {
+          exerciseType: "lesson_keywords", objectiveId: familyObjectiveId, familyId: FAMILY,
+          keywordOptions: [{ id: "k1", text: "światła" }, { id: "k2", text: "cukry" }, { id: "k3", text: "tlen" }, { id: "k4", text: "korzenie" }],
+          keyOptionIds: ["k1", "k2"], answer: "światła, cukry", acceptedAnswers: [], focus: [], sourceRefs: [{ quote: "wytwarza cukry" }],
+        };
+        // Przykład karty równy odpowiedzi rodziny: reguła twarda usuwa oba pytania rodziny.
+        return {
+          exercises: [...result.exercises.filter((exercise) => exercise !== base), ...family, keywords],
+          examples: { [familyObjectiveId]: [base.answer as string] },
+        };
+      });
+
+      const draft = await generateSchool(services);
+      expect(draft.exercises.some((exercise) => exercise.exerciseType === "lesson_keywords")).toBe(false);
+      expect(draft.exercises.some((exercise) => exercise.familyId === FAMILY)).toBe(false);
+      expect(draft.rejectedReasons?.[EXPOSURE_REASON]).toBe(2);
+      expect(draft.rejectedReasons?.[ORPHAN_REASON]).toBe(1);
+      expect(draft.coverage).toEqual([]);
+      await expect(publishLessonDraft(services, draft.id, draft.editNumber)).resolves.toBeDefined();
+    });
+
+    it("szkoła, runda włączona: rodzina z jedną odpowiedzią → runda zamawia jedno pytanie samodzielne, inna odpowiedź domyka pokrycie", async () => {
+      const fakes = await fakeGeneration();
+      disposers.push(fakes.dispose);
+      const services = schoolServices(fakes);
+      const isOpen = (exercise: unknown) => (exercise as { exerciseType?: string }).exerciseType === "lesson_open_answer";
+      let familyObjectiveId: string | undefined;
+      routeLessonRound(fakes, async (input) => {
+        const result = await new FakeLlmProvider().generateLessonPool(input);
+        if (familyObjectiveId !== undefined) return result;
+        familyObjectiveId = input.objectives[0]!.id;
+        const base = result.exercises.find(isOpen) as Record<string, unknown>;
+        const family = [1, 2, 3].map((n) => ({ ...base, familyId: "fotosynteza-definicja", prompt: `Pytanie rodziny numer ${n}: czym jest fotosynteza?` }));
+        return { ...result, exercises: [...result.exercises.filter((exercise) => !isOpen(exercise)), ...family] };
+      });
+
+      const draft = await generateSchool(services);
+      const rounds = fakes.llm.lessonRequests.filter((request) => request.purpose === "stage_top_up");
+      expect(rounds).toHaveLength(1);
+      expect(rounds[0]!.objectives.map((objective) => objective.id)).toEqual([familyObjectiveId]);
+      expect(rounds[0]!.stageCounts).toEqual({ guided: 0, productive: 0, independent: 1 });
+      expect(draft.coverage).toEqual([]);
+      const open = draft.exercises.filter((exercise) => exercise.objectiveId === familyObjectiveId && exercise.exerciseType === "lesson_open_answer");
+      expect(open).toHaveLength(4);
+      expect(new Set(open.map((exercise) => exercise.answer)).size).toBe(2);
+      // Rodzina w jednym zagadnieniu to zamierzona struktura: bez ostrzeżeń dla rodzica.
+      expect(draft.exposureLeaks).toBeUndefined();
     });
 
     it("domyślna pula fake'a gramatyki i szkoły nie ma ujawnionych rozwiązań", async () => {
@@ -1646,7 +1711,7 @@ describe("generowanie puli lekcji (integracja)", () => {
     const POLICY = { requestTimeoutMs: 2_000, runTimeoutMs: 60_000, cancelPollMs: 10 };
 
     /** Rozdział na produkcyjnym rejestrze; `topUpRequests` — żądania rundy zapisane przez `fakes.llm`. */
-    async function chapterWorld(policy = POLICY) {
+    async function chapterWorld(policy: LessonGenerationPolicy = POLICY) {
       const fakes = await fakeGeneration();
       disposers.push(fakes.dispose);
       fakes.deps.lessonExecution = policy;
@@ -1673,11 +1738,7 @@ describe("generowanie puli lekcji (integracja)", () => {
       };
     }
 
-    /** Partia główna z `main`, runda z `fakes.llm` (kolejka `queueLessonTopUp`, zapis żądań). */
-    function routeRound(fakes: FakeGeneration, main: (input: PoolInput) => Promise<{ exercises: unknown[]; examples: Record<string, string[]> }>) {
-      const round = fakes.llm.generateLessonPool.bind(fakes.llm);
-      fakes.deps.llm.generateLessonPool = async (input) => (input.purpose === "stage_top_up" ? round(input) : main(input));
-    }
+    const routeRound = routeLessonRound;
 
     async function startChapter(services: Services, material: string) {
       return createLessonFromMaterial(services, { subjectId: "english_chapter", topicTitlePl: "Ubrania", material, poolSize: 40, clientRequestId: randomUUID() });
@@ -1749,6 +1810,32 @@ describe("generowanie puli lekcji (integracja)", () => {
       expect(draft.rejectedReasons).toEqual({ [EXPOSURE_REASON]: 2 });
     });
 
+    it("wynik rundy sam ujawniający rozwiązanie (tłumaczenie równe przykładowi karty) odpada; powód liczony, brak zostaje", async () => {
+      const { fakes, services, topUpRequests } = await chapterWorld();
+      const LEAK = "The coat and the dress";
+      routeRound(fakes, async (input) => {
+        const result = await leakyMainBatch(input, LEAK);
+        fakes.llm.queueLessonTopUp({
+          exercises: [{
+            exerciseType: "lesson_open_answer", objectiveId: input.objectives[0]!.id, instructionPl: "Przetłumacz na angielski.",
+            prompt: "Płaszcz i sukienka — jeszcze raz.", answer: LEAK, acceptedAnswers: [], focus: ["coat"],
+          }],
+          examples: {},
+        });
+        return result;
+      });
+      const { runId, deckId } = await startChapter(services, WEAR_MATERIAL);
+      await executeLessonGeneration(services, runId);
+
+      expect((await readGeneration(services, runId)).state).toBe("succeeded");
+      expect(topUpRequests()).toHaveLength(1);
+      const draft = (await readLessonDeck(services, deckId)).draft!;
+      expect(draft.exercises.some((exercise) => exercise.answer === LEAK)).toBe(false);
+      expect(draft.rejectedCount).toBe(2);
+      expect(draft.rejectedReasons).toEqual({ [EXPOSURE_REASON]: 2 });
+      expect(draft.coverage).toEqual([expect.objectContaining({ objectiveId: draft.objectiveIds[0], stage: "independent", required: 2, actual: 1 })]);
+    });
+
     it("błąd providera w rundzie: run succeeded w pierwszej próbie, szkic zapisany z brakiem pokrycia", async () => {
       const { fakes, services, topUpRequests } = await chapterWorld();
       routeRound(fakes, (input) => leakyMainBatch(input, "The coat and the dress"));
@@ -1761,18 +1848,18 @@ describe("generowanie puli lekcji (integracja)", () => {
       const draft = (await readLessonDeck(services, deckId)).draft!;
       expect(draft.exercises.length).toBeGreaterThan(0);
       expect(draft.coverage).toEqual([expect.objectContaining({ objectiveId: draft.objectiveIds[0], stage: "independent", required: 2, actual: 1 })]);
-      expect(logs).toContain(`[lesson] run=${runId} dogenerowanie pod etap: błąd=provider`);
+      expect(logs).toMatch(new RegExp(`^\\[lesson\\] run=${runId} dogenerowanie pod etap: błąd=provider$`, "m"));
       expect(logs).not.toContain("provider down");
     });
 
     it("runda dłuższa niż limit żądania: przerwana miękko, run succeeded bez dogenerowania", async () => {
-      const { fakes, services } = await chapterWorld({ requestTimeoutMs: 150, runTimeoutMs: 60_000, cancelPollMs: 10 });
+      // Limit żądania z zapasem na obciążoną maszynę; runda czeka wyłącznie na przerwanie przez limit.
+      const { fakes, services } = await chapterWorld({ requestTimeoutMs: 1_000, runTimeoutMs: 60_000, cancelPollMs: 10 });
       let roundCalls = 0;
-      fakes.deps.llm.generateLessonPool = async (input) => {
+      fakes.deps.llm.generateLessonPool = async (input, signal) => {
         if (input.purpose !== "stage_top_up") return leakyMainBatch(input, "The coat and the dress");
         roundCalls += 1;
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        return new FakeLlmProvider().generateLessonPool(input);
+        return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
       };
       const { runId, deckId } = await startChapter(services, WEAR_MATERIAL);
       const { logs } = await withLogs(() => executeLessonGeneration(services, runId));
@@ -1848,6 +1935,57 @@ describe("generowanie puli lekcji (integracja)", () => {
       expect((await readGeneration(services, runId)).state).toBe("succeeded");
       expect((await readLessonDeck(services, deckId)).draft!.coverage).toEqual([]);
       expect(topUpRequests()).toHaveLength(0);
+    });
+
+    /**
+     * Szkic z brakiem etapu samodzielnego (partia główna bez rundy), potem ręczne dogenerowanie z rundą,
+     * w którym partia główna nie daje żadnego przyjętego ćwiczenia.
+     */
+    async function regenerateWithEmptyMainBatch() {
+      const world = await chapterWorld({ ...POLICY, stageTopUp: false });
+      let call = 0;
+      routeRound(world.fakes, async (input) => {
+        call += 1;
+        if (call === 1) return leakyMainBatch(input, "The coat and the dress");
+        return {
+          exercises: [{ exerciseType: "lesson_gap", objectiveId: input.objectives[0]!.id, answer: "a b c d", acceptedAnswers: [], focus: [], stem: "no marker" }],
+          examples: {},
+        };
+      });
+      const { runId, deckId } = await startChapter(world.services, WEAR_MATERIAL);
+      await executeLessonGeneration(world.services, runId);
+      const draft = (await readLessonDeck(world.services, deckId)).draft!;
+      expect(draft.coverage).toEqual([expect.objectContaining({ stage: "independent", required: 2, actual: 1 })]);
+      world.fakes.deps.lessonExecution = POLICY;
+      const regen = await regenerateObjective(world.services, {
+        deckId, objectiveId: draft.objectiveIds[0]!, count: 1, expectedEditNumber: draft.editNumber, clientRequestId: randomUUID(),
+      });
+      return { ...world, deckId, draft, regenRunId: regen.runId };
+    }
+
+    it("ręczne dogenerowanie: partia główna bez przyjętych, runda domyka brak → succeeded", async () => {
+      const { services, topUpRequests, deckId, draft, regenRunId } = await regenerateWithEmptyMainBatch();
+      await executeLessonGeneration(services, regenRunId);
+
+      expect((await readGeneration(services, regenRunId)).state).toBe("succeeded");
+      expect(topUpRequests()).toHaveLength(1);
+      expect(topUpRequests()[0]!.stageCounts).toEqual({ guided: 0, productive: 0, independent: 1 });
+      const after = (await readLessonDeck(services, deckId)).draft!;
+      expect(after.coverage).toEqual([]);
+      expect(after.exercises).toHaveLength(draft.exercises.length + 1);
+      expect(after.rejectedCount).toBe(draft.rejectedCount + 1);
+    });
+
+    it("ręczne dogenerowanie: partia główna i runda bez przyjętych → failed/validation, szkic bez zmian", async () => {
+      const { fakes, services, topUpRequests, deckId, draft, regenRunId } = await regenerateWithEmptyMainBatch();
+      fakes.llm.queueLessonTopUp({ exercises: [], examples: {} });
+      await executeLessonGeneration(services, regenRunId);
+
+      expect(await readGeneration(services, regenRunId)).toMatchObject({ state: "failed", errorCode: "validation" });
+      expect(topUpRequests()).toHaveLength(1);
+      const after = (await readLessonDeck(services, deckId)).draft!;
+      expect(after.exercises).toHaveLength(draft.exercises.length);
+      expect(after.rejectedCount).toBe(draft.rejectedCount + 1);
     });
 
     it("partia główna bez przyjętych ćwiczeń → failed/validation jak dotąd, bez rundy", async () => {

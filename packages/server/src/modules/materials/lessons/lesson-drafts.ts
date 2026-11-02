@@ -27,7 +27,7 @@ import { avoidSentencesFor } from "../../../domain/lessons/avoid-sentences";
 import { explanationTextErrors } from "../../../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
 import { resolveGenerationLeaks } from "../../../domain/lessons/exposure-leaks";
-import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE, stageDeficits } from "../../../domain/lessons/lesson-coverage";
+import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE, stageDeficits, type StageDeficits } from "../../../domain/lessons/lesson-coverage";
 import {
   DEFAULT_LESSON_POLICY,
   defaultPoolSize,
@@ -510,6 +510,8 @@ const LISTEN_CHOICE_PER_OBJECTIVE = 2;
 
 /** Powód odrzucenia świeżego ćwiczenia z rozwiązaniem widocznym wcześniej (klucz `rejectedReasons`, widoczny dla rodzica). */
 const EXPOSURE_LEAK_REASON = "rozwiązanie widoczne wcześniej";
+/** Powód odrzucenia świeżych słów kluczowych, których rodzina pytań otwartych odpadła (klucz `rejectedReasons`). */
+const ORPHAN_KEYWORDS_REASON = "ćwiczenie bez rodziny pytań otwartych";
 
 /**
  * Ile ćwiczeń słuchowych generator może jeszcze dodać do celu: limit na cel minus ćwiczenia
@@ -603,11 +605,10 @@ export function capListenChoiceOverflow(
   return { kept, rejected };
 }
 
-/** Braki etapów jednego zagadnienia (wynik `stageDeficits`), zarazem zamówienie rundy pod etap. */
-type StageDeficits = { readonly guided: number; readonly productive: number; readonly independent: number };
-
 /** Błąd nadwyżki rundy pod etap ponad brak (log walidacji, jak przycięcie limitów celu). */
 const STAGE_TOP_UP_EXCESS_ERROR = "exerciseType: ponad brak etapu";
+/** Błąd ćwiczenia spoza ścieżki etapów w rundzie pod etap (runda zamawia tylko braki etapów). */
+const STAGE_TOP_UP_OUTSIDE_PATH_ERROR = "exerciseType: poza ścieżką etapów w dogenerowaniu";
 
 /** Zapas czasu przed deadlinem przebiegu, który zostaje po wywołaniu rundy na walidację i zapis. */
 const STAGE_TOP_UP_MARGIN_MS = 30_000;
@@ -615,6 +616,8 @@ const STAGE_TOP_UP_MARGIN_MS = 30_000;
 /**
  * Przycina przyjęte ćwiczenia rundy pod etap do braków: z każdego etapu najwyżej jego brak
  * (kolejność wejścia); nadwyżka i ćwiczenia spoza etapów z brakiem odpadają z powodem.
+ * Typy spoza ścieżki etapów (słowa kluczowe, wybór ze słuchu) odpadają zawsze — nie zajmują
+ * miejsca etapu, a runda zamawia wyłącznie braki etapów.
  */
 export function trimToStageDeficits(
   exercises: readonly LessonExerciseDraft[],
@@ -624,6 +627,10 @@ export function trimToStageDeficits(
   const kept: LessonExerciseDraft[] = [];
   const rejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
   for (const exercise of exercises) {
+    if (outsideStagePath(exercise.exerciseType)) {
+      rejected.push({ exercise, errors: [STAGE_TOP_UP_OUTSIDE_PATH_ERROR] });
+      continue;
+    }
     const stage = stageOf(exercise.exerciseType);
     if ((stage === "guided" || stage === "productive" || stage === "independent") && used[stage] < deficits[stage]) {
       used[stage] += 1;
@@ -633,6 +640,29 @@ export function trimToStageDeficits(
     }
   }
   return { kept, rejected };
+}
+
+/**
+ * Świeże ćwiczenia `lesson_keywords`, których rodzina (zagadnienie + `familyId`) nie ma już żadnego
+ * pytania otwartego wśród ćwiczeń szkicu i zachowanych świeżych — odpadają (reguła twarda, kolizje
+ * z historyjką albo przycięcie mogły usunąć całą rodzinę; walidator szkoły zablokowałby wtedy
+ * publikację: „brak rodziny pytań otwartych”). Słowa kluczowe bez `familyId` zostają, jak w walidatorze.
+ */
+export function withoutOrphanKeywords(
+  existing: readonly LessonExerciseDraft[],
+  fresh: readonly LessonExerciseDraft[],
+): { kept: LessonExerciseDraft[]; dropped: number } {
+  const familyKey = (exercise: LessonExerciseDraft) => JSON.stringify([exercise.objectiveId, exercise.familyId]);
+  const openFamilies = new Set(
+    [...existing, ...fresh].filter((exercise) => exercise.exerciseType === "lesson_open_answer" && exercise.familyId).map(familyKey),
+  );
+  const kept = fresh.filter((exercise) => exercise.exerciseType !== "lesson_keywords" || !exercise.familyId || openFamilies.has(familyKey(exercise)));
+  return { kept, dropped: fresh.length - kept.length };
+}
+
+/** Licznik powodu dla `rejectedReasons` (pusty, gdy nic nie odpadło). */
+function reasonCount(reason: string, count: number): Record<string, number> {
+  return count > 0 ? { [reason]: count } : {};
 }
 
 /** Przykłady kart ze szkicu i z bieżącego przebiegu, razem (per zagadnienie: najpierw szkic). */
@@ -1465,8 +1495,8 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
           { avoidSentences: avoidSentencesFor({ examples: ctx.examples, exercises: existing, subject }), purpose: "stage_top_up" },
         );
         const poolInput: LessonPoolInput = { ...base, countPerObjective: count, stageCounts: { ...deficits } };
+        // callSoft sam sprawdza aktualność runu przed żądaniem i po nim.
         const result = await control.callSoft((signal) => ctx.llm.generateLessonPool(poolInput, signal));
-        await control.assertCurrent();
         const scoped = filterExercisesToRequestedObjective(result.exercises, objectiveId);
         const metadata = collectBatchExerciseMetadata(scoped.exercises, byExercise, identityOptions);
         runAnswers.push(...metadata.answers);
@@ -1480,7 +1510,8 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
           existingDrafts: existing,
           existingAnswers: new Set(existing.map((exercise) => exercise.answer)),
           existingExerciseIdentities: new Set(existing.map((exercise) => lessonExerciseIdentity(exercise, identityOptions))),
-          objectiveLimits: new Map([[objectiveId, { count, listen: 0, stages: deficits }]]),
+          // Bez kwot etapów: przycięcie do braków robi niżej trimToStageDeficits.
+          objectiveLimits: new Map([[objectiveId, { count, listen: 0 }]]),
         });
         const trimmed = trimToStageDeficits(fresh.accepted, deficits);
         const leaks = resolveGenerationLeaks({
@@ -1491,17 +1522,18 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
           objectiveOrder: ctx.objectiveOrder,
           subject,
         });
-        kept.push(...leaks.keptFresh);
-        added.push(...leaks.keptFresh);
+        const orphans = withoutOrphanKeywords(existing, leaks.keptFresh);
+        kept.push(...orphans.kept);
+        added.push(...orphans.kept);
         const leakRejected = leaks.droppedFresh.length;
         rejectedCount += fresh.shapeRejected + scoped.outOfScopeCount + fresh.refineRejected + fresh.rejected.length +
-          trimmed.rejected.length + fresh.duplicateCount + leakRejected;
+          trimmed.rejected.length + fresh.duplicateCount + leakRejected + orphans.dropped;
         rejectedReasons = sumRejectedReasons(
           sumRejectedReasons(rejectedReasons, fresh.refinedReasons),
-          leakRejected > 0 ? { [EXPOSURE_LEAK_REASON]: leakRejected } : {},
+          { ...reasonCount(EXPOSURE_LEAK_REASON, leakRejected), ...reasonCount(ORPHAN_KEYWORDS_REASON, orphans.dropped) },
         );
         console.log(
-          `[lesson] run=${runId} dogenerowanie pod etap: zagadnienie=${objectiveId.split(".").at(-1)} guided=${deficits.guided} productive=${deficits.productive} independent=${deficits.independent} przyjęte=${leaks.keptFresh.length}`,
+          `[lesson] run=${runId} dogenerowanie pod etap: zagadnienie=${objectiveId.split(".").at(-1)} guided=${deficits.guided} productive=${deficits.productive} independent=${deficits.independent} przyjęte=${orphans.kept.length}`,
         );
       }
     });
@@ -1798,12 +1830,15 @@ export async function executeLessonGeneration(services: Services, runId: string,
       objectiveOrder,
       subject,
     });
-    let uniqueValid = leaks.keptFresh;
+    // Słowa kluczowe, których rodzina pytań otwartych odpadła (reguła twarda, przycięcie), też odpadają.
+    const orphans = withoutOrphanKeywords(existingDrafts, leaks.keptFresh);
+    let uniqueValid = orphans.kept;
     const leakRejected = leaks.droppedFresh.length;
-    let rejectedCount = shapeRejected + outOfScopeCount + fresh.refineRejected + rejected.length + dupAgainstExisting + leakRejected;
-    let runRejectedReasons = leakRejected > 0
-      ? sumRejectedReasons(fresh.refinedReasons, { [EXPOSURE_LEAK_REASON]: leakRejected })
-      : fresh.refinedReasons;
+    let rejectedCount = shapeRejected + outOfScopeCount + fresh.refineRejected + rejected.length + dupAgainstExisting + leakRejected + orphans.dropped;
+    let runRejectedReasons = sumRejectedReasons(fresh.refinedReasons, {
+      ...reasonCount(EXPOSURE_LEAK_REASON, leakRejected),
+      ...reasonCount(ORPHAN_KEYWORDS_REASON, orphans.dropped),
+    });
 
     console.log(
       `[lesson] run=${runId} walidacja puli: ${summarizeLessonPoolValidation({
@@ -1820,6 +1855,9 @@ export async function executeLessonGeneration(services: Services, runId: string,
     if (leakRejected > 0 || leaks.droppedExampleCount > 0) {
       console.log(`[lesson] run=${runId} ujawnienia: usunięte=${leakRejected} przykłady=${leaks.droppedExampleCount}`);
     }
+    if (orphans.dropped > 0) {
+      console.log(`[lesson] run=${runId} słowa kluczowe bez rodziny pytań otwartych: usunięte=${orphans.dropped}`);
+    }
     // Porzucone warianty redundantne nie są odrzuceniem (nie trafiają do
     // rejectedCount ani podsumowania) — sama linia z licznikiem, bez treści
     // wariantów, żeby incydenty tej klasy były widoczne w logach workera.
@@ -1830,9 +1868,9 @@ export async function executeLessonGeneration(services: Services, runId: string,
       console.log(`[lesson] run=${runId} porzucone wyjaśnienia=${droppedExplanations}`);
     }
 
-    if (uniqueValid.length === 0) {
-      // Nawet przy porażce rodzic widzi skalę odrzuceń: zapisujemy liczniki
-      // do kontekstu (ta sama straż wersji co przy finalizacji).
+    // Porażka walidacji (0 nowych ćwiczeń): nawet wtedy rodzic widzi skalę odrzuceń — zapisujemy
+    // liczniki do kontekstu (ta sama straż wersji co przy finalizacji).
+    const failValidation = async () => {
       await services.db.transaction(async (tx) => {
         const version = (
           await tx.select().from(deckVersions).where(eq(deckVersions.id, run.deckVersionId!)).for("update")
@@ -1854,11 +1892,17 @@ export async function executeLessonGeneration(services: Services, runId: string,
         }
         await markCurrentRun(tx, "failed", "validation");
       });
-      return;
-    }
+    };
 
     // Runda pod brakujący etap (spec etapu przeglądu lekcji): po regule ujawnień, przed zapisem.
-    if (executionPolicy.stageTopUp !== false) {
+    // Pełna generacja bez przyjętych ćwiczeń kończy się porażką bez rundy; ręczne dogenerowanie
+    // do niepustego szkicu dostaje rundę także wtedy, gdy partia główna nic nie dała.
+    const stageTopUpEnabled = executionPolicy.stageTopUp !== false;
+    if (uniqueValid.length === 0 && !(stageTopUpEnabled && existingDrafts.length > 0)) {
+      await failValidation();
+      return;
+    }
+    if (stageTopUpEnabled) {
       const topUp = await stageTopUpRound({
         runId,
         llm: deps.llm,
@@ -1882,6 +1926,10 @@ export async function executeLessonGeneration(services: Services, runId: string,
       rejectedCount += topUp.rejectedCount;
       runRejectedReasons = sumRejectedReasons(runRejectedReasons, topUp.rejectedReasons);
     }
+    if (uniqueValid.length === 0) {
+      await failValidation();
+      return;
+    }
 
     await services.db.transaction(async (tx) => {
       const version = (
@@ -1899,26 +1947,33 @@ export async function executeLessonGeneration(services: Services, runId: string,
         return;
       }
       const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
-      const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, runRejectedReasons);
       // Pula zapisywana do lekcji z historyjką (dogenerowanie, ale też pełny run):
       // ćwiczenie, którego rozwiązanie powtarza zdanie historyjki, ujawniłoby
       // odpowiedź (bariera ekspozycji, spec historyjki §5). Historyjka z tej
       // transakcji — rodzic mógł ją zmienić.
       const story = prevContext.story;
-      const accepted = story
+      const withoutStoryCollisions = story
         ? uniqueValid.filter((ex) => storyCollisions(story.sentences, solvedSentencesOf([ex]), subject.normalizer).length === 0)
         : uniqueValid;
-      const storyRejected = uniqueValid.length - accepted.length;
+      const storyRejected = uniqueValid.length - withoutStoryCollisions.length;
       if (storyRejected > 0) {
         console.log(`[lesson] run=${runId} kolizje z historyjką: odrzucone=${storyRejected}`);
       }
+      // Kolizja mogła usunąć całą rodzinę pytań otwartych — jej słowa kluczowe odpadają razem z nią.
+      const writeOrphans = withoutOrphanKeywords(existingDrafts, withoutStoryCollisions);
+      const accepted = writeOrphans.kept;
+      const writeRejected = storyRejected + writeOrphans.dropped;
+      const rejectedReasons = sumRejectedReasons(
+        sumRejectedReasons(prevContext.rejectedReasons, runRejectedReasons),
+        reasonCount(ORPHAN_KEYWORDS_REASON, writeOrphans.dropped),
+      );
       if (accepted.length === 0) {
         await tx
           .update(deckVersions)
           .set({
             lessonContext: {
               ...prevContext,
-              rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + storyRejected,
+              rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + writeRejected,
               ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
               droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
             } as unknown as Record<string, unknown>,
@@ -1940,7 +1995,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         ...prevContext,
         ...(dynamicTopicData ? { dynamicTopic: dynamicTopicData, objectiveIds: dynamicTopicData.objectives.map((o) => o.id) } : {}),
         examples: { ...prevContext.examples, ...leaks.keptNewExamples },
-        rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + storyRejected,
+        rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + writeRejected,
         ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
         droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
       };

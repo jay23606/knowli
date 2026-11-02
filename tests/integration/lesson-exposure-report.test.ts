@@ -20,13 +20,22 @@ describe("raport ujawnionych rozwiązań w istniejących szkicach", () => {
     await seedEditorPoolWithLeak(pool, covered, { spareIndependent: true });
     const blocked = await lessonWorld(pool, { publish: false, title: "Zablokowany" });
     await seedEditorPoolWithLeak(pool, blocked);
+    // Zablokowany już przed regułą: pula z ujawnieniem bez ćwiczeń luki (brak etapu produktywnego).
+    const blockedBefore = await lessonWorld(pool, { publish: false, title: "Zablokowany wcześniej" });
+    await seedEditorPoolWithLeak(pool, blockedBefore);
+    await pool.query(
+      `delete from learning_app.item_revision_skills where item_revision_id in (
+         select id from learning_app.item_revisions where deck_version_id = $1 and payload->>'exerciseType' = 'lesson_gap')`,
+      [blockedBefore.versionId],
+    );
+    await pool.query("delete from learning_app.item_revisions where deck_version_id = $1 and payload->>'exerciseType' = 'lesson_gap'", [blockedBefore.versionId]);
     // Opublikowana wersja jest niezmienna i nie wchodzi do raportu.
     await lessonWorld(pool, { title: "Opublikowany" });
 
     const rows = await reportLessonExposureLeaks(services.db, services);
     const byVersion = new Map(rows.map((row) => [row.deckVersionId, row]));
 
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
     expect(byVersion.get(clean.versionId)).toMatchObject({
       deckId: clean.deckId, state: "draft", hardLeaks: 0, softLeaks: 0, blockedBefore: false, blockedAfter: false,
     });
@@ -35,6 +44,9 @@ describe("raport ujawnionych rozwiązań w istniejących szkicach", () => {
     });
     expect(byVersion.get(blocked.versionId)).toMatchObject({
       deckId: blocked.deckId, state: "draft", hardLeaks: 1, softLeaks: 0, blockedBefore: false, blockedAfter: true,
+    });
+    expect(byVersion.get(blockedBefore.versionId)).toMatchObject({
+      deckId: blockedBefore.deckId, state: "draft", hardLeaks: 1, softLeaks: 0, blockedBefore: true, blockedAfter: true,
     });
     const newlyBlocked = rows.filter((row) => row.blockedAfter && !row.blockedBefore).map((row) => row.deckVersionId);
     expect(newlyBlocked).toEqual([blocked.versionId]);

@@ -1,5 +1,5 @@
 /**
- * Raport ujawnionych rozwiązań w istniejących szkicach lekcji (tylko odczyt).
+ * Raport ujawnionych rozwiązań w istniejących szkicach lekcji (tylko odczyt: transakcja READ ONLY).
  *
  * Dla każdego szkicu (draft/review) liczy rozwiązania widziane przez dziecko wcześniej
  * (twarde: przykład karty lub ćwiczenie niesamodzielne; miękkie: wcześniejsze ćwiczenie
@@ -39,7 +39,9 @@ if (!databaseUrl) {
 const { db, pool } = createDatabase(databaseUrl);
 try {
   const services = createServices({ db });
-  const rows = await reportLessonExposureLeaks(db, services);
+  // Cały raport w jednej transakcji tylko do odczytu (BEGIN READ ONLY): baza odrzuci każdy zapis,
+  // nawet przypadkowy, a odczyt widzi spójną migawkę.
+  const rows = await db.transaction((tx) => reportLessonExposureLeaks(tx, services), { accessMode: "read only" });
   const leaking = rows.filter((row) => row.hardLeaks + row.softLeaks > 0);
   console.log(`szkice lekcji (draft/review): ${rows.length}, z ujawnieniami: ${leaking.length}`);
   for (const row of leaking) {

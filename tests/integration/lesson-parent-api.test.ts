@@ -708,15 +708,20 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
       expect(published.status).toBe(200);
     });
 
-    it("wersja opublikowana nie ma exposureLeaks, nawet gdy jej ćwiczenia pokrywają się z kartą", async () => {
+    it("wersja opublikowana nie ma exposureLeaks ani wykluczeń w pokryciu, nawet gdy jej ćwiczenia pokrywają się z kartą", async () => {
       const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
       const { services, cookie, deckId, versionId } = await leakedDraft(fakes);
       expect(await rawDraft(services, cookie, deckId)).toHaveProperty("exposureLeaks");
+      // Szkic z zapasem (pokrycie bez reguły ujawnień pełne): po regule brakuje etapu samodzielnego.
+      expect(LessonDraftDtoSchema.parse(await rawDraft(services, cookie, deckId)).coverage)
+        .toContainEqual(expect.objectContaining({ stage: "independent", excluded: 1 }));
       await pool.query("update learning_app.deck_versions set state = 'published', published_at = now() where id = $1", [versionId]);
       await pool.query("update learning_app.decks set published_version_id = $1 where id = $2", [versionId, deckId]);
       const body = (await (await call(services, "GET", `lessons/${deckId}`, { cookie })).json()) as { published: Record<string, unknown> };
       expect(body.published).toBeTruthy();
       expect(body.published).not.toHaveProperty("exposureLeaks");
+      // Opublikowane wersje bez zmian: pokrycie jak przed regułą ujawnień (bez `excluded` i nowych braków).
+      expect(LessonDraftDtoSchema.parse(body.published).coverage).toEqual([]);
     });
 
     it("świeżo wygenerowany szkic gramatyki i rozdziału z fake'a nie ma exposureLeaks", async () => {

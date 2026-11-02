@@ -21,7 +21,7 @@ import DeckSessionTaskBudgetSettings from "../DeckSessionTaskBudgetSettings";
 import type { EditorLeaveState } from "../useParentLeaveGuard";
 import { orpc } from "../query-client";
 import LessonSupervisionPanel from "./LessonSupervisionPanel";
-import LessonExerciseCard, { type CalculationControls, type LeakNotice } from "./LessonExerciseCard";
+import LessonExerciseCard, { leakNoticeFor, type CalculationControls, type LeakNotice } from "./LessonExerciseCard";
 import ArchiveLessonDialog from "./ArchiveLessonDialog";
 import LessonSourceNote from "./LessonSourceNote";
 import LessonStorySection from "./LessonStorySection";
@@ -717,10 +717,15 @@ export default function LessonEditor({
     return () => cancelAnimationFrame(frame);
   }, [exerciseErrors]);
 
-  // Źródło ujawnionego rozwiązania trafia na ekran; druga próba po animacji rozwijania zagadnienia.
+  // Źródło ujawnionego rozwiązania trafia na ekran i dostaje fokus (karta ma tabIndex=-1);
+  // druga próba po animacji rozwijania zagadnienia.
   useEffect(() => {
     if (revealIndex === null) return;
-    const scroll = () => document.querySelector(`[data-testid="exercise-${revealIndex}"]`)?.scrollIntoView({ block: "center" });
+    const scroll = () => {
+      const card = document.querySelector<HTMLElement>(`[data-testid="exercise-${revealIndex}"]`);
+      card?.scrollIntoView({ block: "center" });
+      card?.focus({ preventScroll: true });
+    };
     const frame = requestAnimationFrame(scroll);
     const later = window.setTimeout(() => { scroll(); setRevealIndex(null); }, 300);
     return () => { cancelAnimationFrame(frame); window.clearTimeout(later); };
@@ -844,19 +849,13 @@ export default function LessonEditor({
   const leakNotice = (ex: EditableLessonExercise): LeakNotice | null => {
     const leak = ex.id === undefined ? undefined : leakByExercise.get(ex.id);
     if (!leak) return null;
-    if (leak.source.kind === "card_example") {
-      const title = objectiveMeta(leak.source.objectiveId)?.titlePl ?? leak.source.objectiveId;
-      return { kind: leak.kind, message: messages.lessons.exposureLeakCard.replace("{objective}", () => title), show: null };
-    }
-    const sourceId = leak.source.exerciseId;
-    const source = form?.exercises.find((candidate) => candidate.id === sourceId);
-    if (!source) return { kind: leak.kind, message: messages.lessons.exposureLeakStale, show: null };
-    const n = String((indexByClientKey.get(source.clientKey) ?? 0) + 1);
-    return {
-      kind: leak.kind,
-      message: (leak.kind === "hard" ? messages.lessons.exposureLeakExercise : messages.lessons.exposureLeakSoft).replace("{n}", n),
-      show: { label: messages.lessons.exposureLeakShow.replace("{n}", n), sourceKey: sourceId },
-    };
+    return leakNoticeFor(leak, {
+      objectiveTitle: (objectiveId) => objectiveMeta(objectiveId)?.titlePl ?? objectiveId,
+      sourceIndex: (exerciseId) => {
+        const source = form?.exercises.find((candidate) => candidate.id === exerciseId);
+        return source ? indexByClientKey.get(source.clientKey) : undefined;
+      },
+    });
   };
 
   const exerciseCard = (ex: EditableLessonExercise) => {

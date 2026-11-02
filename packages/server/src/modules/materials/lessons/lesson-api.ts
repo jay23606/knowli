@@ -288,26 +288,41 @@ async function readLessonDraftDto(
   });
   const drafts: LessonExerciseDraft[] = revisions.map((r) => toExerciseDraft(r.payload));
   const draftSubject = services.subjects.getSubject(context.subjectId);
+  // Wersja opublikowana jest niezmienna: jej pokrycie liczymy jak przed regułą ujawnień
+  // (bez wykluczeń i nowych braków), a publikacja szkicu nadal wyklucza ujawnione ćwiczenia.
+  const published = version.state === "published";
   // Nieznany przedmiot: pokrycie z minimami domyślnymi, bez ujawnień (brak normalizatora do ich oceny).
   const coverage: CoverageGapDto[] = draftSubject
-    ? lessonCoverageGaps({ subject: draftSubject, exercises: drafts, examples: context.examples, objectiveIds: context.objectiveIds })
+    ? lessonCoverageGaps({
+        subject: draftSubject,
+        exercises: drafts,
+        examples: context.examples,
+        objectiveIds: context.objectiveIds,
+        ...(published ? { ignoreExposure: true } : {}),
+      })
     : poolCoverage(drafts, context.objectiveIds, lessonPoolMinimums({}));
   // Ujawnione rozwiązania (spec etapu przeglądu lekcji §8): tylko edytowalny szkic — wersja opublikowana
   // jest niezmienna, więc rodzic nie ma czego poprawić; indeksy z domeny mapujemy na id ćwiczeń.
-  const exposureLeaks: ExposureLeakDto[] = draftSubject && version.state !== "published"
+  // Miękkie powtórzenie w rodzinie pytań szkoły (ta sama rodzina w tym samym zagadnieniu) to zamierzona
+  // struktura, nie błąd rodzica: bez ostrzeżenia, choć pokrycie nadal liczy rodzinę raz.
+  const sameFamily = (a: LessonExerciseDraft, b: LessonExerciseDraft) =>
+    a.objectiveId === b.objectiveId && a.familyId !== undefined && a.familyId.trim() !== "" && a.familyId === b.familyId;
+  const exposureLeaks: ExposureLeakDto[] = draftSubject && !published
     ? findExposureLeaks({
         exercises: drafts,
         examples: context.examples,
         objectiveOrder: context.objectiveIds,
         subject: draftSubject,
         mode: "coverage",
-      }).map((leak) => ({
-        exerciseId: revisions[leak.index]!.itemId,
-        kind: leak.kind,
-        source: leak.source.kind === "card_example"
-          ? { kind: "card_example" as const, objectiveId: leak.source.objectiveId }
-          : { kind: "exercise" as const, exerciseId: revisions[leak.source.index]!.itemId },
-      }))
+      })
+        .filter((leak) => !(leak.kind === "soft" && leak.source.kind === "exercise" && sameFamily(drafts[leak.index]!, drafts[leak.source.index]!)))
+        .map((leak) => ({
+          exerciseId: revisions[leak.index]!.itemId,
+          kind: leak.kind,
+          source: leak.source.kind === "card_example"
+            ? { kind: "card_example" as const, objectiveId: leak.source.objectiveId }
+            : { kind: "exercise" as const, exerciseId: revisions[leak.source.index]!.itemId },
+        }))
     : [];
 
   return {

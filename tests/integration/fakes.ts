@@ -84,3 +84,19 @@ export function recordingProvider<T extends object>(provider: T, usage: UsageRec
 export function staleLeaseToken(): string {
   return randomUUID();
 }
+
+/** Wejście generatora puli lekcji (partia główna i runda pod etap). */
+export type LessonPoolRequest = Parameters<FakeLlmProvider["generateLessonPool"]>[0];
+
+/**
+ * Trasowanie po celu żądania: partia główna z `main`, runda pod etap (`purpose: "stage_top_up"`)
+ * z `fakes.llm` — kolejka `queueLessonTopUp` albo domyślna pula fake'a; żądania rundy zapisuje
+ * `fakes.llm.lessonRequests`. `main` nie widzi więc wywołań rundy (domyślnie włączonej).
+ */
+export function routeLessonRound(
+  fakes: FakeGeneration,
+  main: (input: LessonPoolRequest) => Promise<{ exercises: unknown[]; examples: Record<string, string[]> }>,
+): void {
+  const round = fakes.llm.generateLessonPool.bind(fakes.llm);
+  fakes.deps.llm.generateLessonPool = async (input) => (input.purpose === "stage_top_up" ? round(input) : main(input));
+}
