@@ -145,6 +145,7 @@ Wstępne brzmienie; ostateczne po odsłuchu próbek (§3.6).
 | `ui_closing` | Powiedz ciepło i z zadowoleniem. |
 | `lesson_question` | Przeczytaj przyjaźnie, spokojnym tempem i wyraźnie. |
 | `lesson_card` | Przeczytaj jak ciepły nauczyciel, który opowiada, spokojnym tempem. |
+| `lesson_explanation` | Wyjaśnij spokojnie i życzliwie jak cierpliwy nauczyciel; angielskie słowa wymów po angielsku. |
 
 ### 3.3. Miejsca zmian
 

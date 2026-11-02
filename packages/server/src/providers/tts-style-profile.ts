@@ -9,6 +9,7 @@ export const STYLE_SENTENCES_PL: Readonly<Record<TtsStyle, string>> = {
   ui_closing: "Powiedz ciepło i z zadowoleniem.",
   lesson_question: "Przeczytaj przyjaźnie, spokojnym tempem i wyraźnie.",
   lesson_card: "Przeczytaj jak ciepły nauczyciel, który opowiada, spokojnym tempem.",
+  lesson_explanation: "Wyjaśnij spokojnie i życzliwie jak cierpliwy nauczyciel; angielskie słowa wymów po angielsku.",
   cheerful: "Przeczytaj radośnie, z entuzjazmem i uśmiechem w głosie, wyraźnie.",
   curious: "Przeczytaj z wyraźną ciekawością, pytająco, jakbyś zapraszał do zgadywania.",
   gentle: "Przeczytaj bardzo łagodnie i wolniej, ciepłym, kojącym głosem.",

@@ -25,7 +25,7 @@ import { cardReadText } from "../../domain/lessons/card-read-text";
 import { resolveLessonTopic } from "../../domain/lessons/topic-resolution";
 import type { DynamicTopicData, LessonTopic } from "../../domain/lessons/types";
 
-export type AssetRole = "target_audio" | "example_audio" | "illustration" | "prompt_audio" | "feedback_audio";
+export type AssetRole = "target_audio" | "example_audio" | "illustration" | "prompt_audio" | "feedback_audio" | "explanation_audio";
 
 interface RequiredAsset {
   role: AssetRole;
@@ -89,6 +89,8 @@ export interface LessonTtsFlags {
   ttsForAnswers: boolean;
   ttsForPrompts: boolean;
   ttsForFeedbackSentence: boolean;
+  /** Przedmiot ma wyjaśnienie błędu dla dziecka (`explanationPl`) z nagraniem `explanation_audio`. */
+  exerciseExplanations: boolean;
 }
 
 /** Locale nagrania pytania: polecenia i pytania przedmiotów szkolnych są po polsku (design szkoły §11.2). */
@@ -152,6 +154,11 @@ export function requiredAssetsForLessonExercise(
   const sentence = flags.ttsForFeedbackSentence && answerLocale !== "" ? feedbackSentenceText(feedbackSourceOf(payload)) : null;
   if (sentence !== null) {
     required.push(ttsAsset("feedback_audio", sentence, answerLocale, settings));
+  }
+  // Wyjaśnienie błędu: zawsze po polsku, stały styl roli (ton lektora ćwiczenia go nie dotyczy).
+  const explanation = flags.exerciseExplanations && typeof payload.explanationPl === "string" ? payload.explanationPl.trim() : "";
+  if (explanation !== "") {
+    required.push(ttsAsset("explanation_audio", explanation, PROMPT_AUDIO_LOCALE, settings, "lesson_explanation"));
   }
   return required;
 }
@@ -361,7 +368,7 @@ export async function reconcileDraftAssetsTx(
 
   // Dla ćwiczeń lekcji strategia zasobów zależy od flag TTS przedmiotu;
   // czytamy je raz z lesson_context tej wersji (słówka ich nie potrzebują).
-  const flags: LessonTtsFlags = { ttsForAnswers: false, ttsForPrompts: false, ttsForFeedbackSentence: false };
+  const flags: LessonTtsFlags = { ttsForAnswers: false, ttsForPrompts: false, ttsForFeedbackSentence: false, exerciseExplanations: false };
   if (revisions.some((r) => isLessonExercisePayload(r.payload))) {
     const row = (
       await tx
@@ -375,6 +382,7 @@ export async function reconcileDraftAssetsTx(
       flags.ttsForAnswers = subject.ttsForAnswers;
       flags.ttsForPrompts = subject.ttsForPrompts;
       flags.ttsForFeedbackSentence = subject.ttsForFeedbackSentence;
+      flags.exerciseExplanations = subject.exerciseExplanations;
     }
   }
 
@@ -420,9 +428,10 @@ export async function reconcileDraftAssetsTx(
               .from(mediaAssets)
               .where(eq(mediaAssets.id, existing.assetId))
           )[0];
-          // Nagranie pytania i zdania feedbacku nie jest decyzją rodzica (brak „Regeneruj”
-          // w panelu, design szkoły §11.2) i jest tanie: publikacja zleca je ponownie.
-          if (asset && asset.fingerprint === req.fingerprint && asset.state === "failed" && options.keepFailed && req.role !== "prompt_audio" && req.role !== "feedback_audio") {
+          // Nagranie pytania, zdania feedbacku i wyjaśnienia błędu nie jest decyzją rodzica (brak
+          // „Regeneruj” w panelu, design szkoły §11.2) i jest tanie: publikacja zleca je ponownie.
+          if (asset && asset.fingerprint === req.fingerprint && asset.state === "failed" && options.keepFailed
+            && req.role !== "prompt_audio" && req.role !== "feedback_audio" && req.role !== "explanation_audio") {
             continue;
           }
           if (asset && asset.fingerprint === req.fingerprint && asset.state !== "failed") {

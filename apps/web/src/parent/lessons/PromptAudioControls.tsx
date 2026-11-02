@@ -81,9 +81,22 @@ export function cardAudioTargetLabel(cardIndex: number, cardTitle: string, objec
   return objective ? label.replace("{objective}", () => objective) : label.replace("{objective}, ", "");
 }
 
-export default function PromptAudioControls({ audio, target, targetLabel, lessonDraftId, deckId, canRegenerate, locked, testId, onPlay }: {
+/** Rola nagrania ćwiczenia: pytanie albo wyjaśnienie błędu. */
+export type PromptAudioRole = "prompt_audio" | "explanation_audio";
+
+/**
+ * Wejście „Nagraj ponownie” nagrania ćwiczenia. Rola idzie tylko dla wyjaśnienia —
+ * pytanie wysyła to samo wejście co dotąd (bez pola `role`).
+ */
+export function promptAudioRegenerateInput(lessonDraftId: string, itemRevisionId: string, role: PromptAudioRole | undefined) {
+  return { lessonDraftId, itemRevisionId, ...(role === "explanation_audio" ? { role } : {}) };
+}
+
+export default function PromptAudioControls({ audio, target, role, targetLabel, lessonDraftId, deckId, canRegenerate, locked, testId, onPlay }: {
   audio: LessonPromptAudioDto;
   target: PromptAudioTarget;
+  /** Które nagranie ćwiczenia regeneruje przycisk; brak = pytanie. Dotyczy tylko `target.kind === "prompt"`. */
+  role?: PromptAudioRole;
   /** Czego dotyczą przyciski („Ćwiczenie 3”, „karta 2 — …”) — w nazwie dostępności, bo takich przycisków jest na stronie wiele. */
   targetLabel: string;
   lessonDraftId: string;
@@ -109,7 +122,7 @@ export default function PromptAudioControls({ audio, target, targetLabel, lesson
   }, [audio.state, audio.assetId, resetPrompt, resetCard]);
 
   const regenerate = () => {
-    if (target.kind === "prompt") promptMutation.mutate({ lessonDraftId, itemRevisionId: target.itemRevisionId });
+    if (target.kind === "prompt") promptMutation.mutate(promptAudioRegenerateInput(lessonDraftId, target.itemRevisionId, role));
     else cardMutation.mutate({ lessonDraftId, objectiveId: target.objectiveId, cardIndex: target.cardIndex });
   };
 

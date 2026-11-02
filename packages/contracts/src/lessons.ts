@@ -402,6 +402,8 @@ export const LessonExerciseInputSchema = z.object({
   extraWords: z.array(z.string().min(1).max(MAX_CLOZE_WORD_LENGTH)).min(MIN_CLOZE_EXTRA).max(MAX_CLOZE_EXTRA).optional(),
   /** Ton lektora nagrania pytania; brak = styl domyślny roli (spec TTS §4.1). */
   voiceTone: LessonVoiceToneSchema.optional(),
+  /** Jedno zdanie po polsku pokazywane po błędzie w treningu (przedmioty z flagą `exerciseExplanations`). */
+  explanationPl: text.optional(),
 }).strict();
 export type LessonExerciseInput = z.infer<typeof LessonExerciseInputSchema>;
 
@@ -423,6 +425,8 @@ const LessonExerciseDraftDtoSchema = LessonExerciseInputSchema.extend({
   revisionId: UuidSchema,
   /** Nagranie pytania; brak = ćwiczenie nie ma nagrania dla tego tekstu. Tylko do odczytu. */
   promptAudio: LessonPromptAudioDtoSchema.optional(),
+  /** Nagranie wyjaśnienia błędu (`explanationPl`); brak = ćwiczenie nie ma wyjaśnienia z nagraniem. Tylko do odczytu. */
+  explanationAudio: LessonPromptAudioDtoSchema.optional(),
   /**
    * Nagranie zdania „Posłuchaj i wybierz” (`lesson_listen_choice`, rola `feedback_audio`
    * dla `feedbackSentenceText`); brak = to ćwiczenie nie ma bodźca słuchowego. Tylko do odczytu.
@@ -446,6 +450,28 @@ export const CoverageGapDtoSchema = z.object({
   actual: z.number().int().nonnegative(),
 });
 export type CoverageGapDto = z.infer<typeof CoverageGapDtoSchema>;
+
+/**
+ * Historyjka na koniec sesji lekcji (spec 2026-11-01): zdania do przeczytania
+ * i posłuchania oraz pytania wielokrotnego wyboru. Kształt odpowiada
+ * `LessonStory` z domeny; schemat jest celowo luźny (limity tylko jako bezpiecznik
+ * granicy), a reguły i komunikaty o błędach daje domena.
+ */
+export const LessonStoryOptionSchema = z.object({
+  id: z.string().min(1).max(16),
+  text: z.string().max(1000),
+}).strict();
+export const LessonStoryQuestionSchema = z.object({
+  id: z.string().min(1).max(16),
+  question: z.string().max(1000),
+  options: z.array(LessonStoryOptionSchema).max(10),
+  correctOption: z.string().max(16),
+}).strict();
+export const LessonStorySchema = z.object({
+  sentences: z.array(z.string().max(1000)).max(20),
+  questions: z.array(LessonStoryQuestionSchema).max(10),
+}).strict();
+export type LessonStoryDto = z.infer<typeof LessonStorySchema>;
 
 /**
  * Widok szkicu lekcji dla panelu rodzica (design „Data Models → Kontrakty”).
@@ -479,6 +505,8 @@ export const LessonDraftDtoSchema = z.object({
    * ton się zapisuje, ale nagrania brzmią domyślnie.
    */
   voiceTones: z.object({ styleEnabled: z.boolean() }).strict().optional(),
+  /** Przedmiot ma wyjaśnienie błędu dla dziecka: panel pokazuje pole `explanationPl`. Brak pola = przedmiot go nie ma. */
+  exerciseExplanations: z.literal(true).optional(),
   rejectedCount: z.number().int().nonnegative(),
   /**
    * Powody odrzuceń przy czyszczeniu świeżo wygenerowanej puli (przedmiot z
@@ -488,6 +516,10 @@ export const LessonDraftDtoSchema = z.object({
   /** Zagadnienia odrzucone/pominięte na etapie generowania tematu (zestawy szkolne). */
   droppedObjectiveCount: z.number().int().nonnegative().optional(),
   coverage: z.array(CoverageGapDtoSchema),
+  /** Historyjka na koniec sesji; brak pola = lekcja bez historyjki. */
+  story: LessonStorySchema.optional(),
+  /** Przedmiot obsługuje historyjkę (flaga przedmiotu); brak pola = nie wiadomo/nie dotyczy. */
+  storyEnabled: z.boolean().optional(),
 });
 export type LessonDraftDto = z.infer<typeof LessonDraftDtoSchema>;
 
@@ -515,6 +547,8 @@ export const LessonDeckDtoSchema = z.object({
   draft: LessonDraftDtoSchema.nullable(),
   published: LessonDraftDtoSchema.nullable(),
   generation: GenerationDtoSchema.nullable(),
+  /** Najnowszy run generowania historyjki (null/brak = nie zlecano). */
+  storyGeneration: GenerationDtoSchema.nullable().optional(),
   assignments: z.array(AssignmentDtoSchema),
   /** Pochodzenie z materiału źródłowego rodzica; brak pola — wklejony tekst albo źródło usunięto. */
   source: LessonDeckSourceDtoSchema.optional(),

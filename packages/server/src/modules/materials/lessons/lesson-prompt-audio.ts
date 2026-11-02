@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { LessonCardAudioDto, LessonPromptAudioDto } from "@learning/contracts";
 import type { Services } from "../../../config";
@@ -48,32 +48,38 @@ function groupBy<T>(rows: readonly T[], key: (row: T) => string): Map<string, T[
 const notCancelled = sql`not exists (select 1 from ${generationRuns} where ${generationRuns.assetId} = ${mediaAssets.id} and ${generationRuns.state} = 'superseded')`;
 
 /**
- * Stan nagrań wersji lekcji: pytania i zdania ćwiczeń słuchowych per rewizja
- * oraz karty w kolejności zagadnień tematu. Wiersz bez żadnej generacji swojego fingerprintu (albo brak wiersza)
- * nie daje wpisu. Jedno zapytanie na rodzaj nagrania dla całej wersji.
+ * Stan nagrań wersji lekcji: pytania, wyjaśnienia błędu i zdania ćwiczeń słuchowych
+ * per rewizja oraz karty w kolejności zagadnień tematu. Wiersz bez żadnej generacji
+ * swojego fingerprintu (albo brak wiersza) nie daje wpisu. Jedno zapytanie na rodzaj
+ * nagrania dla całej wersji (pytania, wyjaśnienia i zdania czytają ten sam zbiór
+ * wierszy `revision_assets`).
  */
 export async function readLessonAudioStates(
   db: Executor,
   versionId: string,
   objectiveOrder: readonly string[],
-): Promise<{ prompts: Map<string, LessonPromptAudioDto>; sentences: Map<string, LessonPromptAudioDto>; cards: LessonCardAudioDto[] }> {
-  const readRevisionAudio = async (role: "prompt_audio" | "feedback_audio") => {
-    const rows = await db
-      .select({ itemRevisionId: revisionAssets.itemRevisionId, id: mediaAssets.id, state: mediaAssets.state })
-      .from(revisionAssets)
-      .innerJoin(itemRevisions, eq(itemRevisions.id, revisionAssets.itemRevisionId))
-      .innerJoin(mediaAssets, eq(mediaAssets.fingerprint, revisionAssets.expectedFingerprint))
-      .where(and(eq(itemRevisions.deckVersionId, versionId), eq(revisionAssets.role, role), eq(mediaAssets.kind, "tts"), notCancelled))
-      .orderBy(desc(mediaAssets.generationNumber));
-    const byRevision = new Map<string, LessonPromptAudioDto>();
-    for (const [itemRevisionId, generations] of groupBy(rows, (row) => row.itemRevisionId)) {
-      byRevision.set(itemRevisionId, audioDto(generations));
-    }
-    return byRevision;
-  };
-  const prompts = await readRevisionAudio("prompt_audio");
+): Promise<{ prompts: Map<string, LessonPromptAudioDto>; explanations: Map<string, LessonPromptAudioDto>; sentences: Map<string, LessonPromptAudioDto>; cards: LessonCardAudioDto[] }> {
+  const promptRows = await db
+    .select({ itemRevisionId: revisionAssets.itemRevisionId, role: revisionAssets.role, id: mediaAssets.id, state: mediaAssets.state })
+    .from(revisionAssets)
+    .innerJoin(itemRevisions, eq(itemRevisions.id, revisionAssets.itemRevisionId))
+    .innerJoin(mediaAssets, eq(mediaAssets.fingerprint, revisionAssets.expectedFingerprint))
+    .where(and(
+      eq(itemRevisions.deckVersionId, versionId),
+      inArray(revisionAssets.role, ["prompt_audio", "explanation_audio", "feedback_audio"]),
+      eq(mediaAssets.kind, "tts"),
+      notCancelled,
+    ))
+    .orderBy(desc(mediaAssets.generationNumber));
+  const prompts = new Map<string, LessonPromptAudioDto>();
+  const explanations = new Map<string, LessonPromptAudioDto>();
   // Zdanie ćwiczenia słuchowego (`feedback_audio`): to samo odczytanie stanu co pytanie.
-  const sentences = await readRevisionAudio("feedback_audio");
+  const sentences = new Map<string, LessonPromptAudioDto>();
+  const byRole = { prompt_audio: prompts, explanation_audio: explanations, feedback_audio: sentences } as const;
+  for (const [, generations] of groupBy(promptRows, (row) => `${row.role}:${row.itemRevisionId}`)) {
+    const { role, itemRevisionId } = generations[0]!;
+    byRole[role as keyof typeof byRole].set(itemRevisionId, audioDto(generations));
+  }
 
   const cardRows = await db
     .select({ objectiveId: lessonCardAssets.objectiveId, cardIndex: lessonCardAssets.cardIndex, id: mediaAssets.id, state: mediaAssets.state })
@@ -92,7 +98,7 @@ export async function readLessonAudioStates(
   };
   const cards = [...cardsByKey.values()].sort((a, b) =>
     rank(a.objectiveId) - rank(b.objectiveId) || a.objectiveId.localeCompare(b.objectiveId) || a.cardIndex - b.cardIndex);
-  return { prompts, sentences, cards };
+  return { prompts, explanations, sentences, cards };
 }
 
 /** Blokada wersji jak przy edycji szkicu; opublikowana wersja jest niezmienna. */
@@ -157,6 +163,8 @@ async function enqueueNextGenerationTx(tx: Tx, fingerprint: string): Promise<str
 const PromptAudioInputSchema = z.object({
   lessonDraftId: z.uuid(),
   itemRevisionId: z.uuid(),
+  /** Nagranie pytania (domyślnie) albo wyjaśnienia błędu tego samego ćwiczenia. */
+  role: z.enum(["prompt_audio", "explanation_audio"]).default("prompt_audio"),
 });
 
 const CardAudioInputSchema = z.object({
@@ -198,13 +206,14 @@ async function reconcileThenNextTx(
 }
 
 /**
- * „Nagraj ponownie” pytania ćwiczenia w szkicu lekcji. Brak wersji, rewizji
- * w tej wersji, wiersza nagrania albo zasobu jego fingerprintu → `not_found`;
- * opublikowana wersja → `immutable`. Wiersz szkicu wskazuje nową generację.
+ * „Nagraj ponownie” pytania albo wyjaśnienia błędu (`role`) ćwiczenia w szkicu
+ * lekcji. Brak wersji, rewizji w tej wersji, wiersza nagrania (np. ćwiczenie bez
+ * wyjaśnienia) albo zasobu jego fingerprintu → `not_found`; opublikowana wersja →
+ * `immutable`. Wiersz szkicu wskazuje nową generację.
  */
 export async function regenerateLessonPromptAudio(
   services: Services,
-  input: z.infer<typeof PromptAudioInputSchema>,
+  input: z.input<typeof PromptAudioInputSchema>,
 ): Promise<{ assetId: string }> {
   const valid = PromptAudioInputSchema.parse(input);
   assertMediaConfigured(services);
@@ -218,7 +227,7 @@ export async function regenerateLessonPromptAudio(
         .where(and(
           eq(revisionAssets.itemRevisionId, valid.itemRevisionId),
           eq(itemRevisions.deckVersionId, valid.lessonDraftId),
-          eq(revisionAssets.role, "prompt_audio"),
+          eq(revisionAssets.role, valid.role),
         ))
     )[0];
     const { assetId, rebound } = await reconcileThenNextTx(tx, services, version, readRow);
@@ -226,7 +235,7 @@ export async function regenerateLessonPromptAudio(
       await tx
         .update(revisionAssets)
         .set({ assetId, state: "pending" })
-        .where(and(eq(revisionAssets.itemRevisionId, valid.itemRevisionId), eq(revisionAssets.role, "prompt_audio")));
+        .where(and(eq(revisionAssets.itemRevisionId, valid.itemRevisionId), eq(revisionAssets.role, valid.role)));
     }
     return { assetId };
   });

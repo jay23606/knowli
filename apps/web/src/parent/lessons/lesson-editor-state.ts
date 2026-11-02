@@ -3,6 +3,7 @@ import type {
   LessonDraftDto,
   LessonExerciseInput,
   LessonExerciseTypeDto,
+  LessonStoryDto,
   LessonVoiceTone,
 } from "@learning/contracts";
 
@@ -97,6 +98,8 @@ export interface EditableLessonExercise {
   extraWords?: string[] | null;
   /** Ton lektora nagrania pytania; brak = styl domyślny roli. Nagrania (`promptAudio`) są tylko do odczytu i nie wracają w patchu. */
   voiceTone?: LessonVoiceTone;
+  /** Zdanie po polsku pokazywane dziecku po błędzie (surowy tekst z pola; przycinane w patchu). Nagranie (`explanationAudio`) jest tylko do odczytu i nie wraca w patchu. */
+  explanationPl?: string;
 }
 
 /** Karta zagadnienia tematu dynamicznego w edytorze; brak `voiceTone` = styl domyślny. */
@@ -132,6 +135,10 @@ export interface LessonDraftPatch {
   exercises?: LessonExerciseInput[];
   examples?: Record<string, string[]>;
   dynamicTopic?: { objectives: EditableDynamicObjective[] };
+  /** Historyjka na koniec sesji: obiekt zastępuje, `null` usuwa, brak pola nie zmienia. */
+  story?: LessonStoryDto | null;
+  /** Historyjka, od której zaczęto edycję; serwer odrzuca zapis (`conflict`), gdy bieżąca jest inna. */
+  expectedStory?: LessonStoryDto | null;
   /** Tylko `[]` (usunięcie tematów zdań); patrz `lessonThemesPatch`. */
   interests?: string[];
 }
@@ -199,6 +206,7 @@ function editableFromExercise(
     ...(exercise.gapAnswers ? { gapAnswers: [...exercise.gapAnswers] } : {}),
     ...(exercise.extraWords ? { extraWords: [...exercise.extraWords] } : {}),
     ...(exercise.voiceTone ? { voiceTone: exercise.voiceTone } : {}),
+    ...(exercise.explanationPl !== undefined ? { explanationPl: exercise.explanationPl } : {}),
   };
 }
 
@@ -381,6 +389,8 @@ function exerciseToInput(exercise: EditableLessonExercise): LessonExerciseInput 
   }
   if (exercise.calculation) input.calculation = structuredClone(exercise.calculation);
   if (exercise.voiceTone) input.voiceTone = exercise.voiceTone;
+  const explanation = exercise.explanationPl?.trim() ?? "";
+  if (explanation.length > 0) input.explanationPl = explanation;
   if (type === "lesson_match") {
     // Odpowiedź, warianty i focus wynikają z par — rodzic ich nie wpisuje; puste wiersze nie blokują zapisu.
     input.pairs = (exercise.pairs ?? []).filter((pair) => pair.left.trim() || pair.right.trim()).map((pair) => ({ ...pair }));

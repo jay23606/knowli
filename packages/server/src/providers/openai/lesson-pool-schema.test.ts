@@ -204,6 +204,38 @@ describe("lessonPoolJsonSchema — ton lektora (stage B)", () => {
   });
 });
 
+describe("lessonPoolJsonSchema — wyjaśnienie błędu (explanationPl)", () => {
+  const allTypes = ["lesson_choice", "lesson_calculation", "lesson_keywords", "lesson_match", "lesson_group", "lesson_cloze"];
+  const wide: LessonPoolInput = {
+    ...input,
+    exerciseTypes: allTypes,
+    objectives: [{ ...input.objectives[0]!, exerciseTypes: allTypes }],
+  };
+
+  it("dokłada wymagane pole explanationPl (string|null) do każdej gałęzi poza kalkulacją przy fladze", () => {
+    const schema = lessonPoolJsonSchema({ ...wide, exerciseExplanations: true }) as any;
+    const branches = schema.properties.exercises.items.anyOf;
+    expect(branches).toHaveLength(6);
+    for (const branch of branches) {
+      const type = branch.properties.exerciseType.enum[0];
+      if (type === "lesson_calculation") {
+        expect(branch.properties).not.toHaveProperty("explanationPl");
+        expect(branch.required).not.toContain("explanationPl");
+        continue;
+      }
+      expect(branch.properties.explanationPl).toEqual({ type: ["string", "null"] });
+      expect(branch.required).toContain("explanationPl");
+      expect(branch.required.sort()).toEqual(Object.keys(branch.properties).sort());
+    }
+  });
+
+  it("jest identyczny z schematem bez flagi, gdy flaga jest false lub jej brak", () => {
+    const base = JSON.stringify(lessonPoolJsonSchema(wide));
+    expect(JSON.stringify(lessonPoolJsonSchema({ ...wide, exerciseExplanations: false }))).toBe(base);
+    expect(base).not.toContain("explanationPl");
+  });
+});
+
 describe("lessonPoolJsonSchema — cytaty w gałęziach pary/grupy/luki zależą od groundingRequired", () => {
   const dedicated = (groundingRequired: boolean | undefined) => {
     const schema = lessonPoolJsonSchema({

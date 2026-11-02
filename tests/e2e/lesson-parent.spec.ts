@@ -149,6 +149,15 @@ test("generates a multi-objective Present Simple pool with Polish prompts and no
   expect(deck.draft?.exercises.some((exercise) => exercise.exerciseType === "lesson_open_answer" && exercise.prompt?.startsWith("Przetłumacz"))).toBe(true);
 });
 
+// Klik „Zapisz" + oczekiwanie na odpowiedź PATCH szkicu i na koniec zapisu
+// (przycisk wraca ze stanu busy), bo kolejne kroki zależą od odblokowanych kart.
+async function saveLessonAndWait(page: Page) {
+  const patched = page.waitForResponse((r) => r.request().method() === "PATCH" && r.url().includes("/lesson-drafts/"));
+  await page.getByTestId("save-lesson").click();
+  await patched;
+  await expect(page.getByTestId("save-lesson")).toBeEnabled();
+}
+
 test("creates a lesson, reviews it grouped by objective and stage, fixes a validation error, saves, closes coverage and publishes", async ({ page, request }) => {
   const suffix = randomUUID().slice(0, 8);
   const childName = `Lekcyjne dziecko ${suffix}`;
@@ -184,11 +193,11 @@ test("creates a lesson, reviews it grouped by objective and stage, fixes a valid
   await page.getByTestId(`exercise-edit-${idx}`).click();
   const originalFocus = await page.getByTestId(`exercise-focus-${idx}`).inputValue();
   await page.getByTestId(`exercise-focus-${idx}`).fill("");
-  await page.getByTestId("save-lesson").click();
+  await saveLessonAndWait(page);
   await expect(page.getByTestId(`exercise-errors-${idx}`)).toBeVisible();
   // Poprawka: przywróć element sprawdzany.
   await page.getByTestId(`exercise-focus-${idx}`).fill(originalFocus);
-  await page.getByTestId("save-lesson").click();
+  await saveLessonAndWait(page);
   await expect(page.getByTestId(`exercise-errors-${idx}`)).toHaveCount(0);
 
   // Doprowadź do braku pokrycia: usuń wszystkie ćwiczenia etapu samodzielnego.
@@ -197,11 +206,24 @@ test("creates a lesson, reviews it grouped by objective and stage, fixes a valid
   const independentStage = page.getByTestId(`stage-${objectiveId}-independent`);
   // „Usuń ćwiczenie” jest w menu ⋯ karty
   const menus = independentStage.locator('[data-testid^="exercise-menu-"]');
-  while (await menus.count()) {
-    await menus.first().click();
-    await page.locator('[data-testid^="exercise-remove-"]').click();
+  for (let remaining = await menus.count(); remaining > 0; remaining = await menus.count()) {
+    // Menu bywa zamykane przez przewijanie/odświeżenie karty albo zasłaniane przez
+    // dolny pasek akcji — ponawiamy wyłącznie otwarcie menu (z próbnym kliknięciem
+    // pozycji), a „Usuń” klikamy raz: ponowienie kliknięcia mogłoby usunąć kolejną kartę.
+    const remove = page.locator('[data-testid^="exercise-remove-"]');
+    await expect(async () => {
+      if (!(await remove.isVisible())) {
+        await menus.first().scrollIntoViewIfNeeded();
+        await menus.first().click();
+      }
+      await expect(remove).toBeVisible({ timeout: 2_000 });
+      await expect(remove).toBeEnabled({ timeout: 2_000 });
+      await remove.click({ trial: true, timeout: 2_000 });
+    }).toPass({ timeout: 30_000 });
+    await remove.click();
+    await expect(menus).toHaveCount(remaining - 1);
   }
-  await page.getByTestId("save-lesson").click();
+  await saveLessonAndWait(page);
   // Pokrycie pokazuje brak etapu samodzielnego; publikacja zablokowana.
   await expect(page.getByTestId("coverage-gaps")).toBeVisible();
   await expect(page.getByTestId("publish-lesson")).toBeDisabled();
@@ -348,6 +370,99 @@ test("parent edits an AI example before publishing: change is sent in PATCH.exam
   await page.locator(`[data-deck-id="${deckId}"]`).click();
   await expect(page.getByTestId("lesson-editor")).toBeVisible();
   await expect(page.getByTestId(`example-line-${objectiveId}-0`)).toHaveValue(corrected);
+});
+
+/** Historyjka z fake'a powstaje w osobnym runie po puli — czeka na nią sekcja w edytorze. */
+async function waitForGeneratedStory(page: Page): Promise<void> {
+  await expect(page.getByTestId("lesson-story-section")).toBeVisible();
+  await expect(page.getByTestId("lesson-story-sentence-0")).toHaveValue("Sam has a red bike.", { timeout: 120_000 });
+  await expect(page.getByTestId("lesson-story-question-q1")).toHaveValue("Jaki rower ma Sam?");
+}
+
+test("parent edits generated story and publishes", async ({ page }) => {
+  await enterParent(page);
+  const deckId = await createLesson(page, `Historyjka ${randomUUID().slice(0, 8)}`);
+  await waitForGeneratedStory(page);
+
+  const edited = "Sam has a big red bike.";
+  await page.getByTestId("lesson-story-sentence-0").fill(edited);
+  // niezapisana zmiana blokuje generowanie od nowa
+  await expect(page.getByTestId("lesson-story-generate")).toBeDisabled();
+  const saved = page.waitForResponse((r) => r.request().method() === "PATCH" && /\/api\/v1\/parent\/lesson-drafts\//.test(r.url()));
+  await page.getByTestId("save-lesson").click();
+  const patch = await saved;
+  expect(patch.status(), await patch.text()).toBe(200);
+  expect((patch.request().postDataJSON() as { story?: { sentences: string[] } }).story?.sentences[0]).toBe(edited);
+  await expect(page.getByTestId("lesson-story-sentence-0")).toHaveValue(edited);
+
+  await expect(page.getByTestId("publish-lesson")).toBeEnabled({ timeout: 120_000 });
+  await page.getByTestId("publish-lesson").click();
+  await expect(page.getByTestId("publish-status")).toBeVisible({ timeout: 120_000 });
+  // wersja opublikowana: historyjka tylko do odczytu
+  await expect(page.getByTestId("lesson-story-published-hint")).toBeVisible();
+  await expect(page.getByTestId("lesson-story-section")).toContainText(edited);
+  await expect(page.getByTestId("lesson-story-sentence-0")).toHaveCount(0);
+
+  const response = await page.request.get(`/api/v1/parent/lessons/${deckId}`);
+  expect(response.ok()).toBeTruthy();
+  const deck = LessonDeckDtoSchema.parse(await response.json());
+  expect(deck.published?.story?.sentences[0]).toBe(edited);
+});
+
+test("exercise-only save does not send the story; removing the story sends null", async ({ page }) => {
+  await enterParent(page);
+  const deckId = await createLesson(page, `Historyjka zapis ${randomUUID().slice(0, 8)}`);
+  await waitForGeneratedStory(page);
+  const isPatch = (r: { request(): { method(): string }; url(): string }) =>
+    r.request().method() === "PATCH" && /\/api\/v1\/parent\/lesson-drafts\//.test(r.url());
+
+  // Zmiana samego ćwiczenia: PATCH bez pola `story` (nie anuluje runu historyjki).
+  const editButton = page.locator('[data-testid^="exercise-edit-"]').first();
+  const idx = (await editButton.getAttribute("data-testid"))!.replace("exercise-edit-", "");
+  await editButton.click();
+  await page.getByTestId(`exercise-instruction-${idx}`).fill("Uzupełnij zdanie poprawną formą.");
+  const exerciseSave = page.waitForResponse(isPatch);
+  await page.getByTestId("save-lesson").click();
+  const exercisePatch = await exerciseSave;
+  expect(exercisePatch.status(), await exercisePatch.text()).toBe(200);
+  const exerciseBody = exercisePatch.request().postDataJSON() as { story?: unknown; exercises?: unknown[] };
+  expect(exerciseBody.exercises?.length).toBeGreaterThan(0);
+  expect(exerciseBody.story).toBeUndefined();
+  await expect(page.getByTestId("lesson-story-sentence-0")).toHaveValue("Sam has a red bike.");
+
+  // „Usuń historyjkę” + zapis: PATCH ze `story: null`, sekcja w stanie pustym.
+  await page.getByTestId("lesson-story-remove").click();
+  await expect(page.getByTestId("lesson-story-empty")).toBeVisible();
+  const removeSave = page.waitForResponse(isPatch);
+  await page.getByTestId("save-lesson").click();
+  const removePatch = await removeSave;
+  expect(removePatch.status(), await removePatch.text()).toBe(200);
+  const removeBody = removePatch.request().postDataJSON() as { story?: unknown };
+  expect("story" in removeBody).toBe(true);
+  expect(removeBody.story).toBeNull();
+  await expect(page.getByTestId("lesson-story-empty")).toBeVisible();
+  await expect(page.getByTestId("lesson-story-sentence-0")).toHaveCount(0);
+
+  const response = await page.request.get(`/api/v1/parent/lessons/${deckId}`);
+  expect(response.ok()).toBeTruthy();
+  expect(LessonDeckDtoSchema.parse(await response.json()).draft?.story).toBeUndefined();
+});
+
+test("story validation error is shown", async ({ page }) => {
+  await enterParent(page);
+  await createLesson(page, `Historyjka blad ${randomUUID().slice(0, 8)}`);
+  await waitForGeneratedStory(page);
+
+  // fake ma 4 zdania — po usunięciu ostatniego zostają 3
+  await page.getByTestId("lesson-story-sentence-remove-3").click();
+  await expect(page.getByTestId("lesson-story-sentence-3")).toHaveCount(0);
+  const saved = page.waitForResponse((r) => r.request().method() === "PATCH" && /\/api\/v1\/parent\/lesson-drafts\//.test(r.url()));
+  await page.getByTestId("save-lesson").click();
+  expect((await saved).status()).toBe(400);
+  await expect(page.getByTestId("lesson-story-errors")).toContainText("Historyjka ma mieć od 4 do 6 zdań.");
+  // formularz zostaje z niezapisaną zmianą: 3 zdania, usunięte nie wraca
+  await expect(page.getByTestId("lesson-story-sentence-2")).toBeVisible();
+  await expect(page.getByTestId("lesson-story-sentence-3")).toHaveCount(0);
 });
 
 test("sentence themes: inserted from the child profile into a new lesson, shown in the editor and removable with a draft patch (#197)", async ({ page }) => {

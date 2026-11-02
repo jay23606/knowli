@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { lessonExerciseIdentity, lessonExerciseStimulusRecord } from "../domain/lessons/exercise-identity";
+import { explanationTextErrors } from "../domain/lessons/exercise-explanation";
 import { poolCoverage, validatePool } from "../domain/lessons/pool-validation";
 import { stageOf } from "../domain/lessons/stages";
 import { englishChapterSubject } from "../domain/lessons/subjects/english-chapter/module";
@@ -183,6 +184,100 @@ describe("FakeLlmProvider voice tones", () => {
     expect(cardsOn[0]!.cards.map((c) => c.voiceTone)).toEqual(["cheerful", undefined]);
     const cardsOff = (await llm.generateLessonObjectives(objectivesInput)).objectives as { cards: Record<string, unknown>[] }[];
     for (const card of cardsOff[0]!.cards) expect(card).not.toHaveProperty("voiceTone");
+  });
+});
+
+describe("FakeLlmProvider — wyjaśnienie błędu (explanationPl)", () => {
+  const grammarInput = {
+    subjectId: englishGrammarSubject.id,
+    subjectTitle: englishGrammarSubject.titlePl,
+    answerLocale: englishGrammarSubject.answerLocale,
+    promptLocale: englishGrammarSubject.promptLocale,
+    promptProfile: { generationRole: "lesson", gradingRole: "grade", almostDefinition: "close" },
+    exerciseTypes: englishGrammarSubject.exerciseTypes,
+    transforms: [],
+    objectives: [{
+      id: presentSimpleV1.objectives[0]!.id,
+      descriptionEn: "d",
+      exerciseTypes: presentSimpleV1.objectives[0]!.exerciseTypes,
+      errorCategories: [],
+    }],
+    material: "play run jump swim",
+    countPerObjective: 3,
+    stageCounts: { guided: 1, productive: 1, independent: 1 },
+    graderAvailable: false,
+  } satisfies LessonPoolInput;
+
+  it("przy fladze każde ćwiczenie ma poprawne wyjaśnienie, bez flagi żadne", async () => {
+    const llm = new FakeLlmProvider();
+    const on = await llm.generateLessonPool({ ...grammarInput, exerciseExplanations: true });
+    expect(on.exercises.length).toBeGreaterThan(0);
+    for (const exercise of on.exercises) {
+      const text = (exercise as { explanationPl?: unknown }).explanationPl;
+      expect(typeof text).toBe("string");
+      expect(explanationTextErrors(text as string)).toEqual([]);
+    }
+    const off = await llm.generateLessonPool(grammarInput);
+    for (const exercise of off.exercises) expect(exercise).not.toHaveProperty("explanationPl");
+  });
+
+  it("pula rozdziału też niesie wyjaśnienia przy fladze", async () => {
+    const topic = englishChapterSubject.buildDynamicTopic!({
+      titlePl: "Unit 1",
+      objectives: [{
+        id: "english_chapter.ddeck.clothes", titlePl: "Ubrania", descriptionEn: "Clothes", kind: "words",
+        cards: [{ title: "Słówka", body: "coat — płaszcz" }, { title: "Jeszcze", body: "boots — buty" }],
+      }],
+    });
+    const chapter: LessonPoolInput = {
+      subjectId: englishChapterSubject.id,
+      subjectTitle: englishChapterSubject.titlePl,
+      answerLocale: englishChapterSubject.answerLocale,
+      promptLocale: englishChapterSubject.promptLocale,
+      promptProfile: { generationRole: "lesson", gradingRole: "chapter", almostDefinition: "close" },
+      exerciseTypes: englishChapterSubject.exerciseTypes,
+      transforms: [],
+      objectives: [{ id: topic.objectives[0]!.id, descriptionEn: "Clothes", exerciseTypes: topic.objectives[0]!.exerciseTypes, errorCategories: [] }],
+      material: ["Zagadnienie 1: Ubrania", "coat, boots, dress, skirt, t-shirt"].join("\n"),
+      countPerObjective: 6,
+      stageCounts: { guided: 2, productive: 2, independent: 2 },
+      graderAvailable: false,
+      deduplication: "exercise",
+    };
+    const on = await new FakeLlmProvider().generateLessonPool({ ...chapter, exerciseExplanations: true });
+    expect(on.exercises.length).toBeGreaterThan(0);
+    for (const exercise of on.exercises) {
+      expect(explanationTextErrors((exercise as { explanationPl: string }).explanationPl)).toEqual([]);
+    }
+    const off = await new FakeLlmProvider().generateLessonPool(chapter);
+    for (const exercise of off.exercises) expect(exercise).not.toHaveProperty("explanationPl");
+  });
+});
+
+describe("FakeLlmProvider — historyjka lekcji", () => {
+  it("fake generateLessonStory returns 4 sentences and 1 question with index in range", async () => {
+    const llm = new FakeLlmProvider();
+    const { story } = await llm.generateLessonStory({
+      subjectTitle: "Angielski",
+      topicTitle: "Unit 1",
+      answerLocale: "en-GB",
+      promptLocale: "pl-PL",
+      objectives: [],
+      material: "coat — płaszcz",
+      generationRole: "role",
+      storyRules: "rules",
+      avoidSentences: [],
+    });
+    const raw = story as { sentences: string[]; questions: { question: string; options: string[]; correctOptionIndex: number }[] };
+    expect(raw.sentences).toHaveLength(4);
+    expect(raw.sentences[0]).toBe("Sam has a red bike.");
+    expect(raw.questions).toHaveLength(1);
+    const [question] = raw.questions;
+    expect(question!.question).toBe("Jaki rower ma Sam?");
+    expect(question!.options).toEqual(["czerwony", "niebieski", "zielony"]);
+    expect(question!.correctOptionIndex).toBe(0);
+    expect(question!.correctOptionIndex).toBeGreaterThanOrEqual(0);
+    expect(question!.correctOptionIndex).toBeLessThan(question!.options.length);
   });
 });
 

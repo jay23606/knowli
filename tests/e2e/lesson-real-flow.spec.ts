@@ -403,6 +403,9 @@ test("approved lesson survives reload and support without duplicate or independe
         await kid.getByRole("button", { name: wrongText!, exact: true }).click();
         const wrongAttempt = AttemptDtoSchema.parse(await (await wrongAttemptResponse).json());
         expect(wrongAttempt).toMatchObject({ taskId: taskAfterDifficulty.taskId, feedback: { kind: "incorrect" } });
+        // Gramatyka: po błędzie dziecko dostaje zatwierdzone wyjaśnienie (fake generator) i widzi je w doku.
+        expect(wrongAttempt.feedback?.hintPl).toBe("Ta reguła mówi, jak zbudować poprawne zdanie.");
+        await expect(kid.getByTestId("kid-explanation-text")).toHaveText("Ta reguła mówi, jak zbudować poprawne zdanie.");
         incorrectCount += 1;
         incorrectTaskIds.push(taskAfterDifficulty.taskId);
         await kid.getByTestId("kid-next").click();

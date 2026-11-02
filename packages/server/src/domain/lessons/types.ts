@@ -145,6 +145,12 @@ export interface SubjectPromptProfile {
    */
   readonly objectivesRules?: string;
   /**
+   * Reguły generacji historyjki na koniec sesji (język, długość, formy reguł
+   * tematu, pytania o treść) doklejane do promptu historyjki. Wymagane, gdy
+   * `SubjectModule.lessonStory` jest włączone (pilnuje `validateSubject`).
+   */
+  readonly storyRules?: string;
+  /**
    * Reguła użycia tematów zdań z zainteresowań dziecka (#197), dokładana do promptu
    * systemowego. Obecność pola = przedmiot przyjmuje tematy; same tematy to dane
    * rodzica i idą do wiadomości użytkownika, nigdy do tej reguły.
@@ -209,6 +215,8 @@ export interface LessonExerciseDraft {
   readonly extraWords?: readonly string[];
   /** Ton lektora nagrania pytania; brak = styl domyślny roli (spec TTS §4.1). */
   readonly voiceTone?: LessonVoiceTone;
+  /** Wyjaśnienie błędu dla dziecka (jedno polskie zdanie, po przycięciu; spec 2026-11-01); tylko przy `exerciseExplanations`. */
+  readonly explanationPl?: string;
 }
 
 /**
@@ -252,6 +260,12 @@ export interface SubjectModule {
    * `titlePl` przedmiotu. Brak = przedmiot nie tworzy zestawów z materiału.
    */
   readonly materialSubjectTitle?: "parent" | "fixed";
+  /**
+   * Czy sesje lekcji tego przedmiotu kończą się historyjką (krótki tekst w
+   * języku odpowiedzi z pytaniami o treść). Włączenie wymaga niepustego
+   * `prompts.storyRules`. Brak = `false`.
+   */
+  readonly lessonStory?: boolean;
   /**
    * Czy polecenie (`instructionPl`) niesie bodziec znaczenia: tożsamość ćwiczeń
    * `lesson_choice`, `lesson_gap` i `lesson_order` uwzględnia wtedy znormalizowane
@@ -297,6 +311,12 @@ export interface SubjectModule {
    * od `ttsForAnswers` (audio odpowiedzi przed odpowiedzią).
    */
   readonly ttsForFeedbackSentence: boolean;
+  /**
+   * Wyjaśnienie błędu dla dziecka (`explanationPl` ćwiczenia): jedno polskie zdanie
+   * pokazywane po błędnej odpowiedzi w treningu, z nagraniem `explanation_audio`.
+   * Przedmiot bez flagi nie przyjmuje pola.
+   */
+  readonly exerciseExplanations: boolean;
   /**
    * Odpowiedź mówiona (dyktowanie do pola, design szkoły §5): język nagrania
    * i typy ćwiczeń, które ją przyjmują. Brak = przedmiot bez mikrofonu.

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { messages } from "@learning/contracts";
-import PromptAudioControls, { cardAudioTargetLabel, VoiceToneSelect } from "./PromptAudioControls";
+import PromptAudioControls, { cardAudioTargetLabel, promptAudioRegenerateInput, VoiceToneSelect } from "./PromptAudioControls";
 import { renderParentMarkup } from "../test-render";
 
 const ASSET_ID = "4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
@@ -31,6 +31,26 @@ describe("PromptAudioControls — nazwy dostępności", () => {
 
   it("cel z `$&` wstawiony dosłownie", () => {
     expect(controls({ state: "ready", assetId: ASSET_ID }, "karta 1 — A $& B")).toContain('aria-label="Posłuchaj: karta 1 — A $&amp; B"');
+  });
+});
+
+describe("PromptAudioControls — nagranie wyjaśnienia", () => {
+  it("kontrolki wyjaśnienia mają odrębną nazwę dostępności i własny testId", () => {
+    const markup = renderParentMarkup(
+      <PromptAudioControls audio={{ state: "ready", assetId: ASSET_ID }} target={{ kind: "prompt", itemRevisionId: ASSET_ID }} role="explanation_audio"
+        targetLabel={messages.lessons.explanationAudioTarget.replace("{exercise}", "Ćwiczenie 3")}
+        lessonDraftId={DRAFT_ID} deckId={DRAFT_ID} canRegenerate locked={false} testId="lesson-explanation-audio" onPlay={vi.fn()} />,
+    );
+    expect(markup).toContain('data-testid="lesson-explanation-audio"');
+    expect(markup).toContain('aria-label="Posłuchaj: wyjaśnienie — Ćwiczenie 3"');
+    expect(markup).toContain('aria-label="Nagraj ponownie: wyjaśnienie — Ćwiczenie 3"');
+    expect(markup).not.toContain('aria-label="Posłuchaj: Ćwiczenie 3"');
+  });
+
+  it("rola explanation_audio idzie do mutacji; pytanie wysyła wejście jak dotąd, bez roli", () => {
+    expect(promptAudioRegenerateInput(DRAFT_ID, ASSET_ID, "explanation_audio")).toEqual({ lessonDraftId: DRAFT_ID, itemRevisionId: ASSET_ID, role: "explanation_audio" });
+    expect(promptAudioRegenerateInput(DRAFT_ID, ASSET_ID, undefined)).toEqual({ lessonDraftId: DRAFT_ID, itemRevisionId: ASSET_ID });
+    expect(promptAudioRegenerateInput(DRAFT_ID, ASSET_ID, "prompt_audio")).toEqual({ lessonDraftId: DRAFT_ID, itemRevisionId: ASSET_ID });
   });
 });
 

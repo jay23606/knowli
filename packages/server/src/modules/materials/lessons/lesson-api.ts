@@ -1,16 +1,19 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
   ChildInterestsSchema,
   LessonDynamicTopicPatchSchema,
   LessonExerciseInputSchema,
+  LessonStorySchema,
   type AssignmentDto,
   type CoverageGapDto,
   type GenerationDto,
   type LessonDeckDto,
   type LessonDraftDto,
   type LessonExerciseInput,
+  type LessonStoryDto,
   type SubjectCatalogDto,
 } from "@learning/contracts";
 import type { Services } from "../../../config";
@@ -20,7 +23,6 @@ import {
   childProfiles,
   deckVersions,
   decks,
-  generationRuns,
   itemRevisionSkills,
   itemRevisions,
   learningItems,
@@ -33,11 +35,12 @@ import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
 import { DEFAULT_LESSON_POLICY } from "../../../domain/lessons/lesson-policy";
 import { materialCreationMode, requiresParentSubjectTitle } from "../../../domain/lessons/material-creation";
 import { poolCoverage, validatePool } from "../../../domain/lessons/pool-validation";
+import { solvedSentencesOf, validateLessonStory, type LessonStory } from "../../../domain/lessons/story";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
 import { assertAssetPublishable, mediaPendingError, reconcileBeforePublish, reconcileDraftAssetsTx } from "../media-reconciliation";
 import { copyRevisionsSkillsAssets } from "../decks";
-import { supersedeLessonRuns } from "../generation-runs";
+import { supersedeFailedLessonStoryRuns, supersedeLessonRuns } from "../generation-runs";
 import { readDeckSource } from "../source-materials";
 import {
   assertEditable,
@@ -46,6 +49,7 @@ import {
   lockVersion,
 } from "../version-ops";
 import { buildLessonPayload, buildObjectiveCriteria, lessonPayloadVersion, splitByPoolExtra, toExerciseDraft } from "./lesson-drafts";
+import { latestLessonRunOfPurpose, latestLessonStoryRun } from "./lesson-story-generation";
 import { readLessonAudioStates } from "./lesson-prompt-audio";
 
 /**
@@ -72,6 +76,8 @@ interface LessonContextView {
   material: string;
   subjectTitlePl?: string;
   dynamicTopic?: DynamicTopicData;
+  /** Historyjka na koniec sesji (przedmioty z `lessonStory`). */
+  story?: LessonStory;
   /** Migawka tematów zdań (przedmioty z `interestsRule`); brak klucza = bez tematów. */
   interests?: string[];
 }
@@ -90,8 +96,30 @@ function readLessonContext(raw: Record<string, unknown> | null): LessonContextVi
     material: ctx.material ?? "",
     ...(ctx.subjectTitlePl ? { subjectTitlePl: ctx.subjectTitlePl } : {}),
     ...(ctx.dynamicTopic ? { dynamicTopic: ctx.dynamicTopic } : {}),
+    ...(ctx.story ? { story: ctx.story } : {}),
     ...(ctx.interests?.length ? { interests: [...ctx.interests] } : {}),
   };
+}
+
+/** Historyjka domeny → DTO (kopia, bez współdzielenia tablic `readonly`). */
+function storyDto(story: LessonStory): LessonStoryDto {
+  return {
+    sentences: [...story.sentences],
+    questions: story.questions.map((question) => ({
+      id: question.id,
+      question: question.question,
+      options: question.options.map((option) => ({ id: option.id, text: option.text })),
+      correctOption: question.correctOption,
+    })),
+  };
+}
+
+/** Bariera ekspozycji i reguły historyjki wobec puli; błędy → `validation` z `details.story`. */
+function assertStoryValid(subject: SubjectModule, story: LessonStory, drafts: readonly LessonExerciseDraft[]): void {
+  const errors = validateLessonStory(story, { normalizer: subject.normalizer, solvedSentences: solvedSentencesOf(drafts) });
+  if (errors.length > 0) {
+    throw new AppError("validation", { details: { story: errors } });
+  }
 }
 
 /** Przedmiot z rejestru lub `validation` — wersja opublikowana przypina rejestr. */
@@ -169,6 +197,7 @@ function exerciseDtoFromPayload(
     ...(draft.statement === undefined ? {} : { statement: draft.statement }),
     ...(draft.prompt === undefined ? {} : { prompt: draft.prompt }),
     ...(draft.hint === undefined ? {} : { hint: draft.hint }),
+    ...(draft.explanationPl === undefined ? {} : { explanationPl: draft.explanationPl }),
     ...(draft.transformId === undefined ? {} : { transformId: draft.transformId }),
     ...(draft.noticeSegments === undefined
       ? {}
@@ -271,10 +300,15 @@ async function readLessonDraftDto(
   const exercises = revisions.map((r) => {
     const dto = exerciseDtoFromPayload(r.itemId, r.id, r.payload);
     const promptAudio = audio.prompts.get(r.id);
-    const withPrompt = promptAudio ? { ...dto, promptAudio } : dto;
+    const explanationAudio = audio.explanations.get(r.id);
     // Zdanie ćwiczenia słuchowego: stan nagrania tylko dla `lesson_listen_choice`.
     const sentenceAudio = dto.exerciseType === "lesson_listen_choice" ? audio.sentences.get(r.id) : undefined;
-    return sentenceAudio ? { ...withPrompt, sentenceAudio } : withPrompt;
+    return {
+      ...dto,
+      ...(promptAudio ? { promptAudio } : {}),
+      ...(explanationAudio ? { explanationAudio } : {}),
+      ...(sentenceAudio ? { sentenceAudio } : {}),
+    };
   });
   const drafts: LessonExerciseDraft[] = revisions.map((r) => toExerciseDraft(r.payload));
   const draftSubject = services.subjects.getSubject(context.subjectId);
@@ -294,6 +328,7 @@ async function readLessonDraftDto(
     topicVersion: context.topicVersion,
     objectiveIds: [...context.objectiveIds],
     ...(draftSubject?.ttsForPrompts === true ? { voiceTones: { styleEnabled: services.media?.tts.style === "instructions" } } : {}),
+    ...(draftSubject?.exerciseExplanations === true ? { exerciseExplanations: true as const } : {}),
     ...(context.subjectTitlePl === undefined ? {} : { subjectTitlePl: context.subjectTitlePl }),
     ...(context.interests?.length ? { interests: [...context.interests] } : {}),
     ...(context.dynamicTopic === undefined
@@ -315,8 +350,10 @@ async function readLessonDraftDto(
         }),
     examples: context.examples,
     exercises,
-    // Nagranie pytania i zdania feedbacku nie jest zasobem do decyzji rodzica (design szkoły §11.2).
-    assets: assetRows.flatMap((a) => a.role === "prompt_audio" || a.role === "feedback_audio" ? [] : [{
+    ...(context.story ? { story: storyDto(context.story) } : {}),
+    storyEnabled: draftSubject?.lessonStory === true,
+    // Nagranie pytania, zdania feedbacku i wyjaśnienia błędu nie jest zasobem do decyzji rodzica (design szkoły §11.2).
+    assets: assetRows.flatMap((a) => a.role === "prompt_audio" || a.role === "feedback_audio" || a.role === "explanation_audio" ? [] : [{
       itemRevisionId: a.itemRevisionId,
       role: a.role,
       state:
@@ -337,32 +374,9 @@ async function readLessonDraftDto(
   };
 }
 
-/** Najnowszy run `lesson` wskazanej wersji (polling panelu rodzica). */
+/** Najnowszy run puli lekcji wskazanej wersji (polling panelu rodzica; bez runów historyjki). */
 async function latestLessonRun(db: Executor, deckVersionId: string): Promise<GenerationDto | null> {
-  const run = (
-    await db
-      .select()
-      .from(generationRuns)
-      .where(and(eq(generationRuns.deckVersionId, deckVersionId), eq(generationRuns.kind, "lesson")))
-      .orderBy(desc(generationRuns.createdAt))
-      .limit(1)
-  )[0];
-  if (!run) {
-    return null;
-  }
-  const deckId = (
-    await db.select({ deckId: deckVersions.deckId }).from(deckVersions).where(eq(deckVersions.id, deckVersionId))
-  )[0]?.deckId ?? null;
-  return {
-    id: run.id,
-    deckId,
-    deckVersionId: run.deckVersionId ?? null,
-    state: run.state as GenerationDto["state"],
-    attempts: run.attempts,
-    errorCode: run.errorCode ?? null,
-    // Lekcje liczą odrzucenia w `LessonDraftDto.rejectedCount` (z `lesson_context`), nie w runie.
-    rejectedCount: null,
-  };
+  return latestLessonRunOfPurpose(db, deckVersionId, "pool");
 }
 
 async function lessonAssignments(db: Executor, deckId: string): Promise<AssignmentDto[]> {
@@ -424,6 +438,8 @@ async function readLessonDeckSnapshot(db: Executor, services: Services, id: stri
     draft: editable ? await readLessonDraftDto(db, services, editable.id) : null,
     published: publishedVersionId ? await readLessonDraftDto(db, services, publishedVersionId) : null,
     generation: editable ? await latestLessonRun(db, editable.id) : null,
+    // Run historyjki osobno: `generation` pokazuje tylko runy puli (spec §6.2).
+    storyGeneration: editable ? await latestLessonStoryRun(db, editable.id) : null,
     assignments: await lessonAssignments(db, id),
     ...(source === undefined ? {} : { source }),
     // Wymaganie 10.1: provider oceny dowolnych odpowiedzi (nazwa modelu z
@@ -462,10 +478,20 @@ const LessonDraftPatchSchema = z.object({
   exercises: z.array(LessonExerciseInputSchema).optional(),
   examples: z.record(z.string(), z.array(z.string())).optional(),
   dynamicTopic: LessonDynamicTopicPatchSchema.optional(),
+  /** Historyjka: obiekt zastępuje, `null` usuwa, brak pola nie zmienia. */
+  story: LessonStorySchema.nullable().optional(),
+  /**
+   * Historyjka, od której rodzic zaczął edycję (`null` = bez historyjki). Run historyjki
+   * nie podbija `editNumber`, więc przy `story` serwer porównuje ją z bieżącą i przy
+   * różnicy zwraca `conflict` (wynik runu z innej karty nie zostanie nadpisany po cichu).
+   */
+  expectedStory: LessonStorySchema.nullable().optional(),
   interests: ChildInterestsSchema.optional(),
 }).refine(
-  (p) => p.title !== undefined || p.exercises !== undefined || p.examples !== undefined || p.dynamicTopic !== undefined || p.interests !== undefined,
-  { message: "patch must change title, exercises, examples, dynamicTopic or interests" },
+  (p) =>
+    p.title !== undefined || p.exercises !== undefined || p.examples !== undefined ||
+    p.dynamicTopic !== undefined || p.story !== undefined || p.interests !== undefined,
+  { message: "patch must change title, exercises, examples, dynamicTopic, story or interests" },
 );
 export type LessonDraftPatch = z.infer<typeof LessonDraftPatchSchema>;
 
@@ -660,6 +686,12 @@ export async function editLessonDraft(
     assertEditable(version, patch.expectedEditNumber);
     const context = readLessonContext(version.lessonContext);
     const subject = requireSubject(services, context.subjectId);
+    if (patch.story !== undefined && subject.lessonStory !== true) {
+      throw new AppError("validation", { message: "story patch requires a subject with lesson story" });
+    }
+    if (patch.story !== undefined && patch.expectedStory !== undefined && !isDeepStrictEqual(patch.expectedStory, context.story ?? null)) {
+      throw new AppError("conflict");
+    }
     // Niepuste tematy zdań mają sens tylko tam, gdzie przedmiot ma regułę w prompcie (jak przy
     // tworzeniu lekcji); pusta lista (usunięcie) jest zawsze dozwolona.
     if (patch.interests?.length && subject.prompts.interestsRule === undefined) {
@@ -714,6 +746,19 @@ export async function editLessonDraft(
       ? { ...context, dynamicTopic: nextDynamicTopic, objectiveIds: nextDynamicTopic.objectives.map((o) => o.id) }
       : context;
 
+    // Historyjka bez patcha ćwiczeń: bariera ekspozycji wobec bieżącej puli
+    // pomniejszonej o ćwiczenia usuwanych zagadnień (pula po tej edycji).
+    if (patch.story && patch.exercises === undefined) {
+      const rows = await tx
+        .select({ payload: itemRevisions.payload })
+        .from(itemRevisions)
+        .where(eq(itemRevisions.deckVersionId, versionId));
+      const remaining = rows
+        .map((row) => toExerciseDraft(row.payload))
+        .filter((draft) => !deletedObjectiveIds.includes(draft.objectiveId));
+      assertStoryValid(subject, patch.story, remaining);
+    }
+
     if (patch.exercises !== undefined) {
       const topic = requireTopic(services, effectiveContext);
       // Walidacja per ćwiczenie — zbieramy wszystkie błędy, nie przerywamy na pierwszym.
@@ -725,6 +770,10 @@ export async function editLessonDraft(
       if (errors.length > 0) {
         throw new AppError("validation", { details: { exercises: errors } });
       }
+      // Bariera wobec puli z patcha, przed zapisem ćwiczeń: historyjka z tego patcha,
+      // a bez pola `story` zapisana (`null` usuwa ją, więc nie ma czego sprawdzać).
+      const story = patch.story === undefined ? context.story : patch.story;
+      if (story) assertStoryValid(subject, story, drafts);
       await applyLessonExercisesEdit(tx, { id: version.id, deckId: version.deckId }, subject, context.topicVersion, patch.exercises);
     }
 
@@ -745,18 +794,21 @@ export async function editLessonDraft(
         await tx.delete(itemRevisions).where(eq(itemRevisions.id, revision.id));
       }
     }
-    if (nextDynamicTopic !== undefined || patch.examples !== undefined || patch.interests !== undefined) {
+    if (nextDynamicTopic !== undefined || patch.examples !== undefined || patch.story !== undefined || patch.interests !== undefined) {
       // Pusta lista tematów usuwa klucz (brak klucza = lekcja bez tematów, jak przy tworzeniu).
       const currentContext = (version.lessonContext ?? {}) as Record<string, unknown>;
       const contextWithoutInterests = Object.fromEntries(Object.entries(currentContext).filter(([key]) => key !== "interests"));
-      const nextContext = {
+      const nextContext: Record<string, unknown> = {
         ...(patch.interests === undefined ? currentContext : contextWithoutInterests),
         ...(patch.interests?.length ? { interests: patch.interests } : {}),
         ...(nextDynamicTopic
           ? { dynamicTopic: nextDynamicTopic, objectiveIds: nextDynamicTopic.objectives.map((o) => o.id) }
           : {}),
         ...(patch.examples !== undefined ? { examples: patch.examples } : {}),
+        ...(patch.story ? { story: patch.story } : {}),
       };
+      // `story: null` usuwa historyjkę (klucz znika z kontekstu).
+      if (patch.story === null) delete nextContext.story;
       await tx
         .update(deckVersions)
         .set({ lessonContext: nextContext as Record<string, unknown> })
@@ -764,7 +816,16 @@ export async function editLessonDraft(
     }
 
     await bumpEditNumber(tx, versionId);
-    await supersedeLessonRuns(tx, versionId, services.clock.now());
+    // Wybór rodzica co do historyjki wygrywa z runem historyjki w toku (spec §6.2);
+    // edycja bez pola `story` zostawia run historyjki.
+    await supersedeLessonRuns(
+      tx,
+      versionId,
+      services.clock.now(),
+      undefined,
+      patch.story === undefined ? {} : { includeStoryRuns: true },
+    );
+    if (patch.story !== undefined) await supersedeFailedLessonStoryRuns(tx, versionId);
     await reconcileDraftAssetsTx(tx, services, { id: version.id, state: version.state });
     return readLessonDraftDto(tx, services, versionId);
   });
@@ -810,6 +871,8 @@ export async function publishLessonDraft(
     const groundedPublish = splitByPoolExtra(subject, drafts, context.material);
     const invalid = [...groundedPublish.extraRejected, ...validatePool(groundedPublish.kept, subject, topic).rejected];
     if (invalid.length > 0) throw new AppError("validation", { details: { exercises: invalid.map((rejection) => ({ index: drafts.indexOf(rejection.exercise), errors: rejection.errors })) } });
+    // Historyjka (np. ze starych danych) też przechodzi barierę ekspozycji wobec publikowanej puli.
+    if (context.story) assertStoryValid(subject, context.story, drafts);
     const gaps = mergeCoverage(
       poolCoverage(drafts, context.objectiveIds, poolMinimumsOf(services, context.subjectId)),
       distinctOpenAnswerGaps(subject, drafts, context.objectiveIds),
@@ -852,6 +915,9 @@ export async function publishLessonDraft(
     }
 
     const now = services.clock.now();
+    // Publikacja kończy szkic: oczekujące runy (także historyjki, §6.2a) od razu
+    // jako zastąpione, zamiast czekać, aż worker je przejmie i odrzuci.
+    await supersedeLessonRuns(tx, versionId, now, undefined, { includeStoryRuns: true });
     await tx
       .update(deckVersions)
       .set({ state: "published", publishedAt: now })

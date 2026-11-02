@@ -9,7 +9,9 @@ import { messages, type FeedbackDto, type SpellingDiffSegmentDto } from "@learni
  * - `lesson_almost` → „Prawie!”, zaznaczone segmenty odpowiedzi, poprawna
  *   odpowiedź; ton wsparcia (niebieski).
  * - `lesson_hint` → zaznaczone segmenty + podpowiedź kategorii (`hintPl`) +
- *   poprawna odpowiedź; ton wsparcia.
+ *   poprawna odpowiedź; ton wsparcia. Gdy `hintPl` to wyjaśnienie ćwiczenia
+ *   z nagraniem (`explanationAudioAssetId`), tekst pokazuje wiersz wyjaśnienia
+ *   w doku (z „Posłuchaj wyjaśnienia”), a nie treść karty.
  * - `lesson_precision_hint` → odpowiedź poprawna, ale rozwlekła (trener
  *   precyzji): „Świetnie!” + zachęta do skrócenia (`hintPl`); ton sukcesu,
  *   bez segmentów i bez poprawnej odpowiedzi (dziecko odpowiedziało dobrze).
@@ -61,7 +63,7 @@ export function lessonFeedbackView(dto: FeedbackDto | null): LessonFeedbackView 
     tone: "retry",
     answerSegments: dto.answerSegments ?? null,
     correctText: dto.correctText ?? null,
-    hint: dto.kind === "lesson_hint" ? dto.hintPl ?? null : null,
+    hint: dto.kind === "lesson_hint" && dto.explanationAudioAssetId === undefined ? dto.hintPl ?? null : null,
     technical: false,
   };
 }

@@ -52,6 +52,15 @@ export const englishGrammarPrompts: SubjectPromptProfile = {
     "Never offer an equivalent option (a full form and a contraction of the same form, such as does not and doesn't, or is not and isn't) " +
     "and never start an option with an apostrophe. Do not check a difference that exists only in spelling. " +
     "Never set instructionPl, hint or visualSubject on a lesson_listen_choice exercise: the recording is the whole stimulus and the child sees only the gap sentence and the options.",
+  storyRules:
+    "Write a short story in English for a Polish child, about 8 years old, at a beginner level. " +
+    "Use the tense practised by the topic and very simple language. Reuse vocabulary from the parent's material where possible. " +
+    "The story has 4 to 6 short sentences about one character or one situation. " +
+    "Use only the grammar forms of the objectives listed above, and show them across the story in affirmative, negative and question sentences where those objectives cover them. " +
+    "Write 1 or 2 questions in Polish about the content of the story (who, what, when), never about grammar. " +
+    "Each question has exactly 3 short answers in Polish: exactly one is correct, and the wrong ones are plausible " +
+    "but clearly contradicted by the text. " +
+    "Never repeat any sentence from the 'do not repeat' list.",
   // Tematy zdań z zainteresowań dziecka (#197, spec §5.1); same tematy idą w wiadomości użytkownika jako dane.
   interestsRule:
     "Sentence themes: the parent listed a few topics the child enjoys (they may be in Polish — " +

@@ -59,12 +59,12 @@ async function legacyLessonTask(services: Services): Promise<{ childId: string; 
 }
 
 describe("gramatyka bez TTS", () => {
-  it("generacja zapisuje ćwiczenia bez zasobów audio odpowiedzi; zlecone są tylko nagrania zdań feedbacku", async () => {
+  it("generacja zapisuje ćwiczenia bez zasobów audio odpowiedzi; zlecone są tylko nagrania zdań feedbacku i wyjaśnień", async () => {
     const { draft } = await generatedLesson();
     // 20 ćwiczeń podziału etapów + 2 ćwiczenia wyboru ze słuchu (dodatek poza podziałem).
     expect(draft.exercises).toHaveLength(22);
     expect(draft.assets).toEqual([]);
-    expect((await pool.query("select count(*)::int as count from learning_app.revision_assets where role <> 'feedback_audio'")).rows[0].count).toBe(0);
+    expect((await pool.query("select count(*)::int as count from learning_app.revision_assets where role not in ('feedback_audio', 'explanation_audio')")).rows[0].count).toBe(0);
     expect((await pool.query("select count(*)::int as count from learning_app.media_assets")).rows[0].count).toBeGreaterThan(0);
     expect((await pool.query("select distinct kind from learning_app.generation_runs order by kind")).rows).toEqual([{ kind: "lesson" }, { kind: "tts" }]);
   });
@@ -109,19 +109,19 @@ describe("gramatyka bez TTS", () => {
     expect(draft.assets).toHaveLength(22);
     // Przedmiot z wyłączonym audio odpowiedzi i zdania feedbacku (jak po wyłączeniu obu flag).
     const services = createServices({ db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps,
-      subjects: createSubjectRegistry([grammarWithoutSentenceAudio]) });
+      subjects: createSubjectRegistry([{ ...grammarWithoutSentenceAudio, exerciseExplanations: false }]) });
     for (let pass = 0; pass < 10; pass += 1) {
       const result = await runDueGenerationWork(services, { lesson: 0, deck: 0, tts: 50, images: 0 });
       if (result.processed === 0) break;
     }
     expect(fakes.tts.requests).toHaveLength(0);
     const runs = (await pool.query("select state from learning_app.generation_runs where kind='tts'")).rows;
-    // Jedno uruchomienie na każdy odrębny zasób target_audio/feedback_audio szkicu.
+    // Jedno uruchomienie na każdy odrębny zasób target_audio/feedback_audio/explanation_audio szkicu.
     const distinct = (await pool.query<{ count: number }>(
       `select count(distinct ra.asset_id)::int as count
          from learning_app.revision_assets ra
          join learning_app.item_revisions ir on ir.id = ra.item_revision_id
-        where ir.deck_version_id = $1 and ra.role in ('target_audio','feedback_audio')`,
+        where ir.deck_version_id = $1 and ra.role in ('target_audio','feedback_audio','explanation_audio')`,
       [draft.id],
     )).rows[0]!.count;
     expect(runs.length).toBe(distinct);
@@ -148,7 +148,7 @@ describe("gramatyka bez TTS", () => {
     // Bez odczytu zdania: w popraw/przekształć zdanie równa się odpowiedzi, więc
     // `target_audio` i `feedback_audio` dzielą zasób, którego włączona rola nie anuluje.
     const services = createServices({ db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps,
-      subjects: createSubjectRegistry([grammarWithoutSentenceAudio]) });
+      subjects: createSubjectRegistry([{ ...grammarWithoutSentenceAudio, exerciseExplanations: false }]) });
     const assetId = draft.assets[0]!.assetId!;
     const originalQuery = pool.query;
     let release!: () => void;

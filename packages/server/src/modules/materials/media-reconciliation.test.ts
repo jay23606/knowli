@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultMediaSettings } from "../../config";
+import { STYLE_SENTENCES_PL } from "../../providers/tts-style-profile";
 import { requiredAssetsFor, requiredAssetsForLessonCards, requiredAssetsForLessonExercise } from "./media-reconciliation";
 import { schoolSubject } from "../../domain/lessons/subjects/school/module";
 import { payloadToItem } from "./item-payload";
@@ -15,32 +16,32 @@ describe("requiredAssetsForLessonExercise — nagranie pytania (design szkoły �
   };
 
   it("`ttsForPrompts` zleca `prompt_audio` po polsku z polecenia i pytania, bez opcji", () => {
-    const required = requiredAssetsForLessonExercise(choice, defaultMediaSettings, { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false });
+    const required = requiredAssetsForLessonExercise(choice, defaultMediaSettings, { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false, exerciseExplanations: false });
     expect(required.map((asset) => asset.role)).toEqual(["prompt_audio"]);
     expect(required[0]!.metadata).toMatchObject({ kind: "tts", text: "Wybierz odpowiedź. Ile nóg ma pająk?", locale: "pl-PL" });
   });
 
   it("zmiana treści pytania zmienia fingerprint (nowe nagranie przy edycji)", () => {
-    const flags = { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false };
+    const flags = { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false, exerciseExplanations: false };
     const before = requiredAssetsForLessonExercise(choice, defaultMediaSettings, flags)[0]!.fingerprint;
     const after = requiredAssetsForLessonExercise({ ...choice, stem: "Ile nóg ma owad?" }, defaultMediaSettings, flags)[0]!.fingerprint;
     expect(after).not.toBe(before);
   });
 
   it("bez flag nic nie zleca; obliczenia nie mają nagrania pytania", () => {
-    expect(requiredAssetsForLessonExercise(choice, defaultMediaSettings, { ttsForAnswers: false, ttsForPrompts: false, ttsForFeedbackSentence: false })).toEqual([]);
+    expect(requiredAssetsForLessonExercise(choice, defaultMediaSettings, { ttsForAnswers: false, ttsForPrompts: false, ttsForFeedbackSentence: false, exerciseExplanations: false })).toEqual([]);
     expect(requiredAssetsForLessonExercise({ exerciseType: "lesson_calculation", instructionPl: "Oblicz.", prompt: "3/4 + 1/2", answer: "5/4", answerLocale: "pl-PL" },
-      defaultMediaSettings, { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false })).toEqual([]);
+      defaultMediaSettings, { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false, exerciseExplanations: false })).toEqual([]);
   });
 
   it("`ttsForAnswers` nadal zleca `target_audio` odpowiedzi", () => {
-    const required = requiredAssetsForLessonExercise({ ...choice, answerLocale: "en-GB", answer: "eight" }, defaultMediaSettings, { ttsForAnswers: true, ttsForPrompts: false, ttsForFeedbackSentence: false });
+    const required = requiredAssetsForLessonExercise({ ...choice, answerLocale: "en-GB", answer: "eight" }, defaultMediaSettings, { ttsForAnswers: true, ttsForPrompts: false, ttsForFeedbackSentence: false, exerciseExplanations: false });
     expect(required.map((asset) => asset.role)).toEqual(["target_audio"]);
   });
 
   it("głos zależy od locale: angielskie słówko głosem en-GB, polskie pytanie głosem domyślnym", () => {
     const settings = { ...defaultMediaSettings, tts: { ...defaultMediaSettings.tts, voice: "pl-PL-Harper", voices: { "en-GB": "en-GB-Emily" } } };
-    const [prompt] = requiredAssetsForLessonExercise(choice, settings, { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false });
+    const [prompt] = requiredAssetsForLessonExercise(choice, settings, { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false, exerciseExplanations: false });
     expect(prompt!.metadata).toMatchObject({ locale: "pl-PL", voice: "pl-PL-Harper" });
     const vocab = requiredAssetsFor(payloadToItem({ source: "czwartek", target: "Thursday", example: "Today is Thursday.", visualType: "none", sourceLocale: "pl-PL", targetLocale: "en-GB" }), settings);
     expect(vocab.map((asset) => asset.metadata.voice)).toEqual(["en-GB-Emily", "en-GB-Emily"]);
@@ -53,7 +54,7 @@ describe("requiredAssetsForLessonExercise — nagranie pytania (design szkoły �
       ...defaultMediaSettings,
       tts: { ...defaultMediaSettings.tts, format: "wav" as const, instructions: { "pl-PL": "Mów po polsku.", "en-GB": "Speak British English." } },
     };
-    const [prompt] = requiredAssetsForLessonExercise(choice, settings, { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false });
+    const [prompt] = requiredAssetsForLessonExercise(choice, settings, { ttsForAnswers: false, ttsForPrompts: true, ttsForFeedbackSentence: false, exerciseExplanations: false });
     expect(prompt!.metadata).toMatchObject({ locale: "pl-PL", format: "wav", instructions: "Mów po polsku." });
     const vocab = requiredAssetsFor(payloadToItem({ source: "czwartek", target: "Thursday", visualType: "none", sourceLocale: "pl-PL", targetLocale: "en-GB" }), settings);
     expect(vocab[0]!.metadata).toMatchObject({ locale: "en-GB", format: "wav", instructions: "Speak British English." });
@@ -103,7 +104,7 @@ describe("requiredAssetsForLessonExercise — zdanie feedbacku (feedback_audio)"
     answer: "plays",
     answerLocale: "en-GB",
   };
-  const on = { ttsForAnswers: false, ttsForPrompts: false, ttsForFeedbackSentence: true };
+  const on = { ttsForAnswers: false, ttsForPrompts: false, ttsForFeedbackSentence: true, exerciseExplanations: false };
 
   it("luka z flagą zleca feedback_audio z pełnym zdaniem, bez stylu wypowiedzi", () => {
     const settings = {
@@ -176,7 +177,7 @@ describe("requiredAssetsForLessonExercise — zdanie feedbacku (feedback_audio)"
 
   it("lesson_cloze z flagami szkoły (ttsForFeedbackSentence: false) nie zleca feedback_audio", () => {
     const flags = {
-      ttsForAnswers: schoolSubject.ttsForAnswers, ttsForPrompts: schoolSubject.ttsForPrompts, ttsForFeedbackSentence: schoolSubject.ttsForFeedbackSentence,
+      ttsForAnswers: schoolSubject.ttsForAnswers, ttsForPrompts: schoolSubject.ttsForPrompts, ttsForFeedbackSentence: schoolSubject.ttsForFeedbackSentence, exerciseExplanations: schoolSubject.exerciseExplanations,
     };
     expect(flags.ttsForFeedbackSentence).toBe(false);
     const cloze = {
@@ -194,5 +195,56 @@ describe("requiredAssetsForLessonExercise — zdanie feedbacku (feedback_audio)"
       exerciseType: "lesson_choice", stem: "What's the weather like?", answerLocale: "en-GB",
       options: [{ id: "a", text: "It's sunny." }, { id: "b", text: "It's a coat." }], correctOption: "a",
     }, defaultMediaSettings, on)).toEqual([]);
+  });
+});
+
+describe("requiredAssetsForLessonExercise — wyjaśnienie błędu (explanation_audio)", () => {
+  const gap = {
+    exerciseType: "lesson_gap",
+    instructionPl: "Uzupełnij zdanie.",
+    stem: "She ___ football.",
+    answer: "plays",
+    answerLocale: "en-GB",
+    explanationPl: "Po she dodajemy s.",
+  };
+  const on = { ttsForAnswers: false, ttsForPrompts: false, ttsForFeedbackSentence: false, exerciseExplanations: true };
+  const styled = {
+    ...defaultMediaSettings,
+    tts: { ...defaultMediaSettings.tts, style: "instructions" as const, instructions: { "pl-PL": "Mów po polsku.", "en-GB": "Speak British English." } },
+  };
+
+  it("zleca explanation_audio po polsku z tekstem wyjaśnienia i zdaniem stylu w instrukcjach", () => {
+    const required = requiredAssetsForLessonExercise(gap, styled, on);
+    expect(required.map((asset) => asset.role)).toEqual(["explanation_audio"]);
+    expect(required[0]!.metadata).toMatchObject({
+      kind: "tts", text: "Po she dodajemy s.", locale: "pl-PL",
+      instructions: `Mów po polsku. ${STYLE_SENTENCES_PL.lesson_explanation}`,
+    });
+  });
+
+  it("fingerprint zależy od instrukcji, nie od samego trybu stylu: bez stylu instrukcja to sama instrukcja pl-PL", () => {
+    const plain = { ...styled, tts: { ...styled.tts, style: "none" as const } };
+    const [asset] = requiredAssetsForLessonExercise(gap, plain, on);
+    expect(asset!.metadata).toMatchObject({ locale: "pl-PL", instructions: "Mów po polsku." });
+    expect(asset!.fingerprint).not.toBe(requiredAssetsForLessonExercise(gap, styled, on)[0]!.fingerprint);
+  });
+
+  it("flaga false albo brak wyjaśnienia nie zleca roli", () => {
+    expect(requiredAssetsForLessonExercise(gap, styled, { ...on, exerciseExplanations: false })).toEqual([]);
+    const { explanationPl: _omitted, ...withoutExplanation } = gap;
+    expect(requiredAssetsForLessonExercise(withoutExplanation, styled, on)).toEqual([]);
+    expect(requiredAssetsForLessonExercise({ ...gap, explanationPl: "   " }, styled, on)).toEqual([]);
+    expect(requiredAssetsForLessonExercise({ ...gap, explanationPl: 7 }, styled, on)).toEqual([]);
+  });
+
+  it("zmiana tekstu zmienia fingerprint, a ton lektora ćwiczenia go nie zmienia", () => {
+    const before = requiredAssetsForLessonExercise(gap, styled, on)[0]!.fingerprint;
+    expect(requiredAssetsForLessonExercise({ ...gap, explanationPl: "Po he też dodajemy s." }, styled, on)[0]!.fingerprint).not.toBe(before);
+    expect(requiredAssetsForLessonExercise({ ...gap, voiceTone: "mysterious" }, styled, on)[0]!.fingerprint).toBe(before);
+  });
+
+  it("współistnieje z feedback_audio i prompt_audio jako osobna rola", () => {
+    const all = requiredAssetsForLessonExercise(gap, styled, { ...on, ttsForPrompts: true, ttsForFeedbackSentence: true });
+    expect(all.map((asset) => asset.role).sort()).toEqual(["explanation_audio", "feedback_audio", "prompt_audio"]);
   });
 });

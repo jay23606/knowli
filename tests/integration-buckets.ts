@@ -72,6 +72,7 @@ export const INTEGRATION_BUCKETS: readonly (readonly string[])[] = [
     lesson-parent-api.test.ts
     lesson-parent-supervision.test.ts
     lesson-sentence-audio.test.ts
+    lesson-story.test.ts
     media.test.ts
     mock-test-reporting.test.ts
     parent-work-card-regressions.test.ts
@@ -94,6 +95,7 @@ export const INTEGRATION_BUCKETS: readonly (readonly string[])[] = [
     lesson-calculation.test.ts
     lesson-chapter-sentence-audio.test.ts
     lesson-dictation.test.ts
+    lesson-error-explanation.test.ts
     lesson-generation.test.ts
     lesson-question-audio.test.ts
     lesson-schema.test.ts

@@ -534,6 +534,66 @@ describe("materializeExercise — nagranie zdania feedbacku w prywatnym kluczu",
   });
 });
 
+describe("materializeExercise — wyjaśnienie ćwiczenia w prywatnym kluczu (spec 2026-11-01 §4.1)", () => {
+  const explanationAudioId = "55555555-5555-4555-8555-555555555555";
+  const explanationPl = "Po she dodajemy -s, więc wybierz plays.";
+  const payload = {
+    exerciseType: "lesson_choice",
+    objectiveId: "english_grammar.present_simple.third_person_s",
+    instructionPl: "Wybierz poprawną formę.",
+    stem: "She ___ football.",
+    options: [{ id: "a", text: "plays" }, { id: "b", text: "play" }],
+    correctOption: "a",
+    answer: "plays",
+    acceptedAnswers: [],
+    focus: ["plays"],
+    explanationPl,
+    answerLocale: subject.answerLocale,
+    promptLocale: subject.promptLocale,
+  } as LoadedExercise["payload"];
+  const exercise: LoadedExercise = {
+    ...loaded(payload),
+    explanationAudioAssetId: explanationAudioId,
+    explanationExposureKeys: ["tk-other"],
+  };
+
+  it("trening z flagą przedmiotu niesie trzy pola w kluczu, ale nie w promptcie dziecka", () => {
+    const task = materializeExercise({ independentCheck: false, reason: "practice" }, "e1", exercise, topic, subject);
+    expect(task.answerKey).toMatchObject({ explanationPl, explanationAudioAssetId: explanationAudioId, explanationExposureKeys: ["tk-other"] });
+    const prompt = JSON.stringify(task.prompt);
+    expect(prompt).not.toContain(explanationPl);
+    expect(prompt).not.toContain(explanationAudioId);
+    expect(prompt).not.toContain("tk-other");
+    // Wyjaśnienie ujawnia się dopiero w feedbacku — nie jest ekspozycją wydania.
+    expect(task.exposures).not.toContain("tk-other");
+  });
+
+  it("nagranie niegotowe przy wydaniu — klucz bez audio, z tekstem", () => {
+    const task = materializeExercise({ independentCheck: false, reason: "practice" }, "e2", { ...exercise, explanationAudioAssetId: null }, topic, subject);
+    expect(task.answerKey.explanationPl).toBe(explanationPl);
+    expect(task.answerKey).not.toHaveProperty("explanationAudioAssetId");
+  });
+
+  it("kartkówka i przedmiot bez flagi nie niosą wyjaśnienia", () => {
+    for (const task of [
+      materializeExercise({ independentCheck: true, reason: "due_check" }, "e3", exercise, topic, subject, { mockTest: true }),
+      materializeExercise({ independentCheck: false, reason: "practice" }, "e4", exercise, topic, { ...subject, exerciseExplanations: false }),
+    ]) {
+      expect(task.answerKey).not.toHaveProperty("explanationPl");
+      expect(task.answerKey).not.toHaveProperty("explanationAudioAssetId");
+      expect(task.answerKey).not.toHaveProperty("explanationExposureKeys");
+    }
+  });
+
+  it("ćwiczenie bez wyjaśnienia nie niesie pól", () => {
+    const { explanationPl: _omit, ...rest } = payload;
+    void _omit;
+    const task = materializeExercise({ independentCheck: false, reason: "practice" }, "e5", { ...exercise, payload: rest as LoadedExercise["payload"] }, topic, subject);
+    expect(task.answerKey).not.toHaveProperty("explanationPl");
+    expect(task.answerKey).not.toHaveProperty("explanationExposureKeys");
+  });
+});
+
 describe("„Posłuchaj i wybierz” (lesson_listen_choice) — bodziec i materializacja", () => {
   const sentenceId = "33333333-3333-4333-8333-333333333333";
   const payload = {

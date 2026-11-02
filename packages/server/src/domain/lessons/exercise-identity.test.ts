@@ -76,6 +76,14 @@ describe("lessonExerciseIdentity", () => {
   });
 });
 
+describe("lessonExerciseIdentity — wyjaśnienie błędu", () => {
+  it("jest takie samo z wyjaśnieniem i bez niego", () => {
+    const base = exercise({});
+    expect(lessonExerciseIdentity({ ...base, explanationPl: "Po does czasownik bez -s." })).toBe(lessonExerciseIdentity(base));
+    expect(lessonExerciseStimulus({ ...base, explanationPl: "Po does czasownik bez -s." })).toBe(lessonExerciseStimulus(base));
+  });
+});
+
 describe("lessonExerciseIdentity — polecenie jako bodziec (instructionIsStimulus)", () => {
   const withInstruction = { instructionIsStimulus: true } as const;
   const gap = (instructionPl: string) => exercise({

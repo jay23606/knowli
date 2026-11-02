@@ -12,6 +12,7 @@ import {
   LessonExerciseInputSchema,
   LessonDraftDtoSchema,
   LessonDeckDtoSchema,
+  LessonStorySchema,
   ObjectiveProgressDtoSchema,
   LessonVerdictDtoSchema,
   LessonVerdictDecisionSchema,
@@ -105,6 +106,20 @@ describe("SubjectCatalogDtoSchema", () => {
     const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, topics: [] };
     const school = { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] };
     expect(SubjectCatalogDtoSchema.safeParse({ subjects: [chapter, school] }).success).toBe(true);
+  });
+});
+
+describe("wyjaśnienie błędu (explanationPl)", () => {
+  const exercise = {
+    exerciseType: "lesson_gap", objectiveId: "o1", stem: "He ___ football.",
+    answer: "plays", acceptedAnswers: [], focus: ["plays"],
+  };
+  it("accepts a sentence up to 120 characters and its absence, rejects 121 characters and an empty text", () => {
+    expect(LessonExerciseInputSchema.safeParse({ ...exercise, explanationPl: "Przy he dodajemy -s." }).success).toBe(true);
+    expect(LessonExerciseInputSchema.safeParse({ ...exercise, explanationPl: "a".repeat(120) }).success).toBe(true);
+    expect(LessonExerciseInputSchema.safeParse(exercise).success).toBe(true);
+    expect(LessonExerciseInputSchema.safeParse({ ...exercise, explanationPl: "a".repeat(121) }).success).toBe(false);
+    expect(LessonExerciseInputSchema.safeParse({ ...exercise, explanationPl: "" }).success).toBe(false);
   });
 });
 
@@ -324,6 +339,52 @@ describe("LessonDraftDtoSchema — powody odrzuceń", () => {
     for (const bad of [0, -1, 1.5, "2"]) {
       expect(LessonDraftDtoSchema.safeParse({ ...draft, rejectedReasons: { powód: bad } }).success).toBe(false);
     }
+  });
+});
+
+describe("historyjka lekcji (kontrakty)", () => {
+  const story = {
+    sentences: ["Tom has a red ball.", "He plays in the park."],
+    questions: [{
+      id: "q1", question: "What colour is the ball?",
+      options: [{ id: "a", text: "Red" }, { id: "b", text: "Blue" }],
+      correctOption: "a",
+    }],
+  };
+  const draft = {
+    id: UUID, deckId: UUID2, editNumber: 1, status: "draft", title: "Present Simple",
+    subjectId: "english_grammar", topicId: "present_simple", topicVersion: 1,
+    objectiveIds: ["o1"], examples: {}, exercises: [], assets: [], rejectedCount: 0, coverage: [],
+  };
+
+  it("LessonStorySchema accepts story and rejects extra fields", () => {
+    expect(LessonStorySchema.safeParse(story).success).toBe(true);
+    const withExtra = { ...story, questions: [{ ...story.questions[0], correctText: "Red" }] };
+    expect(LessonStorySchema.safeParse(withExtra).success).toBe(false);
+    expect(LessonStorySchema.safeParse({ ...story, extra: 1 }).success).toBe(false);
+  });
+
+  it("LessonDraftDto parses without story fields", () => {
+    const parsed = LessonDraftDtoSchema.parse(draft);
+    expect(parsed.story).toBeUndefined();
+    expect(parsed.storyEnabled).toBeUndefined();
+  });
+
+  it("LessonDraftDto parses with story and storyEnabled", () => {
+    const parsed = LessonDraftDtoSchema.parse({ ...draft, story, storyEnabled: true });
+    expect(parsed.story).toEqual(story);
+    expect(parsed.storyEnabled).toBe(true);
+  });
+
+  it("LessonDeckDto accepts storyGeneration null and run", () => {
+    const base = {
+      id: UUID, title: "Present Simple", state: "draft",
+      draft, published: null, generation: null, assignments: [], grading: { available: false },
+    };
+    expect(LessonDeckDtoSchema.parse(base).storyGeneration).toBeUndefined();
+    expect(LessonDeckDtoSchema.parse({ ...base, storyGeneration: null }).storyGeneration).toBeNull();
+    const run = { id: UUID3, deckId: UUID2, deckVersionId: null, state: "running", attempts: 1, errorCode: null };
+    expect(LessonDeckDtoSchema.parse({ ...base, storyGeneration: run }).storyGeneration).toMatchObject({ id: UUID3 });
   });
 });
 

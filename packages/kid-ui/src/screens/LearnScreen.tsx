@@ -5,7 +5,7 @@ import type { ExerciseHandlers } from "../exercises/types";
 import { optionOutcomes, type OptionOutcome } from "../exercises/option-outcome";
 import { format } from "../format";
 import { AnswerFeedbackActions, AnswerFeedbackContent, AnswerFeedbackSecondaryActions, feedbackTone } from "./AnswerFeedback";
-import { ExerciseFeedbackDock, type FeedbackDockSentenceAudio, type FeedbackDockTone } from "./ExerciseFeedbackDock";
+import { ExerciseFeedbackDock, type FeedbackDockExplanation, type FeedbackDockSentenceAudio, type FeedbackDockTone } from "./ExerciseFeedbackDock";
 import { ExerciseFrame } from "../exercises/ExerciseFrame";
 import { ExerciseGuidanceProvider } from "../exercises/exercise-guidance";
 import { KidIcon } from "../components/KidIcon";
@@ -16,7 +16,7 @@ import { MeaningVisualView } from "../visuals/MeaningVisualView";
 import { SpeechFeedbackActions, SpeechFeedbackContent, SpeechFeedbackReferenceAction, SpeechFeedbackSecondaryActions } from "./SpeechFeedbackCard";
 import { lessonFeedbackView } from "./lesson-feedback-view";
 import { describeSpeechFeedback } from "./speech-feedback-view";
-import { isLessonTask, questionAudioOf, type LearningSessionController, type LearningScreen as LearningScreenState } from "../session/session-controller";
+import { isLessonTask, questionAudioOf, type FeedbackRecording, type LearningSessionController, type LearningScreen as LearningScreenState, type SentenceRate } from "../session/session-controller";
 import { useFeedbackCooldown } from "./useFeedbackCooldown";
 import { SessionProgress } from "../components/SessionProgress";
 import { advanceSessionProgress, initialSessionProgress, progressAttempt, progressDone, resultOutcome } from "../components/session-progress-state";
@@ -45,6 +45,11 @@ function RevealActions({ onConfirm, busy }: { onConfirm: () => void; busy: boole
       {messages.kid.understand}
     </ActionButton>
   );
+}
+
+/** Błąd ręcznego odsłuchu zdania (bez błędu wyjaśnienia — ten porusza przyciskiem wyjaśnienia). */
+function sentenceRateError(error: { rate: FeedbackRecording; seq: number } | null): { rate: SentenceRate; seq: number } | null {
+  return error === null || error.rate === "explanation" ? null : { rate: error.rate, seq: error.seq };
 }
 
 function answerDockTone(dto: Parameters<typeof feedbackTone>[0]): FeedbackDockTone {
@@ -124,15 +129,33 @@ export function LearnScreen({
   const sentenceAudio: FeedbackDockSentenceAudio | null = sentenceReadback && !listenChoice && feedback !== null
     ? {
         playing: feedback.sentencePlaying ?? null,
-        error: feedback.sentenceAudioError ?? null,
+        error: sentenceRateError(feedback.sentenceAudioError ?? null),
         // Te same warunki co strażnik kontrolera (`#playSentence`) i odsłuch pytania.
         disabled: busy || offline || screen.recordingPhase !== "idle",
         onPlay: (rate) => void controller.playSentenceAudio(rate),
       }
     : null;
+  // Wyjaśnienie ćwiczenia po błędzie w lekcji: tekst przy `incorrect` z `hintPl`;
+  // przy `lesson_hint` dok pokazuje go tylko z nagraniem (bez niego zostaje
+  // w treści karty). Nagranie gra wyłącznie po kliknięciu.
+  const explanationDto = feedback !== null && feedback.modality !== "audio" && isLessonTask(task) ? feedback.dto : null;
+  // Odsłuch wyjaśnienia jak „Posłuchaj zdania”: wskaźnik, blokada i błąd ręcznego odsłuchu.
+  const explanationError = feedback?.sentenceAudioError?.rate === "explanation" ? { seq: feedback.sentenceAudioError.seq } : null;
+  const explanation: FeedbackDockExplanation | null = explanationDto?.hintPl !== undefined && (explanationDto.kind === "incorrect" || explanationDto.explanationAudioAssetId !== undefined)
+    ? {
+        text: explanationDto.hintPl,
+        ...(explanationDto.explanationAudioAssetId !== undefined ? {
+          onPlay: () => void controller.playExplanationAudio(),
+          playing: feedback?.explanationPlaying === true,
+          // Te same warunki co przyciski zdania i strażnik kontrolera.
+          disabled: busy || offline || screen.recordingPhase !== "idle",
+          error: explanationError,
+        } : {}),
+      }
+    : null;
   const guidanceButton = instructionAudioKey
     ? <GuidanceButton audioKey={instructionAudioKey} onPlay={(key) => controller.playGuidance(key)} testId="kid-guidance-play" showError={false}
-        {...(sentenceReadback || listenChoice ? { icon: "question" as const } : {})} />
+        {...(sentenceReadback || listenChoice || explanation?.onPlay !== undefined ? { icon: "question" as const } : {})} />
     : null;
   // W wierszu instrukcji obok odsłuchu słowa: obrysowany „?”, nie drugi głośnik.
   const instructionGuidanceButton = instructionAudioKey
@@ -286,6 +309,7 @@ export function LearnScreen({
         celebrate={celebrateInDock}
         guidance={guidanceButton}
         sentenceAudio={sentenceAudio}
+        explanation={explanation}
         primary={<AnswerFeedbackActions dto={feedback.dto} retry={feedback.retry} busy={busy}
           onNext={() => void controller.continueLearning()} />}
         secondary={lessonFeedbackView(feedback.dto)?.technical === true && feedback.retry ? (

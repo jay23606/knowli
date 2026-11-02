@@ -15,6 +15,17 @@ export function lessonTextTargetKey(
 }
 
 /**
+ * Tekst ekspozycji ćwiczenia: to, co dziecko widzi rozwiązane (`exposureText`
+ * przedmiotu), a bez niego odpowiedź kanoniczna.
+ */
+export function exerciseExposureText(
+  subject: Pick<SubjectModule, "exposureText">,
+  draft: LessonExerciseDraft,
+): string {
+  return subject.exposureText?.(draft) ?? draft.answer;
+}
+
+/**
  * `target_key` ćwiczenia lekcji: klucz ekspozycji liczony z tekstu, który
  * dziecko faktycznie widzi rozwiązany. Domyślnie to odpowiedź kanoniczna
  * (przedmioty bez `exposureText` zachowują dotychczasowy klucz); przedmiot
@@ -26,5 +37,5 @@ export function lessonExerciseTargetKey(
   subject: Pick<SubjectModule, "answerLocale" | "exposureText" | "normalizeExposureText">,
   draft: LessonExerciseDraft,
 ): string {
-  return lessonTextTargetKey(subject, subject.exposureText?.(draft) ?? draft.answer);
+  return lessonTextTargetKey(subject, exerciseExposureText(subject, draft));
 }

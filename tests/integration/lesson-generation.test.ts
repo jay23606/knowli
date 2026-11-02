@@ -203,9 +203,9 @@ describe("generowanie puli lekcji (integracja)", () => {
     );
     expect(skills[0]!.count).toBe(revisions.length);
 
-    // Gramatyka nie zleca TTS odpowiedzi; przypina wyłącznie nagrania zdań feedbacku.
-    const roles = await query<{ role: string }>("select distinct role from learning_app.revision_assets");
-    expect(roles).toEqual([{ role: "feedback_audio" }]);
+    // Gramatyka nie zleca TTS odpowiedzi; przypina wyłącznie nagrania zdań feedbacku i wyjaśnień błędu.
+    const roles = await query<{ role: string }>("select distinct role from learning_app.revision_assets order by role");
+    expect(roles).toEqual([{ role: "explanation_audio" }, { role: "feedback_audio" }]);
   });
 
   it("szkic gramatyki zawiera ćwiczenia wyboru ze słuchu na cel, bez odrzuceń, a port dostaje dodatek poza podziałem etapów", async () => {
@@ -1129,6 +1129,84 @@ describe("generowanie puli lekcji (integracja)", () => {
     await expect(createLessonFromMaterial(services, { ...command, subjectId: "school", clientRequestId: randomUUID() })).rejects.toMatchObject({ code: "validation" });
     await expect(createLessonFromMaterial(services, { ...command, subjectId: "english_grammar", clientRequestId: randomUUID() })).rejects.toMatchObject({ code: "validation" });
   });
+  it("gramatyka: fake provider generuje wyjaśnienia, a rewizje i DTO szkicu je niosą", async () => {
+    const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
+    const services = lessonServices(fakes);
+    const { runId, deckId } = await createLesson(services, command());
+    await executeLessonGeneration(services, runId);
+    const run = await readGeneration(services, runId);
+    expect(run.state).toBe("succeeded");
+
+    const rows = await query<{ payload: { explanationPl?: string } }>(
+      "select payload from learning_app.item_revisions where deck_version_id = $1 and payload->>'exerciseType' is not null",
+      [run.deckVersionId!],
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.payload.explanationPl).toBe("Ta reguła mówi, jak zbudować poprawne zdanie.");
+
+    const draft = (await readLessonDeck(services, deckId)).draft!;
+    expect(draft.exercises.length).toBe(rows.length);
+    for (const exercise of draft.exercises) expect(exercise.explanationPl).toBe("Ta reguła mówi, jak zbudować poprawne zdanie.");
+  });
+
+  it("gramatyka: wyjaśnienie łamiące reguły jest po cichu usuwane, ćwiczenie zostaje", async () => {
+    const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
+    const services = lessonServices(fakes);
+    const generate = fakes.llm.generateLessonPool.bind(fakes.llm);
+    fakes.llm.generateLessonPool = async (...args) => {
+      const result = await generate(...args);
+      const exercises = result.exercises.map((exercise, index) => (
+        index === 0 ? { ...exercise as Record<string, unknown>, explanationPl: "Pierwsze zdanie. Drugie zdanie." } : exercise
+      ));
+      return { ...result, exercises };
+    };
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const { runId, deckId } = await createLesson(services, command());
+      await executeLessonGeneration(services, runId);
+      const run = await readGeneration(services, runId);
+      expect(run.state).toBe("succeeded");
+      const exercises = (await readLessonDeck(services, deckId)).draft!.exercises;
+      expect(exercises.length).toBeGreaterThan(1);
+      expect(exercises.filter((exercise) => exercise.explanationPl === undefined)).toHaveLength(1);
+      expect(exercises.filter((exercise) => exercise.explanationPl !== undefined).length).toBe(exercises.length - 1);
+      expect(log.mock.calls.map((call) => String(call[0]))).toContain(`[lesson] run=${runId} porzucone wyjaśnienia=1`);
+      const [version] = await query<{ lesson_context: { rejectedCount: number } }>(
+        "select lesson_context from learning_app.deck_versions where id = $1", [run.deckVersionId!]);
+      expect(version!.lesson_context.rejectedCount).toBe(0);
+    } finally { log.mockRestore(); }
+  });
+
+  it("szkoła: wyjaśnienie z modelu jest odrzucane po cichu (przedmiot bez flagi)", async () => {
+    const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
+    const { db } = testDatabase();
+    const services = createServices({
+      db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps,
+      subjects: createSubjectRegistry([schoolSubject]),
+    });
+    const generate = fakes.llm.generateLessonPool.bind(fakes.llm);
+    let sawFlag: boolean | undefined;
+    fakes.llm.generateLessonPool = async (input, ...rest) => {
+      sawFlag = input.exerciseExplanations;
+      const result = await generate(input, ...rest);
+      return { ...result, exercises: result.exercises.map((exercise) => ({ ...exercise as Record<string, unknown>, explanationPl: "Roślina robi cukry ze światła." })) };
+    };
+    const { runId, deckId } = await createSchoolLesson(services, {
+      subjectTitlePl: "Przyroda", topicTitlePl: "Fotosynteza",
+      material: [
+        "Zagadnienie 1: Fotosynteza",
+        "Wyjaśnienie: Fotosynteza to proces, w którym roślina z wody i dwutlenku węgla, przy udziale światła, wytwarza cukry. Cukry są pokarmem rośliny.",
+      ].join("\n"),
+      poolSize: 40, clientRequestId: randomUUID(),
+    });
+    await executeLessonGeneration(services, runId);
+    expect((await readGeneration(services, runId)).state).toBe("succeeded");
+    expect(sawFlag).toBe(false);
+    const exercises = (await readLessonDeck(services, deckId)).draft!.exercises;
+    expect(exercises.length).toBeGreaterThan(0);
+    for (const exercise of exercises) expect(exercise.explanationPl).toBeUndefined();
+  });
+
   it("zestaw szkolny: generacja wyprowadza zagadnienia z materiału i zapisuje ćwiczenia v3 z cytatami", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);

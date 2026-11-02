@@ -7,6 +7,7 @@ import type {
   ImageProvider,
   LessonObjectivesInput,
   LessonPoolInput,
+  LessonStoryInput,
   LlmGeneratedItem,
   LlmGenerateDeckInput,
   LlmProvider,
@@ -245,7 +246,16 @@ function fakeChapterPool(input: LessonPoolInput): {
       }
     }
   }
-  return { exercises, examples };
+  return { exercises: withFakeExplanations(exercises, input), examples };
+}
+
+/** Stałe zdanie bez odpowiedzi ćwiczenia: spełnia reguły treści wyjaśnienia (jedno zdanie, zwykły tekst, ≤ 120). */
+const FAKE_EXPLANATION = "Ta reguła mówi, jak zbudować poprawne zdanie.";
+
+/** Przy fladze `exerciseExplanations` każde ćwiczenie dostaje przewidywalne wyjaśnienie (infrastruktura testowa). */
+function withFakeExplanations(exercises: Record<string, unknown>[], input: LessonPoolInput): Record<string, unknown>[] {
+  if (input.exerciseExplanations !== true) return exercises;
+  return exercises.map((exercise) => ({ ...exercise, explanationPl: FAKE_EXPLANATION }));
 }
 
 /**
@@ -317,7 +327,7 @@ function fakeLessonExercises(input: LessonPoolInput): {
   // Przykładowy ton lektora (etap B): tylko gdy generator ma go zwracać.
   if (input.voiceTones === true && exercises.length > 0) exercises[0] = { ...exercises[0]!, voiceTone: "curious" };
 
-  return { exercises, examples };
+  return { exercises: withFakeExplanations(exercises, input), examples };
 }
 
 /** Typ wyboru ze słuchu: dodatek poza podziałem etapów (`listenChoicePerObjective`). */
@@ -508,6 +518,7 @@ export class FakeLlmProvider implements LlmProvider {
   readonly requests: LlmGenerateDeckInput[] = [];
   readonly lessonRequests: LessonPoolInput[] = [];
   readonly objectiveRequests: LessonObjectivesInput[] = [];
+  readonly storyRequests: LessonStoryInput[] = [];
   #behaviors: LlmBehavior[] = [];
   #lessonBehaviors: LlmLessonBehavior[] = [];
   readonly #delayMs: number;
@@ -554,6 +565,21 @@ export class FakeLlmProvider implements LlmProvider {
       await sleep(this.#lessonDelayMs);
     }
     return { objectives: fakeLessonObjectives(input) };
+  }
+
+  async generateLessonStory(input: LessonStoryInput): Promise<{ story: unknown }> {
+    this.storyRequests.push(input);
+    if (this.#lessonDelayMs > 0) {
+      await sleep(this.#lessonDelayMs);
+    }
+    return {
+      story: {
+        sentences: ["Sam has a red bike.", "He rides it to the park.", "The bike is fast and shiny.", "Sam is very happy."],
+        questions: [
+          { question: "Jaki rower ma Sam?", options: ["czerwony", "niebieski", "zielony"], correctOptionIndex: 0 },
+        ],
+      },
+    };
   }
 
   async generateLessonPool(

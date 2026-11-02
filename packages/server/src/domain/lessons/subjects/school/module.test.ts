@@ -544,4 +544,8 @@ describe("schoolSubject — zdanie feedbacku", () => {
   it("nie nagrywa zdania po odpowiedzi", () => {
     expect(schoolSubject.ttsForFeedbackSentence).toBe(false);
   });
+
+  it("nie przyjmuje wyjaśnień błędu", () => {
+    expect(schoolSubject.exerciseExplanations).toBe(false);
+  });
 });
