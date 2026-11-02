@@ -12,6 +12,18 @@
   max-width: 420px;
 }
 
+/* Treść poprzedniego miesiąca przygaszona, dopóki nie dojdzie wybrany. */
+.pp-costs-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-md);
+  transition: opacity 120ms ease;
+}
+
+.pp-costs-content[data-switching] {
+  opacity: 0.55;
+}
+
 .pp-costs-tab {
   min-height: 44px;
 }

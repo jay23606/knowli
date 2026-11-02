@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { ParentCostsDtoSchema, ParentCostsQuerySchema, USAGE_FEATURES, type ParentCostsDto, type UsageFeature } from "@learning/contracts";
 import type { Services } from "../../config";
 import { monthBounds, currentMonth } from "../../domain/report-month";
+import { validRewardTimezone } from "../../domain/reward-activity";
 import { familySettings } from "../../db/schema";
 import { AppError } from "../../errors";
 
@@ -11,7 +12,6 @@ import { AppError } from "../../errors";
  * czyta — nie zmienia wierszy dziennika ani danych innych obszarów.
  */
 
-const DEFAULT_TIMEZONE = "Europe/Warsaw";
 const MAX_STATEMENT_MS = 10_000;
 const MICRO = 1_000_000n;
 
@@ -90,13 +90,16 @@ interface ChildCostRow extends Record<string, unknown> {
 /**
  * Raport kosztów wybranego miesiąca: nagłówek i funkcje oraz dzieci dla miesiąca,
  * materiały z kwotami od początku (`totalUsd`, rozbicie) i z miesiąca (`monthUsd`).
- * Miesiąc liczony w strefie rodziny; przyszły miesiąc to błąd `validation`.
+ * Miesiąc liczony w strefie rodziny (bez `month` — bieżący wg zegara serwera);
+ * przyszły miesiąc to błąd `validation`.
  */
 export async function readParentCosts(services: Services, input: unknown): Promise<ParentCostsDto> {
-  const { month } = ParentCostsQuerySchema.parse(input);
+  const query = ParentCostsQuerySchema.parse(input);
   const [family] = await services.db.select({ timezone: familySettings.timezone }).from(familySettings).limit(1);
-  const timezone = family?.timezone ?? DEFAULT_TIMEZONE;
-  if (month > currentMonth(services.clock.now(), timezone)) throw new AppError("validation");
+  const timezone = validRewardTimezone(family?.timezone);
+  const nowMonth = currentMonth(services.clock.now(), timezone);
+  const month = query.month ?? nowMonth;
+  if (month > nowMonth) throw new AppError("validation");
   const { startUtc, endExclusiveUtc } = monthBounds(month, timezone);
   const inMonth = sql`occurred_at >= ${startUtc}::timestamptz and occurred_at < ${endExclusiveUtc}::timestamptz`;
 
@@ -241,6 +244,7 @@ export async function readParentCosts(services: Services, input: unknown): Promi
 
     return ParentCostsDtoSchema.parse({
       month,
+      currentMonth: nowMonth,
       timezone,
       totals: {
         costUsd: formatMicro(totalMicro),

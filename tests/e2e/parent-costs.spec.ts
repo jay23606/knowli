@@ -4,15 +4,20 @@ import { messages } from "@learning/contracts";
 /**
  * Sekcja Koszty panelu rodzica (spec 2026-11-02-llm-cost-tracking §6): nagłówek
  * z sumą, trzy zakładki, przełącznik miesiąca, wejście z menu i geometria na
- * telefonie. API rodzica zaślepione w przeglądarce, zegar przeglądarki stały.
+ * telefonie. API rodzica zaślepione w przeglądarce; bieżący miesiąc podaje
+ * serwer (`currentMonth`), a zegar przeglądarki nie ma na niego wpływu.
  */
+
+/** Bieżący miesiąc według zaślepionego serwera. */
+const SERVER_MONTH = "2026-11";
 
 const DECK_A = "3f2c1a9e-5b7d-4c8e-9a1b-2c3d4e5f6a7b";
 const DECK_B = "8a9b0c1d-2e3f-4a5b-8c7d-9e0f1a2b3c4d";
 const CHILD = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 
 const FIXTURE = {
-  month: "2026-11",
+  month: SERVER_MONTH,
+  currentMonth: SERVER_MONTH,
   timezone: "Europe/Warsaw",
   totals: { costUsd: "4.123456", estimatedUsd: "0.850000", calls: 40, unknownCalls: 2, failedCalls: 3, unscopedCalls: 1 },
   features: [
@@ -32,7 +37,8 @@ const FIXTURE = {
 };
 
 const EMPTY = {
-  month: "2026-11",
+  month: SERVER_MONTH,
+  currentMonth: SERVER_MONTH,
   timezone: "Europe/Warsaw",
   totals: { costUsd: "0.000000", estimatedUsd: "0.000000", calls: 0, unknownCalls: 0, failedCalls: 0, unscopedCalls: 0 },
   features: [],
@@ -40,18 +46,31 @@ const EMPTY = {
   children: [],
 };
 
-interface Mock { months: string[] }
+interface Mock {
+  /** Miesiące z zapytań; `""` = zapytanie bez `month` (bieżący miesiąc serwera). */
+  months: string[];
+  /** Wstrzymuje odpowiedź dla miesiąca, dopóki test nie wywoła zwróconej funkcji. */
+  hold(month: string): () => void;
+}
 
 async function openCosts(page: Page, body: unknown = FIXTURE, path = "/parent/costs"): Promise<Mock> {
-  const mock: Mock = { months: [] };
-  await page.clock.setFixedTime(new Date("2026-11-15T12:00:00Z"));
-  await page.route("**/api/v1/parent/**", (route) => {
+  const held = new Map<string, Promise<void>>();
+  const mock: Mock = {
+    months: [],
+    hold(month) {
+      let release!: () => void;
+      held.set(month, new Promise<void>((resolve) => { release = resolve; }));
+      return release;
+    },
+  };
+  await page.route("**/api/v1/parent/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/login")) return route.fulfill({ json: { authenticated: true, setupRequired: false } });
     if (url.pathname.endsWith("/costs")) {
       const month = url.searchParams.get("month") ?? "";
       mock.months.push(month);
-      return route.fulfill({ json: { ...(body as object), month } });
+      await held.get(month);
+      return route.fulfill({ json: { ...(body as object), month: month || SERVER_MONTH, currentMonth: SERVER_MONTH } });
     }
     return route.fulfill({ json: [] });
   });
@@ -69,9 +88,9 @@ test("nagłówek z sumą, szacunkiem i ostrzeżeniami oraz zakładka Funkcje", a
   await expect(page.getByRole("heading", { level: 1, name: messages.costs.title })).toBeVisible();
   await expect(page.getByTestId("costs-total")).toHaveText("Listopad 2026: 4,12 USD");
   await expect(page.getByTestId("costs-note-estimated")).toHaveText("w tym ≈ 0,85 USD szacunkowo");
-  await expect(page.getByTestId("costs-note-unknown")).toHaveText("2 wywołania bez znanej ceny");
+  await expect(page.getByTestId("costs-note-unknown")).toHaveText("2 wywołania bez znanej ceny — suma jest zaniżona");
   await expect(page.getByTestId("costs-note-failed")).toHaveText("3 nieudane wywołania");
-  await expect(page.getByTestId("costs-note-unscoped")).toHaveText("1 wywołanie bez przypisania");
+  await expect(page.getByTestId("costs-note-unscoped")).toHaveText("1 wywołanie bez przypisania — to błąd aplikacji, zgłoś go");
   await expect(page.getByTestId("costs-net-note")).toHaveText(messages.costs.netNote);
   // żadna zakładka paska nie jest aktywna
   for (const id of ["tab-decks", "tab-sources", "tab-children", "tab-progress", "tab-work-card"]) {
@@ -118,7 +137,9 @@ test("zakładki Materiały i Dzieci: wiersze, znaczniki szacunku i „+N bez cen
 test("strzałki miesiąca: wstecz pyta o poprzedni miesiąc, w bieżącym „dalej” jest wyłączone", async ({ page }) => {
   const mock = await openCosts(page);
   await expect(page.getByTestId("costs-total")).toBeVisible();
-  expect(mock.months).toEqual(["2026-11"]);
+  // pierwsze zapytanie bez miesiąca — bieżący wybiera serwer
+  expect(mock.months).toEqual([""]);
+  await expect(page.getByTestId("costs-month")).toHaveText("Listopad 2026");
   await expect(page.getByTestId("costs-next")).toBeDisabled();
 
   await page.getByTestId("costs-prev").click();
@@ -130,6 +151,37 @@ test("strzałki miesiąca: wstecz pyta o poprzedni miesiąc, w bieżącym „dal
   await page.getByTestId("costs-next").click();
   await expect(page.getByTestId("costs-month")).toHaveText("Listopad 2026");
   await expect(page.getByTestId("costs-next")).toBeDisabled();
+});
+
+test("zegar przeglądarki w innym miesiącu nie zmienia bieżącego miesiąca serwera", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2027-01-01T00:30:00Z"));
+  const mock = await openCosts(page);
+  await expect(page.getByTestId("costs-total")).toHaveText("Listopad 2026: 4,12 USD");
+  expect(mock.months).toEqual([""]);
+  await expect(page.getByTestId("costs-error")).toHaveCount(0);
+  await expect(page.getByTestId("costs-next")).toBeDisabled();
+});
+
+test("przełączanie miesiąca: do odpowiedzi poprzednie dane są przygaszone, a obok miesiąca kręci się wskaźnik", async ({ page }) => {
+  const mock = await openCosts(page);
+  await expect(page.getByTestId("costs-total")).toHaveText("Listopad 2026: 4,12 USD");
+  await expect(page.getByTestId("costs-switching")).toHaveCount(0);
+  const release = mock.hold("2026-10");
+
+  await page.getByTestId("costs-prev").click();
+  await expect(page.getByTestId("costs-month")).toHaveText("Październik 2026");
+  await expect(page.getByTestId("costs-switching")).toBeVisible();
+  await expect(page.getByTestId("costs-content")).toHaveAttribute("data-switching", "true");
+  await expect(page.getByTestId("costs-content")).toHaveCSS("opacity", "0.55");
+  await expect(page.locator(".pp-costs")).toHaveAttribute("aria-busy", "true");
+  // dane poprzedniego miesiąca zostają, dopóki nie dojdą nowe
+  await expect(page.getByTestId("costs-total")).toContainText("Listopad 2026");
+
+  release();
+  await expect(page.getByTestId("costs-total")).toContainText("Październik 2026");
+  await expect(page.getByTestId("costs-switching")).toHaveCount(0);
+  await expect(page.getByTestId("costs-content")).not.toHaveAttribute("data-switching", /.*/);
+  await expect(page.locator(".pp-costs")).toHaveAttribute("aria-busy", "false");
 });
 
 test("pusty miesiąc pokazuje komunikat zamiast tabel", async ({ page }) => {

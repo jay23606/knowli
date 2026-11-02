@@ -407,6 +407,23 @@ describe("usage recorder", () => {
     expect((untouched[0]!.occurred_at as Date).toISOString()).toBe(at.toISOString());
   });
 
+  it("deleteChild succeeds with an invalid family timezone, using the default one", async () => {
+    const childId = await insertChild();
+    await insertUsage(validRow({
+      occurred_at: new Date("2026-10-15T12:34:00.000Z"), scope_kind: "session", child_id: childId, cost_usd: "0.001000",
+    }));
+    await pool.query("update learning_app.family_settings set timezone='Not/AZone'");
+    try {
+      await deleteChild(services, childId);
+    } finally {
+      await pool.query("update learning_app.family_settings set timezone='Europe/Warsaw'");
+    }
+
+    const [row] = await usageRows();
+    expect(row).toMatchObject({ child_id: null, cost_usd: "0.001000" });
+    expect((row!.occurred_at as Date).toISOString()).toBe("2026-09-30T22:00:00.000Z");
+  });
+
   it("deleteChild of a missing profile is not found", async () => {
     await expect(deleteChild(services, randomUUID())).rejects.toMatchObject({ code: "not_found" });
   });
@@ -493,6 +510,7 @@ describe("cost report", () => {
     expect(ParentCostsDtoSchema.safeParse(report).success).toBe(true);
     expect(report).toEqual({
       month: "2026-08",
+      currentMonth: "2026-11",
       timezone: "Europe/Warsaw",
       totals: { costUsd: "0.000000", estimatedUsd: "0.000000", calls: 0, unknownCalls: 0, failedCalls: 0, unscopedCalls: 0 },
       features: [],
@@ -514,6 +532,32 @@ describe("cost report", () => {
     expect(october.timezone).toBe("UTC");
     expect(october.totals.costUsd).toBe("0.500000");
     expect(november.totals.costUsd).toBe("0.000000");
+  });
+
+  it("defaults an omitted month to the server's current month in the family timezone", async () => {
+    // 2026-11-30T23:30Z: w UTC jeszcze listopad, w Warszawie już grudzień.
+    const lateClock = new ManualClock("2026-11-30T23:30:00.000Z");
+    const late = createServices({ db, clock: lateClock });
+
+    const warsaw = await readParentCosts(late, {});
+    expect(warsaw).toMatchObject({ month: "2026-12", currentMonth: "2026-12" });
+
+    await pool.query("update learning_app.family_settings set timezone='UTC'");
+    const utc = await readParentCosts(late, {});
+    expect(utc).toMatchObject({ month: "2026-11", currentMonth: "2026-11" });
+    await expect(readParentCosts(late, { month: "2026-12" })).rejects.toMatchObject({ code: "validation" });
+  });
+
+  it("falls back to the default timezone when the family one is invalid", async () => {
+    await pool.query("update learning_app.family_settings set timezone='Not/AZone'");
+    await insertUsage(validRow({
+      feature: "deck_generation", scope_kind: "none", cost_usd: "0.500000", occurred_at: new Date("2026-10-31T23:30:00.000Z"),
+    }));
+
+    const november = await readParentCosts(services, { month: "2026-11" });
+
+    expect(november.timezone).toBe("Europe/Warsaw");
+    expect(november.totals.costUsd).toBe("0.500000");
   });
 
   it("rejects a future month, a malformed one and extra keys", async () => {
@@ -671,8 +715,9 @@ describe("parent costs API", () => {
     await truncateCoreTables();
   });
 
-  function costsRequest(cookie?: string, month = "2026-10"): Request {
-    return new Request(`http://localhost:3000/api/v1/parent/costs?month=${month}`, {
+  function costsRequest(cookie?: string, month: string | null = "2026-10"): Request {
+    const search = month === null ? "" : `?month=${month}`;
+    return new Request(`http://localhost:3000/api/v1/parent/costs${search}`, {
       method: "GET",
       headers: { host: "localhost:3000", ...(cookie ? { cookie: `parent_session=${cookie}` } : {}) },
     });
@@ -696,5 +741,18 @@ describe("parent costs API", () => {
     const body = (await response.json()) as ParentCostsDto;
     expect(ParentCostsDtoSchema.safeParse(body).success).toBe(true);
     expect(body.month).toBe("2026-10");
+  });
+
+  it("serves the server's current month when the query omits it", async () => {
+    const { services } = buildTestServices();
+    await setupParent(services, "koszty-pin-1");
+    const { token } = await loginParent(services, "koszty-pin-1");
+
+    const response = await handleParentApi(costsRequest(token, null), services);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ParentCostsDto;
+    expect(ParentCostsDtoSchema.safeParse(body).success).toBe(true);
+    expect(body.month).toBe(body.currentMonth);
   });
 });

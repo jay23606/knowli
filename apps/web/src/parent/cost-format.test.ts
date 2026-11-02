@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareMoney, currentMonth, formatUnits, formatUsd, monthLabel, pluralForm, shiftMonth } from "./cost-format";
+import { compareMoney, formatUnits, formatUsd, monthLabel, pluralForm, shiftMonth } from "./cost-format";
 
 const NBSP = " ";
 const EMPTY = { inputTokens: 0, outputTokens: 0, characters: 0, audioMs: 0, images: 0 };
@@ -65,11 +65,6 @@ describe("months", () => {
   it("labels a month in Polish with a capital letter", () => {
     expect(monthLabel("2026-11")).toBe("Listopad 2026");
     expect(monthLabel("2026-01")).toBe("Styczeń 2026");
-  });
-
-  it("reads the current month from the local date", () => {
-    expect(currentMonth(new Date(2026, 10, 15, 12))).toBe("2026-11");
-    expect(currentMonth(new Date(2026, 0, 1, 0, 5))).toBe("2026-01");
   });
 });
 

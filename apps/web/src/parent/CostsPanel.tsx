@@ -5,7 +5,7 @@ import { ActionIcon, Alert, Group, Loader, Paper, Stack, Table, Tabs, Text, Titl
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { messages, type ParentCostsDto } from "@learning/contracts";
 import { errorMessage } from "./api";
-import { compareMoney, currentMonth, fill, formatUnits, formatUsd, isPositive, monthLabel, pluralForm, shiftMonth } from "./cost-format";
+import { compareMoney, fill, formatUnits, formatUsd, isPositive, monthLabel, pluralForm, shiftMonth } from "./cost-format";
 import { ParentIcon } from "./ParentIcon";
 import { plainClick } from "./plain-click";
 import { routePath, type ParentRoute } from "./parent-routes";
@@ -185,15 +185,17 @@ function Header({ report, month }: { report: ParentCostsDto; month: string }) {
  * materiałów i dzieci (spec 2026-11-02-llm-cost-tracking §6). Tylko odczyt.
  */
 export default function CostsPanel({ onNavigate }: { onNavigate: (route: ParentRoute) => void }) {
-  const [now] = useState(() => currentMonth(new Date()));
-  const [month, setMonth] = useState(now);
+  // `null` = bieżący miesiąc wg serwera (strefa rodziny), a nie zegara przeglądarki
+  const [selected, setSelected] = useState<string | null>(null);
   // poprzedni miesiąc zostaje na ekranie, dopóki nie dojdzie nowy (bez migania)
   const query = useQuery({
-    ...orpc.costs.get.queryOptions({ input: { month } }),
+    ...orpc.costs.get.queryOptions({ input: selected === null ? {} : { month: selected } }),
     select: selectBody,
     placeholderData: keepPreviousData,
   });
   const report = query.data;
+  const month = selected ?? report?.month;
+  const switching = query.isPlaceholderData;
   const everythingEmpty = report !== undefined
     && report.totals.calls === 0 && report.features.length === 0 && report.decks.length === 0 && report.children.length === 0;
 
@@ -207,19 +209,23 @@ export default function CostsPanel({ onNavigate }: { onNavigate: (route: ParentR
           radius="md"
           aria-label={messages.costs.previousMonth}
           data-testid="costs-prev"
-          onClick={() => setMonth(shiftMonth(month, -1))}
+          disabled={month === undefined}
+          onClick={() => month && setSelected(shiftMonth(month, -1))}
         >
           <ParentIcon name="chevron-left" />
         </ActionIcon>
-        <Text fw={600} ta="center" data-testid="costs-month">{monthLabel(month)}</Text>
+        <Group gap={8} wrap="nowrap" justify="center">
+          <Text fw={600} ta="center" data-testid="costs-month">{month ? monthLabel(month) : ""}</Text>
+          {switching && <Loader size="xs" role="status" aria-label={messages.costs.loading} data-testid="costs-switching" />}
+        </Group>
         <ActionIcon
           variant="default"
           size={44}
           radius="md"
           aria-label={messages.costs.nextMonth}
           data-testid="costs-next"
-          disabled={month >= now}
-          onClick={() => setMonth(shiftMonth(month, 1))}
+          disabled={month === undefined || report === undefined || month >= report.currentMonth}
+          onClick={() => month && setSelected(shiftMonth(month, 1))}
         >
           <ParentIcon name="chevron-right" />
         </ActionIcon>
@@ -232,7 +238,7 @@ export default function CostsPanel({ onNavigate }: { onNavigate: (route: ParentR
       )}
       {query.isError && <Alert color="red" variant="light" role="alert" data-testid="costs-error">{errorMessage(query.error)}</Alert>}
       {report && (
-        <>
+        <div className="pp-costs-content" data-switching={switching || undefined} data-testid="costs-content">
           <Header report={report} month={report.month} />
           {everythingEmpty ? (
             <EmptyMonth />
@@ -248,7 +254,7 @@ export default function CostsPanel({ onNavigate }: { onNavigate: (route: ParentR
               <Tabs.Panel value="children" pt="md"><ChildrenTab rows={report.children} /></Tabs.Panel>
             </Tabs>
           )}
-        </>
+        </div>
       )}
     </Stack>
   );

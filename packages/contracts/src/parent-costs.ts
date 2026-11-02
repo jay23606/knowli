@@ -2,8 +2,13 @@ import { z } from "zod";
 import { UuidSchema } from "./common";
 import { UsageFeatureSchema } from "./usage-features";
 
-/** Zapytanie raportu kosztów: miesiąc kalendarzowy `YYYY-MM` w strefie rodziny. */
-export const ParentCostsQuerySchema = z.object({ month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/) }).strict();
+const MonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+
+/**
+ * Zapytanie raportu kosztów: miesiąc kalendarzowy `YYYY-MM` w strefie rodziny.
+ * Bez `month` serwer bierze bieżący miesiąc rodziny (zegar serwera, nie przeglądarki).
+ */
+export const ParentCostsQuerySchema = z.object({ month: MonthSchema.optional() }).strict();
 export type ParentCostsQuery = z.infer<typeof ParentCostsQuerySchema>;
 
 /** Kwota w USD jako ciąg dziesiętny z dokładnością do mikrodolara (np. `"0.003333"`). */
@@ -18,7 +23,9 @@ const Count = z.number().int().nonnegative();
  * od początku (`totalUsd` i rozbicie) i z wybranego miesiąca (`monthUsd`).
  */
 export const ParentCostsDtoSchema = z.object({
-  month: z.string(),
+  month: MonthSchema,
+  /** Bieżący miesiąc w strefie rodziny wg zegara serwera — najpóźniejszy dozwolony. */
+  currentMonth: MonthSchema,
   timezone: z.string(),
   totals: z.object({
     costUsd: MoneySchema,

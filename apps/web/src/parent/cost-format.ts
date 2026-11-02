@@ -115,11 +115,6 @@ export function shiftMonth(month: string, delta: -1 | 1): string {
   return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, "0")}`;
 }
 
-/** Bieżący miesiąc według lokalnego czasu przeglądarki (`YYYY-MM`). */
-export function currentMonth(now: Date): string {
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-}
-
 const MONTH_FORMAT = new Intl.DateTimeFormat("pl-PL", { month: "long", year: "numeric", timeZone: "UTC" });
 
 /** „Listopad 2026”. */

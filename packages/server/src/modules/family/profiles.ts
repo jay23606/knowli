@@ -13,8 +13,7 @@ import { childProfiles, familySettings, learningSessions } from "../../db/schema
 import { AppError } from "../../errors";
 import type { Services } from "../../config";
 import { anonymizeChildUsage } from "../../providers/usage/anonymize";
-
-const DEFAULT_TIMEZONE = "Europe/Warsaw";
+import { validRewardTimezone } from "../../domain/reward-activity";
 
 export async function listChildren(services: Services): Promise<ChildDto[]> {
   const rows = await services.db
@@ -74,7 +73,7 @@ export async function deleteChild(services: Services, childId: string): Promise<
       throw new AppError("not_found");
     }
     const timezoneRow = (await tx.select({ timezone: familySettings.timezone }).from(familySettings).limit(1))[0];
-    await anonymizeChildUsage(tx, id, timezoneRow?.timezone ?? DEFAULT_TIMEZONE);
+    await anonymizeChildUsage(tx, id, validRewardTimezone(timezoneRow?.timezone));
     await tx.delete(childProfiles).where(eq(childProfiles.id, id));
   });
 }
