@@ -128,6 +128,9 @@ function recordingLlm(inner: LlmProvider): { llm: LlmProvider; calls: RecordedCa
         throw error;
       }
     },
+    generateLessonStory: () => {
+      throw new Error("generateLessonStory is not exercised by this probe");
+    },
     async generateLessonPool(input, signal) {
       const started = Date.now();
       try {

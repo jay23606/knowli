@@ -22,9 +22,13 @@ export const FEEDBACK_SENTENCE_MAX_LENGTH = 200;
  * Pełne, poprawne zdanie ćwiczenia lekcji w języku odpowiedzi (albo krótki
  * tekst luk z bankiem słów), czytane dziecku po odpowiedzi. `null`, gdy typ
  * nie ma pojedynczego zdania do przeczytania, luka jest niejednoznaczna,
- * słowa luk nie pasują do tekstu albo zdanie przekracza limit.
+ * słowa luk nie pasują do tekstu albo zdanie przekracza limit (`maxLength`;
+ * domyślnie limit nagrania — bariera ekspozycji historyjki podaje brak limitu).
  */
-export function feedbackSentenceText(source: FeedbackSentenceSource): string | null {
+export function feedbackSentenceText(
+  source: FeedbackSentenceSource,
+  maxLength: number = FEEDBACK_SENTENCE_MAX_LENGTH,
+): string | null {
   let raw: string | undefined;
   switch (source.exerciseType) {
     case "lesson_gap":
@@ -49,7 +53,7 @@ export function feedbackSentenceText(source: FeedbackSentenceSource): string | n
       return null;
   }
   const sentence = raw?.trim().replace(/\s+/g, " ").replace(/ ([.,!?])/g, "$1");
-  if (!sentence || sentence.length > FEEDBACK_SENTENCE_MAX_LENGTH) return null;
+  if (!sentence || sentence.length > maxLength) return null;
   return sentence;
 }
 

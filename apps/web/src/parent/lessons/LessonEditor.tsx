@@ -13,6 +13,7 @@ import {
   type LessonDeckDto,
   type LessonDraftDto,
   type LessonExerciseErrors,
+  type LessonStoryDto,
 } from "@learning/contracts";
 import { callParent, ApiCallError, errorMessage, isMediaPendingError, parentClient } from "../api";
 import type { AssignmentTestSettings } from "../AssignmentTestGoalFields";
@@ -23,6 +24,8 @@ import LessonSupervisionPanel from "./LessonSupervisionPanel";
 import LessonExerciseCard, { type CalculationControls } from "./LessonExerciseCard";
 import ArchiveLessonDialog from "./ArchiveLessonDialog";
 import LessonSourceNote from "./LessonSourceNote";
+import LessonStorySection from "./LessonStorySection";
+import { storyEquals } from "./lesson-story-form";
 import PromptAudioControls, { cardAudioTargetLabel, VoiceToneSelect } from "./PromptAudioControls";
 import { EditorActionBar, EditorAssignments, EditorErrorText } from "../EditorAssignments";
 import { ParentIcon } from "../ParentIcon";
@@ -57,6 +60,13 @@ function gradingDisabled(deck: LessonDeckDto | null): boolean {
   return deck?.grading.available === false;
 }
 
+/** Komunikaty historyjki z błędu walidacji (`details.story`, zapis i publikacja); inaczej pusta lista. */
+function storyErrorsOf(cause: unknown): string[] {
+  if (!(cause instanceof ApiCallError) || cause.code !== "validation") return [];
+  const story = (cause.details as { story?: unknown } | undefined)?.story;
+  return Array.isArray(story) ? story.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
 /** Liczba ćwiczeń do dogenerowania: całkowita 1–60 (kontrakt polecenia). */
 export function regenCountValid(count: number): boolean {
   return Number.isInteger(count) && count >= 1 && count <= 60;
@@ -70,13 +80,15 @@ export function regenCountValid(count: number): boolean {
 export function lessonPollInterval(deck: LessonDeckDto | undefined): number | false {
   if (!deck) return false;
   const generating = deck.generation?.state === "queued" || deck.generation?.state === "running";
+  // run historyjki jest osobny od puli (nie blokuje edytora), ale jego wynik też trzeba odczytać
+  const storyGenerating = deck.storyGeneration?.state === "queued" || deck.storyGeneration?.state === "running";
   const visible = deck.draft ?? deck.published;
   const assetsPending = visible?.assets.some((asset) => asset.state === "pending") ?? false;
   // nagrania pytań i kart nie są w `assets` (serwer je pomija) — ich stan niosą ćwiczenia i `cardAudio`
   // (zdanie „Posłuchaj i wybierz” — `sentenceAudio` — jest tak samo poza `assets`)
   const promptAudioPending = visible?.exercises.some((exercise) => exercise.promptAudio?.state === "pending" || exercise.sentenceAudio?.state === "pending") ?? false;
   const cardAudioPending = visible?.cardAudio?.some((card) => card.audio.state === "pending") ?? false;
-  if (generating || assetsPending) return 1000;
+  if (generating || storyGenerating || assetsPending) return 1000;
   return promptAudioPending || cardAudioPending ? 3000 : false;
 }
 
@@ -126,6 +138,14 @@ export default function LessonEditor({
   // PATCH-a ćwiczeń żyje w `lesson-editor-state.ts` (poza zakresem tej edycji);
   // przykłady dokładamy do ciała PATCH w `save()`. `null` = jeszcze nie zasiane.
   const [examplesForm, setExamplesForm] = useState<Record<string, string[]> | null>(null);
+  // Historyjka na koniec sesji: `undefined` = bez lokalnej zmiany (obowiązuje DTO),
+  // `null` = rodzic ją usunął. Do PATCH trafia tylko zmieniona (`patch.story`).
+  const [storyForm, setStoryForm] = useState<LessonStoryDto | null | undefined>(undefined);
+  // Historyjka szkicu w chwili pierwszej lokalnej zmiany: run historyjki (np. z innej karty)
+  // nie podbija editNumber, więc zapis niesie ją jako `expectedStory`.
+  const storyBase = useRef<LessonStoryDto | null>(null);
+  // Błędy historyjki z serwera (`details.story` z zapisu i publikacji).
+  const [storyErrors, setStoryErrors] = useState<string[]>([]);
   // Tematy zdań (migawka z tworzenia lekcji) w szkicu można tylko usunąć: `[]` po
   // „Usuń tematy”. Do PATCH trafiają wyłącznie po zmianie (`lessonThemesPatch`).
   const [interestsForm, setInterestsForm] = useState<string[] | null>(null);
@@ -327,6 +347,7 @@ export default function LessonEditor({
     setForm(snapshot.form);
     setCalculationInputs({});
     setExamplesForm(structuredClone(active.examples ?? {}));
+    setStoryForm(undefined);
     setInterestsForm([...(active.interests ?? [])]);
   }, [active, draft, newKey]);
 
@@ -395,6 +416,13 @@ export default function LessonEditor({
     });
   };
 
+  const changeStory = (story: LessonStoryDto | null) => {
+    if (storyForm === undefined) storyBase.current = draft?.story ?? null;
+    markDirty();
+    setStoryErrors([]);
+    setStoryForm(story);
+  };
+
   const save = async () => {
     const base = baseSnapshot.current;
     if (!draft || !form || !base || busyRef.current || !dirty.current || base.versionId !== draft.id || calculationBlocked) return;
@@ -406,6 +434,7 @@ export default function LessonEditor({
     setBusyState(true);
     setError(null);
     setExerciseErrors({});
+    setStoryErrors([]);
     try {
       // Revalidate every variant through the same domain immediately before saving.
       snapshot.form.exercises = await Promise.all(snapshot.form.exercises.map(async ex => ex.calculation
@@ -415,6 +444,11 @@ export default function LessonEditor({
       // Przykłady serwer nadpisuje całością per cel; dokładamy aktualny stan,
       // bo serializacja ćwiczeń (lesson-editor-state) ich nie obejmuje.
       if (examplesForm) patch.examples = examplesForm;
+      // Historyjka tylko po zmianie: patch historyjki anuluje jej trwający run i waliduje ją od nowa.
+      if (storyForm !== undefined && !storyEquals(storyForm, draft.story)) {
+        patch.story = storyForm;
+        patch.expectedStory = storyBase.current;
+      }
       const interestsPatch = lessonThemesPatch(draft.interests, interestsForm);
       if (interestsPatch) patch.interests = interestsPatch;
       const saved = await run(() => parentClient.lessonDrafts.edit({
@@ -424,6 +458,7 @@ export default function LessonEditor({
       baseSnapshot.current = createLessonSnapshot(saved, newKey);
       setForm(baseSnapshot.current.form);
       setExamplesForm(structuredClone(saved.examples ?? {}));
+      setStoryForm(undefined);
       setInterestsForm([...(saved.interests ?? [])]);
       dirty.current = false;
       setIsDirty(false);
@@ -436,6 +471,7 @@ export default function LessonEditor({
         const map: Record<number, string[]> = {};
         for (const entry of parsed.exercises ?? []) map[entry.index] = entry.errors;
         setExerciseErrors(map);
+        setStoryErrors(storyErrorsOf(cause));
         setTab("exercises");
         setError(messages.errors.validation);
       } else if (cause instanceof ApiCallError && (cause.code === "conflict" || cause.code === "immutable")) {
@@ -468,6 +504,8 @@ export default function LessonEditor({
         setExamplesForm(structuredClone(next.examples ?? {}));
         setInterestsForm([...(next.interests ?? [])]);
       }
+      setStoryForm(undefined);
+      setStoryErrors([]);
       setError(null);
     } catch (cause) {
       setError(errorMessage(cause));
@@ -480,6 +518,7 @@ export default function LessonEditor({
     if (!draft || busy || isDirty || conflict || draft.exercises.length === 0 || draft.coverage.length > 0) return;
     setBusyState(true);
     setError(null);
+    setStoryErrors([]);
     try {
       await run(() => parentClient.lessonDrafts.publish({
         lessonDraftId: draft.id,
@@ -492,6 +531,10 @@ export default function LessonEditor({
       // 409 pokrycia: odśwież, by pokazać aktualną listę braków z DTO;
       // zlecone przy publikacji audio odczyt pokaże jako generowane.
       setError(isMediaPendingError(cause) ? messages.decks.publishMediaPending : errorMessage(cause));
+      const errors = storyErrorsOf(cause);
+      setStoryErrors(errors);
+      // sekcja historyjki jest w zakładce ćwiczeń
+      if (errors.length > 0) setTab("exercises");
       await load();
     } finally {
       setBusyState(false);
@@ -546,6 +589,43 @@ export default function LessonEditor({
       setError(errorMessage(cause));
     } finally {
       regenLock.current = false;
+      setBusyState(false);
+    }
+  };
+
+  // Run historyjki: osobny od puli, nie ustawia `generating` edytora (spec §6.2).
+  const storyGenerating = deck?.storyGeneration?.state === "queued" || deck?.storyGeneration?.state === "running";
+  const generateStory = async () => {
+    if (!draft || busyRef.current || dirty.current || conflictActive.current || generating || storyGenerating || draft.exercises.length === 0) return;
+    setBusyState(true);
+    setError(null);
+    setStoryErrors([]);
+    try {
+      await run(() => parentClient.lessonDrafts.regenerateStory({
+        lessonDraftId: draft.id,
+        expectedEditNumber: draft.editNumber,
+        clientRequestId: crypto.randomUUID(),
+      }));
+      await load();
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusyState(false);
+    }
+  };
+
+  const retryStory = async () => {
+    const runId = deck?.storyGeneration?.id;
+    if (!runId || busyRef.current || dirty.current || conflictActive.current) return;
+    setBusyState(true);
+    setError(null);
+    setStoryErrors([]);
+    try {
+      await run(() => parentClient.generation.retry({ runId }));
+      await load();
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
       setBusyState(false);
     }
   };
@@ -630,6 +710,15 @@ export default function LessonEditor({
     });
     return () => cancelAnimationFrame(frame);
   }, [exerciseErrors]);
+
+  // Błędy samej historyjki (bez błędów ćwiczeń): sekcja historyjki trafia na ekran.
+  useEffect(() => {
+    if (storyErrors.length === 0 || Object.keys(exerciseErrors).length > 0) return;
+    const frame = requestAnimationFrame(() => {
+      document.querySelector('[data-testid="lesson-story-section"]')?.scrollIntoView({ block: "center" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [storyErrors, exerciseErrors]);
 
   const confirmUnassign = (childId: string) => {
     confirmIds.current.push(modals.openConfirmModal({
@@ -1045,6 +1134,23 @@ export default function LessonEditor({
   const showActionBar = editable || (deck?.state === "published" && !draft);
   const errorAlert = <EditorErrorText error={error ?? ""} />;
 
+  // Historyjka: szkic edytowalny przy przedmiocie z historyjką; wersja opublikowana tylko do odczytu.
+  const storyVisible = editable ? draft?.storyEnabled === true : deck?.published?.storyEnabled === true;
+  const storySection = storyVisible && (
+    <LessonStorySection
+      story={editable ? (storyForm !== undefined ? storyForm : draft?.story ?? null) : deck?.published?.story ?? null}
+      editable={editable}
+      errors={storyErrors}
+      generation={editable ? deck?.storyGeneration ?? null : null}
+      busy={busy || generating}
+      locked={isDirty || conflict}
+      hasExercises={(draft?.exercises.length ?? 0) > 0}
+      onChange={changeStory}
+      onGenerate={() => void generateStory()}
+      onRetry={() => void retryStory()}
+    />
+  );
+
   const exercisesContent = (
     <Stack gap="md">
       {form && (
@@ -1063,6 +1169,7 @@ export default function LessonEditor({
         </Group>
       )}
       {objectiveGroups}
+      {storySection}
       {coverage}
       {settings}
     </Stack>

@@ -51,6 +51,12 @@ export function validateSubject(module: SubjectModule): string[] {
     );
   }
 
+  // Historyjka na koniec sesji jest generowana z reguł przedmiotu — bez nich
+  // prompt nie ma czego doklejić.
+  if (module.lessonStory === true && !module.prompts.storyRules?.trim()) {
+    errors.push("Przedmiot: lessonStory wymaga niepustego prompts.storyRules");
+  }
+
   // Nagranie zdania to jedyny bodziec wyboru ze słuchu: bez TTS zdania zadanie nie byłoby wydawalne.
   if (module.exerciseTypes.includes("lesson_listen_choice") && module.ttsForFeedbackSentence !== true) {
     errors.push("Przedmiot: „lesson_listen_choice” wymaga ttsForFeedbackSentence (nagrania zdania)");

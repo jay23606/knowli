@@ -45,6 +45,7 @@ import {
   readParentWorkCard,
   regenerateLessonCardAudio,
   regenerateLessonPromptAudio,
+  regenerateLessonStory,
   regenerateObjective,
   regenerateRevisionAsset,
   removeAssignment,
@@ -115,6 +116,7 @@ vi.mock("@learning/server", async (importActual) => {
     regenerateObjective: vi.fn(),
     regenerateLessonPromptAudio: vi.fn(),
     regenerateLessonCardAudio: vi.fn(),
+    regenerateLessonStory: vi.fn(),
     retryGeneration: vi.fn(),
     upsertAssignment: vi.fn(),
     removeAssignment: vi.fn(),
@@ -1301,6 +1303,82 @@ describe("parent oRPC router — lesson-drafts", () => {
 
     expect(response.status).toBe(400);
     expect(regenerateLessonCardAudio).not.toHaveBeenCalled();
+  });
+
+  const storyRequestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const story = {
+    sentences: ["Tom has a dog.", "The dog is brown.", "They run in the park.", "Tom loves his dog."],
+    questions: [{
+      id: "q1",
+      question: "Jaki jest pies?",
+      options: [{ id: "a", text: "brązowy" }, { id: "b", text: "biały" }, { id: "c", text: "czarny" }],
+      correctOption: "a",
+    }],
+  };
+
+  async function patchLessonDraft(patch: Record<string, unknown>): Promise<Response> {
+    return call(`/lesson-drafts/${lessonDraftId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+      headers: { "content-type": "application/json", ...sessionCookie },
+    });
+  }
+
+  it("edit przyjmuje patch z samą historyjką (200)", async () => {
+    vi.mocked(editLessonDraft).mockResolvedValueOnce(lessonDraftDto as never);
+
+    const response = await patchLessonDraft({ expectedEditNumber: 1, story });
+
+    expect(response.status).toBe(200);
+    expect(editLessonDraft).toHaveBeenCalledWith(services, lessonDraftId, { expectedEditNumber: 1, story });
+  });
+
+  it("edit liczy story: null jako zmianę (usunięcie historyjki, 200)", async () => {
+    vi.mocked(editLessonDraft).mockResolvedValueOnce(lessonDraftDto as never);
+
+    const response = await patchLessonDraft({ expectedEditNumber: 1, story: null });
+
+    expect(response.status).toBe(200);
+    expect(editLessonDraft).toHaveBeenCalledWith(services, lessonDraftId, { expectedEditNumber: 1, story: null });
+  });
+
+  it("edit odrzuca pusty patch bez wołania przypadku użycia (400)", async () => {
+    const response = await patchLessonDraft({ expectedEditNumber: 1 });
+
+    expect(response.status).toBe(400);
+    expect(editLessonDraft).not.toHaveBeenCalled();
+  });
+
+  it("regenerateStory zleca run historyjki z deckVersionId wersji i zwraca 202 {runId, deckId}", async () => {
+    vi.mocked(regenerateLessonStory).mockResolvedValueOnce({ runId, deckId });
+
+    const response = await call(
+      `/lesson-drafts/${lessonDraftId}/story/regenerate`,
+      jsonInit({ expectedEditNumber: 3, clientRequestId: storyRequestId }),
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ runId, deckId });
+    expect(regenerateLessonStory).toHaveBeenCalledWith(services, {
+      deckVersionId: lessonDraftId,
+      expectedEditNumber: 3,
+      clientRequestId: storyRequestId,
+    });
+  });
+
+  it("regenerateStory odrzuca expectedEditNumber 0 i clientRequestId spoza UUID (400)", async () => {
+    const zeroEdit = await call(
+      `/lesson-drafts/${lessonDraftId}/story/regenerate`,
+      jsonInit({ expectedEditNumber: 0, clientRequestId: storyRequestId }),
+    );
+    const badRequestId = await call(
+      `/lesson-drafts/${lessonDraftId}/story/regenerate`,
+      jsonInit({ expectedEditNumber: 1, clientRequestId: "nie-uuid" }),
+    );
+
+    expect(zeroEdit.status).toBe(400);
+    expect(badRequestId.status).toBe(400);
+    expect(regenerateLessonStory).not.toHaveBeenCalled();
   });
 });
 

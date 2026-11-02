@@ -74,6 +74,7 @@ export {
   createSchoolLesson,
   executeLessonGeneration,
   regenerateObjective,
+  regenerateLessonStory,
   applyLessonExercises,
   splitStages,
 } from "./modules/materials";

@@ -46,12 +46,16 @@ import type {
   LessonTopic,
   SubjectModule,
 } from "../../../domain/lessons/types";
+import { solvedSentencesOf, storyCollisions, type LessonStory } from "../../../domain/lessons/story";
 import type { LessonPoolInput, LlmLessonStageCounts } from "../../../ports/ai";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
 import {
   claimQueuedRun,
   enqueueGenerationRun,
+  isStoryRunInput,
+  lessonPoolRunFilter,
   supersedeLessonRuns,
+  type LESSON_STORY_PURPOSE,
 } from "../generation-runs";
 import { MAX_AUTOMATIC_ATTEMPTS, requireGeneration } from "../generation-runtime";
 import { classifyLessonGenerationFailure, lessonRetryDelayMs } from "./lesson-generation-errors";
@@ -59,6 +63,7 @@ import { assertLessonGenerationFinalizationAllowed, LessonGenerationCancelledErr
 import { DEFAULT_LESSON_GENERATION_POLICY } from "./lesson-generation-policy";
 import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { committedRetryAfterSourceChange, lockSourceMaterialForCopy } from "../source-materials";
+import { executeLessonStoryGeneration, queueLessonStoryRunTx } from "./lesson-story-generation";
 
 /**
  * Generowanie i zapis szkicu lekcji (design „Generowanie puli (worker)”).
@@ -71,7 +76,7 @@ import { committedRetryAfterSourceChange, lockSourceMaterialForCopy } from "../s
  */
 
 /** Kontekst lekcji zapisany w `deck_versions.lesson_context`. */
-interface LessonContext {
+export interface LessonContext {
   subjectId: string;
   topicId: string;
   topicVersion: number;
@@ -92,10 +97,12 @@ interface LessonContext {
   rejectedReasons?: Record<string, number>;
   /** Zagadnienia odrzucone/pominięte na etapie generowania tematu (szkoła; panel rodzica). */
   droppedObjectiveCount?: number;
+  /** Historyjka na koniec sesji (przedmioty z `lessonStory`); zapisuje ją run historyjki albo rodzic. */
+  story?: LessonStory;
 }
 
 /** Wejście runu `lesson` zapisane w `generation_runs.input`. */
-interface LessonRunInput {
+export interface LessonRunInput {
   deckId: string;
   deckVersionId: string;
   subjectId: string;
@@ -113,6 +120,8 @@ interface LessonRunInput {
   dynamicTopic?: DynamicTopicData;
   /** Dogenerowanie jednego celu: nowe ćwiczenia dopisujemy, nie czyścimy. */
   regenerate?: { objectiveId: string; count: number; existingAnswers: string[]; existingExercises?: LessonExerciseStimulus[] };
+  /** Run historyjki (`LESSON_STORY_PURPOSE`); brak = generowanie puli ćwiczeń. */
+  purpose?: typeof LESSON_STORY_PURPOSE;
 }
 
 function requireSubject(services: Services, subjectId: string): SubjectModule {
@@ -1255,6 +1264,9 @@ export async function executeLessonGeneration(services: Services, runId: string,
   if (run.kind !== "lesson") {
     throw new AppError("internal", { message: "not a lesson run" });
   }
+  if (isStoryRunInput(run.input)) {
+    return executeLessonStoryGeneration(services, runId, options);
+  }
   if (run.state !== "queued") {
     return;
   }
@@ -1592,22 +1604,49 @@ export async function executeLessonGeneration(services: Services, runId: string,
         await markCurrentRun(tx, "superseded", null);
         return;
       }
+      const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
+      const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, refined.rejectedReasons);
+      // Pula zapisywana do lekcji z historyjką (dogenerowanie, ale też pełny run):
+      // ćwiczenie, którego rozwiązanie powtarza zdanie historyjki, ujawniłoby
+      // odpowiedź (bariera ekspozycji, spec historyjki §5). Historyjka z tej
+      // transakcji — rodzic mógł ją zmienić.
+      const story = prevContext.story;
+      const accepted = story
+        ? uniqueValid.filter((ex) => storyCollisions(story.sentences, solvedSentencesOf([ex]), subject.normalizer).length === 0)
+        : uniqueValid;
+      const storyRejected = uniqueValid.length - accepted.length;
+      if (storyRejected > 0) {
+        console.log(`[lesson] run=${runId} kolizje z historyjką: odrzucone=${storyRejected}`);
+      }
+      if (accepted.length === 0) {
+        await tx
+          .update(deckVersions)
+          .set({
+            lessonContext: {
+              ...prevContext,
+              rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + storyRejected,
+              ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
+              droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
+            } as unknown as Record<string, unknown>,
+          })
+          .where(eq(deckVersions.id, version.id));
+        await markCurrentRun(tx, "failed", "validation");
+        return;
+      }
       await applyLessonExercises(
         tx,
         { id: version.id, deckId: version.deckId },
         subject,
         input.topicVersion,
-        uniqueValid,
+        accepted,
       );
       // Uzupełnienie lesson_context: przykłady i licznik odrzuconych (sumujemy przy
       // dogenerowaniu). lesson_context jest niezmienny dopiero po publikacji.
-      const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
-      const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, refined.rejectedReasons);
       const nextContext: LessonContext = {
         ...prevContext,
         ...(dynamicTopicData ? { dynamicTopic: dynamicTopicData, objectiveIds: dynamicTopicData.objectives.map((o) => o.id) } : {}),
         examples: { ...prevContext.examples, ...examples },
-        rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount,
+        rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + storyRejected,
         ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
         droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
       };
@@ -1618,7 +1657,22 @@ export async function executeLessonGeneration(services: Services, runId: string,
       await reconcileDraftAssetsTx(tx, services, version);
       const nextEditNumber = version.editNumber + 1;
       await tx.update(deckVersions).set({ editNumber: nextEditNumber }).where(eq(deckVersions.id, version.id));
-      await supersedeLessonRuns(tx, version.id, services.clock.now(), runId);
+      if (input.regenerate) {
+        // Dogenerowanie celu nie anuluje runu historyjki (spec §6.2).
+        await supersedeLessonRuns(tx, version.id, services.clock.now(), runId);
+      } else {
+        // Nowa pula: stara historyjka w toku jest nieaktualna; zlecamy nową
+        // (tylko przedmiot z `lessonStory` i tylko gdy wersja nie ma historyjki).
+        await supersedeLessonRuns(tx, version.id, services.clock.now(), runId, { includeStoryRuns: true });
+        if (nextContext.story === undefined) {
+          await queueLessonStoryRunTx(
+            tx,
+            services,
+            { ...version, editNumber: nextEditNumber, lessonContext: nextContext as unknown as Record<string, unknown> },
+            `lesson-story:${runId}`,
+          );
+        }
+      }
       if (version.state !== "review") {
         await tx.update(deckVersions).set({ state: "review" }).where(eq(deckVersions.id, version.id));
       }
@@ -1679,10 +1733,12 @@ export async function regenerateObjective(
       if (version.editNumber !== args.expectedEditNumber) {
         throw new AppError("conflict");
       }
+      // Aktywny run historyjki nie blokuje dogenerowania (spec §6.2).
       const activeRun = (await tx.select({ id: generationRuns.id }).from(generationRuns).where(and(
         eq(generationRuns.kind, "lesson"),
         eq(generationRuns.deckVersionId, version.id),
         inArray(generationRuns.state, ["queued", "running"]),
+        lessonPoolRunFilter(),
       )).limit(1))[0];
       if (activeRun) throw new AppError("conflict");
       const context = (version.lessonContext ?? {}) as unknown as LessonContext;
