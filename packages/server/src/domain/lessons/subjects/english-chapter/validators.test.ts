@@ -52,6 +52,23 @@ function choice(overrides: Partial<LessonExerciseDraft> = {}): LessonExerciseDra
   };
 }
 
+function listen(overrides: Partial<LessonExerciseDraft> = {}): LessonExerciseDraft {
+  return {
+    exerciseType: "lesson_listen_choice",
+    objectiveId: WEATHER,
+    stem: "It's ___ today.",
+    options: [
+      { id: "a", text: "raining" },
+      { id: "b", text: "sunny" },
+    ],
+    correctOption: "a",
+    answer: "raining",
+    acceptedAnswers: [],
+    focus: ["raining"],
+    ...overrides,
+  };
+}
+
 function gap(overrides: Partial<LessonExerciseDraft> = {}): LessonExerciseDraft {
   return {
     exerciseType: "lesson_gap",
@@ -376,4 +393,31 @@ describe("refineChapterPool (walidacja słownikowa świeżej puli)", () => {
     const bare = choice({ options: undefined });
     expect(refineChapterPool([bare], { material: MATERIAL }).kept).toEqual([bare]);
   });
+
+  it("wybór ze słuchu: słowo spoza materiału w opcji odrzuca ćwiczenie, zgodne wraca bez kopii", () => {
+    const ok = listen();
+    expect(refineChapterPool([ok], { material: MATERIAL })).toEqual({ kept: [ok], rejected: [] });
+    const bad = listen({ options: [{ id: "a", text: "raining" }, { id: "b", text: "snowing" }] });
+    const result = refineChapterPool([bad], { material: MATERIAL });
+    expect(result.kept).toEqual([]);
+    expect(result.rejected).toEqual([{ exercise: bad, reason: "słowo spoza materiału: snowing" }]);
+  });
+
+  it("wybór ze słuchu nie zawęża wariantów odpowiedzi (nie jest typem wariantowym)", () => {
+    const ex = listen({ acceptedAnswers: ["bright"] });
+    expect(refineChapterPool([ex], { material: MATERIAL }).kept).toEqual([ex]);
+  });
 });
+
+describe("wybór ze słuchu w przedmiocie rozdziału", () => {
+  it("nie wymaga polskiego bodźca w poleceniu — bodźcem jest nagranie", () => {
+    expect(validateChapterExercise(listen(), TOPIC)).toEqual([]);
+    expect(validateLessonExercise(listen(), englishChapterSubject, TOPIC)).toEqual([]);
+  });
+
+  it("polecenie, podpowiedź i pole obrazka są niedozwolone", () => {
+    expect(validateLessonExercise(listen({ instructionPl: "Dziś pada deszcz. Wybierz słowo." }), englishChapterSubject, TOPIC)).not.toEqual([]);
+    expect(validateChapterExercise(listen({ hint: "rain" }), TOPIC)).not.toEqual([]);
+  });
+});
+

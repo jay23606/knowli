@@ -19,7 +19,7 @@ import {
 } from "@learning/server";
 import type { VocabularyItemInput } from "@learning/contracts";
 import { assertAssetPublishable } from "../../packages/server/src/modules/materials/media-reconciliation";
-import { ManualClock, testDatabase, truncateCoreTables } from "./helpers";
+import { grammarWithoutSentenceAudio, ManualClock, testDatabase, truncateCoreTables } from "./helpers";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
 
 /*
@@ -233,7 +233,7 @@ describe("publikacja zleca brakujące media trwale (issue #106)", () => {
   it("publikacja lekcji z wymaganym audio odpowiedzi zleca je trwale i przechodzi po generacji", async () => {
     const generation = await fakes();
     // lekcja wygenerowana bez audio, potem przedmiot zaczyna go wymagać (zmiana konfiguracji)
-    const withoutAudio = services(generation, { subjects: createSubjectRegistry([{ ...englishGrammarSubject, ttsForFeedbackSentence: false }]) });
+    const withoutAudio = services(generation, { subjects: createSubjectRegistry([grammarWithoutSentenceAudio]) });
     const run = await createLesson(withoutAudio, {
       subjectId: "english_grammar", topicId: "present_simple", objectiveIds: ["english_grammar.present_simple.third_person_s"],
       material: "He plays football. She reads books. She watches TV.", poolSize: 20, clientRequestId: randomUUID(),

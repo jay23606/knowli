@@ -22,6 +22,13 @@ describe("feedbackSentenceText", () => {
     expect(feedbackSentenceText({ exerciseType: "lesson_choice", stem: "___ is happy.", options, correctOption: "z" })).toBeNull();
   });
 
+  it("lesson_listen_choice wstawia tekst poprawnej opcji jak lesson_choice", () => {
+    const options = [{ id: "a", text: "like" }, { id: "b", text: "doesn't like" }];
+    expect(feedbackSentenceText({ exerciseType: "lesson_listen_choice", stem: "She ___ milk.", options, correctOption: "b" })).toBe("She doesn't like milk.");
+    expect(feedbackSentenceText({ exerciseType: "lesson_listen_choice", stem: "___ She ___ milk.", options, correctOption: "b" })).toBeNull();
+    expect(feedbackSentenceText({ exerciseType: "lesson_listen_choice", stem: `${"a".repeat(200)} ___`, options, correctOption: "b" })).toBeNull();
+  });
+
   it("lesson_order skleja klocki w kolejności kanonicznej", () => {
     expect(feedbackSentenceText({ exerciseType: "lesson_order", items: items("She", "plays", "football", ".") })).toBe("She plays football.");
     expect(feedbackSentenceText({ exerciseType: "lesson_order", items: items("Yes", ",", "I", "am", ".") })).toBe("Yes, I am.");

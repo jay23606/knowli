@@ -128,6 +128,13 @@ describe("planLessonMockTest — notice, determinizm, przeplot", () => {
     expect(plan.map((slot) => slot.exerciseType)).toEqual(["lesson_gap"]);
   });
 
+  it("pomija lesson_listen_choice (ćwiczenie słuchowe poza ścieżką etapów, #198)", () => {
+    const listen = entry({ objectiveId: "obj-a", exerciseType: "lesson_listen_choice", stage: "guided", targetKey: "listen" });
+    const choice = entry({ objectiveId: "obj-a", exerciseType: "lesson_choice", stage: "guided" });
+    const plan = planLessonMockTest({ pool: [listen, choice], objectiveIds: ["obj-a"], requestedCount: 5, exposedTargetKeys: [] });
+    expect(plan.map((slot) => slot.exerciseType)).toEqual(["lesson_choice"]);
+  });
+
   it("jest deterministyczny (tie-break po kolejności w puli)", () => {
     const a1 = entry({ objectiveId: "obj-a", stage: "productive", targetKey: "a1" });
     const a2 = entry({ objectiveId: "obj-a", stage: "productive", targetKey: "a2" });

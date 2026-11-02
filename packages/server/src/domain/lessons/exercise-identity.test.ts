@@ -138,3 +138,32 @@ describe("lessonExerciseIdentity — polecenie jako bodziec (instructionIsStimul
   });
 });
 
+describe("lessonExerciseIdentity — lesson_listen_choice", () => {
+  const listen = (overrides: Partial<LessonExerciseDraft> = {}) => exercise({
+    exerciseType: "lesson_listen_choice",
+    stem: "I can see a ___.",
+    options: [{ id: "a", text: "cat" }, { id: "b", text: "dog" }],
+    correctOption: "a",
+    answer: "cat",
+    ...overrides,
+  });
+
+  it("is [objectiveId, type, [normalized stem, normalized full sentence]]", () => {
+    expect(lessonExerciseIdentity(listen({ stem: "  She ___   MILK. ", options: [{ id: "a", text: "Doesn't like" }, { id: "b", text: "likes" }], correctOption: "a" }))).toBe(
+      JSON.stringify(["english_grammar.present_simple.question", "lesson_listen_choice", JSON.stringify(["she ___ milk.", "she doesn't like milk."])]),
+    );
+  });
+
+  it("differs when the correct option differs (the recording differs)", () => {
+    expect(lessonExerciseIdentity(listen())).not.toBe(lessonExerciseIdentity(listen({ correctOption: "b", answer: "dog" })));
+  });
+
+  it("differs from lesson_choice with the same stem", () => {
+    expect(lessonExerciseIdentity(listen())).not.toBe(lessonExerciseIdentity(listen({ exerciseType: "lesson_choice" })));
+  });
+
+  it("ignores instructionIsStimulus and the instruction text", () => {
+    expect(lessonExerciseIdentity(listen(), { instructionIsStimulus: true })).toBe(lessonExerciseIdentity(listen({ instructionPl: "Inne polecenie" }), { instructionIsStimulus: true }));
+    expect(lessonExerciseIdentity(listen(), { instructionIsStimulus: true })).toBe(lessonExerciseIdentity(listen()));
+  });
+});

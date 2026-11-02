@@ -143,7 +143,8 @@ test("generates a multi-objective Present Simple pool with Polish prompts and no
     expect(deck.draft?.examples[objectiveId]?.length).toBeGreaterThan(0);
     const exercises = deck.draft!.exercises.filter((exercise) => exercise.objectiveId === objectiveId);
     expect(exercises.length).toBeGreaterThanOrEqual(9);
-    expect(exercises.every((exercise) => exercise.instructionPl?.length)).toBe(true);
+    // Ćwiczenie wyboru ze słuchu nie ma polecenia (jest stałe w Kid UI).
+    expect(exercises.filter((exercise) => exercise.exerciseType !== "lesson_listen_choice").every((exercise) => exercise.instructionPl?.length)).toBe(true);
   }
   expect(deck.draft?.exercises.some((exercise) => exercise.exerciseType === "lesson_open_answer" && exercise.prompt?.startsWith("Przetłumacz"))).toBe(true);
 });

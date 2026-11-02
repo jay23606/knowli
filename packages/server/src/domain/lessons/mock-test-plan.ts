@@ -5,12 +5,13 @@
  * Wybiera porcję ≤ `requestedCount` z puli, rozdzielając zadania między cele
  * proporcjonalnie (różnica liczby zadań między celami ≤ 1, gdy pula pozwala).
  * W obrębie celu preferuje: ćwiczenia niewidziane przed widzianymi, a następnie
- * typy produktywne/samodzielne przed prowadzonymi. Pomija `lesson_notice`.
+ * typy produktywne/samodzielne przed prowadzonymi. Pomija `lesson_notice` i typy
+ * spoza ścieżki etapów (`outsideStagePath`).
  * Deterministyczny (tie-break po kolejności w puli). Kolejność wyniku to
  * przeplot celów (round-robin w kolejności `objectiveIds`).
  */
 
-import { stageOf } from "./stages";
+import { outsideStagePath, stageOf } from "./stages";
 import type { LessonExerciseType, LessonStage } from "./types";
 
 /** Wpis puli widziany przez planer kartkówki. */
@@ -99,11 +100,12 @@ export function planLessonMockTest(input: LessonMockTestInput): LessonMockTestIt
   const exposed = new Set(exposedTargetKeys);
   const inScope = new Set(objectiveIds);
 
-  // Kandydaci per cel, uporządkowani preferencją. Pomijamy notice, słowa kluczowe
-  // (wsparcie trenera precyzji, nie sprawdzenie) i cele spoza lekcji.
+  // Kandydaci per cel, uporządkowani preferencją. Pomijamy notice, typy spoza
+  // ścieżki etapów (słowa kluczowe — wsparcie trenera precyzji; zadanie słuchowe —
+  // wspomagane nagraniem, #198; żadne nie jest sprawdzeniem) i cele spoza lekcji.
   const byObjective = new Map<string, RankedEntry[]>();
   pool.forEach((entry, order) => {
-    if (entry.exerciseType === "lesson_notice" || entry.exerciseType === "lesson_keywords" || stageOf(entry.exerciseType) === "intro") {
+    if (entry.exerciseType === "lesson_notice" || outsideStagePath(entry.exerciseType) || stageOf(entry.exerciseType) === "intro") {
       return;
     }
     if (!inScope.has(entry.objectiveId)) {

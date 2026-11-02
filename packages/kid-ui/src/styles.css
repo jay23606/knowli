@@ -2957,3 +2957,25 @@
 .kid-page[data-viewport-very-short="true"] .kid-exercise-frame .kid-material-content {
   overflow: visible;
 }
+
+/* „Posłuchaj i wybierz”: luka w zdaniu to puste miejsce z kreską, nie surowe podkreślenia. */
+.kid-ui .kid-listen-gap {
+  display: inline-block;
+  inline-size: 2.5em;
+  margin-inline: 0.2em;
+  border-block-end: 0.1em solid var(--md-sys-color-outline);
+  vertical-align: baseline;
+}
+
+/* Status bodźca pod opcjami: zawsze zamontowany, pusty bez marginesów nie zabiera wysokości. */
+.kid-ui .kid-listen-status {
+  margin: 0;
+}
+
+/* Głośnik polecenia wyróżniony wypełnieniem (wariant filled, nie obrys jak fokus), gdy przeglądarka
+   zablokowała autoodtwarzanie; warstwy hover/pressed przycisku liczą się od tych zmiennych. */
+.kid-ui .kid-exercise-instruction [data-attention="true"] {
+  --action-bg: var(--md-sys-color-primary);
+  --action-fg: var(--md-sys-color-on-primary);
+  --action-border: var(--md-sys-color-primary);
+}

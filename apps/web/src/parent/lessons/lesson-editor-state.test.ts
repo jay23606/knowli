@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LessonDraftDto } from "@learning/contracts";
+import { LessonExerciseInputSchema, type LessonDraftDto } from "@learning/contracts";
 import {
   clozeGapCountOf,
   clozeWordsOf,
@@ -13,6 +13,7 @@ import {
   groupExercisesByObjectiveAndStage,
   lessonThemesPatch,
   lessonExerciseChanged,
+  missingListenAudioCount,
   nextGroupId,
   nextRequiredElementId,
   stageOfExerciseType,
@@ -286,6 +287,28 @@ it("zachowuje pola v3 ćwiczeń szkolnych w obie strony", () => {
     expect(patch.exercises![1]).not.toHaveProperty("visualSubject");
   });
 
+  it("wybór ze słuchu: zdanie z luką, opcje i poprawna opcja przechodzą do patcha, bez polecenia i piktogramu", () => {
+    const base = draft();
+    const listen: LessonDraftDto["exercises"][number] = {
+      id: "00000000-0000-4000-8000-000000000033",
+      revisionId: "00000000-0000-4000-8000-000000000043",
+      exerciseType: "lesson_listen_choice",
+      objectiveId: "english_grammar.present_simple.third_person_s",
+      stem: "He ___ football.",
+      answer: "plays",
+      acceptedAnswers: [],
+      focus: ["plays"],
+      options: [{ id: "a", text: "plays" }, { id: "b", text: "play" }],
+      correctOption: "a",
+    };
+    const snapshot = createLessonSnapshot({ ...base, exercises: [listen] }, () => "unused");
+    const sent = toLessonDraftPatch(snapshot).exercises![0]!;
+    expect(sent).toMatchObject({ exerciseType: "lesson_listen_choice", stem: "He ___ football.", correctOption: "a" });
+    expect(sent.options).toEqual([{ id: "a", text: "plays" }, { id: "b", text: "play" }]);
+    expect(sent).not.toHaveProperty("instructionPl");
+    expect(sent).not.toHaveProperty("visualSubject");
+  });
+
   it("splits acceptedAnswers into lines and focus into words, dropping empty entries", () => {
     const snapshot = createLessonSnapshot(draft(), () => "unused");
     snapshot.form.exercises[1]!.acceptedText = " watch \n \n watchez ";
@@ -464,6 +487,60 @@ describe("calculation editor", () => {
     const variants = [ex, { ...ex, clientKey: "variant-2" }, { ...ex, clientKey: "other-objective", objectiveId: "other" }];
     expect(groupCalculationFamilies(variants).map(g => g.exercises.length)).toEqual([2, 1]);
     expect(groupCalculationFamilies(variants.filter(e => e.clientKey !== ex.clientKey)).map(g => g.exercises.length)).toEqual([1, 1]);
+  });
+});
+
+describe("wybór ze słuchu (#198): payload i licznik nagrań", () => {
+  const OBJ = "english_grammar.present_simple.third_person_s";
+  const listen = (n: number, sentenceAudio?: LessonDraftDto["exercises"][number]["sentenceAudio"]): LessonDraftDto["exercises"][number] => ({
+    id: `00000000-0000-4000-8000-0000000000${n}3`,
+    revisionId: `00000000-0000-4000-8000-0000000000${n}4`,
+    exerciseType: "lesson_listen_choice",
+    objectiveId: OBJ,
+    stem: "He ___ football.",
+    answer: "plays",
+    acceptedAnswers: [],
+    focus: ["plays"],
+    options: [{ id: "a", text: "plays" }, { id: "b", text: "play" }],
+    correctOption: "a",
+    ...(sentenceAudio ? { sentenceAudio } : {}),
+  });
+
+  it("payload nie niesie sentenceAudio ani promptAudio i przechodzi schemat wejścia", () => {
+    const exercise = listen(1, { state: "ready", assetId: "00000000-0000-4000-8000-0000000000aa", previousAssetId: "00000000-0000-4000-8000-0000000000ab" });
+    const snapshot = createLessonSnapshot(draft({ exercises: [exercise] }), () => "unused");
+    const sent = toLessonDraftPatch(snapshot).exercises![0]!;
+    expect(sent).not.toHaveProperty("sentenceAudio");
+    expect(sent).not.toHaveProperty("promptAudio");
+    expect(LessonExerciseInputSchema.safeParse(sent).success).toBe(true);
+    expect(JSON.stringify(sent)).not.toContain("Audio");
+  });
+
+  it("polecenie, podpowiedź i piktogram wpisane w ćwiczeniu słuchowym nie trafiają do payloadu", () => {
+    const snapshot = createLessonSnapshot(draft({ exercises: [listen(1)] }), () => "unused");
+    const ex = snapshot.form.exercises[0]!;
+    ex.instructionPl = "Wybierz";
+    ex.hint = "podpowiedź";
+    ex.visualSubject = "girl";
+    const sent = toLessonDraftPatch(snapshot).exercises![0]!;
+    expect(sent).not.toHaveProperty("instructionPl");
+    expect(sent).not.toHaveProperty("hint");
+    expect(sent).not.toHaveProperty("visualSubject");
+    expect(sent).toMatchObject({ stem: "He ___ football.", correctOption: "a" });
+    expect(LessonExerciseInputSchema.safeParse(sent).success).toBe(true);
+  });
+
+  it("licznik liczy ćwiczenia słuchowe bez gotowego nagrania (pending, failed, brak wpisu)", () => {
+    const exercises = [
+      listen(1, { state: "ready", assetId: "00000000-0000-4000-8000-0000000000aa" }),
+      listen(2, { state: "pending" }),
+      listen(3, { state: "failed" }),
+      listen(4),
+      draft().exercises[0]!,
+    ];
+    expect(missingListenAudioCount(exercises)).toBe(3);
+    expect(missingListenAudioCount([exercises[0]!, exercises[4]!])).toBe(0);
+    expect(missingListenAudioCount([])).toBe(0);
   });
 });
 

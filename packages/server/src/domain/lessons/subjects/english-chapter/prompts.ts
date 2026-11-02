@@ -44,6 +44,12 @@ export const englishChapterPrompts: SubjectPromptProfile = {
     "weather word for weather, another day for a day) — never a word of a trivially different class, such as a day " +
     "among colours or a weather word among clothes. When the chapter has no second word of that category, check a " +
     "different part of the sentence instead of padding the options. " +
+    "lesson_listen_choice (listening choice): a narrator reads the full English sentence aloud and the child picks the word that fills the gap. " +
+    "The meaning stimulus is the recording, so instructionPl, hint and visualSubject are always null here. " +
+    "stem is one short natural sentence of at most 12 words with exactly one gap written as ___ (two or more underscores) on a word or frame element of the material; " +
+    "2 or 3 options, each option is a word or phrase from the chapter material, as in lesson_choice, exactly one correct, and the options sound clearly different when spoken " +
+    "(not two spellings or an apostrophe contraction beside its full form of the same word). Never start an option with an apostrophe. " +
+    "Distractors are plausible: the same category as the correct option, taken from the material. " +
     "lesson_gap: stem is a short English sentence with exactly one gap ___; answer is the missing chapter word or phrase " +
     "(at most 3 words) and focus is that checked word. Vary the answers: no more than 2 lesson_gap exercises of one " +
     "objective may have the same answer. In an objective built on a sentence frame (e.g. I'm wearing (a) ...) vary " +

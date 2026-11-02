@@ -50,6 +50,7 @@ export const EXERCISE_TYPES = [
   "lesson_match",
   "lesson_group",
   "lesson_cloze",
+  "lesson_listen_choice",
 ] as const;
 export type ExerciseTypeDto = (typeof EXERCISE_TYPES)[number];
 
@@ -267,6 +268,16 @@ export const TaskPromptSchema = z.discriminatedUnion("kind", [
     /** Język treści zadania (przedmiot ma jeden język odpowiedzi); brak = bez atrybutu `lang`. */
     contentLocale: LessonContentLocaleSchema.optional(),
     questionAudioAssetId: QuestionAudioSchema,
+  }).strict(),
+  // „Posłuchaj i wybierz” (#198): zdanie z luką czyta lektor, a polecenie dziecka
+  // pochodzi z katalogu komunikatów — prompt nie niesie `instructionPl` ani id nagrania
+  // (nagranie bodźca odsłania serwer osobną ścieżką po rejestracji ekspozycji).
+  z.object({
+    kind: z.literal("lesson_listen_choice"),
+    stem: z.string().min(1),
+    options: z.array(ChoiceOptionSchema).min(1),
+    /** Język treści zadania; brak = bez atrybutu `lang`. */
+    contentLocale: LessonContentLocaleSchema.optional(),
   }).strict(),
   z.object({
     kind: z.literal("lesson_order"),

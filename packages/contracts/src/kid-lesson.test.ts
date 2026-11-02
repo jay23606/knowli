@@ -89,6 +89,26 @@ describe("EXERCISE_TYPES includes the 9 lesson types", () => {
   });
 });
 
+describe("lesson_listen_choice prompt", () => {
+  const prompt = { kind: "lesson_listen_choice", stem: "He ___ football.", options: [option], contentLocale: "en-GB" };
+  it("accepts stem, options and contentLocale, and registers the exercise type", () => {
+    expect(TaskPromptSchema.safeParse(prompt).success).toBe(true);
+    expect(TaskPromptSchema.safeParse({ kind: "lesson_listen_choice", stem: "He ___ football.", options: [option] }).success).toBe(true);
+    expect(EXERCISE_TYPES as readonly string[]).toContain("lesson_listen_choice");
+  });
+  it.each([
+    ["instructionPl", { instructionPl: "Wybierz" }],
+    ["audioAssetId", { audioAssetId: UUID }],
+    ["questionAudioAssetId", { questionAudioAssetId: UUID }],
+    ["correctOptionId", { correctOptionId: UUID }],
+  ])("rejects a prompt carrying %s", (_label, extra) => {
+    expect(TaskPromptSchema.safeParse({ ...prompt, ...extra }).success).toBe(false);
+  });
+  it("requires at least one option", () => {
+    expect(TaskPromptSchema.safeParse({ ...prompt, options: [] }).success).toBe(false);
+  });
+});
+
 describe("retired daily round API", () => {
   it("rejects stale requests to start a daily round", () => {
     expect(SessionInputSchema.safeParse({

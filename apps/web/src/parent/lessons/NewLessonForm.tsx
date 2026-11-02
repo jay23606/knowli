@@ -656,6 +656,10 @@ export default function NewLessonForm({
               value={values.poolSize}
               onChange={(value) => form.setValues({ poolSize: value, poolSizeTouched: true })}
             />
+            {/* Katalog nie niesie typów ćwiczeń: wybór ze słuchu mają przedmioty z nagraniami zdań, czyli wszystkie poza szkolnym. */}
+            {path !== "school" && (
+              <Text size="sm" className="pp-editor-muted" data-testid="lesson-listen-choice-note">{messages.lessons.listenChoiceCreateNote}</Text>
+            )}
 
             {submitError && (
               <Alert color="red" variant="light" role="alert" data-testid="api-error" icon={<ParentIcon name="alert-triangle" />}>

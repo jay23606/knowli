@@ -6,6 +6,7 @@ import { englishChapterSubject } from "../domain/lessons/subjects/english-chapte
 import { refineChapterPool } from "../domain/lessons/subjects/english-chapter/validators";
 import { englishGrammarSubject } from "../domain/lessons/subjects/english-grammar/module";
 import { presentSimpleV1 } from "../domain/lessons/subjects/english-grammar/topics/present-simple";
+import { toBeV1 } from "../domain/lessons/subjects/english-grammar/topics/to-be";
 import type { LessonPoolInput } from "../ports/ai";
 import { toExerciseDraft } from "../modules/materials/lessons/lesson-drafts";
 import { isMaterialVocabularyTarget, materialPhraseIndex } from "../domain/lessons/subjects/english/material-phrase";
@@ -42,6 +43,115 @@ describe("FakeLlmProvider lesson pool", () => {
     expect(result.valid.filter((item) => stageOf(item.exerciseType) === "guided")).toHaveLength(6);
     expect(result.valid.filter((item) => stageOf(item.exerciseType) === "productive")).toHaveLength(10);
     expect(result.valid.filter((item) => stageOf(item.exerciseType) === "independent")).toHaveLength(4);
+  });
+});
+
+describe("FakeLlmProvider — wybór ze słuchu (listenChoicePerObjective)", () => {
+  function grammarInput(topic: typeof presentSimpleV1, objectiveSuffix: string, overrides: Partial<LessonPoolInput> = {}): LessonPoolInput {
+    const objective = topic.objectives.find((item) => item.id.endsWith(objectiveSuffix))!;
+    return {
+      subjectId: englishGrammarSubject.id,
+      subjectTitle: englishGrammarSubject.titlePl,
+      answerLocale: englishGrammarSubject.answerLocale,
+      promptLocale: englishGrammarSubject.promptLocale,
+      promptProfile: { generationRole: "lesson", gradingRole: "grammar", almostDefinition: "close" },
+      exerciseTypes: englishGrammarSubject.exerciseTypes,
+      transforms: [],
+      objectives: [{
+        id: objective.id,
+        descriptionEn: objective.descriptionEn,
+        exerciseTypes: objective.exerciseTypes,
+        errorCategories: objective.errorCategories,
+      }],
+      material: "play football school music pets",
+      countPerObjective: 9,
+      stageCounts: { guided: 3, productive: 4, independent: 2 },
+      graderAvailable: false,
+      deduplication: "exercise",
+      ...overrides,
+    };
+  }
+
+  it.each([
+    [presentSimpleV1, "third_person_s"],
+    [presentSimpleV1, "negative"],
+    [presentSimpleV1, "question"],
+    [toBeV1, "affirmative_forms"],
+    [toBeV1, "negative_forms"],
+    [toBeV1, "questions"],
+  ] as const)("dokłada 2 poprawne ćwiczenia słuchowe na cel: %#", async (topic, suffix) => {
+    const input = grammarInput(topic, suffix, { listenChoicePerObjective: 2 });
+    const raw = await new FakeLlmProvider().generateLessonPool(input);
+    const drafts = raw.exercises.map(toExerciseDraft);
+    const listen = drafts.filter((draft) => draft.exerciseType === "lesson_listen_choice");
+    expect(listen).toHaveLength(2);
+    for (const draft of listen) {
+      expect(draft.instructionPl).toBeUndefined();
+      expect(draft.hint).toBeUndefined();
+      expect(draft.visualSubject).toBeUndefined();
+    }
+    // Pozostałe ćwiczenia fake'a nie są budowane pod reguły „to be”, więc oceniamy ćwiczenia słuchowe w pełnej puli.
+    const result = validatePool(drafts, englishGrammarSubject, topic);
+    expect(result.rejected.filter(({ exercise }) => exercise.exerciseType === "lesson_listen_choice")).toEqual([]);
+    expect(result.valid.filter((draft) => draft.exerciseType === "lesson_listen_choice")).toHaveLength(2);
+    // Dodatek leży poza podziałem etapów: reszta puli ma dotychczasową liczbę ćwiczeń.
+    expect(drafts).toHaveLength(9 + 2);
+  });
+
+  it("bez pola (albo z zerem) nie dokłada ćwiczeń słuchowych", async () => {
+    for (const overrides of [{}, { listenChoicePerObjective: 0 }]) {
+      const raw = await new FakeLlmProvider().generateLessonPool(grammarInput(presentSimpleV1, "third_person_s", overrides));
+      expect(raw.exercises.map((exercise) => (exercise as { exerciseType: string }).exerciseType)).not.toContain("lesson_listen_choice");
+    }
+  });
+
+  it("pomija cele, których lista nie zawiera typu, i ma unikalne tożsamości także przy dogenerowaniu", async () => {
+    const llm = new FakeLlmProvider();
+    const first = await llm.generateLessonPool(grammarInput(presentSimpleV1, "third_person_s", { listenChoicePerObjective: 2 }));
+    const withoutType = grammarInput(presentSimpleV1, "third_person_s", { listenChoicePerObjective: 2 });
+    const stripped = { ...withoutType, objectives: [{ ...withoutType.objectives[0]!, exerciseTypes: withoutType.objectives[0]!.exerciseTypes.filter((type) => type !== "lesson_listen_choice") }] };
+    const none = await llm.generateLessonPool(stripped);
+    expect(none.exercises.map((exercise) => (exercise as { exerciseType: string }).exerciseType)).not.toContain("lesson_listen_choice");
+
+    const existingExercises = first.exercises.map((exercise) => lessonExerciseStimulusRecord(toExerciseDraft(exercise)));
+    const second = await llm.generateLessonPool(grammarInput(presentSimpleV1, "third_person_s", { listenChoicePerObjective: 2, existingExercises }));
+    const identities = [...first.exercises, ...second.exercises].map((exercise) => lessonExerciseIdentity(toExerciseDraft(exercise)));
+    expect(new Set(identities).size).toBe(identities.length);
+  });
+
+  it("rozdział: ćwiczenia słuchowe ze słów materiału przechodzą słownik i walidację puli", async () => {
+    const material = ["Zagadnienie 1: Ubrania", "coat, boots, dress, skirt, t-shirt"].join("\n");
+    const topic = englishChapterSubject.buildDynamicTopic!({
+      titlePl: "Unit 1",
+      objectives: [{
+        id: "english_chapter.ddeck.clothes",
+        titlePl: "Ubrania",
+        descriptionEn: "Clothes",
+        kind: "words",
+        cards: [{ title: "Słówka", body: "coat — płaszcz" }, { title: "Jeszcze", body: "boots — buty" }],
+      }],
+    });
+    const raw = await new FakeLlmProvider().generateLessonPool({
+      subjectId: englishChapterSubject.id,
+      subjectTitle: englishChapterSubject.titlePl,
+      answerLocale: englishChapterSubject.answerLocale,
+      promptLocale: englishChapterSubject.promptLocale,
+      promptProfile: { generationRole: "lesson", gradingRole: "chapter", almostDefinition: "close" },
+      exerciseTypes: englishChapterSubject.exerciseTypes,
+      transforms: [],
+      objectives: [{ id: topic.objectives[0]!.id, descriptionEn: "Clothes", exerciseTypes: topic.objectives[0]!.exerciseTypes, errorCategories: [] }],
+      material,
+      countPerObjective: 14,
+      stageCounts: { guided: 4, productive: 7, independent: 3 },
+      graderAvailable: false,
+      deduplication: "exercise",
+      listenChoicePerObjective: 2,
+    });
+    const drafts = raw.exercises.map(toExerciseDraft);
+    expect(refineChapterPool(drafts, { material }).rejected).toEqual([]);
+    const result = validatePool(drafts, englishChapterSubject, topic);
+    expect(result.rejected).toEqual([]);
+    expect(result.valid.filter((draft) => draft.exerciseType === "lesson_listen_choice")).toHaveLength(2);
   });
 });
 

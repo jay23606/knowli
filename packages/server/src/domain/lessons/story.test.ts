@@ -244,6 +244,21 @@ describe("solvedSentencesOf", () => {
     expect(sentences).toEqual(["He drinks tea."]);
   });
 
+  it("fills a listening choice stem with the correct option (the sentence read aloud)", () => {
+    const sentences = solvedSentencesOf([
+      draft({
+        exerciseType: "lesson_listen_choice",
+        stem: "She ___ milk.",
+        options: [
+          { id: "a", text: "like" },
+          { id: "b", text: "likes" },
+        ],
+        correctOption: "b",
+      }),
+    ]);
+    expect(sentences).toEqual(["She likes milk."]);
+  });
+
   it("adds the correct option of a choice whose stem has no gap", () => {
     const sentences = solvedSentencesOf([
       draft({

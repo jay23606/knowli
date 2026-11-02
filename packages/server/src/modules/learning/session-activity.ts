@@ -6,6 +6,7 @@ import {
   SessionActivityReviewRecordSchema,
   SessionActivityReviewVerdictSchema,
   TaskPromptSchema,
+  messages,
   sessionActivityAward,
   taskActiveMs,
   type SessionActivityReport,
@@ -172,6 +173,9 @@ export function describeTaskPrompt(p: TaskPrompt): { instruction: string; stimul
     }
     case "lesson_choice":
       return { instruction: p.instructionPl, stimulus: p.stem, options: options(p.options) };
+    case "lesson_listen_choice":
+      // Polecenie dziecka pochodzi z katalogu komunikatów (prompt nie ma `instructionPl`).
+      return { instruction: messages.kid.lessonListenChoiceInstruction, stimulus: p.stem, options: options(p.options) };
     case "lesson_order":
       return { instruction: p.instructionPl, stimulus: null, options: options(p.items) };
     case "lesson_match":
@@ -220,7 +224,7 @@ type LessonAnswerSnapshot = z.infer<typeof LessonAnswerSnapshotSchema>;
 
 export function lessonAnswerValues(key: LessonAnswerSnapshot, prompt: TaskPrompt | null): { valuesById: Map<string, string>; acceptedAnswers: string[] } {
   const valuesById = new Map<string, string>();
-  if (prompt?.kind === "lesson_choice" || prompt?.kind === "lesson_short_answer" || prompt?.kind === "lesson_keywords" || prompt?.kind === "reading" || prompt?.kind === "reverse_recognition") {
+  if (prompt?.kind === "lesson_choice" || prompt?.kind === "lesson_listen_choice" || prompt?.kind === "lesson_short_answer" || prompt?.kind === "lesson_keywords" || prompt?.kind === "reading" || prompt?.kind === "reverse_recognition") {
     for (const option of prompt.options) valuesById.set(option.id, option.text);
   }
   if (prompt?.kind === "lesson_order") for (const item of prompt.items) valuesById.set(item.id, item.text);

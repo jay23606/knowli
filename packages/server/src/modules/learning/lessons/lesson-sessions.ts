@@ -47,6 +47,7 @@ import {
   type LoadedExercise,
   type MaterializedLessonTask,
 } from "./lesson-materialize";
+import { listenStimulusAssetId } from "./listen-stimulus";
 
 /**
  * Sesja lekcji po stronie serwera (zadanie 13). `sessions.ts` deleguje tu dla
@@ -174,7 +175,10 @@ async function historicalSupportObjectives(
       inArray(sql<string>`${itemRevisions.payload}->>'objectiveId'`, args.objectiveIds),
     ));
   const tasks = rows.flatMap((row) => {
-    const payload = row.payload as { objectiveId?: string };
+    const payload = row.payload as { objectiveId?: string; exerciseType?: string };
+    // Zadanie słuchowe nie jest dowodem trudności reguły ani jej przezwyciężenia
+    // (spec #198 §3.3): pomijamy je całkowicie, niezależnie od wyniku.
+    if (payload?.exerciseType === "lesson_listen_choice") return [];
     const lessonContext = row.lessonContext as { subjectId?: string } | null;
     const objectiveId = payload?.objectiveId;
     if (lessonContext?.subjectId !== args.subjectId || !objectiveId || !args.objectiveIds.includes(objectiveId)) return [];
@@ -616,6 +620,10 @@ function planLessonTaskFromSnapshot(
         ...(e.payload.questionType ? { questionType: e.payload.questionType } : {}),
         ...(e.payload.questionType === "comparison"
           ? { searchText: [e.payload.prompt ?? "", ...(e.payload.requiredElements ?? []).map((el) => el.text)].join(" ") }
+          : {}),
+        // Gotowość nagrania-bodźca tylko dla zadań słuchowych; ta sama reguła co materializacja.
+        ...(e.payload.exerciseType === "lesson_listen_choice"
+          ? { stimulusAudioReady: listenStimulusAssetId(e, subject, "training") !== null }
           : {}),
       }),
     ),

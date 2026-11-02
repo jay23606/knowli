@@ -58,4 +58,11 @@ describe("lessonPollInterval", () => {
     expect(lessonPollInterval(lesson({ storyGeneration: story("failed"), draftAssets: ["approved"] }))).toBe(false);
     expect(lessonPollInterval(lesson({ storyGeneration: story("succeeded"), draftAssets: ["approved"] }))).toBe(false);
   });
+
+  it("odpytuje, gdy nagranie zdania „Posłuchaj i wybierz” czeka (sentenceAudio, nie ma go w assets)", () => {
+    const pending = { draft: { assets: [], exercises: [{ sentenceAudio: { state: "pending" } }] } } as unknown as LessonDeckDto;
+    const failed = { draft: { assets: [], exercises: [{ sentenceAudio: { state: "failed" } }] } } as unknown as LessonDeckDto;
+    expect(lessonPollInterval(pending)).toBe(3000);
+    expect(lessonPollInterval(failed)).toBe(false);
+  });
 });
