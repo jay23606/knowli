@@ -172,6 +172,10 @@ nieokreślonych, a pomyłkowe stuknięcie niczego nie psuje.
     zaznaczona — większa, wypełniona `primary`. Promienie jako stałe w `PairLines` (6 i 8 px);
   - dla każdej pary linię prostą 4 px `primary` z zaokrąglonymi końcami (`kid-lesson-match-line`,
     `data-left-id`, `data-right-id`).
+  Gdy zaznaczony kafelek jest w parze, jego linia grubieje do 6 px (`kid-lesson-pair__line--selected`),
+  a odpowiednik w drugiej kolumnie dostaje obwódkę 2 px `primary` z odstępem 2 px
+  (`kid-lesson-pair__item--partner`), więc skrzyżowane linie długich opisów na telefonie da się prześledzić;
+  bez kolorowych znaczników par.
   Kolory przez klasy CSS z tokenami. Kropka wchodzi do połowy w kafelek, więc stuknięcie w jej
   wewnętrzną połowę trafia w kafelek; zewnętrzna połowa i pas są martwe (akceptowane).
 - Liczba kropek i linii wynika ze stanu (renderowana zawsze); współrzędne z pomiaru, domyślnie 0
@@ -339,3 +343,16 @@ Brak odbioru na fizycznym urządzeniu raportujemy jawnie.
   przez `setAttribute`.
 - **E2E**: tolerancja końców linii oraz kontrole skali 1,6, zmiany rozmiaru i zmiany stylu mieszkają w
   `lesson-assignment-layout.spec.ts`.
+- **Wyróżnienie pary zaznaczonego kafelka** (przegląd końcowy): grubsza linia (6 px) i obwódka odpowiednika
+  zamiast kolorowych znaczników par (§5.4); skrzyżowane linie przy 390×844 da się prześledzić.
+- **Łamanie słów przy 320 px**: kafelki par mają `hyphens: auto`, ale Chromium nie dzieli polskich słów
+  (dzieli tylko angielskie — lewa kolumna z `lang` materiału). Słowo „wyznaczająca” przestało się łamać
+  dzięki mniejszemu paddingowi kafelka poniżej 360 px (6 px w poziomie); kontrola E2E rozbitych słów zostaje
+  przy lewej kolumnie.
+- **Odstęp luk w sąsiednich wierszach**: luka ma pionowy margines 3 px (wchodzi do wiersza `inline-flex`),
+  więc luki w kolejnych wierszach się nie stykają.
+- **Pusta luka** ma tło `surface-container-high` (stan „wolny”, §3), nie `surface-container`.
+- **Przyklejony bank przy komunikacie z akcjami**: reguła `data-action-notice` robiła z ramy zadania kontener
+  przewijania także w trybie przewijanej strony, więc w niskim landscape (844×390) bank przestawał się
+  przyklejać (odtworzone w Chromium). Reguła działa teraz tylko poza trybem przewijanej strony
+  (`data-zoomed`, `data-viewport-very-short`); test niskiego landscape sprawdza bank także z komunikatem.
