@@ -80,24 +80,37 @@ export function PairLines({
     }
   };
 
-  // Po każdym renderze: pary i zaznaczenie zmieniają liczbę i klasy elementów SVG.
-  useLayoutEffect(() => {
-    layoutRef.current();
-  });
-
-  // Zmiana rozmiaru kontenera lub kafelków (zawijanie tekstu, obrót, zoom); nigdy sam SVG.
+  // Jeden obserwator na czas życia warstwy: zmiana rozmiaru kontenera lub kafelków
+  // (zawijanie tekstu, obrót, zoom) przelicza współrzędne; nigdy sam SVG (pętla).
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const observedRef = useRef(new WeakSet<Element>());
   useLayoutEffect(() => {
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => layoutRef.current());
-    if (containerRef.current !== null) observer.observe(containerRef.current);
-    for (const [side, items] of [["left", state.left], ["right", state.right]] as const) {
-      for (const item of items) {
-        const tile = tileOf(side, item.id);
-        if (tile !== null) observer.observe(tile);
-      }
+    observerRef.current = observer;
+    observedRef.current = new WeakSet();
+    return () => {
+      observer.disconnect();
+      observerRef.current = null;
+    };
+  }, []);
+
+  // Po każdym renderze: pary i zaznaczenie zmieniają liczbę i klasy elementów SVG,
+  // a kafelek mógł zostać podpięty lub ponownie zamontowany — dopisz go do obserwatora.
+  useLayoutEffect(() => {
+    const observer = observerRef.current;
+    if (observer !== null) {
+      const watch = (element: Element | null) => {
+        if (element === null || observedRef.current.has(element)) return;
+        observedRef.current.add(element);
+        observer.observe(element);
+      };
+      watch(containerRef.current);
+      for (const item of state.left) watch(tileOf("left", item.id));
+      for (const item of state.right) watch(tileOf("right", item.id));
     }
-    return () => observer.disconnect();
-  }, [containerRef, tileOf, state.left, state.right]);
+    layoutRef.current();
+  });
 
   const dots = [
     ...state.left.map((item) => ({ side: "left" as const, id: item.id })),

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, renderKid } from "../../test/render-kid";
+import { act, cleanup, renderKid } from "../../test/render-kid";
 import { PairLines } from "./PairLines";
 import { pairState, type PairSide, type PairState } from "./assignment-state";
 
@@ -18,9 +18,13 @@ function stateWith(pairs: Array<[string, string]>, selected: PairState["selected
   return { ...base, pairs: new Map(pairs), selected };
 }
 
+/** Kontenery dołączone do `document.body` przez `renderLines` — usuwane po każdym teście. */
+const attached: HTMLElement[] = [];
+
 function renderLines(state: PairState) {
   const container = document.createElement("div");
   document.body.appendChild(container);
+  attached.push(container);
   const tiles = new Map<string, HTMLElement>();
   for (const side of ["left", "right"] as const) {
     for (const entry of side === "left" ? state.left : state.right) {
@@ -37,6 +41,7 @@ function renderLines(state: PairState) {
 
 afterEach(() => {
   cleanup();
+  for (const node of attached.splice(0)) node.remove();
   vi.unstubAllGlobals();
   motionFlags.reduce = false;
 });
@@ -123,5 +128,61 @@ describe("PairLines", () => {
     const second = renderLines(stateWith([["l1", "r2"]]));
     const style = second.container.querySelector("[data-testid='kid-lesson-match-line']")?.getAttribute("style") ?? "";
     expect(style).not.toContain("opacity: 0");
+  });
+
+  it("obserwuje kontener i każdy kafelek (także podpięty później), nigdy SVG; przelicza po zmianie rozmiaru", () => {
+    class FakeResizeObserver {
+      static instances: FakeResizeObserver[] = [];
+      readonly observed: Element[] = [];
+      disconnected = false;
+      constructor(readonly callback: ResizeObserverCallback) {
+        FakeResizeObserver.instances.push(this);
+      }
+      observe(target: Element) {
+        this.observed.push(target);
+      }
+      unobserve() {}
+      disconnect() {
+        this.disconnected = true;
+      }
+    }
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const state = stateWith([["l1", "r2"]]);
+    const container = document.createElement("div");
+    const place = (offsetTop: number) => {
+      const tile = document.createElement("div");
+      for (const [key, value] of Object.entries({ offsetLeft: 0, offsetTop, offsetWidth: 100, offsetHeight: 40 })) {
+        Object.defineProperty(tile, key, { value, configurable: true });
+      }
+      return tile;
+    };
+    const tiles = new Map<string, HTMLElement>([
+      ["left:l1", place(10)],
+      ["right:r2", place(70)],
+    ]);
+    const containerRef = createRef<HTMLElement>();
+    (containerRef as { current: HTMLElement | null }).current = container;
+    const tileOf = (side: PairSide, id: string) => tiles.get(`${side}:${id}`) ?? null;
+    const view = renderKid(<PairLines state={state} containerRef={containerRef} tileOf={tileOf} />);
+
+    expect(FakeResizeObserver.instances).toHaveLength(1);
+    const observer = FakeResizeObserver.instances[0]!;
+    expect(observer.observed).toEqual([container, tiles.get("left:l1"), tiles.get("right:r2")]);
+
+    // Kafelek zarejestrowany po pierwszym renderze (np. ponownie zamontowany) też jest obserwowany, bez duplikatów.
+    tiles.set("left:l2", place(130));
+    view.rerender(<PairLines state={state} containerRef={containerRef} tileOf={tileOf} />);
+    expect(FakeResizeObserver.instances).toHaveLength(1);
+    expect(observer.observed).toEqual([container, tiles.get("left:l1"), tiles.get("right:r2"), tiles.get("left:l2")]);
+    expect(observer.observed.some((target) => target instanceof SVGElement)).toBe(false);
+
+    const line = view.container.querySelector("[data-testid='kid-lesson-match-line']")!;
+    expect(line.getAttribute("y1")).toBe("30");
+    Object.defineProperty(tiles.get("left:l1")!, "offsetTop", { value: 50, configurable: true });
+    act(() => observer.callback([], observer as unknown as ResizeObserver));
+    expect(line.getAttribute("y1")).toBe("70");
+
+    view.unmount();
+    expect(observer.disconnected).toBe(true);
   });
 });
