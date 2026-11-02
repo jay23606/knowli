@@ -201,6 +201,8 @@ const LessonDraftPatchContractSchema = z.object({
   dynamicTopic: LessonDynamicTopicPatchSchema.optional(),
   /** Historyjka: obiekt zastępuje, null usuwa, brak pola nie zmienia. */
   story: LessonStorySchema.nullable().optional(),
+  /** Historyjka, od której zaczęto edycję (null = bez historyjki); inna niż bieżąca przy `story` → conflict. */
+  expectedStory: LessonStorySchema.nullable().optional(),
   interests: ChildInterestsSchema.optional(),
 }).refine(
   (patch) =>

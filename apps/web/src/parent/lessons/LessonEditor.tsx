@@ -141,6 +141,9 @@ export default function LessonEditor({
   // Historyjka na koniec sesji: `undefined` = bez lokalnej zmiany (obowiązuje DTO),
   // `null` = rodzic ją usunął. Do PATCH trafia tylko zmieniona (`patch.story`).
   const [storyForm, setStoryForm] = useState<LessonStoryDto | null | undefined>(undefined);
+  // Historyjka szkicu w chwili pierwszej lokalnej zmiany: run historyjki (np. z innej karty)
+  // nie podbija editNumber, więc zapis niesie ją jako `expectedStory`.
+  const storyBase = useRef<LessonStoryDto | null>(null);
   // Błędy historyjki z serwera (`details.story` z zapisu i publikacji).
   const [storyErrors, setStoryErrors] = useState<string[]>([]);
   // Tematy zdań (migawka z tworzenia lekcji) w szkicu można tylko usunąć: `[]` po
@@ -414,6 +417,7 @@ export default function LessonEditor({
   };
 
   const changeStory = (story: LessonStoryDto | null) => {
+    if (storyForm === undefined) storyBase.current = draft?.story ?? null;
     markDirty();
     setStoryErrors([]);
     setStoryForm(story);
@@ -441,7 +445,10 @@ export default function LessonEditor({
       // bo serializacja ćwiczeń (lesson-editor-state) ich nie obejmuje.
       if (examplesForm) patch.examples = examplesForm;
       // Historyjka tylko po zmianie: patch historyjki anuluje jej trwający run i waliduje ją od nowa.
-      if (storyForm !== undefined && !storyEquals(storyForm, draft.story)) patch.story = storyForm;
+      if (storyForm !== undefined && !storyEquals(storyForm, draft.story)) {
+        patch.story = storyForm;
+        patch.expectedStory = storyBase.current;
+      }
       const interestsPatch = lessonThemesPatch(draft.interests, interestsForm);
       if (interestsPatch) patch.interests = interestsPatch;
       const saved = await run(() => parentClient.lessonDrafts.edit({

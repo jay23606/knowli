@@ -428,6 +428,22 @@ describe("run historyjki lekcji (integracja)", () => {
     expect(run!.next_attempt_at!.getTime()).toBeGreaterThan(clock.now().getTime());
   });
 
+  it("transient error while preparing story input requeues the run instead of leaving it running", async () => {
+    const { services, clock, versionId, storyRunId } = await generatedGrammarLesson();
+    // Przejściowy błąd po przejęciu runu, przed wywołaniem modelu (jak awaria odczytu z bazy).
+    const failing = {
+      ...services,
+      subjects: { ...services.subjects, getSubject: () => { throw new Error("connection reset"); } },
+    } as typeof services;
+
+    await executeLessonGeneration(failing, storyRunId!);
+
+    const [run] = await storyRuns(versionId);
+    expect(run!.state).toBe("queued");
+    expect(run!.attempts).toBe(1);
+    expect(run!.next_attempt_at!.getTime()).toBeGreaterThan(clock.now().getTime());
+  });
+
   describe("regenerateLessonStory", () => {
     it("published → immutable", async () => {
       const { services, deckId, versionId } = await generatedGrammarLesson();
@@ -744,6 +760,38 @@ describe("run historyjki lekcji (integracja)", () => {
       const version = await versionRow(versionId);
       expect(version.edit_number).toBe(3);
       expect(version.lesson_context.story).toEqual(PARENT_STORY);
+    });
+
+    it("story edit based on an older story conflicts after a story run wrote a new one", async () => {
+      // Karta A zaczęła edycję szkicu bez historyjki; w karcie B run historyjki zapisał wynik
+      // (bez podbicia editNumber), więc expectedEditNumber karty A nadal się zgadza.
+      const { services, versionId, storyRunId } = await generatedGrammarLesson();
+      await executeLessonGeneration(services, storyRunId!);
+      const generated = (await versionRow(versionId)).lesson_context.story;
+      expect(generated).toBeTruthy();
+
+      await expect(
+        editLessonDraft(services, versionId, { expectedEditNumber: 2, story: PARENT_STORY, expectedStory: null }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      const version = await versionRow(versionId);
+      expect(version.edit_number).toBe(2);
+      expect(version.lesson_context.story).toEqual(generated);
+    });
+
+    it("story edit based on the current story saves", async () => {
+      const { services, versionId, storyRunId } = await generatedGrammarLesson();
+      await executeLessonGeneration(services, storyRunId!);
+      const generated = (await versionRow(versionId)).lesson_context.story;
+
+      const dto = await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: PARENT_STORY, expectedStory: generated });
+
+      expect(dto.story).toEqual(PARENT_STORY);
+      // Usunięcie też porównuje bazę edycji.
+      await expect(
+        editLessonDraft(services, versionId, { expectedEditNumber: 3, story: null, expectedStory: generated }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      const removed = await editLessonDraft(services, versionId, { expectedEditNumber: 3, story: null, expectedStory: PARENT_STORY });
+      expect(removed.story).toBeUndefined();
     });
 
     it("edit with story null removes story", async () => {

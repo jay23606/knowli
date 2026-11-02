@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -472,6 +473,12 @@ const LessonDraftPatchSchema = z.object({
   dynamicTopic: LessonDynamicTopicPatchSchema.optional(),
   /** Historyjka: obiekt zastępuje, `null` usuwa, brak pola nie zmienia. */
   story: LessonStorySchema.nullable().optional(),
+  /**
+   * Historyjka, od której rodzic zaczął edycję (`null` = bez historyjki). Run historyjki
+   * nie podbija `editNumber`, więc przy `story` serwer porównuje ją z bieżącą i przy
+   * różnicy zwraca `conflict` (wynik runu z innej karty nie zostanie nadpisany po cichu).
+   */
+  expectedStory: LessonStorySchema.nullable().optional(),
   interests: ChildInterestsSchema.optional(),
 }).refine(
   (p) =>
@@ -674,6 +681,9 @@ export async function editLessonDraft(
     const subject = requireSubject(services, context.subjectId);
     if (patch.story !== undefined && subject.lessonStory !== true) {
       throw new AppError("validation", { message: "story patch requires a subject with lesson story" });
+    }
+    if (patch.story !== undefined && patch.expectedStory !== undefined && !isDeepStrictEqual(patch.expectedStory, context.story ?? null)) {
+      throw new AppError("conflict");
     }
     // Niepuste tematy zdań mają sens tylko tam, gdzie przedmiot ma regułę w prompcie (jak przy
     // tworzeniu lekcji); pusta lista (usunięcie) jest zawsze dozwolona.

@@ -213,25 +213,57 @@ export async function executeLessonStoryGeneration(
     return;
   }
 
-  const version = (await services.db.select({ state: deckVersions.state, lessonContext: deckVersions.lessonContext })
-    .from(deckVersions).where(eq(deckVersions.id, versionId)))[0];
-  if (!version) {
-    await markCurrentRun(services.db, "failed", "deck_version_gone");
+  // Błąd rozliczany jak błąd providera: przejściowy wraca do kolejki z `nextAttemptAt`,
+  // po wyczerpaniu prób albo przy błędzie terminalnym run kończy się `failed`.
+  const settleFailure = async (error: unknown): Promise<void> => {
+    const failure = classifyLessonGenerationFailure(error);
+    if (!failure.retryable) {
+      await markCurrentRun(services.db, "failed", failure.errorCode);
+    } else if (attempts >= MAX_AUTOMATIC_ATTEMPTS) {
+      await markCurrentRun(services.db, "failed", "attempts_exhausted");
+    } else {
+      const delay = lessonRetryDelayMs(attempts, failure.retryAfterMs, Math.random);
+      const nextAttemptAt = new Date(services.clock.now().getTime() + delay);
+      await markCurrentRun(services.db, "queued", failure.errorCode, nextAttemptAt);
+    }
+  };
+
+  // Przygotowanie wejścia po przejęciu runu: wyjątek (np. przejściowy błąd bazy)
+  // nie może zostawić runu w `running` bez automatycznego ponowienia.
+  const prepare = async (): Promise<{ subject: SubjectModule; input: LessonStoryInput } | null> => {
+    const version = (await services.db.select({ state: deckVersions.state, lessonContext: deckVersions.lessonContext })
+      .from(deckVersions).where(eq(deckVersions.id, versionId)))[0];
+    if (!version) {
+      await markCurrentRun(services.db, "failed", "deck_version_gone");
+      return null;
+    }
+    if (version.state === "published") {
+      await markCurrentRun(services.db, "superseded", null);
+      return null;
+    }
+    const context = version.lessonContext as unknown as LessonContext | null;
+    const resolved = context?.subjectId ? resolveLessonTopic(services.subjects, context) : undefined;
+    const storyRules = resolved?.subject.prompts.storyRules?.trim();
+    if (!context || !resolved || resolved.subject.lessonStory !== true || !storyRules) {
+      await markCurrentRun(services.db, "failed", "validation");
+      return null;
+    }
+    const { subject, topic } = resolved;
+    return {
+      subject,
+      input: storyInput(subject, topic, context, storyRules, solvedSentencesOf(await poolDraftsOf(services.db, versionId))),
+    };
+  };
+  let prepared: Awaited<ReturnType<typeof prepare>>;
+  try {
+    prepared = await prepare();
+  } catch (error) {
+    console.error(`[lesson-story] run=${runId} błąd przygotowania wejścia próba=${attempts}`);
+    await settleFailure(error);
     return;
   }
-  if (version.state === "published") {
-    await markCurrentRun(services.db, "superseded", null);
-    return;
-  }
-  const context = version.lessonContext as unknown as LessonContext | null;
-  const resolved = context?.subjectId ? resolveLessonTopic(services.subjects, context) : undefined;
-  const storyRules = resolved?.subject.prompts.storyRules?.trim();
-  if (!context || !resolved || resolved.subject.lessonStory !== true || !storyRules) {
-    await markCurrentRun(services.db, "failed", "validation");
-    return;
-  }
-  const { subject, topic } = resolved;
-  const input = storyInput(subject, topic, context, storyRules, solvedSentencesOf(await poolDraftsOf(services.db, versionId)));
+  if (!prepared) return;
+  const { subject, input } = prepared;
 
   const executionPolicy = deps.lessonExecution ?? DEFAULT_LESSON_GENERATION_POLICY;
   const runDeadlineAtMs = runStartedAtMs + executionPolicy.runTimeoutMs;
@@ -262,15 +294,7 @@ export async function executeLessonStoryGeneration(
     }
     const failure = classifyLessonGenerationFailure(error);
     console.error(`[lesson-story] run=${runId} błąd LLM: kod=${failure.errorCode} retryable=${failure.retryable} próba=${attempts}`);
-    if (!failure.retryable) {
-      await markCurrentRun(services.db, "failed", failure.errorCode);
-    } else if (attempts >= MAX_AUTOMATIC_ATTEMPTS) {
-      await markCurrentRun(services.db, "failed", "attempts_exhausted");
-    } else {
-      const delay = lessonRetryDelayMs(attempts, failure.retryAfterMs, Math.random);
-      const nextAttemptAt = new Date(services.clock.now().getTime() + delay);
-      await markCurrentRun(services.db, "queued", failure.errorCode, nextAttemptAt);
-    }
+    await settleFailure(error);
     return;
   }
 

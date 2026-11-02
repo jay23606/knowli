@@ -135,6 +135,8 @@ export interface LessonDraftPatch {
   dynamicTopic?: { objectives: EditableDynamicObjective[] };
   /** Historyjka na koniec sesji: obiekt zastępuje, `null` usuwa, brak pola nie zmienia. */
   story?: LessonStoryDto | null;
+  /** Historyjka, od której zaczęto edycję; serwer odrzuca zapis (`conflict`), gdy bieżąca jest inna. */
+  expectedStory?: LessonStoryDto | null;
   /** Tylko `[]` (usunięcie tematów zdań); patrz `lessonThemesPatch`. */
   interests?: string[];
 }
