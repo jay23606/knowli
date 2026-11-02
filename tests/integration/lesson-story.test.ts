@@ -703,6 +703,36 @@ describe("run historyjki lekcji (integracja)", () => {
     expect((await readGeneration(services, activeRunId)).state).toBe("queued");
   });
 
+  it("retried full run keeps the parent story and rejects exercises that solve its sentences", async () => {
+    const { fakes, services, lessonRunId, deckId, versionId } = await failedFullLesson();
+    // Dziś nieosiągalne przez API (patch historyjki podbija editNumber, więc ponowienie
+    // pełnego runu daje conflict) — niezmiennik bariery pilnujemy dla każdego zapisu puli.
+    await pool.query(
+      `update learning_app.deck_versions set lesson_context = lesson_context || jsonb_build_object('story', $2::jsonb) where id = $1`,
+      [versionId, JSON.stringify(PARENT_STORY)],
+    );
+    const original = fakes.llm.generateLessonPool.bind(fakes.llm);
+    fakes.llm.generateLessonPool = async (input) => {
+      const result = await original(input);
+      return {
+        ...result,
+        exercises: [{ ...SHE_PLAYS_GAP, stem: "Tom ___ a small dog.", answer: "has", focus: ["has"] }, ...result.exercises],
+      };
+    };
+
+    await retryGeneration(services, lessonRunId);
+    await executeLessonGeneration(services, lessonRunId);
+
+    expect((await readGeneration(services, lessonRunId)).state).toBe("succeeded");
+    const draft = (await readLessonDeck(services, deckId)).draft!;
+    expect(draft.exercises.length).toBeGreaterThan(0);
+    expect(draft.exercises.some((ex) => ex.stem === "Tom ___ a small dog.")).toBe(false);
+    expect(draft.rejectedCount).toBeGreaterThanOrEqual(1);
+    expect(draft.story).toEqual(PARENT_STORY);
+    // Wersja ma historyjkę, więc pełny run nie zleca nowej.
+    expect((await storyRuns(versionId)).filter((run) => run.state === "queued")).toEqual([]);
+  });
+
   describe("edycja historyjki (editLessonDraft)", () => {
     it("edit saves valid story and bumps editNumber", async () => {
       const { services, versionId } = await generatedGrammarLesson();

@@ -1606,10 +1606,11 @@ export async function executeLessonGeneration(services: Services, runId: string,
       }
       const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
       const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, refined.rejectedReasons);
-      // Dogenerowanie do lekcji z historyjką: ćwiczenie, którego rozwiązanie
-      // powtarza zdanie historyjki, ujawniłoby odpowiedź (bariera ekspozycji,
-      // spec historyjki §5). Historyjka z tej transakcji — rodzic mógł ją zmienić.
-      const story = input.regenerate ? prevContext.story : undefined;
+      // Pula zapisywana do lekcji z historyjką (dogenerowanie, ale też pełny run):
+      // ćwiczenie, którego rozwiązanie powtarza zdanie historyjki, ujawniłoby
+      // odpowiedź (bariera ekspozycji, spec historyjki §5). Historyjka z tej
+      // transakcji — rodzic mógł ją zmienić.
+      const story = prevContext.story;
       const accepted = story
         ? uniqueValid.filter((ex) => storyCollisions(story.sentences, solvedSentencesOf([ex]), subject.normalizer).length === 0)
         : uniqueValid;
