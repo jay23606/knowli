@@ -1004,6 +1004,18 @@ describe("lesson_listen_choice — walidacja", () => {
     expect(errors.some((e) => e.includes("zdania z opcjami"))).toBe(true);
   });
 
+  /** Błędy reguły sybilantu dla zdania i opcji (poprawna jest pierwsza). */
+  function sibilantErrorsOf(stem: string, texts: readonly string[]): string[] {
+    const errors = errorsOf(listen({
+      stem,
+      options: texts.map((text, index) => ({ id: String.fromCharCode(97 + index), text })),
+      correctOption: "a",
+      answer: texts[0]!,
+      focus: [texts[0]!],
+    }));
+    return errors.filter((e) => e.includes("różnica niesłyszalna"));
+  }
+
   it.each([
     ["He ___ snakes.", "play", "plays"],
     ["She ___ soccer.", "like", "likes"],
@@ -1017,14 +1029,7 @@ describe("lesson_listen_choice — walidacja", () => {
     ["He ___ sleeping.", "He's", "He"],
     ["She ___ “snakes”.", "like", "likes"],
   ])("odrzuca sybilant za luką przy opcjach różnych o -s: %s (%s / %s)", (stem, first, second) => {
-    const errors = errorsOf(listen({
-      stem,
-      options: [{ id: "a", text: first }, { id: "b", text: second }],
-      correctOption: "b",
-      answer: second,
-      focus: [second],
-    }));
-    expect(errors.some((e) => e.includes("różnica niesłyszalna"))).toBe(true);
+    expect(sibilantErrorsOf(stem, [first, second])).not.toEqual([]);
   });
 
   it.each([
@@ -1042,25 +1047,11 @@ describe("lesson_listen_choice — walidacja", () => {
     ["She ___ sorry.", "say", "says"],
     ["He ___ it.", "like", "likes"],
   ])("dopuszcza słyszalną różnicę: %s (%s / %s)", (stem, first, second) => {
-    const errors = errorsOf(listen({
-      stem,
-      options: [{ id: "a", text: first }, { id: "b", text: second }],
-      correctOption: "b",
-      answer: second,
-      focus: [second],
-    }));
-    expect(errors.filter((e) => e.includes("różnica niesłyszalna"))).toEqual([]);
+    expect(sibilantErrorsOf(stem, [first, second])).toEqual([]);
   });
 
   it("komunikat o sybilancie wskazuje parę opcji i wyraz za luką, także przy trzech opcjach", () => {
-    const errors = errorsOf(listen({
-      stem: "He ___ snakes.",
-      options: [{ id: "a", text: "likes" }, { id: "b", text: "like" }, { id: "c", text: "is" }],
-      correctOption: "a",
-      answer: "likes",
-      focus: ["likes"],
-    }));
-    const sibilant = errors.filter((e) => e.includes("różnica niesłyszalna"));
+    const sibilant = sibilantErrorsOf("He ___ snakes.", ["likes", "like", "is"]);
     expect(sibilant).toHaveLength(1);
     expect(sibilant[0]).toContain("„likes” i „like”");
     expect(sibilant[0]).toContain("„snakes”");
