@@ -768,17 +768,12 @@ export const messages = {
     lessonGroupRemove: "Wyjmij {item} z grupy {group}",
     lessonGroupEmpty: "Pusto",
     lessonGroupActiveHint: "Dotykaj tego, co pasuje do grupy: {group}",
-    // „Uzupełnij tekst” (lesson_cloze): luki w tekście, miejsca i bank słów.
-    lessonClozeText: "Tekst z lukami",
-    lessonClozeGaps: "Luki",
+    // „Uzupełnij tekst” (lesson_cloze): luka w zdaniu jako przycisk i bank słów.
     lessonClozePool: "Słowa do wyboru",
-    lessonClozeEmptySlot: "Wybierz słowo",
-    lessonClozeGapEmpty: "luka {n}, pusta",
-    lessonClozeGapFilled: "luka {n}: {word}",
-    lessonClozeChooseSlot: "Luka {n}: wybierz słowo",
-    lessonClozeRemove: "Luka {n}: {word}. Dotknij, aby wyjąć słowo",
     lessonClozePlace: "Wstaw {word} do luki {n}",
-    lessonClozeActiveHint: "Które słowo pasuje do luki {n}?",
+    lessonClozeGapPrefix: "Luka {n}:",
+    lessonClozeGapEmptyLabel: "Luka {n}: pusta, wybierz słowo",
+    lessonClozeChangeHint: "Dotknij luki, żeby zmienić słowo.",
     // Luka (lesson_gap): pole w miejscu luki i podpowiedź bezokolicznika.
     lessonGapInput: "Wpisz brakujące słowo",
     lessonGapHint: "Podpowiedź: {hint}",

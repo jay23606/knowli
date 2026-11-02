@@ -2678,7 +2678,7 @@
 }
 
 .kid-lesson-match__pool,
-.kid-lesson-group__pool {
+.kid-lesson-assign__pool {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -2751,10 +2751,11 @@
   }
 }
 
-/* „Uzupełnij tekst” (design szkoły §13.5): luka w tekście to znacznik z numerem
-   (nie przycisk), miejsca luk i bank pod tekstem w jednej kolumnie — kontener
-   materiału ma ok. 530 px na telefonie i do ok. 690 px od szerokości expanded
-   (kolumna 720 px bez marginesów), a bank ma stać tuż pod miejscami. */
+/* „Uzupełnij tekst” (design szkoły §13.5; UX: spec 2026-11-02-lesson-cloze-match-ux
+   §4): luka w zdaniu to przycisk (`kid-lesson-block`), jedyny cel stukania; bank
+   słów stoi pod tekstem w jednej kolumnie (kontener materiału ma ok. 530 px na
+   telefonie i do ok. 690 px od szerokości expanded), a w niskim landscape obok,
+   przyklejony. */
 .kid-lesson-cloze {
   width: 100%;
   display: grid;
@@ -2771,58 +2772,79 @@
 }
 
 /* Wiersz ok. 60 znaków jak na karcie (`--kid-reading-measure`); węższy blok stoi na
-   środku kolumny nad miejscami luk i bankiem słów, wiersze od początku. Selektor
-   z `.kid-ui`, bo `.kid-theme p { margin: 0 }` ma wyższą specyficzność niż sama klasa. */
+   środku kolumny nad bankiem słów, wiersze od początku. Selektor z `.kid-ui`, bo
+   `.kid-theme p { margin: 0 }` ma wyższą specyficzność niż sama klasa. Luka jest
+   `inline-flex` i sama powiększa swój wiersz, więc interlinia 2 tylko wyrównuje
+   odstęp wierszy z luką i bez niej. */
 .kid-ui .kid-lesson-cloze__text {
   margin-block: 0;
   margin-inline: auto;
   inline-size: 100%;
   max-inline-size: var(--kid-reading-measure);
   font-size: var(--kid-type-title-size);
-  line-height: 1.6;
+  line-height: 2;
   overflow-wrap: anywhere;
 }
 
-.kid-lesson-cloze__gap {
-  display: inline;
-  padding: 0 4px;
+/* Reguły luki po `.kid-ui .kid-lesson-block` (jego `overflow-wrap: anywhere`
+   ustępuje `break-word`) i na równej specyficzności z `…:active`, który ustępuje
+   miejscem, bo stany luk są później w pliku. */
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap {
+  display: inline-flex;
+  vertical-align: middle;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  min-inline-size: 4.5em;
+  max-inline-size: 100%;
+  margin-inline: 2px;
+  padding: 4px 12px;
+  font: inherit;
+  font-weight: var(--kid-type-answer-weight);
+  line-height: 1.2;
+  overflow-wrap: break-word;
+  text-align: center;
+}
+
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap--empty {
   border-bottom: 2px dashed var(--md-sys-color-outline);
-  font-weight: var(--kid-type-title-weight);
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
+  background: var(--md-sys-color-surface-container);
 }
 
-.kid-lesson-cloze__gap--filled {
-  border-bottom-style: solid;
-  color: var(--md-sys-color-primary);
-}
-
-.kid-lesson-cloze__gap--active {
-  border-bottom-color: var(--kid-accent);
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap--filled {
+  border-color: var(--md-sys-color-primary);
   background: var(--md-sys-color-secondary-container);
   color: var(--md-sys-color-on-secondary-container);
 }
 
-.kid-lesson-cloze__gap-number {
-  margin-inline-end: 4px;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--kid-type-label-xs-size);
-  font-weight: var(--kid-type-label-weight);
-  vertical-align: super;
+/* Aktywna luka (wspólny język stanów, §3): wypełniona `primary`, pełna obwódka;
+   `:active` nie zmienia tła pod tekstem `on-primary`. */
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap--active,
+.kid-ui .kid-lesson-block.kid-lesson-cloze__gap--active:active {
+  border: 1px solid var(--md-sys-color-primary);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
 }
 
-.kid-lesson-cloze__slots {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.kid-lesson-cloze__gap-mark {
+  color: var(--md-sys-color-on-primary);
 }
 
-.kid-lesson-cloze__slot-row {
-  display: flex;
-  min-width: 0;
+/* Wiersz podpowiedzi stoi zawsze (pusty też), więc tekst nie zmienia wysokości treści. */
+.kid-lesson-cloze__hint {
+  min-height: 1.5em;
+}
+
+@media (max-height: 479px) and (min-width: 600px) {
+  .kid-lesson-cloze {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    align-items: start;
+  }
+
+  .kid-lesson-cloze__bank {
+    position: sticky;
+    top: 0;
+  }
 }
 
 /* Luka: zdanie z polem edycji dokładnie w miejscu luki. */

@@ -1,18 +1,20 @@
 import { Fragment, useRef, useState } from "react";
 import { messages, type LessonItem } from "@learning/contracts";
+import { LessonBlockButton } from "../../components/LessonBlockButton";
 import { format } from "../../format";
 import { ExerciseFrame } from "../ExerciseFrame";
 import { useRetryReset } from "../useRetryReset";
 import type { ExerciseProps } from "../types";
-import { AssignmentCheckButton, AssignmentPool, AssignmentSlot } from "./AssignmentPool";
+import { AssignmentCheckButton, AssignmentPool } from "./AssignmentPool";
 import { matchAssignments, matchComplete, matchPool, matchState, placeRight, rightOf, selectSlot } from "./assignment-state";
 
 /**
- * „Uzupełnij tekst” (`lesson_cloze`, design szkoły §13.5): luki w tekście są
- * tylko znacznikami (numer i wstawione słowo) — cele ≥48 px w środku zdania
- * rozsadzałyby wiersze na 320 px. Dziecko stuka miejsce luki pod tekstem
- * (domyślnie pierwsze puste), potem słowo z banku. Stan to reguły „Połącz
- * w pary”: luki = lewa kolumna, słowa = prawa.
+ * „Uzupełnij tekst” (`lesson_cloze`, design szkoły §13.5; UX: spec
+ * 2026-11-02-lesson-cloze-match-ux §4): luka w zdaniu jest przyciskiem i jedynym
+ * celem stukania — dziecko dotyka luki (domyślnie aktywna jest pierwsza pusta),
+ * potem słowa z banku pod tekstem. Stan to reguły „Połącz w pary”: luki = lewa
+ * kolumna, słowa = prawa. Nazwa dostępna luki pochodzi z treści (ukryty polski
+ * przedrostek + słowo w `lang` materiału), bez `aria-label`.
  */
 export function LessonClozeView({ task, busy, dock, handlers }: ExerciseProps) {
   const prompt = task.prompt.kind === "lesson_cloze" ? task.prompt : null;
@@ -29,6 +31,7 @@ export function LessonClozeView({ task, busy, dock, handlers }: ExerciseProps) {
   const pool = matchPool(state);
   const numberOf = new Map(gaps.map((gap, index) => [gap.id, index + 1] as const));
   const activeNumber = state.active === null ? null : numberOf.get(state.active) ?? null;
+  const showChangeHint = complete && pool.length > 0 && !disabled;
 
   return (
     <ExerciseFrame
@@ -48,57 +51,35 @@ export function LessonClozeView({ task, busy, dock, handlers }: ExerciseProps) {
                 const word = rightOf(state, segment.gapId);
                 const active = state.active === segment.gapId;
                 return (
-                  <span
+                  <LessonBlockButton
                     key={segment.gapId}
-                    className={`kid-lesson-cloze__gap${word ? " kid-lesson-cloze__gap--filled" : ""}${active ? " kid-lesson-cloze__gap--active" : ""}`}
+                    type="button"
+                    className={`kid-lesson-block kid-lesson-cloze__gap ${word ? "kid-lesson-cloze__gap--filled" : "kid-lesson-cloze__gap--empty"}${active ? " kid-lesson-cloze__gap--active" : ""}`}
                     data-testid="kid-lesson-cloze-gap"
+                    aria-pressed={active}
+                    disabled={disabled}
+                    onClick={() => { setState((current) => selectSlot(current, segment.gapId)); handlers.onEdit(); }}
                   >
-                    <span className="kid-visually-hidden">
-                      {word ? format(messages.kid.lessonClozeGapFilled, { n, word: word.text }) : format(messages.kid.lessonClozeGapEmpty, { n })}
-                    </span>
-                    <span aria-hidden="true" lang={prompt.contentLocale}>
-                      <span className="kid-lesson-cloze__gap-number">{n}</span>
-                      {word ? word.text : "…"}
-                    </span>
-                  </span>
+                    {word ? (
+                      <>
+                        <span className="kid-visually-hidden">{format(messages.kid.lessonClozeGapPrefix, { n })} </span>
+                        <span lang={prompt.contentLocale}>{word.text}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="kid-visually-hidden">{format(messages.kid.lessonClozeGapEmptyLabel, { n })}</span>
+                        {active && <span className="kid-lesson-cloze__gap-mark" aria-hidden="true">?</span>}
+                      </>
+                    )}
+                  </LessonBlockButton>
                 );
               })}
             </p>
-            <ul className="kid-lesson-cloze__slots" aria-label={messages.kid.lessonClozeGaps}>
-              {gaps.map((gap, index) => {
-                const n = index + 1;
-                const word = rightOf(state, gap.id);
-                const active = state.active === gap.id;
-                return (
-                  <li key={gap.id} className="kid-lesson-cloze__slot-row">
-                    <AssignmentSlot
-                      filled={word !== null}
-                      active={active}
-                      disabled={disabled}
-                      testId="kid-lesson-cloze-slot"
-                      lang={word ? prompt.contentLocale : undefined}
-                      label={word
-                        ? format(messages.kid.lessonClozeRemove, { n, word: word.text })
-                        : format(messages.kid.lessonClozeChooseSlot, { n })}
-                      onSelect={() => { setState((current) => selectSlot(current, gap.id)); handlers.onEdit(); }}
-                    >
-                      <span className="kid-lesson-cloze__gap-number" aria-hidden="true">{n}</span>
-                      {word ? word.text : messages.kid.lessonClozeEmptySlot}
-                    </AssignmentSlot>
-                  </li>
-                );
-              })}
-            </ul>
           </div>
           <div className="kid-lesson-cloze__bank">
-            {activeNumber !== null && pool.length > 0 && (
-              <p className="kid-hint" data-testid="kid-lesson-cloze-hint" aria-live="polite">
-                {format(messages.kid.lessonClozeActiveHint, { n: activeNumber })}
-              </p>
-            )}
             <AssignmentPool
               items={pool}
-              className="kid-lesson-match__pool"
+              className="kid-lesson-assign__pool kid-lesson-cloze__pool"
               testId="kid-lesson-cloze-pool"
               optionTestId="kid-lesson-cloze-option"
               label={messages.kid.lessonClozePool}
@@ -107,6 +88,9 @@ export function LessonClozeView({ task, busy, dock, handlers }: ExerciseProps) {
               labelOf={(item) => (activeNumber !== null ? format(messages.kid.lessonClozePlace, { n: activeNumber, word: item.text }) : item.text)}
               onPick={(itemId) => { setState((current) => placeRight(current, itemId)); handlers.onEdit(); }}
             />
+            <p className="kid-hint kid-lesson-cloze__hint" data-testid="kid-lesson-cloze-hint" aria-live="polite">
+              {showChangeHint ? messages.kid.lessonClozeChangeHint : ""}
+            </p>
           </div>
         </div>
       )}

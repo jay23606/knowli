@@ -85,7 +85,7 @@ export function LessonGroupView({ task, busy, dock, handlers }: ExerciseProps) {
           )}
           <AssignmentPool
             items={pool}
-            className="kid-lesson-group__pool"
+            className="kid-lesson-assign__pool"
             testId="kid-lesson-group-pool"
             optionTestId="kid-lesson-group-item"
             label={messages.kid.lessonGroupPool}
