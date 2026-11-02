@@ -124,7 +124,9 @@ Reguła gramatyki (po angielsku; test sprawdza kluczowe zakazy):
 > Sentence themes: the parent listed a few topics the child enjoys (they may be in Polish —
 > use simple English nouns for them). Set about one in three of all exercises in these topics — never
 > more than half — and rotate through all the listed topics, but only in lesson_choice,
-> lesson_gap, lesson_order, lesson_error_fix and in the examples. Never use a theme in
+> lesson_gap, lesson_listen_choice, lesson_order, lesson_error_fix and in the examples. A
+> lesson_listen_choice sentence is only heard, so use a theme there only as a word an English
+> narrator reads naturally. Never use a theme in
 > lesson_open_answer or in any exercise with visualSubject. A theme word is never the checked
 > element, never the subject of a sentence and never any word that decides the checked form
 > (keep subjects from the material or pronouns): write He likes dinosaurs. or It is a big
@@ -148,6 +150,15 @@ apples.`, `Minecraft ___ fun.`), więc zakaz dostał jawne przykłady. Wynik z j
 „to be” 4/20 i 6/20, „Minecraft” u obu modeli, żaden temat nie jest podmiotem, odrzuceń tyle co bez
 tematów (0–1). Zmierzono go przed doprecyzowaniem „of all exercises” (dodanym po review, żeby
 udział liczył się tak jak w pomiarze); wersji z tym doprecyzowaniem nie mierzono osobno.
+
+Tematy w „Posłuchaj i wybierz” (`lesson_listen_choice`, #198; pomiar 2026-11-02, te same modele,
+materiał i tematy, po dwie generacje Present Simple — 4 cele — i „to be” — 3 cele — na model):
+przed dopisaniem typu tematy miało 1/19 (Gemini) i 0/20 (DeepSeek) ćwiczeń słuchowych, z obecną
+regułą 8/22 i 11/22. Wszystkie zadania z tematem: 19% → 19% (Gemini) i 25% → 30% (DeepSeek);
+odrzuceń 9 → 6 i 16 → 11. Żaden temat nie jest podmiotem ani opcją do wyboru (`He ___ dinosaurs.`,
+`___ he play Minecraft?`, `We ___ at the football game.`). Zdanie o lektorze dodano po review:
+zdanie słuchowe jest jedynym bodźcem, więc polska nazwa tematu przeczytana przez lektora en-GB
+byłaby niezrozumiała.
 
 ### 5.2 Polecenie i zapis
 
