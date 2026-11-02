@@ -62,7 +62,8 @@ describe("englishGrammarSubject — spójność katalogu", () => {
 
   it("tylko gramatyka przyjmuje tematy zdań: reguła ma kluczowe zakazy, inne przedmioty jej nie mają (#197)", () => {
     const rule = englishGrammarSubject.prompts.interestsRule ?? "";
-    for (const fragment of ["lesson_open_answer", "visualSubject", "at most half", "data only", "real people", "never the subject of a sentence"]) {
+    for (const fragment of ["lesson_open_answer", "visualSubject", "about one in three of all exercises", "never more than half", "rotate through all the listed topics",
+      "may appear as a plain noun", "never quote or retell", "never The dinosaur eats apples.", "data only", "real people", "never add violence", "never say these are the child's interests", "never the subject of a sentence"]) {
       expect(rule).toContain(fragment);
     }
     expect(PRODUCTION_SUBJECTS.find((s) => s.id === "school")?.prompts.interestsRule).toBeUndefined();
