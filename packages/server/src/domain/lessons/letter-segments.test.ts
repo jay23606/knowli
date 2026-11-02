@@ -71,6 +71,44 @@ describe("letterSegments — zaznaczenie liter w feedbacku lekcji", () => {
     expect(result.correct).toContainEqual({ text: "e", state: "pill" });
   });
 
+  it("słowo porównuje się ze słowem z tego samego miejsca zdania, nie z najbliższym gdziekolwiek", () => {
+    // Regresja z przeglądu: „go” dawało zaznaczenie w „to”, „has” — w „hat”.
+    const go = letterSegments([{ text: "She ", state: "plain" }, { text: "go", state: "pill" }, { text: " to school", state: "plain" }], "She goes to school");
+    expect(go.answer).toEqual([{ text: "She ", state: "plain" }, { text: "go", state: "pill" }, { text: " to school", state: "plain" }]);
+    expect(go.correct).toEqual([{ text: "She go", state: "plain" }, { text: "es", state: "pill" }, { text: " to school", state: "plain" }]);
+
+    const has = letterSegments([{ text: "I ", state: "plain" }, { text: "has", state: "pill" }, { text: " a hat", state: "plain" }], "I have a hat");
+    expect(has.answer).toEqual([{ text: "I ha", state: "plain" }, { text: "s", state: "pill" }, { text: " a hat", state: "plain" }]);
+    expect(has.correct).toEqual([{ text: "I ha", state: "plain" }, { text: "ve", state: "pill" }, { text: " a hat", state: "plain" }]);
+
+    // Remis odległości rozstrzyga miejsce w zdaniu, nie kolejność słów.
+    const tie = letterSegments([{ text: "he can hit the ", state: "plain" }, { text: "cab", state: "pill" }], "he can hit the cap");
+    expect(tie.correct).toEqual([{ text: "he can hit the ca", state: "plain" }, { text: "p", state: "pill" }]);
+  });
+
+  it("zaznaczenie części słowa i odpowiedź bez pary słów zostają w całości", () => {
+    const partial = letterSegments([{ text: "He ", state: "plain" }, { text: "play", state: "pill" }, { text: "s football", state: "plain" }], "He plays football");
+    expect(partial.correct).toBeNull();
+    expect(partial.answer).toEqual([{ text: "He ", state: "plain" }, { text: "play", state: "pill" }, { text: "s football", state: "plain" }]);
+  });
+
+  it("zapis spoza NFC nie dostaje zaznaczenia samego akcentu", () => {
+    const result = letterSegments([{ text: "cafe", state: "pill" }], "café");
+    expect(result.correct).toBeNull();
+    expect(result.answer).toEqual([{ text: "cafe", state: "pill" }]);
+  });
+
+  it("ponad limit segmentów Kid DTO obie strony zostają bez zmian", () => {
+    const words = Array.from({ length: 17 }, (_, index) => `wor${String.fromCharCode(97 + index)}d`);
+    const answer = words.flatMap((word, index) => [
+      ...(index > 0 ? [{ text: " ", state: "plain" as const }] : []),
+      { text: word.replace("d", "x"), state: "pill" as const },
+    ]);
+    const result = letterSegments(answer, words.join(" "));
+    expect(result.answer).toEqual(answer);
+    expect(result.correct).toBeNull();
+  });
+
   it("każde słowo poprawnej odpowiedzi dopasowuje się najwyżej raz", () => {
     const result = letterSegments([{ text: "cat", state: "pill" }, { text: " and ", state: "plain" }, { text: "cat", state: "pill" }], "car and car");
     expect(result.correct).toEqual([

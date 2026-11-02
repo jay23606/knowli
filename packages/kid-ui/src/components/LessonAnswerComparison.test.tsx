@@ -44,8 +44,10 @@ describe("LessonAnswerComparison", () => {
     expect(screen.getByTestId("kid-lesson-compare").dataset.layout).toBe("inline");
     const given = screen.getByTestId("kid-lesson-answer-segments");
     const correct = screen.getByTestId("kid-lesson-correct");
-    expect(given.textContent).toBe("hauseboat");
-    expect(correct.textContent).toBe("houseboat");
+    // Czytnik ekranu dostaje całe słowo naraz; kawałki z zaznaczeniem są ukryte przed nim.
+    expect(given.querySelector(".kid-visually-hidden")?.textContent).toBe("hauseboat");
+    expect(correct.querySelector(".kid-visually-hidden")?.textContent).toBe("houseboat");
+    expect(given.querySelector("[aria-hidden='true']")?.textContent).toBe("hauseboat");
     expect([...given.querySelectorAll("[data-testid='kid-spelling-pill']")].map((pill) => pill.textContent)).toEqual(["a"]);
     expect([...correct.querySelectorAll("[data-testid='kid-spelling-pill']")].map((pill) => pill.textContent)).toEqual(["o"]);
     // Słowo to jeden element — nie łamie się między literami.
@@ -60,7 +62,27 @@ describe("LessonAnswerComparison", () => {
     />);
     expect(screen.getByTestId("kid-lesson-compare").dataset.layout).toBe("stacked");
     const correct = screen.getByTestId("kid-lesson-correct");
-    expect(correct.textContent).toBe("she plays football");
+    expect(correct.querySelector(".kid-visually-hidden")?.textContent).toBe("she plays football");
     expect(correct.querySelectorAll("[data-testid='kid-spelling-pill']")).toHaveLength(0);
+  });
+
+  it("długie pojedyncze słowo stoi pod etykietą na całą szerokość", () => {
+    renderKid(<LessonAnswerComparison
+      answerSegments={[{ text: "unfortunatly", state: "pill" }]}
+      correctText="unfortunately"
+      correctSegments={null}
+    />);
+    expect(screen.getByTestId("kid-lesson-compare").dataset.layout).toBe("stacked");
+  });
+
+  it("zaznaczenie kilku słów (lekcja szkolna) to zaznaczenie każdego słowa, a czytnik dostaje cały tekst", () => {
+    renderKid(<LessonAnswerComparison
+      answerSegments={[{ text: "Roślina robi cukry", state: "plain" }, { text: " i jest zielona.", state: "pill" }]}
+      correctText={null}
+      correctSegments={null}
+    />);
+    const given = screen.getByTestId("kid-lesson-answer-segments");
+    expect([...given.querySelectorAll("[data-testid='kid-spelling-pill']")].map((pill) => pill.textContent)).toEqual(["i", "jest", "zielona."]);
+    expect(given.querySelector(".kid-visually-hidden")?.textContent).toBe("Roślina robi cukry i jest zielona.");
   });
 });

@@ -3187,6 +3187,13 @@
   max-width: 100%;
 }
 
+/* Słowo szersze od całej karty (np. wpisany ciąg liter) łamie się w ostateczności
+   w środku zamiast wychodzić poza kartę; kolumna `stacked` ma stałą szerokość. */
+.kid-lesson-compare[data-layout="stacked"] .kid-lesson-word > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .kid-lesson-compare .kid-spelling-pill {
   padding: 0 0.08em;
   border-radius: var(--kid-shape-s);

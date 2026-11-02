@@ -296,9 +296,15 @@
    Przypięty wiersz wyjaśnienia (`--kid-feedback-pinned-height`, też z ExerciseFrame,
    tylko w panelu-nakładce) zmniejsza dotychczasowy limit o swoją wysokość, a limit
    z wolnego miejsca liczy go już jako resztę panelu. Tak samo wiersz przycisków
-   wąskiego doku (`--kid-feedback-toolbar-height`, makieta 2026-11-02). */
+   wąskiego doku (`--kid-feedback-toolbar-height`, makieta 2026-11-02) — ale
+   nie poniżej 96 px (dwa wiersze wyniku), gdy dotychczasowy limit był wyższy:
+   niskie okno z wyjaśnieniem nie zostawia karty bez treści. */
 .content :global(.kid-answer-feedback) {
-  max-height: max(calc(min(calc(36 * var(--kid-vh)), 300px) - var(--kid-feedback-pinned-height, 0px) - var(--kid-feedback-toolbar-height, 0px)), var(--kid-feedback-card-max, 0px));
+  max-height: max(
+    calc(min(calc(36 * var(--kid-vh)), 300px) - var(--kid-feedback-pinned-height, 0px) - var(--kid-feedback-toolbar-height, 0px)),
+    min(calc(min(calc(36 * var(--kid-vh)), 300px) - var(--kid-feedback-pinned-height, 0px)), 96px),
+    var(--kid-feedback-card-max, 0px)
+  );
 }
 
 .content :global(.kid-feedback-content) {

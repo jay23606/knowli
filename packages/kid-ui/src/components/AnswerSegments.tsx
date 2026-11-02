@@ -113,11 +113,20 @@ export function answerTokens(segments: readonly SpellingSegment[]): AnswerToken[
   return tokens;
 }
 
+/**
+ * Jedna odpowiedź: czytnik ekranu dostaje cały tekst naraz (z etykietą
+ * fragmentu „nie na temat”), a widok — słowa z zaznaczonymi literami, których
+ * kawałki czytnik czytałby osobno („h / o / useboat”).
+ */
 function AnswerLine({ segments, variant }: { segments: readonly SpellingSegment[]; variant: "given" | "expected" }): ReactElement {
   let pill = 0;
+  const spoken = segments
+    .map((segment) => segment.state === "offtopic" ? `${segment.text} (${messages.kid.lessonSegmentOffTopic})` : segment.text)
+    .join("");
   return (
     <>
-      {answerTokens(segments).map((token, index) => {
+      <span className="kid-visually-hidden">{spoken}</span>
+      <span aria-hidden="true">{answerTokens(segments).map((token, index) => {
         if (token.kind === "space") return <span key={index}>{token.text}</span>;
         if (token.kind === "offtopic") {
           return <SpellingPill key={index} segment={token.segment} index={pill++} variant={variant} animation="pop" />;
@@ -129,16 +138,20 @@ function AnswerLine({ segments, variant }: { segments: readonly SpellingSegment[
               : <SpellingPill key={partIndex} segment={part} index={pill++} variant={variant} animation="pop" />)}
           </span>
         );
-      })}
+      })}</span>
     </>
   );
 }
 
+/** Najdłuższe słowo, przy którym etykiety stoją z boku odpowiedzi. */
+const INLINE_MAX_LENGTH = 10;
+
 /**
  * Feedback lekcji: odpowiedź dziecka i poprawna odpowiedź z zaznaczonymi
- * literami (makieta 2026-11-02). Krótkie odpowiedzi (po jednym słowie) stoją
- * w dwóch wierszach z etykietami z boku, dłuższe — pod etykietami na całą
- * szerokość. Tekst łamie się tylko między słowami. Kolor nie jest jedynym
+ * literami (makieta 2026-11-02). Krótkie odpowiedzi (jedno słowo do
+ * `INLINE_MAX_LENGTH` znaków) stoją w dwóch wierszach z etykietami z boku,
+ * dłuższe — pod etykietami na całą szerokość. Tekst łamie się między słowami,
+ * a słowo szersze od karty — wyjątkowo w środku. Kolor nie jest jedynym
  * nośnikiem: zaznaczenie ma obwódkę i podkreślenie, a wiersz etykietę.
  */
 export function LessonAnswerComparison({ answerSegments, correctText, correctSegments }: {
@@ -148,9 +161,12 @@ export function LessonAnswerComparison({ answerSegments, correctText, correctSeg
 }): ReactElement | null {
   const given = answerSegments !== null && answerSegments.length > 0 ? answerSegments : null;
   if (given === null && correctText === null) return null;
-  const singleWord = (text: string) => !/\s/u.test(text.trim());
-  const inline = (given === null || singleWord(given.map((segment) => segment.text).join(""))) &&
-    (correctText === null || singleWord(correctText));
+  // Etykiety z boku tylko przy krótkim pojedynczym słowie: kolumna odpowiedzi ma
+  // szerokość słowa, więc dłuższe stoi pod etykietą na całą szerokość karty
+  // (320 px okna mieści obok etykiety ok. 12 znaków w tym rozmiarze).
+  const shortWord = (text: string) => !/\s/u.test(text.trim()) && [...text.trim()].length <= INLINE_MAX_LENGTH;
+  const inline = (given === null || shortWord(given.map((segment) => segment.text).join(""))) &&
+    (correctText === null || shortWord(correctText));
   return (
     <div className="kid-lesson-compare" data-layout={inline ? "inline" : "stacked"} data-testid="kid-lesson-compare">
       {given !== null && (

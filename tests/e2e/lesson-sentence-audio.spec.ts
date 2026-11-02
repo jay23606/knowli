@@ -656,8 +656,11 @@ async function expectSentenceGroupLayout(page: Page, label: string): Promise<voi
     // Karta ma całą szerokość treści doku (padding 10 px z każdej strony).
     expect(card.width, `toolbar: card spans the dock: ${details}`).toBeGreaterThanOrEqual((contentWidth - 1) * zoom);
     expect(card.x, `toolbar: card starts at the dock padding: ${details}`).toBeLessThanOrEqual(dockBox.x + 10 * zoom + 1);
+    expect(card.x + card.width, `toolbar: card ends inside the dock: ${details}`).toBeLessThanOrEqual(dockBox.x + dockBox.width + 1);
   } else {
     expect(card.y, `row: card beside the buttons: ${details}`).toBeLessThan(sentence.y + sentence.height);
+    expect(card.x + card.width, `row: card left of the buttons: ${details}`).toBeLessThanOrEqual(sentence.x + 1);
+    expect(Math.abs(guidance.y - sentence.y), `row: guidance beside the buttons: ${details}`).toBeLessThanOrEqual(1);
   }
 }
 
