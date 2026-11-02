@@ -1,7 +1,8 @@
 # „Uzupełnij tekst” i „Połącz w pary” — naturalne stukanie w Kid UI — design
 
-Data: 2026-11-02. Status: projekt do akceptacji (wersja 2 — po recenzji trzech krytyków: mechanizm,
-UX dziecka na urządzeniach, testy i regresje).
+Data: 2026-11-02. Status: projekt zaakceptowany (wersja 3 — po recenzji trzech krytyków specu: mechanizm,
+UX dziecka na urządzeniach, testy i regresje; poprawki z recenzji planu: zarezerwowany wiersz podpowiedzi luk,
+przyklejony bank w niskim landscape, klasa pustej luki, podłoga lewej kolumny `min-content`).
 Powiązane: `docs/architecture.md` §19 (punkty „Pary i grupy (Etap 7)” i „Uzupełnij tekst (Etap 10)”),
 `docs/superpowers/specs/2026-10-30-kid-ui-large-screens-design.md` (skala `zoom`, §4.4),
 `docs/superpowers/specs/2026-10-31-kid-ui-large-screens-followups-design.md` (`--kid-reading-measure`).
@@ -73,7 +74,9 @@ literałów koloru.
   tekstem. „Sprawdź” aktywne przy komplecie.
 - Gdy wszystkie luki są wypełnione, bank jest wyłączony (brak aktywnej luki), a pod bankiem stoi
   podpowiedź `lessonClozeChangeHint` („Dotknij luki, żeby zmienić słowo.”, `kid-lesson-cloze-hint`,
-  `aria-live="polite"`) — o ile w banku zostały słowa. W innym stanie podpowiedzi nie ma.
+  `aria-live="polite"`) — o ile w banku zostały słowa i widok nie jest wyłączony (dok, `busy`).
+  Wiersz podpowiedzi jest zawsze w DOM i ma zarezerwowaną wysokość (jak w parach, §5.2), więc
+  pojawienie się i zniknięcie tekstu (np. przy „Sprawdź”) nie zmienia wysokości treści.
 - Znikają: lista `kid-lesson-cloze__slots` z `AssignmentSlot` (`kid-lesson-cloze-slot`), numery luk
   (`kid-lesson-cloze__gap-number`) i podpowiedź „Które słowo pasuje do luki N?”.
 
@@ -83,15 +86,18 @@ literałów koloru.
   i pionowy padding (nie dziedziczy interlinii akapitu), `min-inline-size` ok. 4,5 em — **także po
   wypełnieniu**, żeby krótkie słowo nie przesuwało reszty tekstu. Długie wyrażenie zawija się w środku
   przycisku (`max-inline-size: 100%`, `overflow-wrap: break-word`), nie wychodzi poza kolumnę.
-- Stany wg §3: pusta = wolny z dolną obwódką przerywaną `outline`, aktywna = aktywny z „?”, wypełniona =
-  gotowy.
+  Krój i rozmiar luki dziedziczy z tekstu (`font: inherit`), żeby wstawione słowo nie było mniejsze
+  od zdania.
+- Stany wg §3: pusta (`kid-lesson-cloze__gap--empty`) = wolny z dolną obwódką 2 px przerywaną
+  `outline` (tylko w tym stanie), aktywna = aktywny z „?”, wypełniona = gotowy.
 - Tekst `kid-lesson-cloze__text`: przycisk `inline-flex` sam powiększa swój wiersz, więc wiersze nie
   nachodzą na siebie przy żadnej interlinii. `line-height` akapitu podnosimy tylko po to, żeby wiersze
   z luką i bez luki miały zbliżony odstęp — najwyżej 2,0 (wartość z pomiaru w E2E). Zostaje
   `max-inline-size: var(--kid-reading-measure)` i wyśrodkowanie bloku.
 - **Niski landscape** (wysokość < 480 i szerokość ≥ 600): tekst i bank stoją obok siebie
-  (`kid-lesson-cloze__main` | `kid-lesson-cloze__bank`, ok. 3fr/2fr), żeby aktywna luka i bank były
-  widoczne jednocześnie. W pozostałych klasach bank stoi pod tekstem.
+  (`kid-lesson-cloze__main` | `kid-lesson-cloze__bank`, ok. 3fr/2fr), a bank jest przyklejony
+  (`position: sticky; top: 0`), żeby aktywna luka i bank były widoczne jednocześnie także po
+  przewinięciu tekstu. W pozostałych klasach bank stoi pod tekstem.
 
 ### 4.3 Dostępność i `lang`
 
@@ -137,9 +143,10 @@ nieokreślonych, a pomyłkowe stuknięcie niczego nie psuje.
 ### 5.3 Układ
 
 - Kontener `kid-lesson-pair` (test id `kid-lesson-match`, `position: relative`): siatka
-  `minmax(min(7.5em, 42%), 2fr) var(--kid-pair-gutter) minmax(0, 3fr)` — lewa kolumna węższa, ale
-  z podłogą, żeby krótkie pojęcia nie łamały się w środku; prawa szersza (opisy do 100 znaków).
-  Środkowa kolumna to pusty pas na linie.
+  `minmax(min-content, 2fr) var(--kid-pair-gutter) minmax(0, 3fr)` — lewa kolumna węższa, ale
+  nie węższa od najdłuższego słowa (przy `overflow-wrap: break-word` `min-content` to najdłuższe
+  słowo), więc pojęcia nie łamią się w środku; prawa szersza (opisy do 100 znaków). Środkowa kolumna
+  to pusty pas na linie. Podpowiedź (§5.2) stoi poza siatką, w zewnętrznym opakowaniu widoku.
 - `--kid-pair-gutter`: 48 px w compact (<600), 72 px od medium. Wartość bazowa w bloku tokenów,
   nadpisanie w osobnej regule `@media` poza blokiem (wzorzec istniejących tokenów nadpisywanych
   w media queries; test tokenów tnie blok na pierwszym `\n}`).
@@ -157,7 +164,8 @@ nieokreślonych, a pomyłkowe stuknięcie niczego nie psuje.
 
 - `PairLines.tsx` w `packages/kid-ui/src/exercises/lesson/`: jedna warstwa `<svg>` (`kid-lesson-match-lines`,
   `aria-hidden="true"`, `pointer-events: none`, `position: absolute; inset: 0`, `overflow: visible`)
-  w `kid-lesson-pair`, nad kafelkami.
+  jako **ostatnie** dziecko `kid-lesson-pair` (jego `useLayoutEffect` biegnie po podpięciu refów kafelków),
+  nad kafelkami.
 - Rysuje:
   - przy każdym kafelku kropkę (`kid-lesson-match-dot`, `data-side`, `data-item-id`) na środku krawędzi
     zwróconej do pasa: wolna — obwódka `outline`, wypełnienie tłem; w parze — wypełniona `primary`;
@@ -310,3 +318,5 @@ Brak odbioru na fizycznym urządzeniu raportujemy jawnie.
 - **Feedback po błędzie**: `correctText` z pięcioma długimi parami jest długi i przewija się w karcie
   wyniku; bez oceny per para dziecko nie widzi, która linia była zła. Przyjęte w tym zakresie.
 - **Interlinia tekstu z lukami** wydłuża tekst; dok sprawdzają istniejące przypadki docku.
+- **Opcje banku luk** zachowują polski `aria-label` („Wstaw {word} do luki {n}”) na przyciskach
+  z `lang={contentLocale}` — ten sam problem głosu co w §4.3, poza zakresem tej zmiany.
