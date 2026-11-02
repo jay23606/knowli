@@ -31,11 +31,10 @@ import {
   defaultPoolSize,
   type StageMix,
 } from "../../../domain/lessons/lesson-policy";
-import { materialCreationMode, stripListenChoiceExtras } from "../../../domain/lessons/material-creation";
-import { answersEquivalent, keywordsAnswer, MAX_TEXT_LENGTH, validatePool, withoutRedundantAcceptedVariants } from "../../../domain/lessons/pool-validation";
+import { materialCreationMode } from "../../../domain/lessons/material-creation";
+import { keywordsAnswer, MAX_TEXT_LENGTH, validatePool } from "../../../domain/lessons/pool-validation";
 import { outsideStagePath, stageOf } from "../../../domain/lessons/stages";
 import {
-  lessonExerciseIdentity,
   lessonExerciseStimulus,
   lessonExerciseStimulusRecord,
   lessonIdentityOptionsOf,
@@ -66,6 +65,7 @@ import { assertLessonGenerationFinalizationAllowed, LessonGenerationCancelledErr
 import { DEFAULT_LESSON_GENERATION_POLICY } from "./lesson-generation-policy";
 import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { committedRetryAfterSourceChange, lockSourceMaterialForCopy } from "../source-materials";
+import { acceptFreshLessonPool } from "./lesson-pool-acceptance";
 import { executeLessonStoryGeneration, queueLessonStoryRunTx } from "./lesson-story-generation";
 
 /**
@@ -1550,71 +1550,30 @@ export async function executeLessonGeneration(services: Services, runId: string,
   // wyjątek rozlicza run (failed/validation), nie zostawia go w stanie running.
   try {
     assertLessonGenerationFinalizationAllowed(runDeadlineAtMs, options.signal);
-    const wellShaped = rawExercises.filter(isWellShapedRawExercise);
-    const shapeRejected = rawExercises.length - wellShaped.length;
-    // Warianty acceptedAnswers redundantne wobec odpowiedzi kanonicznej (np.
-    // skrótowa forma przeczenia „to be” przy pełnej) porzucamy przy przyjęciu
-    // puli — bez tego walidacja fazy 1 odrzucałaby całe ćwiczenie za wpis
-    // nieznoszący informacji (odpowiedź kanoniczna jest akceptowana automatycznie).
-    let droppedAcceptedVariants = 0;
-    let droppedExplanations = 0;
-    const drafts = wellShaped
-      .map(toExerciseDraft)
-      .map((draft) => withoutVoiceToneUnlessAllowed(draft, subject))
-      .map((draft) => {
-        const sanitized = withoutInvalidExplanation(draft, subject);
-        if (sanitized !== draft) droppedExplanations += 1;
-        return sanitized;
-      })
-      .map(withoutEmptyOptionalArrays)
-      // Ćwiczenie słuchowe nie ma polecenia, podpowiedzi ani piktogramu: dodatek modelu usuwamy, nie odrzucamy ćwiczenia.
-      .map(stripListenChoiceExtras)
-      .map((draft) => (input.regenerate ? scopeFamiliesToRun(draft, runId) : draft))
-      .map((draft) => {
-        const sanitized = withoutRedundantAcceptedVariants(draft, subject.normalizer);
-        droppedAcceptedVariants += draft.acceptedAnswers.length - sanitized.acceptedAnswers.length;
-        return sanitized;
-      });
     if (!topic) {
       await markCurrentRun(services.db, "failed", "validation");
       return;
     }
-    // Czyszczenie świeżego wyjścia modelu hakiem przedmiotu (tylko generacja,
-    // także dogenerowanie): odrzucenia liczą się do rejectedCount i są zliczone
-    // po powodzie w rejectedReasons dla rodzica.
-    const refined = refineGeneratedDrafts(subject, drafts, input.material);
-    // Walidacja puli z materiałem (przedmiot: uziemienie cytatów, rodziny pytań)
-    // przed walidacją semantyczną — odrzucone ćwiczenia liczą się do rejectedCount.
-    const grounded = splitByPoolExtra(subject, stripParentAddedFlags(refined.kept), input.material);
     // Dogenerowanie dopisuje do szkicu: krzyżowa reguła ćwiczeń słuchowych widzi też ćwiczenia już w szkicu
     // (inaczej konflikt zdania z odpowiedzią tekstową wyszedłby dopiero przy publikacji).
     const existingDrafts = input.regenerate ? await existingDraftsOf(services.db, input.deckVersionId) : [];
-    const poolResult = validatePool(grounded.kept, subject, topic, { existingExercises: existingDrafts });
-    const valid = poolResult.valid;
-    const rejected = [...grounded.extraRejected, ...poolResult.rejected];
-    // Duplikaty wobec odpowiedzi już w puli: odrzucamy valid, których odpowiedź
-    // równa się istniejącej (dogenerowanie nie powiela odpowiedzi szkicu).
-    const existingSet = new Set(batches.flatMap((b) => b.existingAnswers));
-    const existingExerciseSet = new Set(batches.flatMap((b) => b.existingExercises).map((exercise) =>
-      JSON.stringify([exercise.objectiveId, exercise.exerciseType, exercise.stimulus]),
-    ));
-    const identityOptions = lessonIdentityOptionsOf(subject);
-    const deduplicated: LessonExerciseDraft[] = [];
-    let dupAgainstExisting = 0;
-    for (const ex of valid) {
-      const clash = subject.poolDeduplication === "exercise"
-        ? existingExerciseSet.has(lessonExerciseIdentity(ex, identityOptions))
-        : [...existingSet].some((a) => answersEquivalent(a, ex.answer, subject.normalizer));
-      if (clash) {
-        dupAgainstExisting += 1;
-      } else {
-        deduplicated.push(ex);
-      }
-    }
-    // Dodatek słuchowy: najwyżej przyznana liczba na cel, a ćwiczenia etapów nie ponad zamówione.
-    const capped = capListenChoiceOverflow(deduplicated, objectiveLimits);
-    const uniqueValid = capped.kept;
-    rejected.push(...capped.rejected);
+    const fresh = acceptFreshLessonPool({
+      rawExercises,
+      subject,
+      topic,
+      material: input.material,
+      familyScope: input.regenerate ? runId : null,
+      existingDrafts,
+      existingAnswers: new Set(batches.flatMap((b) => b.existingAnswers)),
+      existingExerciseIdentities: new Set(batches.flatMap((b) => b.existingExercises).map((exercise) =>
+        JSON.stringify([exercise.objectiveId, exercise.exerciseType, exercise.stimulus]),
+      )),
+      objectiveLimits,
+    });
+    const { shapeRejected, droppedAcceptedVariants, droppedExplanations, rejected } = fresh;
+    const refined = { rejectedCount: fresh.refineRejected, rejectedReasons: fresh.refinedReasons };
+    const dupAgainstExisting = fresh.duplicateCount;
+    const uniqueValid = fresh.accepted;
     const rejectedCount = shapeRejected + outOfScopeCount + refined.rejectedCount + rejected.length + dupAgainstExisting;
 
     console.log(
