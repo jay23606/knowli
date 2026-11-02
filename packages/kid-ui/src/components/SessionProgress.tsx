@@ -22,7 +22,7 @@ export const PEBBLE_LIMIT = 20;
  * the row hop once and drops a star from the last done pebble. Pebbles and
  * star are decorative (aria-hidden); the pill stays the accessible text.
  * Only transform and opacity move; a growing `total` just adds pebbles. */
-export function SessionProgress({ remaining, total = 0, done = 0, milestone = 0 }: {
+export function SessionProgress({ remaining, total = 0, done = 0, milestone = 0, closingStory = false }: {
   /** Label count, or null when the label is not shown yet. */
   remaining: number | null;
   /** Assessed tasks in the session, 0 while still unknown. */
@@ -31,6 +31,8 @@ export function SessionProgress({ remaining, total = 0, done = 0, milestone = 0 
   done?: number;
   /** Changes when a streak milestone is reached. */
   milestone?: number;
+  /** The session ends with a lesson story: the pill says "i historyjka!" instead of "i koniec!". */
+  closingStory?: boolean;
 }): ReactElement {
   const [scope, animate] = useAnimate<HTMLSpanElement>();
   const reduceMotion = useReducedMotion() === true;
@@ -112,7 +114,7 @@ export function SessionProgress({ remaining, total = 0, done = 0, milestone = 0 
           animate={kidProgressPopAnimate}
           transition={kidSpringGentle}
         >
-          {format(messages.kid.remaining, { n: remaining })}
+          {format(closingStory ? messages.kid.remainingStory : messages.kid.remaining, { n: remaining })}
         </m.span>
       )}
     </span>

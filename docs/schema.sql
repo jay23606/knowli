@@ -225,7 +225,7 @@ CREATE TABLE generation_runs (
   -- albo ponowiony ręcznie
   rejected_count integer CHECK (rejected_count IS NULL OR rejected_count >= 0),
   -- talia szkicu, którego uzgodnienie albo ręczna regeneracja zleciły zasób runu mediów
-  -- (spec 2026-11-02-llm-cost-tracking §3.2, migracja 0035); tylko informacyjne, NULL
+  -- (spec 2026-11-02-llm-cost-tracking §3.2, migracja 0036); tylko informacyjne, NULL
   -- dla runów deck/lesson, głosu UI i runów sprzed migracji
   origin_deck_id uuid REFERENCES decks(id) ON DELETE SET NULL,
   CHECK ((lease_token IS NULL) = (lease_until IS NULL)),
@@ -263,7 +263,7 @@ CREATE UNIQUE INDEX one_active_session_per_child
   ON learning_sessions(child_id) WHERE state = 'active';
 CREATE INDEX learning_sessions_child_time_idx ON learning_sessions(child_id, started_at DESC);
 
--- Dziennik płatnych wywołań usług AI (spec 2026-11-02-llm-cost-tracking §3.1, migracja 0035):
+-- Dziennik płatnych wywołań usług AI (spec 2026-11-02-llm-cost-tracking §3.1, migracja 0036):
 -- jeden wiersz to jedno wywołanie HTTP łącznie z ponowieniami. Bez treści, imion i wieku.
 -- Klucze obce zerują się przy usunięciu celu, więc historia kosztów przeżywa profil, sesję,
 -- run i talię.

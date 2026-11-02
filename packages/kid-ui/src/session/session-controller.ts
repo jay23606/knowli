@@ -129,6 +129,11 @@ export interface LearningScreen {
   listenStimulus?: { taskId: string; state: "pending" | "blocked" | "unavailable" | "open"; playing: boolean } | null;
   /** „Posłuchaj pytania” nie odtworzyło nagrania (komunikat w pasku statusu, nie w wierszu instrukcji). */
   questionAudioError?: boolean;
+  /**
+   * Historyjka (`lesson_story`), której nagranie gra właśnie samo (autoodtwarzanie po
+   * zamontowaniu panelu) — przycisk odsłuchu pokazuje wtedy pierścień; null = nic nie gra.
+   */
+  storyAudioPlaying?: string | null;
   /** Dyktowanie odpowiedzi lekcji; brak = zadanie bez dyktowania. */
   dictation?: DictationState | null;
 }
@@ -289,6 +294,10 @@ export class LearningSessionController {
   #autoStartBeep: (() => Promise<void>) | null = null;
   /** Zadanie, na którym auto-start już padł — raz na wyświetlenie zadania (SPEC §16). */
   #autoCaptureTaskId: string | null = null;
+  /** Historyjka, której nagranie już raz próbowało zagrać samo (zatrzask na `taskId`). */
+  #storyAutoPlayTaskId: string | null = null;
+  /** Generacja odtwarzania, która ustawiła `storyAudioPlaying`; null = nic nie gra. */
+  #storyPlayingGeneration: number | null = null;
   /** Sesja z otwartym potwierdzeniem „Koniec”: auto-start czeka na zamknięcie panelu. */
   #endConfirmSessionId: string | null = null;
   /** Otwarcie potwierdzenia „Koniec” unieważnia auto-start w toku, także po zamknięciu panelu. */
@@ -404,6 +413,8 @@ export class LearningSessionController {
     // Przerwane odtwarzanie bodźca nie odblokowuje opcji i nie zostawia pierścienia dźwięku.
     this.#clearListenTimers();
     this.#releaseListenPlaying(this.#listenPlayingGeneration);
+    // Autoodtwarzanie historyjki przerwane przez „Dalej” albo inne odtwarzanie gasi pierścień.
+    this.#releaseStoryPlaying(this.#storyPlayingGeneration);
     if (this.#guidance) this.#guidance.stop();
     else this.#media.player.stop();
     // Wskaźnik odczytu zdania gaśnie synchronicznie przy każdym innym
@@ -446,6 +457,14 @@ export class LearningSessionController {
     this.#listenPlayingGeneration = null;
     const stimulus = this.#learning()?.listenStimulus;
     if (stimulus?.playing) this.#setLearning({ listenStimulus: { ...stimulus, playing: false } });
+  }
+
+  /** Gasi `storyAudioPlaying`, jeśli ustawiła je ta generacja odtwarzania (nowsza zostaje nietknięta). */
+  #releaseStoryPlaying(generation: number | null): void {
+    if (generation === null || this.#storyPlayingGeneration !== generation) return;
+    this.#storyPlayingGeneration = null;
+    // Po teardown widok już odszedł — bez emisji stanu do słuchaczy.
+    if (!this.#disposed && (this.#learning()?.storyAudioPlaying ?? null) !== null) this.#setLearning({ storyAudioPlaying: null });
   }
 
   /** Start odtwarzania bodźca lub odczytu zdania zadania „Posłuchaj i wybierz” zapala pierścień. */
@@ -1015,6 +1034,7 @@ export class LearningSessionController {
         error: null,
         taskAudioError: null,
         questionAudioError: false,
+        storyAudioPlaying: null,
         // „Posłuchaj i wybierz”: opcje czekają na pierwszy odsłuch nowego zadania.
         listenStimulus: task.prompt.kind === "lesson_listen_choice" ? { taskId: task.taskId, state: "pending", playing: false } : null,
       };
@@ -1200,11 +1220,11 @@ export class LearningSessionController {
 
   async completePresentation(): Promise<void> {
     const screen = this.#learning();
-    if (!screen?.task || screen.busy || (screen.task.exerciseType !== "exposure" && screen.task.exerciseType !== "lesson_card")) return;
+    if (!screen?.task || screen.busy || (screen.task.exerciseType !== "exposure" && screen.task.exerciseType !== "lesson_card" && screen.task.exerciseType !== "lesson_story")) return;
     const epoch = this.#epoch;
     const sessionId = screen.session.sessionId;
     const taskId = screen.task.taskId;
-    // „Dalej” kończy odsłuch karty przed przejściem (design szkoły §12.4).
+    // „Dalej” kończy odsłuch karty i historyjki (także autoodtwarzanie) przed przejściem (design szkoły §12.4).
     this.#stopPlayback();
     this.#setLearning({ busy: true, transitioning: true, questionAudioError: false });
     this.#activity?.recordInteraction();
@@ -1842,6 +1862,44 @@ export class LearningSessionController {
     }
   }
 
+  /**
+   * Autoodtwarzanie historyjki (`lesson_story`): nagranie lektora gra samo raz po
+   * zamontowaniu panelu zadania (`LearnScreen.handlePaneMount`), raz na `taskId`,
+   * tylko dla bieżącego zadania z nagraniem i poza `offline`/`busy`/nagrywaniem.
+   * Na czas odtwarzania ekran ma `storyAudioPlaying` (pierścień przycisku); gasi go
+   * koniec albo błąd tego przebiegu (ta sama kontrola generacji co odczyt zdania)
+   * i każde `#stopPlayback` („Dalej”, ręczny odsłuch, nowe zadanie). Każdy błąd —
+   * zablokowany autoplay, plik, sieć — jest cichy: bez `questionAudioError`
+   * i bez trybu offline; zostaje przycisk „Posłuchaj historyjki”. Przy otwartym
+   * potwierdzeniu „Koniec” nic nie gra i zatrzask się nie ustawia (jak auto-start
+   * nagrywania), więc kolejne zamontowanie panelu po powrocie nadal odtworzy.
+   */
+  async autoPlayStoryAudio(taskId: string): Promise<void> {
+    const screen = this.#learning();
+    const task = screen?.task;
+    if (this.#disposed || !screen || !task || task.taskId !== taskId || task.prompt.kind !== "lesson_story") return;
+    if (this.#endConfirmSessionId !== null) return;
+    if (this.#storyAutoPlayTaskId === taskId) return;
+    const assetId = questionAudioOf(task);
+    if (assetId === null || screen.offline || screen.busy || screen.processing || screen.recordingPhase !== "idle") return;
+    this.#storyAutoPlayTaskId = taskId;
+    const epoch = this.#epoch;
+    const playbackGeneration = this.#beginPlayback();
+    try {
+      await this.#playCountedAudio(this.#api.mediaUrl(assetId), assetId, {
+        onStarted: () => {
+          if (this.#disposed || playbackGeneration !== this.#playbackGeneration || epoch !== this.#epoch ||
+              this.#learning()?.task?.taskId !== taskId) return;
+          this.#storyPlayingGeneration = playbackGeneration;
+          this.#setLearning({ storyAudioPlaying: taskId });
+        },
+      });
+    } catch {
+      // Cicho: zablokowane autoodtwarzanie i błąd pliku lub sieci nie są błędem nauki.
+    }
+    this.#releaseStoryPlaying(playbackGeneration);
+  }
+
   async prepareMicrophone(options: { automatic?: boolean } = {}): Promise<void> {
     const screen = this.#learning();
     if (!screen?.task || screen.offline || screen.busy || screen.recordingPhase !== "idle" || screen.microphoneReady) return;
@@ -2340,10 +2398,14 @@ export class LearningSessionController {
     return succeeded;
   }
 
-  /** Czy banner „Jeszcze N i koniec!” jest widoczny dla bieżącego zadania. */
+  /**
+   * Czy banner „Jeszcze N i koniec!” („… i historyjka!”) jest widoczny dla bieżącego
+   * zadania. Poza kartkówką tylko dla 1–3: zadania historyjki mają
+   * `remainingAssessed = 0`, a „Jeszcze 0” nie ma sensu.
+   */
   remainingFor(task: TaskDto | null): number | null {
     if (this.#screen.kind === "learning" && this.#screen.session.mode === "mock_test") return task?.remainingAssessed ?? null;
-    return task !== null && task.remainingAssessed <= REMAINING_BANNER_FROM ? task.remainingAssessed : null;
+    return task !== null && task.remainingAssessed >= 1 && task.remainingAssessed <= REMAINING_BANNER_FROM ? task.remainingAssessed : null;
   }
 
   async reviewMockTest(sessionId: string): Promise<void> {

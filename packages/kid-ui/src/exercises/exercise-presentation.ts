@@ -39,6 +39,13 @@ export function getExercisePresentation(task: TaskDto): ExercisePresentation {
     // domyślny tekst i ikonę per typ.
     case "lesson_card":
       return { instruction: messages.kid.lessonCardInstruction, icon: "sparkles" };
+    case "lesson_story":
+      return {
+        instruction: task.prompt.questionAudioAssetId ? messages.kid.lessonStoryInstructionListen : messages.kid.lessonStoryInstruction,
+        icon: "book",
+      };
+    case "lesson_story_question":
+      return { instruction: task.prompt.question, icon: "book" };
     case "lesson_notice":
       return { instruction: task.prompt.instructionPl, icon: "ear" };
     case "lesson_choice":

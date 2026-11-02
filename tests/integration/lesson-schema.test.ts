@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { lessonWorld } from "../fixtures/lesson-world";
 import { testDatabase } from "./helpers";
 
 /**
@@ -184,13 +185,50 @@ describe("migracja 0007_lessons — CHECK-i i triggery warstwy lekcji", () => {
     expect(rows[0]?.definition).toContain("sequence");
   });
 
-  it("session_tasks.completed dozwolone dla lesson_card, nie dla innych typów lekcji", async () => {
+  it("session_tasks.completed dozwolone dla lesson_card i lesson_story, nie dla innych typów lekcji", async () => {
     const rows = await query<{ definition: string }>(
       `select pg_get_constraintdef(oid) as definition from pg_constraint
        where conname = 'session_tasks_completed_only_exposure'`,
     );
     expect(rows[0]?.definition).toContain("lesson_card");
+    expect(rows[0]?.definition).toContain("lesson_story");
     expect(rows[0]?.definition).toContain("exposure");
+    // Pytanie historyjki kończy się stanem `answered`, więc nie ma go na liście.
+    expect(rows[0]?.definition).not.toMatch(/lesson_story_question/);
+
+    // Zachowanie: `completed` przechodzi dla historyjki, a dla jej pytania jest odrzucane.
+    const child = await insertChild();
+    const world = await lessonWorld(pool, { childId: child });
+    const sessionId = randomUUID();
+    const assignmentId = (
+      await query<{ id: string }>("select id from learning_app.assignments where child_id = $1 and deck_id = $2", [child, world.deckId])
+    )[0]!.id;
+    await pool.query(
+      `insert into learning_app.learning_sessions
+         (id, child_id, assignment_id, deck_id, deck_version_id, policy_id, microphone_enabled, mode, state, task_budget, started_at)
+       values ($1, $2, $3, $4, $5, 'learning-v2', false, 'training', 'active', 5, now())`,
+      [sessionId, child, assignmentId, world.deckId, world.versionId],
+    );
+    const insertTask = async (ordinal: number, exerciseType: string): Promise<string> => {
+      const taskId = randomUUID();
+      await pool.query(
+        `insert into learning_app.session_tasks
+           (id, session_id, child_id, deck_version_id, item_revision_id, ordinal, exercise_type, state, public_prompt, answer_key, issued_at)
+         values ($1, $2, $3, $4, $5, $6, $7, 'issued', '{}'::jsonb, '{}'::jsonb, now())`,
+        [taskId, sessionId, child, world.versionId, world.revisionId, ordinal, exerciseType],
+      );
+      return taskId;
+    };
+    // Naraz może być wydane tylko jedno zadanie sesji, więc historyjkę zamykamy przed pytaniem.
+    const storyId = await insertTask(0, "lesson_story");
+    await pool.query("update learning_app.session_tasks set state = 'completed' where id = $1", [storyId]);
+    const questionId = await insertTask(1, "lesson_story_question");
+    await expectReject(
+      "update learning_app.session_tasks set state = 'completed' where id = $1",
+      [questionId],
+      "session_tasks_completed_only_exposure",
+    );
+    await pool.query("update learning_app.session_tasks set state = 'answered' where id = $1", [questionId]);
   });
 
   it("assignments.test_goals: lesson tylko dla lekcji, cele słówek tylko dla słówek", async () => {

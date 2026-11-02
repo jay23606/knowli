@@ -18,6 +18,7 @@ import { lessonFeedbackView } from "./lesson-feedback-view";
 import { describeSpeechFeedback } from "./speech-feedback-view";
 import { isLessonTask, questionAudioOf, type FeedbackRecording, type LearningSessionController, type LearningScreen as LearningScreenState, type SentenceRate } from "../session/session-controller";
 import { useFeedbackCooldown } from "./useFeedbackCooldown";
+import { frameGuidance, paneMountEffect, questionAudioPresentation, streakAttemptFor } from "./learn-screen-state";
 import { SessionProgress } from "../components/SessionProgress";
 import { advanceSessionProgress, initialSessionProgress, progressAttempt, progressDone, resultOutcome } from "../components/session-progress-state";
 import { kidStreakLength } from "../motion/kid-motion";
@@ -164,14 +165,17 @@ export function LearnScreen({
   // Komunikaty błędu z akcjami (audio zadania / instrukcji) rozpychają pasek
   // statusu i włączają przewijanie ramy ćwiczenia — styluje to styles.css.
   // „Posłuchaj pytania” (design szkoły §11.4) w tym samym miejscu co odsłuch polecenia;
-  // karta nauki stawia go w nagłówku za tytułem jako „Posłuchaj karty” (§12.4).
-  const questionAudioButton = task !== null && questionAudioOf(task) !== null
+  // karta nauki stawia go w nagłówku za tytułem jako „Posłuchaj karty” (§12.4),
+  // historyjka jako „Posłuchaj historyjki” (pierścień także przy autoodtwarzaniu;
+  // decyzje w `questionAudioPresentation`, learn-screen-state.ts).
+  const questionAudio = task !== null ? questionAudioPresentation(task, screen.storyAudioPlaying) : null;
+  const questionAudioButton = task !== null && questionAudio !== null && questionAudioOf(task) !== null
     ? <QuestionAudioButton key={task.taskId} onPlay={() => controller.playQuestionAudio()}
-        label={task.prompt.kind === "lesson_card" ? messages.kid.listenLessonCard : messages.kid.listenLessonQuestion}
+        label={questionAudio.label}
+        {...(questionAudio.playing !== undefined ? { playing: questionAudio.playing } : {})}
         disabled={offline || busy || screen.processing || screen.recordingPhase !== "idle"} />
     : null;
   const questionAudioError = questionAudioButton !== null && screen.questionAudioError === true;
-  const cardAudio = task?.prompt.kind === "lesson_card";
   const actionNotice = screen.taskAudioError != null || (screen.guidanceError && instructionAudioKey) || questionAudioError ? "true" : "false";
   const micAvailable = screen.session.mode !== "mock_test" && screen.session.microphoneEnabled && !screen.micDenied;
   const micState = screen.session.mode === "mock_test" ? "off"
@@ -227,14 +231,18 @@ export function LearnScreen({
   // (SPEC §16). Podwójne wywołanie (np. StrictMode) jest bezpieczne —
   // synchroniczne ustawienie fazy preparing przez prepareMicrophone i latch
   // taskId w kontrolerze czynią drugie wywołanie no-opem.
-  const autoPromptKind = task?.prompt.kind;
   // Auto-start odpala TaskPane po zamontowaniu nowego panelu (patrz niżej),
   // nie efekt keyed taskId: przy AnimatePresence mode="wait" nowy panel
   // montuje się dopiero po wyjściu poprzedniego, a nagrywanie nie może
   // wystartować przed pokazaniem bodźca.
+  // Historyjka: nagranie lektora gra samo raz po zamontowaniu panelu (kontroler
+  // trzyma zatrzask na `taskId` i milczy przy zablokowanym autoodtwarzaniu).
   const handlePaneMount = (mountedTaskId: string) => {
-    if (mountedTaskId === task?.taskId && (autoPromptKind === "speech" || autoPromptKind === "picture_speech")) {
+    const effect = paneMountEffect(task, mountedTaskId);
+    if (effect === "capture_speech") {
       void controller.autoCaptureSpeech();
+    } else if (effect === "play_story") {
+      void controller.autoPlayStoryAudio(mountedTaskId);
     }
   };
 
@@ -272,12 +280,13 @@ export function LearnScreen({
   progressRef.current = advanceSessionProgress(progressRef.current, {
     sessionId: screen.session.sessionId,
     remainingAssessed: task?.remainingAssessed ?? null,
-    attempt: progressAttempt({
+    // Pytania historyjki (i sama historyjka) nie ruszają serii ani gwiazdki.
+    attempt: streakAttemptFor(task, progressAttempt({
       taskId: task?.taskId ?? null,
       feedback,
       feedbackTone: shownTone,
       revealShown: screen.reveal !== null,
-    }),
+    })),
   }, kidStreakLength);
   const progress = progressRef.current;
 
@@ -327,7 +336,7 @@ export function LearnScreen({
         <IconActionButton ref={endButtonRef} variant="text" data-testid="kid-end" aria-label={messages.kid.end} title={messages.kid.end} aria-haspopup="dialog" aria-expanded={endConfirmOpen} disabled={busy} onClick={openEndConfirm}>
           <KidIcon name="close" />
         </IconActionButton>
-        <SessionProgress remaining={remaining} total={progress.total} done={progressDone(progress.total, task?.remainingAssessed ?? null)} milestone={progress.milestone} />
+        <SessionProgress remaining={remaining} total={progress.total} done={progressDone(progress.total, task?.remainingAssessed ?? null)} milestone={progress.milestone} closingStory={task?.closingStory === true} />
         <details className="kid-microphone-status" data-microphone-state={micState}>
           <summary aria-label={micLabel} data-testid="kid-microphone-status">
             <KidIcon name={micState === "off" || micState === "unavailable" ? "microphone-off" : "microphone"} />
@@ -346,7 +355,7 @@ export function LearnScreen({
           </p>
         )}
         {screen.guidanceError && instructionAudioKey && <div className="kid-notice" data-testid="kid-guidance-error"><p>{messages.errors.picture_guidance_unavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.playGuidance(instructionAudioKey).catch(() => undefined)}>{messages.errors.picture_audio_retry}</ActionButton><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.endNow()}>{messages.kid.end}</ActionButton></div>}
-        {questionAudioError && <div className="kid-notice" role="alert" data-testid="kid-question-audio-error"><p>{cardAudio ? messages.kid.cardAudioUnavailable : messages.kid.questionAudioUnavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" data-testid="kid-question-audio-retry" onClick={() => void controller.playQuestionAudio()}>{cardAudio ? messages.kid.cardAudioRetry : messages.kid.questionAudioRetry}</ActionButton></div>}
+        {questionAudioError && <div className="kid-notice" role="alert" data-testid="kid-question-audio-error"><p>{questionAudio?.errorText}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" data-testid="kid-question-audio-retry" onClick={() => void controller.playQuestionAudio()}>{questionAudio?.retryText}</ActionButton></div>}
         {/* „Posłuchaj i wybierz”: sam komunikat — ponawia głośnik w poleceniu, a „Pomiń” jest w zadaniu. */}
         {screen.taskAudioError && listenChoice && <div className="kid-notice" role="alert" data-testid="kid-task-audio-error"><p>{messages.kid.listenStimulusFailed}</p></div>}
         {screen.taskAudioError && !listenChoice && <div className="kid-notice" role="alert" data-testid="kid-task-audio-error"><p>{screen.taskAudioError === "blocked" ? messages.errors.picture_audio_blocked : messages.errors.picture_audio_unavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" data-testid="kid-task-audio-retry" onClick={() => void controller.playTaskAudio()}>{messages.errors.picture_audio_retry}</ActionButton><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.endNow()}>{messages.kid.end}</ActionButton></div>}
@@ -370,7 +379,7 @@ export function LearnScreen({
         task !== null && (
           <div className="kid-task">
             <TaskTransition taskId={task.taskId} onPaneMount={handlePaneMount}>
-            <ExerciseGuidanceProvider value={guidanceInDock ? null : instructionGuidanceButton ?? questionAudioButton}>
+            <ExerciseGuidanceProvider value={frameGuidance({ guidanceInDock, instruction: instructionGuidanceButton, question: questionAudioButton })}>
             {screen.reveal !== null ? (
               <ExerciseFrame task={task} content={(
                 <section className="kid-card kid-reveal" data-testid="kid-reveal">

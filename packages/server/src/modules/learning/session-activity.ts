@@ -168,6 +168,14 @@ export function describeTaskPrompt(p: TaskPrompt): { instruction: string; stimul
       const cardText = [p.card.title, p.card.body, ...p.card.examples].join("\n");
       return { instruction: "Karta lekcji (przeczytanie)", stimulus: cardText, options: [] };
     }
+    case "lesson_story":
+      return { instruction: "Historyjka (przeczytanie i odsłuch)", stimulus: p.story.sentences.join(" "), options: [] };
+    case "lesson_story_question":
+      return {
+        instruction: "Pytanie do historyjki",
+        stimulus: `${p.question} | ${p.story.sentences.join(" ")}`,
+        options: options(p.options),
+      };
     case "lesson_notice": {
       const sentences = p.segments.map((sentence) => sentence.map(({ text }) => text).join(" "));
       return { instruction: p.instructionPl, stimulus: sentences.join(" | "), options: [] };
@@ -225,7 +233,7 @@ type LessonAnswerSnapshot = z.infer<typeof LessonAnswerSnapshotSchema>;
 
 export function lessonAnswerValues(key: LessonAnswerSnapshot, prompt: TaskPrompt | null): { valuesById: Map<string, string>; acceptedAnswers: string[] } {
   const valuesById = new Map<string, string>();
-  if (prompt?.kind === "lesson_choice" || prompt?.kind === "lesson_listen_choice" || prompt?.kind === "lesson_short_answer" || prompt?.kind === "lesson_keywords" || prompt?.kind === "reading" || prompt?.kind === "reverse_recognition") {
+  if (prompt?.kind === "lesson_choice" || prompt?.kind === "lesson_listen_choice" || prompt?.kind === "lesson_short_answer" || prompt?.kind === "lesson_story_question" || prompt?.kind === "lesson_keywords" || prompt?.kind === "reading" || prompt?.kind === "reverse_recognition") {
     for (const option of prompt.options) valuesById.set(option.id, option.text);
   }
   if (prompt?.kind === "lesson_order") for (const item of prompt.items) valuesById.set(item.id, item.text);

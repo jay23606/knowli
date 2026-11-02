@@ -70,7 +70,13 @@ async function waitForListenSentenceAudio(page: Page, deckId: string): Promise<s
 
 async function createAssignedLesson(
   page: Page,
-  options: { objectiveIds?: readonly string[]; suffix?: string; labels?: { childName: string; lessonTitle: string } } = {},
+  options: {
+    objectiveIds?: readonly string[];
+    suffix?: string;
+    labels?: { childName: string; lessonTitle: string };
+    /** Ostatni krok rodzica w szkicu przed publikacją (np. edycja historyjki). */
+    beforePublish?: (page: Page, deckId: string) => Promise<void>;
+  } = {},
 ): Promise<{ childId: string; deckId: string; versionId: string; childName: string; lessonTitle: string; listenAssetIds: string[] }> {
   const objectiveIds = options.objectiveIds ?? [OBJECTIVE_ID];
   const exampleObjectiveId = objectiveIds.includes(OBJECTIVE_ID) ? OBJECTIVE_ID : objectiveIds[0]!;
@@ -137,6 +143,7 @@ async function createAssignedLesson(
   await expect(page.getByTestId("publish-lesson")).toBeEnabled({ timeout: 120_000 });
   await expect(page.locator(`[data-testid^="exercise-audio-state-"]`, { hasText: "generowanie" })).toHaveCount(0, { timeout: 120_000 });
   const listenAssetIds = await waitForListenSentenceAudio(page, deckId);
+  await options.beforePublish?.(page, deckId);
 
   const publish = page.waitForResponse((response) =>
     response.request().method() === "POST" && /\/api\/v1\/parent\/lesson-drafts\/.+\/publish$/.test(new URL(response.url()).pathname),
@@ -737,6 +744,114 @@ test("listen choice slot follows the first assessed task with autoplay, readback
     const listenStep = page.getByTestId("work-card-step").filter({ hasText: "Posłuchaj i wybierz" });
     await expect(listenStep).toHaveCount(1);
     await expect(listenStep).toContainText("Odpowiedziano");
+  } finally {
+    await kidContext.close();
+  }
+});
+
+test("lesson session closes with the story and its questions without changing progress", async ({ page, browser }) => {
+  test.setTimeout(240_000);
+  const suffix = randomUUID().slice(0, 8);
+  const editedSentence = `Sam has a red bike ${suffix}.`;
+  await enterParent(page);
+  const { childId, deckId } = await createAssignedLesson(page, {
+    labels: { childName: `Obieg historyjki ${suffix}`, lessonTitle: `Present Simple historyjka ${suffix}` },
+    // Rodzic poprawia wygenerowaną historyjkę (fake LLM: run po puli) i zapisuje szkic przed publikacją.
+    beforePublish: async (parent) => {
+      const sentence = parent.getByTestId("lesson-story-sentence-0");
+      await expect(sentence).toHaveValue(/\S/, { timeout: 120_000 });
+      await sentence.fill(editedSentence);
+      const saved = parent.waitForResponse((response) =>
+        response.request().method() === "PATCH" && /\/api\/v1\/parent\/lesson-drafts\//.test(new URL(response.url()).pathname),
+      );
+      await parent.getByTestId("save-lesson").click();
+      const patch = await saved;
+      expect(patch.ok(), await patch.text()).toBe(true);
+      expect((patch.request().postDataJSON() as { story?: { sentences: string[] } }).story?.sentences[0]).toBe(editedSentence);
+      await expect(parent.getByTestId("publish-lesson")).toBeEnabled({ timeout: 120_000 });
+    },
+  });
+  // Publikacja nie czeka na nagranie lektora nowego tekstu; plan sesji zamraża je przy starcie.
+  let storyAssetId: string | undefined;
+  await expect.poll(async () => {
+    const deck = LessonDeckDtoSchema.parse(await (await page.request.get(`/api/v1/parent/lessons/${deckId}`)).json());
+    expect(deck.published?.story?.sentences[0]).toBe(editedSentence);
+    storyAssetId = deck.published?.storyAudio?.assetId;
+    return deck.published?.storyAudio?.state ?? "missing";
+  }, { timeout: 120_000 }).toBe("ready");
+  expect(storyAssetId).toBeTruthy();
+  await query("update learning_app.decks set session_task_budget = 2 where id = $1", [deckId]);
+
+  const kidContext = await browser.newContext({ locale: "pl-PL", viewport: { width: 390, height: 844 } });
+  try {
+    const kid = await kidContext.newPage();
+    const audio = await prepareKidAudio(kid);
+    taskResponses = captureTaskResponses(kid);
+    const started = await openKidLesson(kid, childId, deckId);
+    expect(started.taskBudget).toBe(2);
+
+    // Karty i zadania oceniane aż do historyjki; ostatnie oceniane zapowiada historyjkę.
+    let task = await currentTask(kid);
+    let announced = false;
+    for (let step = 0; step < 12 && task.prompt.kind !== "lesson_story"; step += 1) {
+      expect(task.closingStory, `closing story flag on ${task.prompt.kind}`).toBe(true);
+      if (task.prompt.kind === "lesson_card") {
+        task = await advanceLessonCard(kid, task);
+        continue;
+      }
+      if (task.remainingAssessed === 1) {
+        await expect(kid.getByTestId("kid-remaining")).toHaveText("Jeszcze 1 i historyjka!");
+        announced = true;
+      }
+      task = (await answerGuided(kid, task)).nextTask;
+    }
+    if (task.prompt.kind !== "lesson_story") throw new Error(`Oczekiwano historyjki, otrzymano ${task.prompt.kind}`);
+    expect(announced).toBe(true);
+    expect(task.remainingAssessed).toBe(0);
+    expect(task.prompt.questionAudioAssetId).toBe(storyAssetId);
+    const storyText = kid.getByTestId("kid-lesson-story-text");
+    await expect(storyText).toContainText(editedSentence);
+    await expect(storyText).toHaveAttribute("lang", "en-GB");
+    // Autoodtwarzanie pobiera nagranie historyjki z prawdziwego serwera.
+    await expect.poll(() => audio.log).toContain(`media:${storyAssetId}:200`);
+
+    const progressSql = "select * from learning_app.child_objective_progress where child_id = $1 order by objective_id";
+    const progressBefore = await query(progressSql, [childId]);
+    expect(progressBefore.length).toBeGreaterThan(0);
+
+    // Pytanie (fake LLM daje jedno): dobra odpowiedź, potem podsumowanie. Złą odpowiedź pokrywa spec `mocked`.
+    const question = await advanceLessonCard(kid, task);
+    if (question.prompt.kind !== "lesson_story_question") throw new Error(`Oczekiwano pytania historyjki, otrzymano ${question.prompt.kind}`);
+    expect(question.remainingAssessed).toBe(0);
+    const correctOptionId = await readCorrectOption(question.taskId);
+    const correctText = question.prompt.options.find((option) => option.id === correctOptionId)?.text;
+    expect(correctText).toBeTruthy();
+    const attemptResponse = kid.waitForResponse((response) =>
+      response.request().method() === "POST" && new URL(response.url()).pathname === `/api/v1/kid/tasks/${question.taskId}/attempts`,
+    );
+    await kid.getByRole("button", { name: correctText!, exact: true }).click();
+    const attempt = AttemptDtoSchema.parse(await (await attemptResponse).json());
+    expect(attempt).toMatchObject({ taskId: question.taskId, modality: "choice", taskState: "answered", feedback: { kind: "great" } });
+    await expect(kid.getByTestId("kid-feedback")).toContainText("Świetnie!");
+    await kid.getByTestId("kid-next").click();
+    await expect(kid.getByTestId("kid-summary")).toBeVisible();
+
+    // Historyjka bez prób, pytanie z jedną próbą — żadne bez ocen; projekcja postępu bez zmian.
+    const storyRows = await query<{ exercise_type: string; attempts: number; assessments: number }>(
+      `select st.exercise_type, count(distinct a.id)::int as attempts, count(asm.attempt_id)::int as assessments
+         from learning_app.session_tasks st
+         left join learning_app.attempts a on a.task_id = st.id
+         left join learning_app.assessments asm on asm.attempt_id = a.id
+        where st.session_id = $1 and st.exercise_type in ('lesson_story', 'lesson_story_question')
+        group by st.id, st.exercise_type, st.ordinal
+        order by st.ordinal`,
+      [started.sessionId],
+    );
+    expect(storyRows).toEqual([
+      { exercise_type: "lesson_story", attempts: 0, assessments: 0 },
+      { exercise_type: "lesson_story_question", attempts: 1, assessments: 0 },
+    ]);
+    expect(await query(progressSql, [childId])).toEqual(progressBefore);
   } finally {
     await kidContext.close();
   }

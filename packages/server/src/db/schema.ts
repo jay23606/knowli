@@ -488,7 +488,7 @@ export const generationRuns = app.table(
     rejectedCount: integer("rejected_count"),
     // Talia, której szkic zlecił zasób runu mediów (spec 2026-11-02 §3.2): tylko
     // informacyjna dla raportu kosztów — NULL dla runów deck/lesson, głosu UI
-    // i runów zleconych przed migracją 0035. Nie wpływa na dedupe ani lease.
+    // i runów zleconych przed migracją 0036. Nie wpływa na dedupe ani lease.
     originDeckId: uuid("origin_deck_id").references((): AnyPgColumn => decks.id, { onDelete: "set null" }),
   },
   (t) => [
@@ -658,7 +658,7 @@ export const sessionTasks = app.table(
   (t) => [
     check("session_tasks_ordinal_nonnegative", sql`${t.ordinal} >= 0`),
     check("session_tasks_state_allowed", sql`${t.state} in ('issued', 'answered', 'completed', 'skipped')`),
-    check("session_tasks_completed_only_exposure", sql`${t.state} <> 'completed' or ${t.exerciseType} in ('exposure', 'lesson_card')`),
+    check("session_tasks_completed_only_exposure", sql`${t.state} <> 'completed' or ${t.exerciseType} in ('exposure', 'lesson_card', 'lesson_story')`),
     check("session_tasks_answered_never_exposure", sql`${t.state} <> 'answered' or ${t.exerciseType} <> 'exposure'`),
     foreignKey({
       name: "session_tasks_session_child_fk",

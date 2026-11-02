@@ -11,8 +11,8 @@ import {
   upsertAssignment,
 } from "@learning/server";
 import type { TaskDto } from "@learning/contracts";
-import { buildTestServices, capturePoolQueries, startLegacyTrainingSession, testDatabase, truncateCoreTables } from "./helpers";
-import { lessonWorld } from "../fixtures/lesson-world";
+import { buildTestServices, capturePoolQueries, finishLessonTask, startLegacyTrainingSession, testDatabase, truncateCoreTables } from "./helpers";
+import { lessonWorld, STORY_FIXTURE } from "../fixtures/lesson-world";
 
 const { pool } = testDatabase();
 
@@ -138,7 +138,7 @@ describe("przejście między ćwiczeniami — liczba sekwencyjnych SQL", () => {
     await pool.query(
       `truncate learning_app.revision_assets, learning_app.media_assets, learning_app.item_revision_skills,
               learning_app.item_revisions, learning_app.skill_versions, learning_app.learning_items,
-              learning_app.deck_versions, learning_app.decks cascade`,
+              learning_app.lesson_story_assets, learning_app.deck_versions, learning_app.decks cascade`,
     );
   });
 
@@ -212,5 +212,53 @@ describe("przejście między ćwiczeniami — liczba sekwencyjnych SQL", () => {
     console.log(`[transition] lekcja łącznie: ${submitCount + nextCount}`);
     expect(submitCount).toBeLessThanOrEqual(21);
     expect(nextCount).toBeLessThanOrEqual(12);
+  });
+
+  /** Lekcja z historyjką i budżetem 2; kończy zadania do ostatniego przed historyjką. */
+  async function lessonBeforeStory() {
+    const { services, clock } = buildTestServices();
+    const child = await createChild(services, { displayName: "Historyjka", avatarKey: "owl" });
+    const lesson = await lessonWorld(pool, { childId: child.id, richPool: true, now: clock.now(), story: { value: STORY_FIXTURE, audio: "ready" } });
+    await pool.query("update learning_app.decks set session_task_budget = 2 where id = $1", [lesson.deckId]);
+    const session = await startSession(services, { childId: child.id, deckId: lesson.deckId, microphoneEnabled: false });
+    for (let step = 0; step < 20; step++) {
+      const task = (await nextTask(services, session.sessionId))!;
+      await finishLessonTask(services, task);
+      if (task.remainingAssessed === 1 && task.exerciseType !== "lesson_card") return { services, sessionId: session.sessionId };
+    }
+    throw new Error("nie doszło do ostatniego zadania ocenianego");
+  }
+
+  it("nextTask issuing the story stays within the lesson budget", async () => {
+    const { services, sessionId } = await lessonBeforeStory();
+    const next = await capturePoolQueries(pool, () => nextTask(services, sessionId));
+    expect(next.value?.exerciseType).toBe("lesson_story");
+    expect(summarize("nextTask (lekcja, historyjka)", next.queries)).toBeLessThanOrEqual(12);
+  });
+
+  it("answering a story question stays within the lesson submit budget", async () => {
+    const { services, sessionId } = await lessonBeforeStory();
+    const story = (await nextTask(services, sessionId))!;
+    expect(story.exerciseType).toBe("lesson_story");
+    await finishLessonTask(services, story);
+    const question = (await nextTask(services, sessionId))!;
+    expect(question.exerciseType).toBe("lesson_story_question");
+
+    const input = await correctInput(question);
+    expect(input.modality).toBe("choice");
+    const submitted = await capturePoolQueries(pool, () => submitAttempt(services, input));
+    expect(submitted.value.taskState).toBe("answered");
+    // Odpowiedź bez oceny i projekcji: zmierzone 12 zapytań (2026-11-02), wyraźnie
+    // poniżej budżetu zwykłej odpowiedzi lekcji (≤ 21); zapas na drobne zmiany.
+    expect(summarize("submitAttempt (pytanie historyjki)", submitted.queries)).toBeLessThanOrEqual(14);
+  });
+
+  it("re-reading an issued story stays within the lesson budget", async () => {
+    const { services, sessionId } = await lessonBeforeStory();
+    const story = await nextTask(services, sessionId);
+    expect(story?.exerciseType).toBe("lesson_story");
+    const again = await capturePoolQueries(pool, () => nextTask(services, sessionId));
+    expect(again.value).toEqual(story);
+    expect(summarize("nextTask (lekcja, ponowny odczyt historyjki)", again.queries)).toBeLessThanOrEqual(12);
   });
 });

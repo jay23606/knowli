@@ -5,7 +5,7 @@ import { createDrizzleUsageRecorder, createServices, deleteChild, loginParent, r
 import { ManualClock, buildTestServices, handleParentApi, testDatabase, truncateCoreTables } from "./helpers";
 
 /**
- * Migracja 0035_provider_usage_events: tabela dziennika kosztów usług AI
+ * Migracja 0036_provider_usage_events: tabela dziennika kosztów usług AI
  * (spec 2026-11-02-llm-cost-tracking §3.1) i kolumna generation_runs.origin_deck_id
  * (§3.2). Testy wkładają surowe wiersze, żeby sprawdzić bramki bazy niezależnie
  * od recordera.

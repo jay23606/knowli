@@ -65,6 +65,10 @@ export function solvedSentencesOf(drafts: readonly LessonExerciseDraft[]): strin
     if (draft.exerciseType === "lesson_gap") {
       for (const accepted of draft.acceptedAnswers) add(feedbackSentenceText({ ...draft, answer: accepted }, unlimited));
     }
+    // Słuchowy wybór: zaakceptowane warianty pełnego zdania też je rozwiązują (`answer` to tylko słowo w luce).
+    if (draft.exerciseType === "lesson_listen_choice") {
+      for (const accepted of draft.acceptedAnswers) add(accepted);
+    }
     // Wybór bez luki w treści (np. „Które zdanie jest poprawne?”): poprawna opcja sama jest rozwiązaniem.
     if (draft.exerciseType === "lesson_choice" && !/_{2,}/.test(draft.stem ?? "")) {
       add(draft.options?.find((option) => option.id === draft.correctOption)?.text);
@@ -82,7 +86,7 @@ export function solvedSentencesOf(drafts: readonly LessonExerciseDraft[]): strin
 }
 
 /** Tekst do pomiaru długości i porównań: po `trim` i scaleniu białych znaków. */
-function squash(text: string): string {
+export function squashStoryText(text: string): string {
   return text.trim().replace(/\s+/g, " ");
 }
 
@@ -125,7 +129,7 @@ export function validateLessonStory(
     errors.push(`Historyjka ma mieć od ${limits.minSentences} do ${limits.maxSentences} zdań.`);
   }
   story.sentences.forEach((sentence, index) => {
-    const text = squash(sentence);
+    const text = squashStoryText(sentence);
     if (!text) errors.push(`Zdanie ${index + 1} jest puste.`);
     else if (text.length > limits.sentenceMaxLength) {
       errors.push(`Zdanie ${index + 1} jest dłuższe niż ${limits.sentenceMaxLength} znaków.`);
@@ -151,7 +155,7 @@ export function validateLessonStory(
 
 function validateQuestion(question: LessonStoryQuestion, number: number, errors: string[]): void {
   const limits = LESSON_STORY_LIMITS;
-  const text = squash(question.question);
+  const text = squashStoryText(question.question);
   if (!text) errors.push(`Pytanie ${number} jest puste.`);
   else if (text.length > limits.questionMaxLength) {
     errors.push(`Pytanie ${number} jest dłuższe niż ${limits.questionMaxLength} znaków.`);
@@ -162,7 +166,7 @@ function validateQuestion(question: LessonStoryQuestion, number: number, errors:
   }
   const texts: string[] = [];
   question.options.forEach((option, index) => {
-    const optionText = squash(option.text);
+    const optionText = squashStoryText(option.text);
     if (!optionText) errors.push(`Pytanie ${number}: odpowiedź ${index + 1} jest pusta.`);
     else {
       texts.push(optionText.toLocaleLowerCase("pl-PL"));
@@ -182,5 +186,48 @@ function validateQuestion(question: LessonStoryQuestion, number: number, errors:
 
 /** Tekst odczytu historyjki: zdania po `trim` i scaleniu białych znaków, złączone spacją. */
 export function storyReadText(story: LessonStory): string {
-  return story.sentences.map(squash).join(" ");
+  return story.sentences.map(squashStoryText).join(" ");
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Strukturalny odczyt `lesson_context.story` dla sesji: zwraca historyjkę tylko
+ * wtedy, gdy da się z niej bezpiecznie zbudować zadania (zdania, 1–2 pytania po
+ * 3 opcje o unikalnych id, unikalne id pytań, wskazana poprawna opcja). Nie ponawia walidacji
+ * treści (długości, kolizje) — ta należy do zatwierdzania materiału. Błędny
+ * zapis daje `undefined`, czyli sesję bez historyjki.
+ */
+export function readStoredLessonStory(value: unknown): LessonStory | undefined {
+  if (!isRecord(value)) return undefined;
+  const limits = LESSON_STORY_LIMITS;
+  const { sentences, questions } = value;
+  if (!Array.isArray(sentences) || sentences.length === 0 || sentences.length > limits.maxSentences) return undefined;
+  if (!sentences.every((sentence) => typeof sentence === "string" && squashStoryText(sentence) !== "")) return undefined;
+  if (!Array.isArray(questions) || questions.length < limits.minQuestions || questions.length > limits.maxQuestions) return undefined;
+  const readQuestions: LessonStoryQuestion[] = [];
+  for (const question of questions) {
+    const read = readStoredQuestion(question);
+    if (!read) return undefined;
+    readQuestions.push(read);
+  }
+  // Id pytania trafia do klucza zadania (`storyQuestionId`), więc musi być unikalne.
+  if (new Set(readQuestions.map((question) => question.id)).size !== readQuestions.length) return undefined;
+  return { sentences: sentences as string[], questions: readQuestions };
+}
+
+function readStoredQuestion(value: unknown): LessonStoryQuestion | undefined {
+  if (!isRecord(value)) return undefined;
+  const { id, question, options, correctOption } = value;
+  if (typeof id !== "string" || id === "" || typeof question !== "string" || squashStoryText(question) === "") return undefined;
+  if (!Array.isArray(options) || options.length !== LESSON_STORY_LIMITS.optionCount) return undefined;
+  const readOptions: LessonStoryOption[] = [];
+  for (const option of options) {
+    if (!isRecord(option) || typeof option.id !== "string" || option.id === "") return undefined;
+    if (typeof option.text !== "string" || squashStoryText(option.text) === "") return undefined;
+    readOptions.push({ id: option.id, text: option.text });
+  }
+  if (new Set(readOptions.map((option) => option.id)).size !== readOptions.length) return undefined;
+  if (typeof correctOption !== "string" || !readOptions.some((option) => option.id === correctOption)) return undefined;
+  return { id, question, options: readOptions, correctOption };
 }

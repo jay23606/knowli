@@ -3,7 +3,8 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { completePresentation, createChild, createDraft, createServices, endSession, fakeSessionActivityDeps, FakeSessionActivityReviewer, loginParent, nextTask, publishDraft, readParentWorkCard, setupParent, startSession, submitAttempt, upsertAssignment } from "@learning/server";
 import type { SessionActivityReport } from "@learning/contracts";
 import { handleParentApi } from "./helpers";
-import { buildTestServices, testDatabase, truncateCoreTables } from "./helpers";
+import { buildTestServices, finishLessonTask, testDatabase, truncateCoreTables } from "./helpers";
+import { lessonWorld, STORY_FIXTURE } from "../fixtures/lesson-world";
 
 const { pool } = testDatabase();
 afterAll(async () => { await pool.end(); });
@@ -160,5 +161,36 @@ describe("parent work card", () => {
     expect(await readParentWorkCard(services, { childId: other.id, date: "2026-10-16" })).toMatchObject({ childId: other.id, sessions: [], creditedSeconds: 0 });
     await expect(readParentWorkCard(services, { childId: randomUUID(), date: "2026-10-16" }))
       .rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("story tasks appear as steps and do not reduce remaining steps", async () => {
+    const { services, clock } = buildTestServices();
+    const child = await createChild(services, { displayName: "Ola", avatarKey: "fox" });
+    const lesson = await lessonWorld(pool, { childId: child.id, richPool: true, story: { value: STORY_FIXTURE } });
+    // Cel opanowany z należnym sprawdzeniem: plan bez kart z kilkoma ocenianymi slotami.
+    await pool.query("update learning_app.decks set session_task_budget = 8 where id = $1", [lesson.deckId]);
+    await pool.query(
+      `insert into learning_app.child_objective_progress
+         (child_id, subject_id, objective_id, topic_id, status, streak, next_review_at, projection_version)
+       values ($1, 'english_grammar', $2, $3, 'mastered', 3, '2000-01-01T00:00:00Z', 'proj-1')`,
+      [child.id, lesson.objectiveId, lesson.topicId],
+    );
+    const session = await startSession(services, { childId: child.id, deckId: lesson.deckId, microphoneEnabled: false });
+    expect(session.taskBudget).toBeGreaterThan(4);
+    const first = (await nextTask(services, session.sessionId))!;
+    await finishLessonTask(services, first);
+    // Limit czasu przy więcej niż 3 pozostałych: zamiast reszty planu wychodzi historyjka.
+    clock.advanceMs(11 * 60_000);
+    const story: string[] = [];
+    for (let task = await nextTask(services, session.sessionId); task !== null; task = await nextTask(services, session.sessionId)) {
+      story.push(task.exerciseType);
+      await finishLessonTask(services, task);
+    }
+    expect(story).toEqual(["lesson_story", "lesson_story_question", "lesson_story_question"]);
+
+    const card = await readParentWorkCard(services, { childId: child.id });
+    const entry = card.sessions.find((candidate) => candidate.sessionId === session.sessionId)!;
+    expect(entry.steps.map((step) => step.exerciseType)).toEqual([first.exerciseType, ...story]);
+    expect(entry.remainingSteps).toBe(session.taskBudget - 1);
   });
 });
