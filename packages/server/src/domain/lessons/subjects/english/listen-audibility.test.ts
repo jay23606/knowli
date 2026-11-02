@@ -57,6 +57,9 @@ describe("listenChoiceSibilantErrors — końcówka -s przed sybilantem za luką
     ["He ___ it.", "like", "likes"],
     // Wiolonczela zaczyna się od /tʃ/, nie od s; X-ray od samogłoski.
     ["He ___ cello music.", "like", "likes"],
+    // Jednoliterowa podstawa to inne słowo, nie forma z -s.
+    ["___ snakes.", "a", "as"],
+    ["___ Sam happy?", "Is", "I"],
     ["She ___ X-rays.", "like", "likes"],
   ])("dopuszcza słyszalną różnicę: %s (%s / %s)", (stem, first, second) => {
     expect(sibilantErrorsOf(stem, [first, second])).toEqual([]);

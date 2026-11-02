@@ -32,11 +32,13 @@ function startsWithSibilant(word: string): boolean {
  * („likes snakes” brzmi jak „like snakes”). Sylabiczne -es po sybilancie
  * (watch / watches, dance / dances) i zmiana samogłoski (do / does, say / says)
  * pozostają słyszalne. Apostrof pomijamy, więc skrót 's liczy się jak końcówka.
+ * Jednoliterowa podstawa (a / as, I / is) to osobne słowa, nie odmiana.
  */
 function differsByMergingS(a: string, b: string): boolean {
   const bare = (text: string) => text.trim().toLowerCase().replace(/['\u2019]/gu, "");
   const [x, y] = [bare(a), bare(b)];
   const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  if (short.length < 2) return false;
   if (long === `${short}s`) return !/[cgsz]e$/.test(short) && !/(?:^|\s)say$/.test(short);
   if (long === `${short}es`) return !/(?:[sxz]|ch|sh)$/.test(short) && !/(?:^|\s)do$/.test(short);
   return short.endsWith("y") && long === `${short.slice(0, -1)}ies`;
