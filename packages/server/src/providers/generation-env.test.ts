@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withConfigDefaults } from "../config-defaults";
 import { createGenerationDepsFromEnv, generationPublicServiceFromEnv, imageProviderFromEnv } from "./generation-env";
+import { createTestRecorder } from "./usage/test-recorder";
 
 /**
  * Kontrakt konfiguracji LLM generującego materiał (zestawy + pule lekcji):
@@ -373,5 +374,29 @@ describe("generationPublicServiceFromEnv — nazwa usługi generującej dla rodz
     // http w test/development nadal jest opisywany
     expect(generationPublicServiceFromEnv({ NODE_ENV: "development", UMIEM_LLM_BASE_URL: "http://localhost:9000/v1", UMIEM_LLM_MODEL: "m" }))
       .toBe("localhost:9000 · m");
+  });
+});
+
+describe("createGenerationDepsFromEnv — zapis kosztów (usage)", () => {
+  it("factory passes usage to adapter", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okDeckResponse()));
+    const rec = createTestRecorder();
+    const deps = createGenerationDepsFromEnv({
+      OPENAI_API_KEY: "sk-main",
+      UMIEM_LLM_BASE_URL: "https://openrouter.ai/api/v1",
+      UMIEM_LLM_API_KEY: "or-test-key",
+      UMIEM_LLM_MODEL: "google/gemini-3.8-flash",
+    }, rec);
+    await deps!.llm.generateDeck(DECK_INPUT);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({
+      feature: "deck_generation", operation: "deck", provider: "openrouter", model: "google/gemini-3.8-flash", outcome: "ok",
+    });
+  });
+
+  it("bez usage fabryka działa jak dotąd i nic nie zapisuje", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okDeckResponse()));
+    const deps = createGenerationDepsFromEnv({ OPENAI_API_KEY: "sk-main" });
+    await expect(deps!.llm.generateDeck(DECK_INPUT)).resolves.toEqual({ items: [] });
   });
 });

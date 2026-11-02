@@ -7,6 +7,7 @@ import { chatRequestExtrasFromEnv } from "./chat-request-options";
 import { createOpenAiTtsProvider } from "./openai/tts";
 import { endpointKeyFromEnv, isOpenRouterKey, isSecureOpenRouterEndpoint } from "./openrouter-key";
 import { graderConfigured } from "../config";
+import type { UsageRecorder } from "../ports/usage";
 import { lessonGenerationPolicyFromEnv } from "../modules/materials/lessons/lesson-generation-policy";
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -133,7 +134,10 @@ export function imageProviderFromEnv(env: Record<string, string | undefined>) {
  * klucz w nagłówku Authorization, więc poza NODE_ENV test/development wymaga
  * `https://` (jak UMIEM_GRADER_BASE_URL).
  */
-export function createGenerationDepsFromEnv(env: Record<string, string | undefined>): GenerationDeps | undefined {
+export function createGenerationDepsFromEnv(
+  env: Record<string, string | undefined>,
+  usage?: UsageRecorder,
+): GenerationDeps | undefined {
   const mediaRoot = env.MEDIA_ROOT ?? "./data/media";
   const mediaStore = createLocalMediaStore(mediaRoot);
   const lessonExecution = lessonGenerationPolicyFromEnv(env);
@@ -160,6 +164,7 @@ export function createGenerationDepsFromEnv(env: Record<string, string | undefin
       model: nonEmpty(env.UMIEM_LLM_MODEL),
       lessonRequestTimeoutMs: lessonExecution.requestTimeoutMs,
       requestExtras: chatRequestExtrasFromEnv(env, "UMIEM_LLM"),
+      ...(usage ? { usage } : {}),
     }),
     // TTS (np. OpenRouter /audio/speech): model z UMIEM_TTS_MODEL, tym samym,
     // który wchodzi do fingerprintu nagrań (mediaSettingsFromEnv).

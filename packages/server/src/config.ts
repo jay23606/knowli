@@ -382,7 +382,7 @@ export function graderConfigured(env: Record<string, string | undefined>): boole
  * dodatnie. Brak konfiguracji → undefined (model wyłączony to stan poprawny).
  * Sekret żyje tylko w adapterze; tu wyłącznie go przekazujemy.
  */
-export function graderFromEnv(env: Record<string, string | undefined>): GraderDeps | undefined {
+export function graderFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): GraderDeps | undefined {
   const connection = graderConnectionFromEnv(env);
   if (connection === undefined) {
     return undefined;
@@ -397,6 +397,7 @@ export function graderFromEnv(env: Record<string, string | undefined>): GraderDe
   return {
     provider: createOpenAiCompatibleGrader({
       baseUrl, apiKey, model, requestExtras: chatRequestExtrasFromEnv(env, "UMIEM_GRADER"),
+      ...(usage ? { usage } : {}),
     }),
     maxCallsPerSession,
     timeoutMs,
@@ -409,7 +410,7 @@ export function graderFromEnv(env: Record<string, string | undefined>): GraderDe
  * §4): brak konfiguracji gradera = ocena aktywności również wyłączona. Osobny
  * deadline `UMIEM_SESSION_ACTIVITY_TIMEOUT_MS` (domyślnie 60 s).
  */
-export function sessionActivityFromEnv(env: Record<string, string | undefined>): SessionActivityDeps | undefined {
+export function sessionActivityFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): SessionActivityDeps | undefined {
   // to samo połączenie co graderFromEnv — nie polegamy na tym, że kompozycja wywoła go wcześniej
   const connection = graderConnectionFromEnv(env);
   if (connection === undefined) {
@@ -424,6 +425,7 @@ export function sessionActivityFromEnv(env: Record<string, string | undefined>):
   return {
     provider: createOpenAiCompatibleSessionActivityReviewer({
       baseUrl, apiKey, model, requestExtras: chatRequestExtrasFromEnv(env, "UMIEM_GRADER"),
+      ...(usage ? { usage } : {}),
     }),
     timeoutMs,
     publicService: `${new URL(baseUrl).host} · ${model}`,

@@ -13,6 +13,14 @@ import { materializeGeneratedCalculations } from "../lesson-calculations";
 import { materializeGeneratedKeywords } from "../lesson-keywords";
 import { materializeGeneratedAssignments } from "../lesson-assignments";
 import { withChatRequestExtras, type ChatRequestExtras } from "../chat-request-options";
+import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
+import {
+  recordHttpError,
+  recordResponse,
+  recordTransportFailure,
+  recordUnreadable,
+  type UsageEventBase,
+} from "../usage/record-http";
 
 export interface OpenAiLlmOptions {
   apiKey: string;
@@ -21,6 +29,8 @@ export interface OpenAiLlmOptions {
   lessonRequestTimeoutMs?: number;
   /** Opcjonalne pola pośrednika (rozumowanie, routing dostawcy) — `UMIEM_LLM_*`. */
   requestExtras?: ChatRequestExtras;
+  /** Zapis kosztów wywołań (spec cost-tracking §4.2); bez niego adapter działa jak dotąd. */
+  usage?: UsageRecorder;
 }
 
 /** Domyślny model i adres adaptera (puste `UMIEM_LLM_*`); nazwę usługi dla rodzica liczy `generationPublicServiceFromEnv`. */
@@ -630,12 +640,15 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
   const model = options.model ?? DEFAULT_MODEL;
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
   const lessonRequestTimeoutMs = options.lessonRequestTimeoutMs ?? 90_000;
+  const provider = providerFromBaseUrl(baseUrl);
+  const usageBase = (feature: UsageEventBase["feature"], operation: string): UsageEventBase => ({ feature, operation, provider, model });
   /**
    * Wspólna koperta żądania lekcyjnego (strict json_schema): timeout, fetch,
    * mapowanie błędów HTTP/odmowy/długości, parsowanie treści. Zwraca sparsowany
    * JSON; `accept` sprawdza kształt (niezgodny = błąd `output`).
    */
   async function postLessonJson(args: {
+    operation: string;
     schemaName: string;
     schema: Record<string, unknown>;
     system: string;
@@ -643,6 +656,9 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
     signal?: AbortSignal;
     accept: (parsed: unknown) => boolean;
   }): Promise<unknown> {
+    const base = usageBase("lesson_generation", args.operation);
+    // jedno żądanie HTTP = jeden zapis; catch transportu zapisuje tylko, gdy odpowiedzi nie było
+    let recorded = false;
     try {
       const timeoutSignal = AbortSignal.timeout(lessonRequestTimeoutMs);
       const requestSignal = args.signal ? AbortSignal.any([args.signal, timeoutSignal]) : timeoutSignal;
@@ -665,13 +681,22 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
         })),
         signal: requestSignal,
       });
-      if (!response.ok) throw await lessonHttpError(response);
+      if (!response.ok) {
+        recorded = true;
+        recordHttpError(options.usage, base, response.status);
+        throw await lessonHttpError(response);
+      }
       let payload: unknown;
       try {
         payload = await response.json();
       } catch {
+        recorded = true;
+        recordUnreadable(options.usage, base, response.status);
         throw new GenerationProviderError("output", { status: response.status });
       }
+      // płatna odpowiedź jest zapisana zanim treść zostanie zwalidowana
+      recorded = true;
+      recordResponse(options.usage, base, response.status, payload);
       const choices = (payload as { choices?: unknown } | null)?.choices;
       if (!Array.isArray(choices) || choices.length === 0 || choices[0] === null || typeof choices[0] !== "object") {
         throw new GenerationProviderError("output", { status: response.status });
@@ -691,6 +716,7 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
       if (!args.accept(parsed)) throw new GenerationProviderError("output", { status: response.status });
       return parsed;
     } catch (error) {
+      if (!recorded) recordTransportFailure(options.usage, base);
       throw asLessonTransportError(error);
     }
   }
@@ -698,28 +724,44 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
     name: "openai",
     model,
     async generateDeck(input: LlmGenerateDeckInput, signal?: AbortSignal) {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${options.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
-          model,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt(input) },
-            { role: "user", content: "prompt" in input ? input.prompt : deckUserMaterial(input) },
-          ],
-        })),
-        signal,
-      });
+      const base = usageBase("deck_generation", "deck");
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${options.apiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
+            model,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: systemPrompt(input) },
+              { role: "user", content: "prompt" in input ? input.prompt : deckUserMaterial(input) },
+            ],
+          })),
+          signal,
+        });
+      } catch (error) {
+        recordTransportFailure(options.usage, base);
+        throw error;
+      }
       if (!response.ok) {
+        recordHttpError(options.usage, base, response.status);
         throw new Error(`provider_http_${response.status}`);
       }
-      const payload = (await response.json()) as {
+      let payload: {
         choices?: Array<{ message?: { content?: string } }>;
       };
+      try {
+        payload = (await response.json()) as typeof payload;
+      } catch (error) {
+        recordUnreadable(options.usage, base, response.status);
+        throw error;
+      }
+      // płatna odpowiedź jest zapisana zanim treść zostanie zwalidowana
+      recordResponse(options.usage, base, response.status, payload);
       const content = payload.choices?.[0]?.message?.content;
       if (!content) {
         throw new Error("openai llm returned no content");
@@ -735,6 +777,7 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
         ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
       });
       const parsed = await postLessonJson({
+        operation: "lesson_objectives",
         schemaName: "lesson_objectives",
         schema,
         system,
@@ -752,6 +795,7 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
         ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
       }, "the story");
       const story = await postLessonJson({
+        operation: "lesson_story",
         schemaName: "lesson_story",
         schema,
         system,
@@ -767,6 +811,8 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
       const schema = lessonPoolJsonSchema(input);
       const system = lessonSystemPrompt(input);
       const user = lessonUserMaterial(input);
+      const base = usageBase("lesson_generation", "lesson_pool");
+      let recorded = false;
       try {
         const timeoutSignal = AbortSignal.timeout(lessonRequestTimeoutMs);
         const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
@@ -793,13 +839,22 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
           })),
           signal: requestSignal,
         });
-        if (!response.ok) throw await lessonHttpError(response);
+        if (!response.ok) {
+          recorded = true;
+          recordHttpError(options.usage, base, response.status);
+          throw await lessonHttpError(response);
+        }
         let payload: unknown;
         try {
           payload = await response.json();
         } catch {
+          recorded = true;
+          recordUnreadable(options.usage, base, response.status);
           throw new GenerationProviderError("output", { status: response.status });
         }
+        // płatna odpowiedź jest zapisana zanim treść zostanie zwalidowana
+        recorded = true;
+        recordResponse(options.usage, base, response.status, payload);
         if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
           throw new GenerationProviderError("output", { status: response.status });
         }
@@ -828,6 +883,7 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
           examples: lessonExamplesToRecord(result.examples),
         };
       } catch (error) {
+        if (!recorded) recordTransportFailure(options.usage, base);
         throw asLessonTransportError(error);
       }
     },

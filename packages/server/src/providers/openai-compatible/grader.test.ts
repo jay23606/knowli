@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createOpenAiCompatibleGrader } from "./grader";
 import type { GraderInput } from "../../ports/ai";
+import type { UsageRecorder } from "../../ports/usage";
+import { createTestRecorder, createThrowingRecorder } from "../usage/test-recorder";
 
 /**
  * Adapter modelu oceniającego (design „Model oceniający”). Testy z wstrzykniętym
@@ -171,5 +173,107 @@ describe("createOpenAiCompatibleGrader", () => {
     const grader = createOpenAiCompatibleGrader({ baseUrl: "https://g.example/v1", apiKey: "t", model: "m" });
     expect(typeof grader.promptVersion).toBe("string");
     expect(grader.promptVersion.length).toBeGreaterThan(0);
+  });
+});
+
+describe("createOpenAiCompatibleGrader — zapis kosztów (usage)", () => {
+  const COST = { prompt_tokens: 30, completion_tokens: 10, cost: 0.0007 };
+  const school = {
+    question: "Co to jest południk?", modelAnswer: "Linia łącząca bieguny.", requiredElements: [{ id: "e1", text: "łączy bieguny" }],
+    supplementaryElements: [], commonErrors: [], expectedForm: "short", sourceQuotes: [],
+  };
+  const make = (fetchImpl: (url: string, init: CapturedRequest["init"]) => Promise<Response>, usage?: UsageRecorder) =>
+    createOpenAiCompatibleGrader({
+      baseUrl: "https://openrouter.ai/api/v1", apiKey: "secret-token", model: "google/gemini-3.8-flash", fetchImpl,
+      ...(usage ? { usage } : {}),
+    });
+  const grade = (grader: ReturnType<typeof make>, signal: AbortSignal = AbortSignal.timeout(1000), withSchool = false) =>
+    grader.grade(withSchool ? { ...input, school } : input, signal);
+
+  it("records paid response even when content is not JSON", async () => {
+    const rec = createTestRecorder();
+    const grader = make(async () => new Response(JSON.stringify({ choices: [{ message: { content: "not json" } }], usage: COST }), { status: 200 }), rec);
+    await expect(grade(grader)).rejects.toThrow("grader returned non-JSON content");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toEqual({
+      feature: "answer_grading", operation: "grade", provider: "openrouter", model: "google/gemini-3.8-flash",
+      outcome: "ok", httpStatus: 200, inputTokens: 30, outputTokens: 10, providerCostUsd: 0.0007,
+    });
+  });
+
+  it("records paid response even when there are no choices", async () => {
+    const rec = createTestRecorder();
+    const grader = make(async () => new Response(JSON.stringify({ choices: [], usage: COST }), { status: 200 }), rec);
+    await expect(grade(grader)).rejects.toThrow("grader returned no content");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "ok", providerCostUsd: 0.0007 });
+  });
+
+  it("records ok for a valid verdict", async () => {
+    const rec = createTestRecorder();
+    const grader = make(async () => new Response(JSON.stringify({ choices: [{ message: { content: VALID_JSON } }], usage: COST }), { status: 200 }), rec);
+    await grade(grader);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "ok", providerCostUsd: 0.0007 });
+  });
+
+  it("uses grade_school for the school path", async () => {
+    const rec = createTestRecorder();
+    const grader = make(async () => new Response(JSON.stringify({ choices: [{ message: { content: VALID_JSON } }], usage: COST }), { status: 200 }), rec);
+    await grade(grader, undefined, true);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ feature: "answer_grading", operation: "grade_school" });
+  });
+
+  it("records one failed event with httpStatus for HTTP 500 and keeps the error message", async () => {
+    const rec = createTestRecorder();
+    const grader = make(async () => new Response("private-child-answer", { status: 500 }), rec);
+    await expect(grade(grader)).rejects.toThrow("grader request failed: 500");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toEqual({
+      feature: "answer_grading", operation: "grade", provider: "openrouter", model: "google/gemini-3.8-flash",
+      outcome: "failed", httpStatus: 500,
+    });
+  });
+
+  it("records one failed event with httpStatus 200 when the body is unreadable", async () => {
+    const rec = createTestRecorder();
+    const grader = make(async () => new Response("<html>", { status: 200 }), rec);
+    await expect(grade(grader)).rejects.toBeInstanceOf(SyntaxError);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 200 });
+    expect(rec.events[0]).not.toHaveProperty("providerCostUsd");
+  });
+
+  it("records one failed event without httpStatus on abort and rethrows the original error", async () => {
+    const rec = createTestRecorder();
+    const abortError = new DOMException("aborted", "AbortError");
+    const grader = make(async () => { throw abortError; }, rec);
+    await expect(grade(grader, AbortSignal.abort())).rejects.toBe(abortError);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed" });
+    expect(rec.events[0]).not.toHaveProperty("httpStatus");
+  });
+
+  it("records one failed event on a network error", async () => {
+    const rec = createTestRecorder();
+    const grader = make(async () => { throw new TypeError("fetch failed"); }, rec);
+    await expect(grade(grader)).rejects.toThrow("fetch failed");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).not.toHaveProperty("httpStatus");
+  });
+
+  it("throwing recorder does not change adapter result", async () => {
+    const ok = async () => new Response(JSON.stringify({ choices: [{ message: { content: VALID_JSON } }], usage: COST }), { status: 200 });
+    const plain = await grade(make(ok));
+    expect(await grade(make(ok, createThrowingRecorder()))).toEqual(plain);
+    const failing = async () => new Response("x", { status: 500 });
+    await expect(grade(make(failing, createThrowingRecorder()))).rejects.toThrow("grader request failed: 500");
+  });
+
+  it("without usage the request is made and nothing changes", async () => {
+    const { fetchImpl, calls } = capturingFetch(() => chatResponse(VALID_JSON));
+    await expect(grade(make(fetchImpl))).resolves.toMatchObject({ verdict: "incorrect" });
+    expect(calls).toHaveLength(1);
   });
 });

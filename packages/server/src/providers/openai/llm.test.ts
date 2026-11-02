@@ -5,6 +5,8 @@ import type { LlmGenerateDeckInput } from "../../ports/ai";
 import { englishGrammarSubject } from "../../domain/lessons/subjects/english-grammar/module";
 import { schoolSubject } from "../../domain/lessons/subjects/school/module";
 import { GenerationProviderError } from "../../ports/generation-error";
+import type { UsageRecorder } from "../../ports/usage";
+import { createTestRecorder, createThrowingRecorder } from "../usage/test-recorder";
 
 /**
  * Kontrakt składania promptu generacji puli lekcji: adapter buduje prompt
@@ -1000,5 +1002,127 @@ describe("generateLessonPool — tematy zdań (#197)", () => {
     const base = await poolMessages(INPUT);
     const blank = { ...INPUT, promptProfile: { ...INPUT.promptProfile, interestsRule: "   " }, interests: THEMES };
     expect(await poolMessages(blank)).toEqual(base);
+  });
+});
+
+describe("createOpenAiLlmProvider — zapis kosztów (usage)", () => {
+  const OPENROUTER = "https://openrouter.ai/api/v1";
+  const OBJECTIVES = { subjectTitle: "Przyroda", topicTitle: "Las", material: "Las to ekosystem.", generationRole: "You write cards." };
+  const STORY = {
+    subjectTitle: "Angielski — rozdział", topicTitle: "Unit 1", answerLocale: "en-GB", promptLocale: "pl-PL",
+    objectives: [{ id: "chapter.d1.clothes", descriptionEn: "Clothes words." }], material: "coat — płaszcz",
+    generationRole: "You are an author of short stories.", storyRules: "rules", avoidSentences: [],
+  } as LessonStoryInput;
+  const DECK = { prompt: "kolory", sourceLocale: "pl-PL", targetLocale: "en-GB", maxItems: 5 } as LlmGenerateDeckInput;
+  const COST = { prompt_tokens: 12, completion_tokens: 8, cost: 0.003 };
+
+  type Method = { name: string; feature: string; operation: string; call: (llm: ReturnType<typeof createOpenAiLlmProvider>, signal?: AbortSignal) => Promise<unknown> };
+  const METHODS: Method[] = [
+    { name: "generateDeck", feature: "deck_generation", operation: "deck", call: (llm, s) => llm.generateDeck(DECK, s) },
+    { name: "generateLessonPool", feature: "lesson_generation", operation: "lesson_pool", call: (llm, s) => llm.generateLessonPool(INPUT, s) },
+    { name: "generateLessonObjectives", feature: "lesson_generation", operation: "lesson_objectives", call: (llm, s) => llm.generateLessonObjectives(OBJECTIVES, s) },
+    { name: "generateLessonStory", feature: "lesson_generation", operation: "lesson_story", call: (llm, s) => llm.generateLessonStory(STORY, s) },
+  ];
+  const make = (usage?: UsageRecorder) => createOpenAiLlmProvider({ apiKey: "k", baseUrl: OPENROUTER, model: "google/gemini-3.8-flash", ...(usage ? { usage } : {}) });
+  const stubFetch = (impl: () => Promise<Response>) => vi.stubGlobal("fetch", vi.fn(impl));
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+
+  it("records paid response even when content is rejected (finish_reason length)", async () => {
+    stubFetch(async () => json({ choices: [{ finish_reason: "length", message: { content: "{" } }], usage: COST }));
+    const rec = createTestRecorder();
+    await expect(make(rec).generateLessonPool(INPUT)).rejects.toMatchObject({ kind: "incomplete" });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({
+      feature: "lesson_generation", operation: "lesson_pool", outcome: "ok", providerCostUsd: 0.003,
+      provider: "openrouter", model: "google/gemini-3.8-flash", httpStatus: 200, inputTokens: 12, outputTokens: 8,
+    });
+  });
+
+  it("records paid response when generateDeck content is not JSON", async () => {
+    stubFetch(async () => json({ choices: [{ message: { content: "not json" } }], usage: COST }));
+    const rec = createTestRecorder();
+    await expect(make(rec).generateDeck(DECK)).rejects.toBeInstanceOf(SyntaxError);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ feature: "deck_generation", operation: "deck", outcome: "ok", providerCostUsd: 0.003 });
+  });
+
+  it.each(METHODS)("$name records one failed event with httpStatus for HTTP 500 and keeps the error", async (method) => {
+    stubFetch(async () => json({ error: "boom" }, 500));
+    const rec = createTestRecorder();
+    const error = await method.call(make(rec)).catch((e: unknown) => e);
+    if (method.name === "generateDeck") expect((error as Error).message).toBe("provider_http_500");
+    else expect(error).toMatchObject({ kind: "transient", status: 500 });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toEqual({
+      feature: method.feature, operation: method.operation, provider: "openrouter", model: "google/gemini-3.8-flash",
+      outcome: "failed", httpStatus: 500,
+    });
+  });
+
+  it.each(METHODS)("$name records one failed event with httpStatus 200 when the body is unreadable", async (method) => {
+    stubFetch(async () => new Response("<html>", { status: 200 }));
+    const rec = createTestRecorder();
+    await method.call(make(rec)).catch(() => undefined);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ operation: method.operation, outcome: "failed", httpStatus: 200 });
+    expect(rec.events[0]).not.toHaveProperty("providerCostUsd");
+  });
+
+  it.each(METHODS)("$name records one failed event without httpStatus on abort", async (method) => {
+    stubFetch(async () => { throw new DOMException("aborted", "AbortError"); });
+    const rec = createTestRecorder();
+    const error = await method.call(make(rec), AbortSignal.abort()).catch((e: unknown) => e);
+    if (method.name === "generateDeck") expect((error as Error).name).toBe("AbortError");
+    else expect(error).toMatchObject({ kind: "timeout" });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ operation: method.operation, outcome: "failed" });
+    expect(rec.events[0]).not.toHaveProperty("httpStatus");
+  });
+
+  it.each(METHODS)("$name records one failed event on a network error and generateDeck rethrows the original", async (method) => {
+    const networkError = new TypeError("fetch failed");
+    stubFetch(async () => { throw networkError; });
+    const rec = createTestRecorder();
+    const error = await method.call(make(rec)).catch((e: unknown) => e);
+    if (method.name === "generateDeck") expect(error).toBe(networkError);
+    else expect(error).toMatchObject({ kind: "transient" });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ operation: method.operation, outcome: "failed" });
+    expect(rec.events[0]).not.toHaveProperty("httpStatus");
+  });
+
+  it.each(METHODS)("$name records exactly one ok event for a valid response", async (method) => {
+    const body = {
+      generateDeck: { items: [] },
+      generateLessonPool: { exercises: [], examples: [] },
+      generateLessonObjectives: { objectives: [] },
+      generateLessonStory: { sentences: ["a"], questions: [] },
+    }[method.name];
+    stubFetch(async () => json({ choices: [{ message: { content: JSON.stringify(body) } }], usage: COST }));
+    const rec = createTestRecorder();
+    await method.call(make(rec));
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ feature: method.feature, operation: method.operation, outcome: "ok", providerCostUsd: 0.003 });
+  });
+
+  it("throwing recorder does not change adapter result", async () => {
+    const body = { choices: [{ message: { content: JSON.stringify({ exercises: [], examples: [] }) } }], usage: COST };
+    stubFetch(async () => json(body));
+    const plain = await make().generateLessonPool(INPUT);
+    expect(await make(createThrowingRecorder()).generateLessonPool(INPUT)).toEqual(plain);
+
+    stubFetch(async () => json({}, 500));
+    const withoutRecorder = await make().generateLessonPool(INPUT).catch((e: unknown) => e);
+    const withRecorder = await make(createThrowingRecorder()).generateLessonPool(INPUT).catch((e: unknown) => e);
+    expect(withRecorder).toBeInstanceOf(GenerationProviderError);
+    expect(withRecorder).toMatchObject({ kind: (withoutRecorder as GenerationProviderError).kind, status: 500 });
+    await expect(make(createThrowingRecorder()).generateDeck(DECK)).rejects.toThrow("provider_http_500");
+  });
+
+  it("without usage the request is made, nothing is recorded and behaviour is unchanged", async () => {
+    const fetchMock = vi.fn(async () => json({ choices: [{ message: { content: JSON.stringify({ items: [] }) } }], usage: COST }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(make().generateDeck(DECK)).resolves.toEqual({ items: [] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

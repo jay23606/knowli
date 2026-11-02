@@ -1,6 +1,8 @@
 import type { SessionActivityReviewTask, SessionActivityReviewer } from "../../ports/ai";
 import { SessionActivityProviderError } from "../../ports/session-activity-error";
 import { withChatRequestExtras, type ChatRequestExtras } from "../chat-request-options";
+import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
+import { recordHttpError, recordResponse, recordTransportFailure, recordUnreadable } from "../usage/record-http";
 
 /**
  * Adapter oceny aktywności sesji zgodny z OpenAI (spec client-reward-time).
@@ -20,6 +22,8 @@ export interface OpenAiCompatibleSessionActivityOptions {
   model: string;
   /** Opcjonalne pola pośrednika (rozumowanie, routing dostawcy) — `UMIEM_GRADER_*`. */
   requestExtras?: ChatRequestExtras;
+  /** Zapis kosztów wywołań (spec cost-tracking §4.2); bez niego adapter działa jak dotąd. */
+  usage?: UsageRecorder;
   /** Wstrzykiwalny `fetch` dla testów. */
   fetchImpl?: (
     url: string,
@@ -92,29 +96,42 @@ export function createOpenAiCompatibleSessionActivityReviewer(
   options: OpenAiCompatibleSessionActivityOptions,
 ): SessionActivityReviewer {
   const doFetch = options.fetchImpl ?? ((url, init) => fetch(url, init as RequestInit));
+  const base = {
+    feature: "session_activity_review",
+    operation: "review",
+    provider: providerFromBaseUrl(options.baseUrl),
+    model: options.model,
+  } as const;
   return {
     name: "openai-compatible-session-activity",
     model: options.model,
     promptVersion: PROMPT_VERSION,
     async review(input, signal) {
-      const response = await doFetch(`${options.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${options.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
-          model: options.model,
-          temperature: 0,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt() },
-            { role: "user", content: userMessage(input) },
-          ],
-        })),
-        signal,
-      });
+      let response: Response;
+      try {
+        response = await doFetch(`${options.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${options.apiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(withChatRequestExtras(options.requestExtras, {
+            model: options.model,
+            temperature: 0,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: systemPrompt() },
+              { role: "user", content: userMessage(input) },
+            ],
+          })),
+          signal,
+        });
+      } catch (error) {
+        recordTransportFailure(options.usage, base);
+        throw error;
+      }
       if (!response.ok) {
+        recordHttpError(options.usage, base, response.status);
         // bez body w komunikacie — może nieść echo odpowiedzi dziecka; bez tokenu
         throw new SessionActivityProviderError("http_error", response.status);
       }
@@ -124,9 +141,12 @@ export function createOpenAiCompatibleSessionActivityReviewer(
       try {
         payload = (await response.json()) as typeof payload;
       } catch (error) {
+        recordUnreadable(options.usage, base, response.status);
         if (signal.aborted) throw error;
         throw new SessionActivityProviderError("invalid_response");
       }
+      // płatna odpowiedź jest zapisana zanim treść zostanie zwalidowana
+      recordResponse(options.usage, base, response.status, payload);
       const content = payload?.choices?.[0]?.message?.content;
       if (typeof content !== "string" || !content) {
         throw new SessionActivityProviderError("missing_content");

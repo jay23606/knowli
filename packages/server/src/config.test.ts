@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_LESSON_STT_MODEL, defaultMediaSettings, graderFromEnv, lessonSpeechFromEnv, mediaSettingsFromEnv, sessionActivityFromEnv, ttsInstructionsFor, ttsVoiceFor } from "./config";
+import { createTestRecorder } from "./providers/usage/test-recorder";
 
 describe("mediaSettingsFromEnv", () => {
   it("bez env zwraca domyślne ustawienia (low + webp)", () => {
@@ -218,5 +219,40 @@ describe("lessonSpeechFromEnv", () => {
     expect(() => lessonSpeechFromEnv({ UMIEM_LESSON_STT_API_KEY: "k" })).toThrow(/BASE_URL and API_KEY/);
     expect(() => lessonSpeechFromEnv({ UMIEM_LESSON_STT_BASE_URL: "http://stt.local/v1", UMIEM_LESSON_STT_API_KEY: "k" })).toThrow(/https/);
     expect(lessonSpeechFromEnv({ NODE_ENV: "test", UMIEM_LESSON_STT_BASE_URL: "http://stt.local/v1", UMIEM_LESSON_STT_API_KEY: "k" })).toBeDefined();
+  });
+});
+
+describe("fabryki czatu — zapis kosztów (usage)", () => {
+  const env = {
+    UMIEM_GRADER_BASE_URL: "https://openrouter.ai/api/v1",
+    UMIEM_GRADER_API_KEY: "secret",
+    UMIEM_GRADER_MODEL: "google/gemini-3.8-flash",
+  };
+  const stubChat = () =>
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      JSON.stringify({ choices: [{ message: { content: "not json" } }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.001 } }),
+      { status: 200 },
+    )));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("factory passes usage to adapter (grader)", async () => {
+    stubChat();
+    const rec = createTestRecorder();
+    const deps = graderFromEnv(env, rec)!;
+    await deps.provider.grade({
+      subjectTitle: "s", topicTitle: "t", roleProfile: { gradingRole: "r", almostDefinition: "a" }, instruction: "i", stimulus: "x",
+      objective: { description: "d", errorCategories: [] }, acceptedAnswers: ["a"], childAnswer: "b",
+    }, AbortSignal.timeout(1000)).catch(() => undefined);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ feature: "answer_grading", operation: "grade", provider: "openrouter", outcome: "ok", providerCostUsd: 0.001 });
+  });
+
+  it("factory passes usage to adapter (session activity)", async () => {
+    stubChat();
+    const rec = createTestRecorder();
+    const deps = sessionActivityFromEnv(env, rec)!;
+    await deps.provider.review({ tasks: [] }, AbortSignal.timeout(1000)).catch(() => undefined);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ feature: "session_activity_review", operation: "review", provider: "openrouter", outcome: "ok" });
   });
 });
