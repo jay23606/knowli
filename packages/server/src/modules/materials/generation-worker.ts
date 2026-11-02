@@ -1,10 +1,12 @@
 import { and, asc, eq, inArray, isNull, lte, not, notInArray, or, sql } from "drizzle-orm";
 import type { Services } from "../../config";
 import { generationRuns, mediaAssets } from "../../db/schema";
+import { withUsageScope } from "../../ports/usage";
 import { executeGeneration } from "./generation";
 import { executeMediaAsset } from "./media-generation";
 import { errorCodeOf, requireGeneration } from "./generation-runtime";
 import { executeLessonGeneration } from "./lessons/lesson-drafts";
+import { mediaRunUsageScope, runUsageScope } from "./usage-scope";
 import { runWorkerSlots, selectFairWorkerWork, workerAttemptFromKey, workerAttemptKey, workerIdFromAttemptKey, type WorkKind } from "./worker-schedule";
 
 export interface WorkerLimits {
@@ -106,9 +108,15 @@ export async function runDueGenerationWork(
     },
     execute: async ({ kind, value }) => {
       if (options.signal?.aborted) return;
-      if (kind === "deck") await executeGeneration(services, value.id, options.signal);
-      else if (kind === "lesson") await executeLessonGeneration(services, value.id, { signal: options.signal });
-      else await executeMediaAsset(services, value.assetId!, options.signal);
+      // Zakres kosztów (spec llm-cost-tracking §4.1): wywołania providerów runu
+      // przypisujemy runowi i talii — wersji runu albo talii, która zleciła zasób.
+      if (kind === "deck") {
+        await withUsageScope(await runUsageScope(services.db, value.id), () => executeGeneration(services, value.id, options.signal));
+      } else if (kind === "lesson") {
+        await withUsageScope(await runUsageScope(services.db, value.id), () => executeLessonGeneration(services, value.id, { signal: options.signal }));
+      } else {
+        await withUsageScope(await mediaRunUsageScope(services.db, value.assetId!), () => executeMediaAsset(services, value.assetId!, options.signal));
+      }
     },
     onError: (error) => console.error(`[worker] zadanie workera zakończone wyjątkiem: kod=${errorCodeOf(error)}`),
     onProgress: options.onProgress,
