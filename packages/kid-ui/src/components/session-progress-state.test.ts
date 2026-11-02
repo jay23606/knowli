@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advanceSessionProgress, initialSessionProgress, progressAttempt, progressDone, resultOutcome, type FeedbackOutcome } from "./session-progress-state";
+import { advanceSessionProgress, countsTowardStreak, initialSessionProgress, progressAttempt, progressDone, resultOutcome, type FeedbackOutcome } from "./session-progress-state";
 
 const correct = (attemptId: string) => ({ attemptId, outcome: "correct" as FeedbackOutcome });
 
@@ -66,5 +66,14 @@ describe("session progress state", () => {
     expect(progressDone(4, null)).toBe(0);
     expect(progressDone(4, 9)).toBe(0);
     expect(progressDone(4, 0)).toBe(4);
+  });
+
+  it("story tasks never count toward the streak; other tasks do", () => {
+    expect(countsTowardStreak({ exerciseType: "lesson_choice" })).toBe(true);
+    expect(countsTowardStreak({ exerciseType: "recall" })).toBe(true);
+    expect(countsTowardStreak({ exerciseType: "lesson_story" })).toBe(false);
+    expect(countsTowardStreak({ exerciseType: "lesson_story_question" })).toBe(false);
+    // Bez zadania nic nie filtrujemy (próby i tak nie ma).
+    expect(countsTowardStreak(null)).toBe(true);
   });
 });

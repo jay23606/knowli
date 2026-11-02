@@ -7,6 +7,7 @@ import { WrittenView } from "./WrittenView";
 import { LetterCompletionView } from "./LetterCompletionView";
 import { LessonCardView } from "./lesson/LessonCardView";
 import { LessonStoryView } from "./lesson/LessonStoryView";
+import { LessonStoryQuestionView } from "./lesson/LessonStoryQuestionView";
 import { LessonNoticeView } from "./lesson/LessonNoticeView";
 import { LessonChoiceView } from "./lesson/LessonChoiceView";
 import { LessonListenChoiceView } from "./lesson/LessonListenChoiceView";
@@ -62,11 +63,12 @@ export function ExerciseView(props: ExerciseProps) {
     // zmianie zadania, dlatego `key` po `taskId`.
     case "lesson_card":
       return <LessonCardView key={props.task.taskId} {...props} />;
-    // Historyjka na koniec sesji: tekst jak karta; widok pytania dodaje kolejne zadanie etapu 3.
+    // Historyjka na koniec sesji: tekst jak karta; potem pytania o treść
+    // (wybór jak `lesson_choice`, pod opcjami historyjka do ponownego przeczytania).
     case "lesson_story":
       return <LessonStoryView key={props.task.taskId} {...props} />;
     case "lesson_story_question":
-      return null;
+      return <LessonStoryQuestionView key={props.task.taskId} {...props} />;
     case "lesson_notice":
       return <LessonNoticeView key={props.task.taskId} {...props} />;
     case "lesson_choice":

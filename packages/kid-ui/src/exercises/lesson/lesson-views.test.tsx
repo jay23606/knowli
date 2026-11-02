@@ -16,6 +16,7 @@ import { LessonOrderView } from "./LessonOrderView";
 import { LessonSentenceView } from "./LessonSentenceView";
 import { LessonShortAnswerView } from "./LessonShortAnswerView";
 import { LessonStoryView } from "./LessonStoryView";
+import { LessonStoryQuestionView } from "./LessonStoryQuestionView";
 
 afterEach(cleanup);
 
@@ -103,6 +104,91 @@ describe("lesson exercise views", () => {
     fireEvent.click(screen.getByTestId("kid-lesson-next"));
     expect(props.handlers.onComplete).toHaveBeenCalledOnce();
     expect(props.handlers.onAnswerChoice).not.toHaveBeenCalled();
+  });
+
+  const storyQuestion = (): TaskPrompt => ({
+    kind: "lesson_story_question",
+    question: "Kto ma rower?",
+    options: [{ id: id(3), text: "Sam" }, { id: id(4), text: "Jego siostra" }, { id: id(5), text: "Nikt" }],
+    story: { sentences: ["Sam has a red bike.", "He rides it to school."] },
+    contentLocale: "en-GB",
+    questionAudioAssetId: "asset-story",
+  });
+  const follows = (first: Node, second: Node) => (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+  it("story question renders question, then options, then the story in DOM order", () => {
+    renderKid(<LessonStoryQuestionView {...makeExerciseProps(task(storyQuestion()))} />);
+    const instruction = screen.getByTestId("kid-instruction");
+    expect(instruction.textContent).toContain("Kto ma rower?");
+    const options = screen.getAllByTestId("kid-option");
+    expect(options.map((option) => option.textContent)).toEqual(["Sam", "Jego siostra", "Nikt"]);
+    const reread = screen.getByTestId("kid-lesson-story-reread");
+    expect(reread.tagName).toBe("SECTION");
+    expect(follows(instruction, options[0]!)).toBe(true);
+    expect(follows(options[2]!, reread)).toBe(true);
+    expect(reread.contains(screen.getByTestId("kid-lesson-story-text"))).toBe(true);
+    expect(screen.getByTestId("kid-lesson-story-text").textContent).toBe("Sam has a red bike. He rides it to school.");
+  });
+
+  it("story question text and options have no English lang; story text has lang", () => {
+    renderKid(<LessonStoryQuestionView {...makeExerciseProps(task(storyQuestion()))} />);
+    const notEnglish = (element: Element) => element.closest("[lang]")?.getAttribute("lang") !== "en-GB";
+    expect(notEnglish(screen.getByTestId("kid-instruction"))).toBe(true);
+    for (const option of screen.getAllByTestId("kid-option")) {
+      expect(option.getAttribute("lang")).toBeNull();
+      expect(notEnglish(option)).toBe(true);
+    }
+    expect(screen.getByTestId("kid-lesson-story-text").getAttribute("lang")).toBe("en-GB");
+    expect(notEnglish(screen.getByTestId("kid-lesson-story-title"))).toBe(true);
+  });
+
+  it("choosing an option answers immediately", () => {
+    const props = makeExerciseProps(task(storyQuestion()));
+    renderKid(<LessonStoryQuestionView {...props} />);
+    fireEvent.click(screen.getAllByTestId("kid-option")[1]!);
+    expect(props.handlers.onAnswerChoice).toHaveBeenCalledWith(id(4));
+    expect(props.handlers.onComplete).not.toHaveBeenCalled();
+  });
+
+  it("options are disabled while busy", () => {
+    const props = makeExerciseProps(task(storyQuestion()), { busy: true });
+    renderKid(<LessonStoryQuestionView {...props} />);
+    const options = screen.getAllByTestId("kid-option");
+    for (const option of options) expect((option as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(options[0]!);
+    expect(props.handlers.onAnswerChoice).not.toHaveBeenCalled();
+  });
+
+  it("story question has no dont-remember, skip or check action", () => {
+    renderKid(<LessonStoryQuestionView {...makeExerciseProps(task(storyQuestion()))} />);
+    expect(screen.queryByTestId("kid-not-remember")).toBeNull();
+    expect(screen.queryByTestId("kid-skip")).toBeNull();
+    expect(screen.queryByTestId("kid-lesson-check")).toBeNull();
+    expect(screen.queryByTestId("kid-lesson-next")).toBeNull();
+  });
+
+  it("reread section is labelled by its title", () => {
+    renderKid(
+      <ExerciseGuidanceProvider value={<button type="button" data-testid="listen-story">listen</button>}>
+        <LessonStoryQuestionView {...makeExerciseProps(task(storyQuestion()))} />
+      </ExerciseGuidanceProvider>,
+    );
+    const reread = screen.getByTestId("kid-lesson-story-reread");
+    const title = screen.getByTestId("kid-lesson-story-title");
+    expect(title.textContent).toBe("Historyjka");
+    expect(title.id).not.toBe("");
+    expect(reread.getAttribute("aria-labelledby")).toBe(title.id);
+    // Odsłuch historyjki w nagłówku bloku, nie drugi raz w wierszu pytania.
+    const listen = screen.getByTestId("listen-story");
+    expect(screen.getByTestId("kid-lesson-story-listen").contains(listen)).toBe(true);
+    expect(screen.getAllByTestId("listen-story")).toHaveLength(1);
+    expect(screen.getByTestId("kid-instruction").contains(listen)).toBe(false);
+  });
+
+  it("story question keeps the empty listen column without a recording", () => {
+    const { questionAudioAssetId: _omit, ...prompt } = storyQuestion() as Extract<TaskPrompt, { kind: "lesson_story_question" }>;
+    renderKid(<LessonStoryQuestionView {...makeExerciseProps(task(prompt))} />);
+    expect(screen.getByTestId("kid-lesson-story-listen").childElementCount).toBe(0);
   });
 
   it("choice answers immediately by option id", () => {

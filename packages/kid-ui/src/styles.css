@@ -2426,6 +2426,23 @@
   color: var(--kid-muted);
 }
 
+/* Historyjka pod pytaniem o treść: do ponownego przeczytania, z mniejszym
+   naciskiem niż ekran historyjki (niższa powierzchnia i tytuł jak etykieta),
+   żeby pierwszeństwo miały pytanie i opcje. Kolumna tekstu i stała kolumna
+   odsłuchu bez zmian. */
+.kid-ui .kid-lesson-story--reread {
+  border-color: var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container);
+}
+
+.kid-ui .kid-lesson-story--reread .kid-lesson-story__title {
+  font-family: inherit;
+  font-size: var(--kid-type-label-size);
+  font-weight: var(--kid-type-label-weight);
+  line-height: var(--kid-type-label-line-height);
+  color: var(--kid-muted);
+}
+
 /* Wskazanie: zdania ze słowami jako dużymi, dotykowymi przyciskami. */
 .kid-lesson-notice {
   width: 100%;
