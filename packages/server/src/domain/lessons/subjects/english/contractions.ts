@@ -84,6 +84,19 @@ export const CONTRACTIONS: Readonly<Record<string, readonly (readonly string[])[
     ["that", "is"],
     ["that", "has"],
   ],
+  // Ramy pytań i „there is” z podręczników („Where's the…?”, „There's a…”, „What's…?”).
+  "what's": [
+    ["what", "is"],
+    ["what", "has"],
+  ],
+  "where's": [
+    ["where", "is"],
+    ["where", "has"],
+  ],
+  "there's": [
+    ["there", "is"],
+    ["there", "has"],
+  ],
 
   // --- Wieloznaczne: 'd → would | had. ---
   "i'd": [

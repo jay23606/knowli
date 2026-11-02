@@ -537,6 +537,27 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
     expect(body.details!.exercises!.length).toBeGreaterThan(0);
   });
 
+  it("wariant równoważny odpowiedzi po normalizacji znika przy edycji i nie blokuje publikacji", async () => {
+    const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
+    const { services, cookie } = await freshParent(fakes);
+    const { deckId } = await createAndGenerate(services, cookie);
+    const draft = LessonDeckDtoSchema.parse(await (await call(services, "GET", `lessons/${deckId}`, { cookie })).json()).draft!;
+    const exercises = draft.exercises.map(stripToInput);
+    const first = exercises[0]!;
+    // Wariant równy odpowiedzi (np. „There is…” przy „There's…” po rozszerzeniu tabeli skrótów).
+    exercises[0] = { ...first, acceptedAnswers: [...first.acceptedAnswers, first.answer.toUpperCase()] };
+    const edited = await call(services, "PATCH", `lesson-drafts/${draft.id}`, { cookie, body: { expectedEditNumber: draft.editNumber, exercises } });
+    expect(edited.status).toBe(200);
+    const afterEdit = LessonDraftDtoSchema.parse(await edited.json());
+    expect(afterEdit.exercises[0]!.acceptedAnswers).toEqual(first.acceptedAnswers);
+
+    // Szkic zapisany wcześniej z takim wariantem (bez ponownej edycji) publikuje się, a rewizja zostaje bez zmian.
+    const redundant = [...first.acceptedAnswers, first.answer.toUpperCase()];
+    await pool.query("update learning_app.item_revisions set payload=payload || $1::jsonb where id=$2", [JSON.stringify({ acceptedAnswers: redundant }), afterEdit.exercises[0]!.revisionId]);
+    const published = await call(services, "POST", `lesson-drafts/${draft.id}/publish`, { cookie, body: { expectedEditNumber: afterEdit.editNumber } });
+    expect(published.status).toBe(200);
+  });
+
   it("edycja: konflikt expectedEditNumber → 409; edycja opublikowanej → 409", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
