@@ -1087,7 +1087,8 @@ export const messages = {
     // Historyjka na koniec sesji (edytor lekcji rodzica).
     story: {
       title: "Historyjka na koniec sesji",
-      info: "Dziecko przeczyta i posłucha historyjki na koniec każdej sesji, a potem odpowie na pytania. Pytania nie liczą się do postępu.",
+      // Etap 1 (#195): sesja dziecka jeszcze nie pokazuje historyjki — etap 3 przywróci opis zachowania dziecka.
+      info: "Dziecko zobaczy historyjkę na koniec sesji w kolejnej wersji aplikacji. Na razie możesz ją przygotować i sprawdzić tutaj. Pytania nie będą liczyć się do postępu.",
       sentenceLabel: "Zdanie {n}",
       addSentence: "Dodaj zdanie",
       removeSentence: "Usuń zdanie",
