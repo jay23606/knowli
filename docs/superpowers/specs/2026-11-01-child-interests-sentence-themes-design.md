@@ -151,6 +151,15 @@ apples.`, `Minecraft ___ fun.`), więc zakaz dostał jawne przykłady. Wynik z j
 tematów (0–1). Zmierzono go przed doprecyzowaniem „of all exercises” (dodanym po review, żeby
 udział liczył się tak jak w pomiarze); wersji z tym doprecyzowaniem nie mierzono osobno.
 
+Tematy w „Posłuchaj i wybierz” (`lesson_listen_choice`, #198; pomiar 2026-11-02, te same modele,
+materiał i tematy, po dwie generacje Present Simple — 4 cele — i „to be” — 3 cele — na model):
+przed dopisaniem typu tematy miało 1/19 (Gemini) i 0/20 (DeepSeek) ćwiczeń słuchowych, z obecną
+regułą 8/22 i 11/22. Wszystkie zadania z tematem: 19% → 19% (Gemini) i 25% → 30% (DeepSeek);
+odrzuceń 9 → 6 i 16 → 11. Żaden temat nie jest podmiotem ani opcją do wyboru (`He ___ dinosaurs.`,
+`___ he play Minecraft?`, `We ___ at the football game.`). Zdanie o lektorze dodano po review:
+zdanie słuchowe jest jedynym bodźcem, więc polska nazwa tematu przeczytana przez lektora en-GB
+byłaby niezrozumiała.
+
 ### 5.2 Polecenie i zapis
 
 - `LessonCommandSchema.interests` — opcjonalne `ChildInterestsSchema.min(1)` (brak tematów =
