@@ -8,16 +8,17 @@ import { toBeV1 } from "./topics/to-be";
 
 /**
  * Przedmiot `english_grammar` jako wtyczka silnika lekcji (design „Przedmiot
- * i katalog”). Składa dane modułu: wszystkie 9 typów ćwiczeń, kategorie błędów,
+ * i katalog”). Składa dane modułu: 10 typów ćwiczeń gramatyki, kategorie błędów,
  * normalizator skrótów, tematy Present Simple i „to be”, profil promptów i walidator
  * przedmiotu. Rejestracja = ten obiekt + jeden wpis w `subjects/index.ts`.
  */
 
-/** Wszystkie 9 typów ćwiczeń silnika — przedmiot wspiera komplet. */
+/** 10 typów ćwiczeń, które wspiera gramatyka; każdy cel wybiera własny podzbiór. */
 const ALL_EXERCISE_TYPES: readonly LessonExerciseType[] = [
   "lesson_card",
   "lesson_notice",
   "lesson_choice",
+  "lesson_listen_choice",
   "lesson_order",
   "lesson_short_answer",
   "lesson_gap",

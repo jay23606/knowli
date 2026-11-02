@@ -8,6 +8,7 @@ import { LetterCompletionView } from "./LetterCompletionView";
 import { LessonCardView } from "./lesson/LessonCardView";
 import { LessonNoticeView } from "./lesson/LessonNoticeView";
 import { LessonChoiceView } from "./lesson/LessonChoiceView";
+import { LessonListenChoiceView } from "./lesson/LessonListenChoiceView";
 import { LessonShortAnswerView } from "./lesson/LessonShortAnswerView";
 import { LessonOrderView } from "./lesson/LessonOrderView";
 import { LessonGapView } from "./lesson/LessonGapView";
@@ -64,6 +65,8 @@ export function ExerciseView(props: ExerciseProps) {
       return <LessonNoticeView key={props.task.taskId} {...props} />;
     case "lesson_choice":
       return <LessonChoiceView key={props.task.taskId} {...props} />;
+    case "lesson_listen_choice":
+      return <LessonListenChoiceView key={props.task.taskId} {...props} />;
     case "lesson_short_answer":
       return <LessonShortAnswerView key={props.task.taskId} {...props} />;
     case "lesson_order":

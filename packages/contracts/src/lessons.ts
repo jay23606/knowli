@@ -78,6 +78,7 @@ export const LESSON_EXERCISE_TYPES = [
   "lesson_match",
   "lesson_group",
   "lesson_cloze",
+  "lesson_listen_choice",
 ] as const;
 export type LessonExerciseTypeDto = (typeof LESSON_EXERCISE_TYPES)[number];
 export const LessonExerciseTypeSchema = z.enum(LESSON_EXERCISE_TYPES);
@@ -426,6 +427,11 @@ const LessonExerciseDraftDtoSchema = LessonExerciseInputSchema.extend({
   promptAudio: LessonPromptAudioDtoSchema.optional(),
   /** Nagranie wyjaśnienia błędu (`explanationPl`); brak = ćwiczenie nie ma wyjaśnienia z nagraniem. Tylko do odczytu. */
   explanationAudio: LessonPromptAudioDtoSchema.optional(),
+  /**
+   * Nagranie zdania „Posłuchaj i wybierz” (`lesson_listen_choice`, rola `feedback_audio`
+   * dla `feedbackSentenceText`); brak = to ćwiczenie nie ma bodźca słuchowego. Tylko do odczytu.
+   */
+  sentenceAudio: LessonPromptAudioDtoSchema.optional(),
 });
 
 /** Nagranie karty zagadnienia w szkicu (miejsce karty w temacie + stan). */

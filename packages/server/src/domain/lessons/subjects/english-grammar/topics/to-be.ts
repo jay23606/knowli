@@ -13,6 +13,14 @@ import type { LearningObjective, LessonTopic } from "../../../types";
  * (choice/order/short_answer), produktywny (gap/error_fix/transform),
  * samodzielny (open_answer). `lesson_notice` dodajemy tam, gdzie dziecko
  * może wskazać formę czasownika w zdaniu.
+ *
+ * `lesson_listen_choice` (wybór ze słuchu, #198) mają cele ze słyszalną różnicą
+ * formy: am/is/are (affirmative_forms), przeczenia isn't/aren't (negative_forms)
+ * i Is/Are/Am otwierające pytanie (questions).
+ * Is/Are na początku pytania jest wyraźnie słyszalne (np. „___ she happy?”).
+ * Nie mają go: skróty (różnica 'm/'s/'re jest słabo słyszalna, opcja nie może
+ * zaczynać się od apostrofu, a pełna forma i skrót są odpowiedziami
+ * równoważnymi) i krótkie odpowiedzi (cel ćwiczy odpowiedź w całości).
  */
 
 const PREFIX = "english_grammar.to_be";
@@ -51,6 +59,7 @@ const affirmativeForms: LearningObjective = {
     "lesson_card",
     "lesson_notice",
     "lesson_choice",
+    "lesson_listen_choice",
     "lesson_order",
     "lesson_gap",
     "lesson_error_fix",
@@ -124,6 +133,7 @@ const negativeForms: LearningObjective = {
   exerciseTypes: [
     "lesson_card",
     "lesson_choice",
+    "lesson_listen_choice",
     "lesson_gap",
     "lesson_error_fix",
     "lesson_transform",
@@ -162,6 +172,7 @@ const questions: LearningObjective = {
     "lesson_card",
     "lesson_notice",
     "lesson_choice",
+    "lesson_listen_choice",
     "lesson_order",
     "lesson_gap",
     "lesson_transform",

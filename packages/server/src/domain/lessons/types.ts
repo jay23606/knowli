@@ -34,7 +34,8 @@ export type LessonExerciseType =
   | "lesson_keywords"
   | "lesson_match"
   | "lesson_group"
-  | "lesson_cloze";
+  | "lesson_cloze"
+  | "lesson_listen_choice";
 
 /** Etap nauki celu (design: tabela typów → etapy). */
 export type LessonStage = "intro" | "guided" | "productive" | "independent";

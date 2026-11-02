@@ -485,6 +485,7 @@ export async function readLessonMockTestSummary(services: Services, sessionId: s
 function promptText(prompt: TaskPrompt): string {
   switch (prompt.kind) {
     case "lesson_choice":
+    case "lesson_listen_choice":
       return prompt.stem;
     case "lesson_gap":
       return prompt.stemWithGap;

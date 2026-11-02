@@ -39,6 +39,10 @@ describe("chapterExposureText — ekspozycją jest rozwiązane zdanie", () => {
     expect(chapterExposureText({ ...sunnyChoice, options: undefined, correctOption: undefined, answer: "sunny" })).toBe("It's sunny today");
   });
 
+  it("wybór ze słuchu: jak wybór — zdanie z wstawioną poprawną opcją", () => {
+    expect(chapterExposureText({ ...sunnyChoice, exerciseType: "lesson_listen_choice" })).toBe("It's sunny today");
+  });
+
   it("luka: zdanie z wstawioną odpowiedzią", () => {
     const gap = draft({ exerciseType: "lesson_gap", stem: "I'm wearing a ___.", answer: "coat", focus: ["coat"] });
     expect(chapterExposureText(gap)).toBe("I'm wearing a coat");

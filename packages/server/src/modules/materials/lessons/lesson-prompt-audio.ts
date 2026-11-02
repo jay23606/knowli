@@ -48,16 +48,17 @@ function groupBy<T>(rows: readonly T[], key: (row: T) => string): Map<string, T[
 const notCancelled = sql`not exists (select 1 from ${generationRuns} where ${generationRuns.assetId} = ${mediaAssets.id} and ${generationRuns.state} = 'superseded')`;
 
 /**
- * Stan nagrań wersji lekcji: pytania i wyjaśnienia błędu per rewizja oraz karty
- * w kolejności zagadnień tematu. Wiersz bez żadnej generacji swojego fingerprintu
- * (albo brak wiersza) nie daje wpisu. Jedno zapytanie na rodzaj nagrania dla całej
- * wersji (pytania i wyjaśnienia czytają ten sam zbiór wierszy `revision_assets`).
+ * Stan nagrań wersji lekcji: pytania, wyjaśnienia błędu i zdania ćwiczeń słuchowych
+ * per rewizja oraz karty w kolejności zagadnień tematu. Wiersz bez żadnej generacji
+ * swojego fingerprintu (albo brak wiersza) nie daje wpisu. Jedno zapytanie na rodzaj
+ * nagrania dla całej wersji (pytania, wyjaśnienia i zdania czytają ten sam zbiór
+ * wierszy `revision_assets`).
  */
 export async function readLessonAudioStates(
   db: Executor,
   versionId: string,
   objectiveOrder: readonly string[],
-): Promise<{ prompts: Map<string, LessonPromptAudioDto>; explanations: Map<string, LessonPromptAudioDto>; cards: LessonCardAudioDto[] }> {
+): Promise<{ prompts: Map<string, LessonPromptAudioDto>; explanations: Map<string, LessonPromptAudioDto>; sentences: Map<string, LessonPromptAudioDto>; cards: LessonCardAudioDto[] }> {
   const promptRows = await db
     .select({ itemRevisionId: revisionAssets.itemRevisionId, role: revisionAssets.role, id: mediaAssets.id, state: mediaAssets.state })
     .from(revisionAssets)
@@ -65,16 +66,19 @@ export async function readLessonAudioStates(
     .innerJoin(mediaAssets, eq(mediaAssets.fingerprint, revisionAssets.expectedFingerprint))
     .where(and(
       eq(itemRevisions.deckVersionId, versionId),
-      inArray(revisionAssets.role, ["prompt_audio", "explanation_audio"]),
+      inArray(revisionAssets.role, ["prompt_audio", "explanation_audio", "feedback_audio"]),
       eq(mediaAssets.kind, "tts"),
       notCancelled,
     ))
     .orderBy(desc(mediaAssets.generationNumber));
   const prompts = new Map<string, LessonPromptAudioDto>();
   const explanations = new Map<string, LessonPromptAudioDto>();
+  // Zdanie ćwiczenia słuchowego (`feedback_audio`): to samo odczytanie stanu co pytanie.
+  const sentences = new Map<string, LessonPromptAudioDto>();
+  const byRole = { prompt_audio: prompts, explanation_audio: explanations, feedback_audio: sentences } as const;
   for (const [, generations] of groupBy(promptRows, (row) => `${row.role}:${row.itemRevisionId}`)) {
     const { role, itemRevisionId } = generations[0]!;
-    (role === "explanation_audio" ? explanations : prompts).set(itemRevisionId, audioDto(generations));
+    byRole[role as keyof typeof byRole].set(itemRevisionId, audioDto(generations));
   }
 
   const cardRows = await db
@@ -94,7 +98,7 @@ export async function readLessonAudioStates(
   };
   const cards = [...cardsByKey.values()].sort((a, b) =>
     rank(a.objectiveId) - rank(b.objectiveId) || a.objectiveId.localeCompare(b.objectiveId) || a.cardIndex - b.cardIndex);
-  return { prompts, explanations, cards };
+  return { prompts, explanations, sentences, cards };
 }
 
 /** Blokada wersji jak przy edycji szkicu; opublikowana wersja jest niezmienna. */

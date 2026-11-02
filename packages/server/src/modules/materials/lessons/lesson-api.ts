@@ -273,7 +273,14 @@ async function readLessonDraftDto(
     const dto = exerciseDtoFromPayload(r.itemId, r.id, r.payload);
     const promptAudio = audio.prompts.get(r.id);
     const explanationAudio = audio.explanations.get(r.id);
-    return { ...dto, ...(promptAudio ? { promptAudio } : {}), ...(explanationAudio ? { explanationAudio } : {}) };
+    // Zdanie ćwiczenia słuchowego: stan nagrania tylko dla `lesson_listen_choice`.
+    const sentenceAudio = dto.exerciseType === "lesson_listen_choice" ? audio.sentences.get(r.id) : undefined;
+    return {
+      ...dto,
+      ...(promptAudio ? { promptAudio } : {}),
+      ...(explanationAudio ? { explanationAudio } : {}),
+      ...(sentenceAudio ? { sentenceAudio } : {}),
+    };
   });
   const drafts: LessonExerciseDraft[] = revisions.map((r) => toExerciseDraft(r.payload));
   const draftSubject = services.subjects.getSubject(context.subjectId);

@@ -1,5 +1,5 @@
 import { BASE_ERROR_CATEGORY_CODES } from "./base-error-categories";
-import { ASSESSED_STAGES, stageOf } from "./stages";
+import { ASSESSED_STAGES, outsideStagePath, stageOf } from "./stages";
 import type { ErrorCategoryCode, LearningObjective, LessonTopic, SubjectModule } from "./types";
 
 const MIN_CARDS = 2;
@@ -49,6 +49,11 @@ export function validateSubject(module: SubjectModule): string[] {
         ? "Przedmiot: materialSubjectTitle wymaga buildDynamicTopic"
         : "Przedmiot: buildDynamicTopic wymaga materialSubjectTitle",
     );
+  }
+
+  // Nagranie zdania to jedyny bodziec wyboru ze słuchu: bez TTS zdania zadanie nie byłoby wydawalne.
+  if (module.exerciseTypes.includes("lesson_listen_choice") && module.ttsForFeedbackSentence !== true) {
+    errors.push("Przedmiot: „lesson_listen_choice” wymaga ttsForFeedbackSentence (nagrania zdania)");
   }
 
   for (const topic of module.topics) {
@@ -143,7 +148,10 @@ function validateObjective(
     }
   }
 
-  const coveredStages = new Set(objective.exerciseTypes.map((type) => stageOf(type)));
+  // Typy poza ścieżką etapów (np. wybór ze słuchu) nie pokrywają etapu: mogą być niewydawalne.
+  const coveredStages = new Set(
+    objective.exerciseTypes.filter((type) => !outsideStagePath(type)).map((type) => stageOf(type)),
+  );
   for (const stage of ASSESSED_STAGES) {
     if (!coveredStages.has(stage)) {
       errors.push(`${where}: brak typu ćwiczenia z etapu ocenianego „${stage}”`);

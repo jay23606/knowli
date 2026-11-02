@@ -38,7 +38,7 @@ Słowniczek:
 
 #### Kryteria akceptacji
 
-1. WHEN rodzic tworzy lekcję, THE panel rodzica SHALL pozwolić wybrać temat z katalogu, wkleić materiał tekstowy (do 8000 znaków), dodać opcjonalną instrukcję, wybrać reguły (domyślnie wszystkie) i wielkość puli (domyślnie większa z liczb 60 i 12 × liczba wybranych reguł, zakres 20–120).
+1. WHEN rodzic tworzy lekcję, THE panel rodzica SHALL pozwolić wybrać temat z katalogu, wkleić materiał tekstowy (do 8000 znaków), dodać opcjonalną instrukcję, wybrać reguły (domyślnie wszystkie) i wielkość puli (domyślnie większa z liczb 60 i 12 × liczba wybranych reguł, zakres 20–120). Wielkość puli dotyczy ćwiczeń etapów; generowanie dodaje do 2 ćwiczeń wyboru ze słuchu (`lesson_listen_choice`) na regułę ponad nią.
 2. WHEN rodzic zleci generowanie, THE system SHALL utworzyć szkic lekcji i trwałe zadanie generowania w jednej transakcji, z kluczem idempotencji jak przy generowaniu zestawów słówek.
 3. THE generowanie SHALL tworzyć ćwiczenia jednoregułowe wyłącznie dla wybranych reguł i typów dozwolonych w katalogu, używając słownictwa z materiału rodzica tam, gdzie to możliwe.
 4. THE generowanie SHALL tworzyć 2–3 przykłady zdań na regułę do kart wyjaśnienia; teksty reguł pochodzą z katalogu, nie z modelu.
@@ -50,7 +50,7 @@ Słowniczek:
 10. WHEN provider odrzuci żądanie przez błąd konfiguracji, wyczerpany limit, odmowę lub błędny format, THE system SHALL zakończyć run bez automatycznego ponawiania i bez zapisywania częściowej treści.
 11. WHEN provider zgłosi przejściowy błąd lub limit szybkości, THE system SHALL zaplanować ograniczone retry z wykładniczym opóźnieniem i jitterem; poprawne `Retry-After` nie może zostać skrócone, a restart workera zachowuje termin ponowienia.
 12. WHEN rodzic ręcznie ponowi oczekujący run, THE system SHALL wyczyścić termin odroczenia i pozwolić na natychmiastowy claim.
-13. THE lesson-generation flow SHALL NOT generate or require answer-audio (`target_audio`) for grammar exercises, and child lesson tasks SHALL NOT expose an answer-audio speaker before the answer. THE flow SHALL prepare a feedback-sentence recording (`feedback_audio`) for exercise types with a full sentence; it is disclosed only together with a graded answer's feedback and never blocks publication.
+13. THE lesson-generation flow SHALL NOT generate or require answer-audio (`target_audio`) for grammar exercises. THE flow SHALL prepare a feedback-sentence recording (`feedback_audio`) for exercise types with a full sentence; it never blocks publication. Child lesson tasks SHALL NOT expose a sentence recording before the answer, except in the listen-and-choose type (`lesson_listen_choice`), where the recording is the stimulus: it is disclosed only through the server's disclosure authorization (requirement 4.6 — sealed exposure, assisted attempt), and the type is never issued without a ready recording.
 
 ### Wymaganie 3 — Przegląd i publikacja lekcji
 
@@ -71,12 +71,12 @@ Słowniczek:
 
 #### Kryteria akceptacji
 
-1. THE system SHALL obsługiwać typy: karta wyjaśnienia, wskazanie zmieniającego się słowa, wybór formy, układanie zdania z klocków, krótka odpowiedź, uzupełnienie luki, poprawienie błędu, przekształcenie zdania (polecenie z katalogu tematu) i tłumaczenie zdania z polskiego.
+1. THE system SHALL obsługiwać typy: karta wyjaśnienia, wskazanie zmieniającego się słowa, wybór formy, układanie zdania z klocków, krótka odpowiedź, uzupełnienie luki, poprawienie błędu, przekształcenie zdania (polecenie z katalogu tematu), tłumaczenie zdania z polskiego i wybór formy ze słuchu (`lesson_listen_choice`: dziecko słyszy pełne zdanie, widzi je z luką i wybiera brakującą formę).
 2. THE karta wyjaśnienia SHALL kończyć się działaniem „Dalej”, bez próby, oceny i zużycia budżetu ocenianych zadań.
-3. THE typy zamknięte (wskazanie, wybór, klocki, krótka odpowiedź z opcjami) SHALL być oceniane deterministycznie po identyfikatorach odpowiedzi; układanie z klocków ma jeden kanoniczny porządek.
+3. THE typy zamknięte (wskazanie, wybór, wybór formy ze słuchu, klocki, krótka odpowiedź z opcjami) SHALL być oceniane deterministycznie po identyfikatorach odpowiedzi; układanie z klocków ma jeden kanoniczny porządek.
 4. THE cała ścieżka lekcji SHALL działać bez mikrofonu.
 5. THE pola tekstowe SHALL mieć wyłączoną autokorektę, sprawdzanie pisowni, autouzupełnianie i automatyczną kapitalizację w zakresie dostępnym na urządzeniu.
-6. WHEN dziecko odtworzy audio zdania przed odpowiedzią w ćwiczeniu tekstowym, THE system SHALL zapisać ekspozycję przed wydaniem audio i zakwalifikować próbę jako wspomaganą.
+6. WHEN dziecko odtworzy audio zdania przed odpowiedzią — w ćwiczeniu tekstowym albo w wyborze formy ze słuchu — THE system SHALL zapisać ekspozycję przed wydaniem audio i zakwalifikować próbę jako wspomaganą; odpowiedź w wyborze ze słuchu bez wcześniejszego odsłuchu SHALL być nieoceniona.
 
 ### Wymaganie 5 — Interaktywny przebieg nauki
 
@@ -85,7 +85,7 @@ Słowniczek:
 #### Kryteria akceptacji
 
 1. WHEN dziecko zaczyna regułę, THE system SHALL pokazać jej karty wyjaśnienia, a następnie ćwiczenie wskazania.
-2. THE system SHALL prowadzić regułę przez etapy: prowadzony (wybór, klocki, krótka odpowiedź), produktywny (luka, poprawienie błędu, przekształcenie) i samodzielny (tłumaczenie oraz typy produktywne na ćwiczeniach niewidzianych).
+2. THE system SHALL prowadzić regułę przez etapy: prowadzony (wybór, klocki, krótka odpowiedź), produktywny (luka, poprawienie błędu, przekształcenie) i samodzielny (tłumaczenie oraz typy produktywne na ćwiczeniach niewidzianych). Wybór formy ze słuchu jest dodatkowym ćwiczeniem poza etapami: nie wprowadza reguły, jest zawsze wspomagany, jego wynik jest neutralny dla etapu i nie otwiera cyklu wsparcia (najwyżej jedno na regułę i dwa na sesję, tylko z gotowym nagraniem).
 3. WHEN dziecko odpowie poprawnie na dwa kolejne ćwiczenia etapu, THE system SHALL przejść do następnego etapu tej reguły.
 4. THE sesja SHALL wprowadzać najwyżej dwie nowe reguły i zachować istniejący budżet sesji (12 ocenianych zadań, 10 minut, bez dokładania zadań po zapowiedzi „Jeszcze 3”); opanowanie całego tematu jest rozłożone na wiele sesji, a okno sprawdzianu nie zwiększa budżetu.
 5. WHEN odpowiedź jest błędna w zakresie reguły, THE system SHALL pokazać zaznaczony błędny fragment, podpowiedź z szablonu kategorii błędu i poprawną odpowiedź, a następnie krótką kartę przypomnienia reguły i jedno łatwiejsze ćwiczenie tej reguły — najwyżej jeden taki cykl na regułę i sesję.

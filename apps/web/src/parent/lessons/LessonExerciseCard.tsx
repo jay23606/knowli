@@ -10,7 +10,7 @@ import PromptAudioControls, { VoiceToneSelect } from "./PromptAudioControls";
 import { clozeWordsOf, filledClozeOf, keywordsAnswerOf, nextRequiredElementId, type EditableLessonExercise } from "./lesson-editor-state";
 
 /** Typy z polem „Zdanie” (stem) w edycji. */
-const STEM_LABEL_TYPES = new Set(["lesson_choice", "lesson_gap"]);
+const STEM_LABEL_TYPES = new Set(["lesson_choice", "lesson_listen_choice", "lesson_gap"]);
 /** Najdłuższe wyjaśnienie (jak `MAX_TEXT_LENGTH` serwera). */
 const EXPLANATION_MAX_LENGTH = 120;
 const UNITS = ["cm", "m", "km"].map((unit) => ({ value: unit, label: unit }));
@@ -65,6 +65,8 @@ interface LessonExerciseCardProps {
   explanations: boolean;
   /** Nagranie wyjaśnienia zapisanej wersji; null, gdy brak albo ćwiczenie zmieniono od zapisu. */
   explanationAudio: LessonPromptAudioDto | null;
+  /** Nagranie zdania „Posłuchaj i wybierz” zapisanej wersji (tylko odczyt, bez „Nagraj ponownie”); null poza tym typem albo po zmianie ćwiczenia. */
+  sentenceAudio: LessonPromptAudioDto | null;
   /** Wersja szkicu i zestaw potrzebne do „Nagraj ponownie”. */
   lessonDraftId: string;
   deckId: string;
@@ -93,8 +95,10 @@ function sameCardProps(prev: LessonExerciseCardProps, next: LessonExerciseCardPr
     || prev.promptAudio?.previousAssetId !== next.promptAudio?.previousAssetId) return false;
   if (prev.explanationAudio?.state !== next.explanationAudio?.state || prev.explanationAudio?.assetId !== next.explanationAudio?.assetId
     || prev.explanationAudio?.previousAssetId !== next.explanationAudio?.previousAssetId) return false;
+  if (prev.sentenceAudio?.state !== next.sentenceAudio?.state || prev.sentenceAudio?.assetId !== next.sentenceAudio?.assetId
+    || prev.sentenceAudio?.previousAssetId !== next.sentenceAudio?.previousAssetId) return false;
   return (Object.keys(next) as (keyof LessonExerciseCardProps)[])
-    .every((key) => key === "audio" || key === "promptAudio" || key === "explanationAudio" || key === "calculation" || Object.is(prev[key], next[key]));
+    .every((key) => key === "audio" || key === "promptAudio" || key === "explanationAudio" || key === "sentenceAudio" || key === "calculation" || Object.is(prev[key], next[key]));
 }
 
 function LessonExerciseCard({
@@ -111,6 +115,7 @@ function LessonExerciseCard({
   promptAudio,
   explanations,
   explanationAudio,
+  sentenceAudio,
   lessonDraftId,
   deckId,
   itemRevisionId,
@@ -157,6 +162,9 @@ function LessonExerciseCard({
     </div>
   ) : null;
   const audioReady = audio?.state === "approved" && audio.assetId !== null;
+  const isListen = ex.exerciseType === "lesson_listen_choice";
+  // odsłuch zdania: gotowe nagranie albo — przy tworzeniu i błędzie — poprzednie ujęcie, jeśli jest
+  const sentenceAssetId = sentenceAudio ? (sentenceAudio.state === "ready" ? sentenceAudio.assetId : sentenceAudio.assetId ?? sentenceAudio.previousAssetId) ?? null : null;
   const audioText = audio ? messages.decks.audioState[audio.state === "approved" ? "ready" : audio.state] ?? "" : "";
 
   return (
@@ -172,7 +180,13 @@ function LessonExerciseCard({
             {audioText}
           </span>
         )}
-        {(editable || audio) && (
+        {sentenceAudio && (
+          <span className="pp-status-badge" data-tone={sentenceAudio.state === "ready" ? "success" : sentenceAudio.state === "failed" ? "danger" : "neutral"}
+            data-testid={`exercise-sentence-audio-state-${index}`}>
+            {messages.decks.audioState[sentenceAudio.state] ?? ""}
+          </span>
+        )}
+        {(editable || audio || sentenceAudio) && (
           <Menu position="bottom-end" withinPortal>
             <Menu.Target>
               <ActionIcon variant="subtle" color="gray" size={44} radius="md" aria-label={messages.lessons.exerciseActionsLabel.replace("{n}", number)} data-testid={`exercise-menu-${index}`}>
@@ -186,6 +200,12 @@ function LessonExerciseCard({
                   {messages.decks.listen}
                 </Menu.Item>
               )}
+              {sentenceAudio && (
+                <Menu.Item leftSection={<ParentIcon name="volume" />} data-testid={`exercise-sentence-play-${index}`} disabled={sentenceAssetId === null}
+                  onClick={() => sentenceAssetId && onPlay(sentenceAssetId)}>
+                  {messages.decks.listen}
+                </Menu.Item>
+              )}
               {editable && (
                 <Menu.Item color="red" leftSection={<ParentIcon name="x" />} data-testid={`exercise-remove-${index}`} disabled={busy} onClick={() => onRemove(ex.clientKey)}>
                   {messages.lessons.removeExercise}
@@ -195,6 +215,15 @@ function LessonExerciseCard({
           </Menu>
         )}
       </Group>
+
+      {isListen && (
+        <div className="pp-lesson-listen-note">
+          <Text size="sm" className="pp-editor-muted" data-testid={`exercise-listen-note-${index}`}>{messages.lessons.listenChoiceNote}</Text>
+          {sentenceAudio?.state === "failed" && (
+            <Text size="sm" c="red" role="status" data-testid={`exercise-sentence-audio-failed-${index}`}>{messages.lessons.listenChoiceAudioFailed}</Text>
+          )}
+        </div>
+      )}
 
       {errors && (
         <Alert color="red" variant="light" id={errId} role="alert" data-testid={errId} mb="sm" icon={<ParentIcon name="alert-triangle" />}>
@@ -231,13 +260,15 @@ function LessonExerciseCard({
       ) : (
         <Stack gap="sm">
           <div className="pp-lesson-fields">
-            <Field wide>
-              <TextInput size="md" label={messages.lessons.exerciseInstructionLabel} data-testid={`exercise-instruction-${index}`}
-                value={ex.instructionPl} disabled={disabled} {...described}
-                onChange={(e) => onMutate({ instructionPl: e.currentTarget.value })} />
-            </Field>
+            {!isListen && (
+              <Field wide>
+                <TextInput size="md" label={messages.lessons.exerciseInstructionLabel} data-testid={`exercise-instruction-${index}`}
+                  value={ex.instructionPl} disabled={disabled} {...described}
+                  onChange={(e) => onMutate({ instructionPl: e.currentTarget.value })} />
+              </Field>
+            )}
 
-            {voiceTones && ex.exerciseType !== "lesson_calculation" && (
+            {voiceTones && ex.exerciseType !== "lesson_calculation" && !isListen && (
               <Field>
                 <VoiceToneSelect value={ex.voiceTone} disabled={disabled} styleEnabled={voiceTones.styleEnabled} testId={`exercise-voice-tone-${index}`}
                   onChange={(voiceTone) => onMutate({ voiceTone })} />

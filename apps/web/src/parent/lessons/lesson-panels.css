@@ -151,6 +151,15 @@
   margin-bottom: 8px;
 }
 
+/* „Posłuchaj i wybierz”: informacja o lektorze i ewentualny błąd nagrania pod nagłówkiem karty */
+.pp-lesson-listen-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
 .pp-lesson-ex-num {
   flex: 1 1 auto;
   min-width: 0;

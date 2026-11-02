@@ -784,3 +784,198 @@ describe("selectLessonTask — trener precyzji (Etap 4)", () => {
     });
   });
 });
+
+describe("selectLessonTask — slot ćwiczenia słuchowego (#198, spec §3.2–3.3)", () => {
+  function listen(objectiveId: string, variant = "a", stimulusAudioReady: boolean | "missing" = true): LessonExerciseCandidate {
+    const key = `${objectiveId}:listen:${variant}`;
+    return {
+      itemId: `item:${key}`,
+      itemRevisionId: `rev:${key}`,
+      objectiveId,
+      exerciseType: "lesson_listen_choice",
+      targetKey: key,
+      ...(stimulusAudioReady === "missing" ? {} : { stimulusAudioReady }),
+    };
+  }
+  const guidedA = `item:${O1}:guided:a`;
+  const learning = (ids: readonly string[]) => Object.fromEntries(ids.map((id) => [id, prog("learning")]));
+
+  it("nowy cel: najpierw zwykłe wprowadzenie, slot słuchowy dopiero po pierwszym zwykłym zadaniu (dynamicznie)", () => {
+    const exercises = [listen(O1), ...poolFor(O1)];
+    const first = selectLessonTask(input({ exercises, objectiveOrder: [O1] }));
+    expect(first).toMatchObject({ kind: "exercise", exerciseType: "lesson_choice", reason: "introduce" });
+
+    const sessionHistory = [task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice", outcome: "correct" })];
+    expect(selectLessonTask(input({ exercises, objectiveOrder: [O1], sessionHistory }))).toEqual({
+      kind: "exercise", itemId: `item:${O1}:listen:a`, itemRevisionId: `rev:${O1}:listen:a`, objectiveId: O1,
+      exerciseType: "lesson_listen_choice", reason: "listen_practice", independentCheck: false,
+    });
+  });
+
+  it("plan sesji (planningMode) też zawiera slot po pierwszym zwykłym zadaniu celu", () => {
+    const exercises = [listen(O1), ...poolFor(O1)];
+    const base = { exercises, objectiveOrder: [O1], planningMode: true, initialProgress: {} };
+    expect(selectLessonTask(input(base))).toMatchObject({ exerciseType: "lesson_choice", reason: "introduce" });
+    const sessionHistory = [task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice" })];
+    expect(selectLessonTask(input({ ...base, sessionHistory }))).toMatchObject({
+      exerciseType: "lesson_listen_choice", reason: "listen_practice", independentCheck: false,
+    });
+  });
+
+  it("cel kontynuowany i opanowany nie dostaje slotu na początku sesji, dopiero po zwykłym zadaniu", () => {
+    for (const status of ["learning", "mastered"] as const) {
+      const snapshot = { [O1]: prog(status) };
+      const base = { exercises: [listen(O1), ...poolFor(O1)], objectiveOrder: [O1], progress: snapshot, initialProgress: snapshot };
+      const first = selectLessonTask(input(base));
+      expect(first?.kind === "exercise" ? first.exerciseType : null).toBe("lesson_gap");
+      const sessionHistory = [task({ objectiveId: O1, itemId: `item:${O1}:productive:a`, exerciseType: "lesson_gap", outcome: "correct" })];
+      expect(selectLessonTask(input({ ...base, sessionHistory }))).toMatchObject({ exerciseType: "lesson_listen_choice", reason: "listen_practice" });
+    }
+  });
+
+  it("najwyżej jedno zadanie słuchowe na cel w sesji", () => {
+    const exercises = [listen(O1, "a"), listen(O1, "b"), ...poolFor(O1)];
+    const sessionHistory = [
+      task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice", outcome: "correct" }),
+      task({ objectiveId: O1, itemId: `item:${O1}:listen:a`, exerciseType: "lesson_listen_choice", outcome: "correct" }),
+    ];
+    const plan = selectLessonTask(input({ exercises, objectiveOrder: [O1], sessionHistory }));
+    expect(plan).toMatchObject({ exerciseType: "lesson_choice", reason: "continue" });
+  });
+
+  it("plan sesji z trzema celami ma najwyżej dwa sloty słuchowe, każdy po zwykłym zadaniu celu", () => {
+    const ids = [O1, O2, O3];
+    const exercises = ids.flatMap((id) => [
+      listen(id), ex(id, "productive", "a"), ex(id, "productive", "b"), ex(id, "productive", "c"),
+    ]);
+    const history: LessonSessionTask[] = [];
+    for (let remaining = 12; remaining > 0; remaining -= 1) {
+      const plan = selectLessonTask(input({
+        exercises, objectiveOrder: ids, progress: learning(ids), initialProgress: learning(ids),
+        planningMode: true, sessionHistory: history, assessedRemaining: remaining,
+      }));
+      if (plan === null) break;
+      expect(plan.kind).toBe("exercise");
+      if (plan.kind !== "exercise") break;
+      if (plan.exerciseType === "lesson_listen_choice") {
+        expect(plan.reason).toBe("listen_practice");
+        expect(history.some((t) => t.objectiveId === plan.objectiveId && t.exerciseType !== "lesson_listen_choice")).toBe(true);
+      }
+      history.push(task({ objectiveId: plan.objectiveId, itemId: plan.itemId, exerciseType: plan.exerciseType }));
+    }
+    const listens = history.filter((t) => t.exerciseType === "lesson_listen_choice").map((t) => t.objectiveId);
+    expect(listens).toEqual([O1, O2]);
+  });
+
+  it.each([
+    ["bez stimulusAudioReady (brak = niegotowe)", "missing"],
+    ["stimulusAudioReady: false", false],
+  ] as const)("kandydat %s → brak slotu, sesja idzie dalej zwykłym zadaniem", (_label, ready) => {
+    const sessionHistory = [task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice", outcome: "correct" })];
+    const plan = selectLessonTask(input({ exercises: [listen(O1, "a", ready), ...poolFor(O1)], objectiveOrder: [O1], sessionHistory }));
+    expect(plan).toMatchObject({ exerciseType: "lesson_choice", reason: "continue" });
+  });
+
+  it("wybiera niewidziane zadanie słuchowe przed widzianym", () => {
+    const sessionHistory = [task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice", outcome: "correct" })];
+    const plan = selectLessonTask(input({
+      exercises: [listen(O1, "a"), listen(O1, "b"), ...poolFor(O1)], objectiveOrder: [O1], sessionHistory,
+      lastSeenAt: { [`item:${O1}:listen:a`]: "2026-10-01T00:00:00.000Z" },
+    }));
+    expect(plan).toMatchObject({ itemId: `item:${O1}:listen:b`, reason: "listen_practice" });
+  });
+
+  it("nigdy nie wprowadza celu zadaniem słuchowym ani nie wydaje go zwykłym wyborem", () => {
+    expect(selectLessonTask(input({ exercises: [listen(O1)], objectiveOrder: [O1] }))).toBeNull();
+    const continued = selectLessonTask(input({
+      exercises: [listen(O1)], objectiveOrder: [O1], progress: learning([O1]), initialProgress: learning([O1]),
+    }));
+    expect(continued).toBeNull();
+  });
+
+  it("ćwiczenie cyklu wsparcia jest zwykłym guided, nawet gdy zadanie słuchowe jest niewidziane", () => {
+    const sessionHistory = [
+      task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice", outcome: "incorrect" }),
+      task({ objectiveId: O1, kind: "support_card" }),
+    ];
+    const plan = selectLessonTask(input({
+      exercises: [listen(O1), ...poolFor(O1)], objectiveOrder: [O1], sessionHistory,
+      lastSeenAt: { [guidedA]: "2026-10-12T11:59:00.000Z", [`item:${O1}:guided:b`]: "2026-10-12T11:58:00.000Z" },
+    }));
+    expect(plan).toMatchObject({ exerciseType: "lesson_choice", reason: "support" });
+  });
+
+  it("błędna odpowiedź słuchowa nie otwiera wsparcia, a dwa sukcesy słuchowe nie awansują etapu", () => {
+    const exercises = [listen(O1, "a"), listen(O1, "b"), ...poolFor(O1)];
+    const wrong = [
+      task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice", outcome: "correct" }),
+      task({ objectiveId: O1, itemId: `item:${O1}:listen:a`, exerciseType: "lesson_listen_choice", outcome: "incorrect" }),
+    ];
+    const afterWrong = selectLessonTask(input({ exercises, objectiveOrder: [O1], sessionHistory: wrong }));
+    expect(afterWrong).toMatchObject({ kind: "exercise", exerciseType: "lesson_choice", reason: "continue" });
+
+    const twoCorrect = [
+      task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice", outcome: "correct" }),
+      task({ objectiveId: O1, itemId: `item:${O1}:listen:a`, exerciseType: "lesson_listen_choice", outcome: "correct" }),
+      task({ objectiveId: O1, itemId: `item:${O1}:listen:b`, exerciseType: "lesson_listen_choice", outcome: "correct" }),
+    ];
+    // Bez neutralności już choice + pierwszy sukces słuchowy (2 kolejne sukcesy guided,
+    // advanceAfterCorrect = 2) dałyby awans na productive (lesson_gap); żaden z nich go nie daje.
+    const afterCorrect = selectLessonTask(input({ exercises, objectiveOrder: [O1], sessionHistory: twoCorrect }));
+    expect(afterCorrect).toMatchObject({ exerciseType: "lesson_choice", reason: "continue" });
+  });
+
+  it("limit planowanych zadań etapu nie liczy zadania słuchowego", () => {
+    const sessionHistory = [
+      task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice" }),
+      task({ objectiveId: O1, itemId: `item:${O1}:listen:a`, exerciseType: "lesson_listen_choice" }),
+    ];
+    const plan = selectLessonTask(input({
+      exercises: [listen(O1), ...poolFor(O1)], objectiveOrder: [O1], planningMode: true, initialProgress: {}, sessionHistory,
+    }));
+    expect(plan).toMatchObject({ itemId: `item:${O1}:guided:b`, reason: "continue" });
+  });
+
+  it("plan z należnymi sprawdzeniami dwóch celów nie ma dwóch zadań słuchowych z rzędu", () => {
+    const ids = [O1, O2];
+    const due = Object.fromEntries(ids.map((id) => [id, prog("learning", "2026-10-11T00:00:00.000Z")]));
+    const exercises = ids.flatMap((id) => [
+      listen(id), ex(id, "independent", "a"), ex(id, "productive", "a"), ex(id, "productive", "b"),
+    ]);
+    const history: LessonSessionTask[] = [];
+    const reasons: string[] = [];
+    for (let remaining = 12; remaining > 0; remaining -= 1) {
+      const plan = selectLessonTask(input({
+        exercises, objectiveOrder: ids, progress: due, initialProgress: due, planningMode: true,
+        sessionHistory: history, assessedRemaining: remaining,
+        reservedDueCheckObjectives: new Set(history.filter((_, i) => reasons[i] === "due_check").map((t) => t.objectiveId)),
+      }));
+      if (plan === null || plan.kind !== "exercise") break;
+      reasons.push(plan.reason);
+      history.push(task({ objectiveId: plan.objectiveId, itemId: plan.itemId, exerciseType: plan.exerciseType }));
+    }
+    expect(reasons.slice(0, 2)).toEqual(["due_check", "due_check"]);
+    const types = history.map((t) => t.exerciseType);
+    for (let i = 1; i < types.length; i += 1) {
+      expect(types[i - 1] === "lesson_listen_choice" && types[i] === "lesson_listen_choice").toBe(false);
+    }
+    expect(history.filter((t) => t.exerciseType === "lesson_listen_choice").map((t) => t.objectiveId)).toEqual([O1, O2]);
+  });
+
+  it("bez budżetu ocenianych (assessedRemaining = 0) brak slotu", () => {
+    const sessionHistory = [task({ objectiveId: O1, itemId: guidedA, exerciseType: "lesson_choice", outcome: "correct" })];
+    expect(selectLessonTask(input({ exercises: [listen(O1), ...poolFor(O1)], objectiveOrder: [O1], sessionHistory, assessedRemaining: 0 }))).toBeNull();
+  });
+
+  it("stara sesja bez initialProgress: zadanie słuchowe jako pierwsze zadanie celu nie czyni celu nowym", () => {
+    const sessionHistory = [
+      task({ objectiveId: O1, itemId: `item:${O1}:listen:a`, exerciseType: "lesson_listen_choice", outcome: "correct" }),
+      task({ objectiveId: O1, itemId: `item:${O1}:productive:a`, exerciseType: "lesson_gap", outcome: "correct" }),
+    ];
+    const plan = selectLessonTask(input({
+      exercises: [listen(O1), ...poolFor(O1), ex(O1, "productive", "b")], objectiveOrder: [O1],
+      progress: learning([O1]), sessionHistory,
+    }));
+    expect(plan).toMatchObject({ exerciseType: "lesson_gap", reason: "continue" });
+  });
+});
