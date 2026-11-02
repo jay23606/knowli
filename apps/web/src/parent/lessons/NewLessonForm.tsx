@@ -318,7 +318,13 @@ export default function NewLessonForm({
   const topic = subject?.topics.find((t) => t.id === values.topicId);
   const materialMax = fromMaterial ? MAX_SCHOOL_MATERIAL_LENGTH : MATERIAL_MAX;
   const hasPending = pending.current !== null;
-  const dirty = form.isDirty() || hasPending;
+  const showThemes = acceptsInterests(catalog, values.subjectId);
+  // Tematy ukryte przy innym przedmiocie nie są wysyłane, więc nie ostrzegają przy wyjściu;
+  // zostają w stanie i wracają po powrocie do gramatyki.
+  const fieldsDirty = showThemes
+    ? form.isDirty()
+    : (Object.keys(values) as (keyof NewLessonValues)[]).some((key) => key !== "interests" && form.isDirty(key));
+  const dirty = fieldsDirty || hasPending;
 
   // W trakcie wysyłania polecenia wyjście jest zablokowane (jak zapis w edytorach):
   // odpowiedź otwiera utworzoną lekcję, więc nawigacja w tej chwili by się z nią ścigała.
@@ -436,7 +442,6 @@ export default function NewLessonForm({
     }
   };
 
-  const showThemes = acceptsInterests(catalog, values.subjectId);
   // ponowienie wysyła to samo polecenie, więc pole tematów blokuje się jak pozostałe pola
   const themesLocked = creating || hasPending;
   const themesPresent = new Set(values.interests.map((entry) => normalizeChildInterest(entry).toLowerCase()));
