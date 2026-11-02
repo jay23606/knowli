@@ -208,6 +208,84 @@ describe("reviewFreshExercises", () => {
     expect(result.objectives).toEqual([{ objectiveId: OBJECTIVES[0], status: "reviewed" }]);
   });
 
+  it("dwie poprawki w jednej partii zbiegające się w to samo ćwiczenie: druga odrzucona (miękka → uwaga, twarda → usunięcie)", async () => {
+    const fresh = await freshPool();
+    const choices = fresh.flatMap((exercise, index) => (exercise.exerciseType === "lesson_choice" ? [index] : []));
+    expect(choices.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = choices as [number, number];
+    for (const category of ["unclear_instruction", "ambiguous"] as const) {
+      const reviewer = new FakeLessonReviewer();
+      reviewer.behavior = () => {
+        const same = { ...shownExercise(reviewer, 0, first + 1), stem: `${String(shownExercise(reviewer, 0, first + 1).stem)} Today.` };
+        return [
+          { n: first + 1, verdict: "fix", category: "unclear_instruction", reasonPl: "Pierwsza poprawka.", exercise: same },
+          { n: second + 1, verdict: "fix", category, reasonPl: "Druga poprawka.", exercise: { ...same } },
+        ];
+      };
+      const result = await reviewFreshExercises(ctx(ready(reviewer), fresh));
+      const replaced = result.exercises.find((exercise) => exercise.stem === `${fresh[first]!.stem} Today.`)!;
+      expect(result.meta.get(replaced)?.changed?.reasonPl).toBe("Pierwsza poprawka.");
+      expect(result.exercises.filter((exercise) => exercise.stem === replaced.stem)).toHaveLength(1);
+      if (category === "unclear_instruction") {
+        expect(result.exercises).toHaveLength(fresh.length);
+        expect(result.meta.get(fresh[second]!)).toEqual({ note: { category, reasonPl: "Druga poprawka.", fixRejected: true } });
+      } else {
+        expect(result.exercises).toHaveLength(fresh.length - 1);
+        expect(result.dropped).toEqual([expect.objectContaining({ category, reasonPl: "Druga poprawka." })]);
+      }
+    }
+  });
+
+  it("poprawki w dwóch zagadnieniach: późniejsza nie może stać się ofiarą wcześniej przyjętej (ujawnienie między zagadnieniami)", async () => {
+    const fresh = await freshPool(OBJECTIVES.slice(0, 2));
+    const reviewer = new FakeLessonReviewer();
+    const WORD = "swims";
+    reviewer.behavior = (input) => {
+      const call = reviewer.inputs.indexOf(input);
+      const n = input.exercises.find(({ exercise }) => exercise.exerciseType === (call === 0 ? "lesson_choice" : "lesson_open_answer"))!.n;
+      const exercise = { ...input.exercises[n - 1]!.exercise };
+      const fix = call === 0
+        ? { ...exercise, answer: WORD, options: [{ id: "a", text: WORD }, { id: "b", text: `${WORD}x` }], correctOption: "a" }
+        : { ...exercise, answer: WORD, focus: [WORD] };
+      return [{ n, verdict: "fix", category: "unnatural_language", reasonPl: `Poprawka ${call + 1}.`, exercise: fix }];
+    };
+    const result = await reviewFreshExercises(ctx(ready(reviewer), fresh));
+    const changed = [...result.meta.entries()].filter(([, entry]) => entry.changed);
+    expect(changed.map(([exercise]) => [exercise.objectiveId, exercise.exerciseType, exercise.answer])).toEqual([[OBJECTIVES[0], "lesson_choice", WORD]]);
+    const notes = [...result.meta.values()].flatMap((entry) => (entry.note ? [entry.note] : []));
+    expect(notes).toEqual([{ category: "unnatural_language", reasonPl: "Poprawka 2.", fixRejected: true }]);
+    expect(result.exercises.filter((exercise) => exercise.answer === WORD)).toHaveLength(1);
+
+    // Kontrola: ta sama poprawka B sama (bez poprawki A) jest poprawna — odrzucenie wynika z A.
+    const alone = new FakeLessonReviewer();
+    alone.behavior = (input) => {
+      if (alone.inputs.indexOf(input) === 0) return [];
+      const n = input.exercises.find(({ exercise }) => exercise.exerciseType === "lesson_open_answer")!.n;
+      return [{ n, verdict: "fix", category: "unnatural_language", reasonPl: "Poprawka 2.", exercise: { ...input.exercises[n - 1]!.exercise, answer: WORD, focus: [WORD] } }];
+    };
+    const control = await reviewFreshExercises(ctx(ready(alone), fresh));
+    expect([...control.meta.values()].filter((entry) => entry.changed)).toHaveLength(1);
+  });
+
+  it("nieprzewidziany błąd walidacji poprawki: zagadnienie unreviewed/failed bez zmian, reszta przejrzana", async () => {
+    const fresh = await freshPool(OBJECTIVES.slice(0, 2));
+    const reviewer = new FakeLessonReviewer();
+    reviewer.behavior = (input) => {
+      if (reviewer.inputs.indexOf(input) !== 0) return [{ n: 1, verdict: "drop", category: "wrong_answer", reasonPl: "Zła odpowiedź." }];
+      return [{ n: 1, verdict: "fix", category: "ambiguous", reasonPl: "Poprawka.", exercise: { ...input.exercises[0]!.exercise, stem: "Inny ___." } }];
+    };
+    const throwing = { ...subject, refineGeneratedPool: () => { throw new Error("walidacja padła"); } };
+    const result = await reviewFreshExercises(ctx(ready(reviewer), fresh, { subject: throwing }));
+    expect(result.objectives).toEqual([
+      { objectiveId: OBJECTIVES[0], status: "unreviewed", reason: "failed" },
+      { objectiveId: OBJECTIVES[1], status: "reviewed" },
+    ]);
+    const firstObjective = fresh.filter((exercise) => exercise.objectiveId === OBJECTIVES[0]);
+    for (const exercise of firstObjective) expect(result.exercises).toContain(exercise);
+    expect(result.droppedCount).toBe(1);
+    expect(result.dropped[0]!.objectiveId).toBe(OBJECTIVES[1]);
+  });
+
   it("limit wywołań: drugie zagadnienie unreviewed/limit, licznik wspólny", async () => {
     const fresh = await freshPool(OBJECTIVES.slice(0, 2));
     const reviewer = new FakeLessonReviewer();

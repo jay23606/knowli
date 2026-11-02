@@ -197,6 +197,10 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       const without = await scenario(null);
       const withCritic = await scenario({ state: "ready", provider: new FakeLessonReviewer(), policy: POLICY });
       expect(without.rejectedReasons).toEqual({ [EXPOSURE_REASON]: 1 });
+      // Gałąź filtra przykładów zadziałała: nowy przykład dogenerowania ujawniał tłumaczenie ze szkicu.
+      expect(JSON.stringify(without.examples)).not.toContain(WEAR_TRANSLATION);
+      expect(JSON.stringify(without.examples)).toContain("I wear a coat.");
+      expect(without.exercises).toEqual(expect.arrayContaining([expect.objectContaining({ answer: WEAR_TRANSLATION })]));
       expect(withCritic.exercises).toEqual(without.exercises);
       expect(withCritic.rejectedCount).toBe(without.rejectedCount);
       expect(withCritic.rejectedReasons).toEqual(without.rejectedReasons);
@@ -310,6 +314,26 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       expect(report.notes).toEqual([expect.objectContaining({ category: "unclear_instruction", fixRejected: true })]);
     });
 
+    it("dwie poprawki w jednej partii zbiegające się w to samo ćwiczenie → zapisana tylko pierwsza, druga z uwagą „poprawka odrzucona”", async () => {
+      const { services, reviewer } = await world();
+      const SAME = "Zdanie z jedną luką. Wpisz brakujące słowo.";
+      reviewer.behavior = (input) => {
+        if (reviewer.inputs.indexOf(input) !== 0) return verdictsFor(input, {});
+        const [first, second] = input.exercises.filter(({ exercise }) => (exercise as Raw).exerciseType === "lesson_gap");
+        const fix = { ...(first!.exercise as Raw), instructionPl: SAME };
+        return verdictsFor(input, {
+          [first!.n]: { n: first!.n, verdict: "fix", category: "unclear_instruction", reasonPl: "Pierwsza.", exercise: fix },
+          [second!.n]: { n: second!.n, verdict: "fix", category: "unclear_instruction", reasonPl: "Druga.", exercise: { ...fix } },
+        });
+      };
+      const { draft } = await generateChapter(services, TWO_OBJECTIVES);
+      expect(draft.exercises.filter((exercise) => exercise.instructionPl === SAME)).toHaveLength(1);
+      const report = (await reportOf(draft.id))!;
+      expect(report.changed).toEqual([expect.objectContaining({ reasonPl: "Pierwsza." })]);
+      expect(report.notes).toEqual([expect.objectContaining({ reasonPl: "Druga.", fixRejected: true })]);
+      expect(draft.rejectedCount).toBe(0);
+    });
+
     it("fix ćwiczenia „Posłuchaj i wybierz” → replace", async () => {
       const { services, reviewer } = await world();
       let replacedWith: string | undefined;
@@ -320,13 +344,14 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
         const options = exercise.options as { id: string; text: string }[];
         const used = new Set(options.map((option) => option.text));
         const words = input.exercises.flatMap(({ exercise: other }) => ((other as Raw).options as { text: string }[] | undefined)?.map((option) => option.text) ?? []);
-        replacedWith = words.find((word) => !used.has(word))!;
-        expect(replacedWith).toBeDefined();
+        replacedWith = words.find((word) => !used.has(word));
+        if (replacedWith === undefined) return verdictsFor(input, {});
         return verdictsFor(input, {
           [n]: { n, verdict: "fix", category: "ambiguous", reasonPl: "Dystraktor brzmiał podobnie.", exercise: { ...exercise, options: [options[0], { id: "b", text: replacedWith }] } },
         });
       };
       const { draft } = await generateChapter(services, TWO_OBJECTIVES);
+      expect(replacedWith).toBeDefined();
       const listen = draft.exercises.filter((exercise) => exercise.exerciseType === "lesson_listen_choice");
       expect(listen.some((exercise) => exercise.options?.[1]?.text === replacedWith)).toBe(true);
       expect((await reportOf(draft.id))!.changed).toHaveLength(1);
@@ -395,11 +420,12 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
         if (target !== undefined) return verdictsFor(input, {});
         const n = nOf(input, (exercise) => exercise.exerciseType === "lesson_open_answer");
         target = shown(input, n);
-        const example = input.cardExamples[input.objective.id]![0]!;
-        expect(example).toBeDefined();
+        const example = input.cardExamples[input.objective.id]?.[0] ?? "";
         return verdictsFor(input, { [n]: { n, verdict: "fix", category: "unnatural_language", reasonPl: "Sztuczne zdanie.", exercise: { ...target, answer: example.replace(/\.$/u, "") } } });
       };
       const { draft } = await generateChapter(services, TWO_OBJECTIVES);
+      const first = reviewer.inputs[0]!;
+      expect(first.cardExamples[first.objective.id]?.[0]).toBeTruthy();
       const original = draft.exercises.find((exercise) => exercise.answer === target!.answer)!;
       expect(original).toBeDefined();
       expect((await reportOf(draft.id))!.notes).toEqual([expect.objectContaining({ exerciseId: original.id, fixRejected: true })]);
@@ -474,11 +500,11 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       const { deckId, draft } = await generateChapter(services, WEAR_MATERIAL, "Ubrania");
       expect(draft.exercises).toHaveLength(6);
       const FIXED = "Ona nosi spódnicę. Wpisz brakujące słowo.";
-      reviewer.behavior = (input) => {
-        expect(input.existingExercises).toHaveLength(6);
-        return verdictsFor(input, { 1: { n: 1, verdict: "fix", category: "unclear_instruction", reasonPl: "Doprecyzowano.", exercise: { ...shown(input, 1), instructionPl: FIXED } } });
-      };
+      reviewer.behavior = (input) =>
+        verdictsFor(input, { 1: { n: 1, verdict: "fix", category: "unclear_instruction", reasonPl: "Doprecyzowano.", exercise: { ...shown(input, 1), instructionPl: FIXED } } });
       const { after } = await regenerate(services, deckId, draft, 1);
+      expect(reviewer.inputs.at(-1)!.existingExercises).toHaveLength(6);
+      expect(reviewer.inputs.at(-1)!.exercises).toHaveLength(1);
       expect(after.exercises).toHaveLength(7);
       expect(after.exercises.some((exercise) => exercise.instructionPl === FIXED)).toBe(true);
       const report = (await reportOf(after.id))!;
@@ -619,12 +645,12 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
     const FIXED = "Poprawione polecenie rundy. Wybierz słowo.";
     reviewer.behavior = (input) => {
       if (reviewer.inputs.length === 1) return verdictsFor(input, {});
-      expect(input.existingExercises).toHaveLength(3);
       const n = nOf(input, (exercise) => exercise.exerciseType === "lesson_choice");
       return verdictsFor(input, { [n]: { n, verdict: "fix", category: "unclear_instruction", reasonPl: "Doprecyzowano.", exercise: { ...shown(input, n), instructionPl: FIXED } } });
     };
     const { draft } = await generateChapter(services, WEAR_MATERIAL, "Ubrania");
     expect(reviewer.inputs).toHaveLength(2);
+    expect(reviewer.inputs[1]!.existingExercises).toHaveLength(3);
     expect(draft.exercises.some((exercise) => exercise.instructionPl === FIXED)).toBe(true);
     expect(draft.coverage).toEqual([]);
     const report = (await reportOf(draft.id))!;

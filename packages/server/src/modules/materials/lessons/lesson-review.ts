@@ -4,7 +4,7 @@ import type { GenerationDeps } from "../../../config";
 import { lessonExerciseIdentity, lessonIdentityOptionsOf } from "../../../domain/lessons/exercise-identity";
 import { exerciseExposureText } from "../../../domain/lessons/exposure-key";
 import { findExposureLeaks, type ExposureLeak } from "../../../domain/lessons/exposure-leaks";
-import { findingText, REVIEW_CATEGORIES, reviewRoleFor, type ReviewCategory } from "../../../domain/lessons/review-criteria";
+import { findingText, NOTE_ONLY_REVIEW_CATEGORIES, REVIEW_CATEGORIES, reviewRoleFor, type ReviewCategory } from "../../../domain/lessons/review-criteria";
 import { exerciseSnippet, statusFromObjectives, type LessonReviewReport, type ReviewReason } from "../../../domain/lessons/review-report";
 import { decideObjectiveReview, type ParsedVerdict } from "../../../domain/lessons/review-verdicts";
 import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
@@ -181,25 +181,27 @@ interface ObjectiveBatch {
 
 type ObjectiveOutcome =
   | { readonly kind: "unreviewed"; readonly reason: ReviewReason; readonly durationMs?: number }
-  | { readonly kind: "reviewed"; readonly verdicts: readonly unknown[]; readonly durationMs: number };
+  | { readonly kind: "reviewed"; readonly verdicts: readonly unknown[]; readonly durationMs?: number };
 
 /**
  * Walidacja poprawki (spec §5.1): ten sam typ, zagadnienie i rodzina; cała partia zagadnienia
- * z poprawką w miejscu oryginału przechodzi `acceptFreshLessonPool`, poprawka jest przyjęta,
- * a żadne inne ćwiczenie partii nie odpada z jej powodu (porównanie z partią bez poprawki);
- * poprawka nie jest ofiarą ani źródłem twardego ujawnienia. Zwraca ćwiczenie po
+ * (`drafts` — bieżący stan, z poprawkami przyjętymi wcześniej) z poprawką w miejscu oryginału
+ * przechodzi `acceptFreshLessonPool`, poprawka jest przyjęta, a żadne inne ćwiczenie partii nie
+ * odpada z jej powodu (porównanie z partią bez tej poprawki); poprawka nie jest ofiarą ani
+ * źródłem twardego ujawnienia i nie tworzy nowej ofiary twardej wśród ćwiczeń szkicu,
+ * świeżych innych zagadnień (`others`, po ich przeglądzie) i partii. Zwraca ćwiczenie po
  * sanityzacji puli albo `undefined`.
  */
 function validatedFix(
   ctx: ReviewPhaseContext,
-  batch: ObjectiveBatch,
+  drafts: readonly LessonExerciseDraft[],
+  others: readonly LessonExerciseDraft[],
   index: number,
   rawFix: Record<string, unknown>,
   poolCheck: (raw: readonly unknown[]) => LessonExerciseDraft[],
-  baseline: () => LessonExerciseDraft[],
 ): LessonExerciseDraft | undefined {
   const { subject } = ctx;
-  const original = batch.drafts[index]!;
+  const original = drafts[index]!;
   const sameIdentity = (candidate: { exerciseType?: unknown; objectiveId?: unknown; familyId?: unknown }) =>
     candidate.exerciseType === original.exerciseType &&
     candidate.objectiveId === original.objectiveId &&
@@ -207,12 +209,11 @@ function validatedFix(
   if (!sameIdentity(rawFix)) return undefined;
 
   // Inne ćwiczenia partii przyjęte bez poprawki muszą zostać przyjęte także z nią.
-  const others = baseline().map((draft) => fingerprintOf(draft, subject));
-  const originalAt = others.indexOf(fingerprintOf(original, subject));
-  if (originalAt !== -1) others.splice(originalAt, 1);
-  const withFix = poolCheck(batch.drafts.map((draft, position) => (position === index ? rawFix : draft)));
-  const remaining = [...withFix];
-  for (const fingerprint of others) {
+  const kept = poolCheck(drafts).map((draft) => fingerprintOf(draft, subject));
+  const originalAt = kept.indexOf(fingerprintOf(original, subject));
+  if (originalAt !== -1) kept.splice(originalAt, 1);
+  const remaining = poolCheck(drafts.map((draft, position) => (position === index ? rawFix : draft)));
+  for (const fingerprint of kept) {
     const at = remaining.findIndex((draft) => fingerprintOf(draft, subject) === fingerprint);
     if (at === -1) return undefined;
     remaining.splice(at, 1);
@@ -221,16 +222,16 @@ function validatedFix(
   const candidate = remaining[0]!;
 
   // Ujawnienia: poprawka nie może być ofiarą ani tworzyć nowej ofiary twardej.
-  const leakInput = (drafts: readonly LessonExerciseDraft[]) => ({
-    exercises: [...ctx.existing, ...drafts],
+  const leakInput = (batch: readonly LessonExerciseDraft[]) => ({
+    exercises: [...ctx.existing, ...others, ...batch],
     examples: ctx.examples,
     objectiveOrder: ctx.objectiveOrder,
     subject,
     mode: "generation" as const,
   });
-  const fixIndex = ctx.existing.length + index;
-  const leaksWith = findExposureLeaks(leakInput(batch.drafts.map((draft, position) => (position === index ? candidate : draft))));
-  const before = hardVictims(findExposureLeaks(leakInput(batch.drafts)));
+  const fixIndex = ctx.existing.length + others.length + index;
+  const leaksWith = findExposureLeaks(leakInput(drafts.map((draft, position) => (position === index ? candidate : draft))));
+  const before = hardVictims(findExposureLeaks(leakInput(drafts)));
   for (const leak of leaksWith) {
     if (leak.kind !== "hard") continue;
     if (leak.index === fixIndex) return undefined;
@@ -238,6 +239,123 @@ function validatedFix(
     if (!before.has(leak.index)) return undefined;
   }
   return candidate;
+}
+
+interface BatchReview {
+  readonly replacements: ReadonlyMap<number, LessonExerciseDraft>;
+  readonly dropIndexes: ReadonlySet<number>;
+  readonly meta: ReadonlyMap<LessonExerciseDraft, ReviewMeta>;
+  readonly dropped: LessonReviewReport["dropped"];
+  readonly status: "reviewed" | "suspicious";
+  readonly counts: { ok: number; note: number; fix: number; drop: number };
+  readonly invalid: number;
+  readonly leaks: number;
+}
+
+/**
+ * Werdykty jednego zagadnienia → zmiany (bez zapisu do stanu fazy; stosuje je wywołujący).
+ * Poprawki walidowane po kolei: każda widzi wcześniej przyjęte poprawki swojej partii,
+ * a jako tło — ćwiczenia szkicu i bieżący stan świeżych innych zagadnień (`current`).
+ */
+function reviewBatch(
+  ctx: ReviewPhaseContext,
+  batch: ObjectiveBatch,
+  rawVerdicts: readonly unknown[],
+  current: readonly (LessonExerciseDraft | undefined)[],
+  hardLeakOf: ReadonlyMap<number, ExposureLeak>,
+  idOf: (alias: unknown) => unknown,
+): BatchReview {
+  const { subject } = ctx;
+  const identityOptions = lessonIdentityOptionsOf(subject);
+  const own = new Set(batch.freshIndexes);
+  const others = current.flatMap((exercise, index) => (exercise === undefined || own.has(index) ? [] : [exercise]));
+  const background = [...ctx.existing, ...others];
+  const listen = batch.drafts.filter((exercise) => exercise.exerciseType === "lesson_listen_choice").length;
+  const poolCheck = (rawExercises: readonly unknown[]) =>
+    acceptFreshLessonPool({
+      rawExercises,
+      subject,
+      topic: ctx.topic,
+      material: ctx.material,
+      familyScope: null,
+      existingDrafts: ctx.existing,
+      existingAnswers: new Set(background.map((exercise) => exercise.answer)),
+      existingExerciseIdentities: new Set(background.map((exercise) => lessonExerciseIdentity(exercise, identityOptions))),
+      objectiveLimits: new Map([[batch.objectiveId, { count: batch.drafts.length - listen, listen }]]),
+    }).accepted;
+
+  const drafts = [...batch.drafts];
+  let invalid = 0;
+  const parsed: ParsedVerdict[] = [];
+  const candidates = new Map<number, LessonExerciseDraft>();
+  const seen = new Set<number>();
+  for (const raw of rawVerdicts) {
+    const verdict = readVerdict(raw);
+    if (verdict === undefined) {
+      invalid += 1;
+      continue;
+    }
+    const inRange = verdict.n >= 1 && verdict.n <= drafts.length;
+    // Tylko pierwszy werdykt danego n się liczy (duplikat zliczy domena jako nieczytelny).
+    const firstForN = inRange && !seen.has(verdict.n);
+    if (inRange) seen.add(verdict.n);
+    if (verdict.verdict !== "fix") {
+      parsed.push(verdict);
+      continue;
+    }
+    const { exercise, ...rest } = verdict;
+    const index = verdict.n - 1;
+    // Poprawka, która i tak będzie tylko uwagą (obliczenia, `too_hard`), nie wchodzi do partii.
+    const replaceable = firstForN && exercise !== null &&
+      drafts[index]!.exerciseType !== "lesson_calculation" && !NOTE_ONLY_REVIEW_CATEGORIES.has(verdict.category);
+    const candidate = replaceable
+      ? validatedFix(ctx, drafts, others, index, { ...exercise, objectiveId: idOf(exercise.objectiveId) }, poolCheck)
+      : undefined;
+    if (candidate !== undefined) {
+      candidates.set(index, candidate);
+      drafts[index] = candidate;
+    }
+    parsed.push({ ...rest, fixValid: candidate !== undefined });
+  }
+
+  const hardLeakIndexes = new Set(batch.freshIndexes.flatMap((freshIndex, position) => (hardLeakOf.has(freshIndex) ? [position] : [])));
+  const decision = decideObjectiveReview({
+    freshCount: batch.drafts.length,
+    objectiveTotal: ctx.existing.filter((exercise) => exercise.objectiveId === batch.objectiveId).length + batch.drafts.length,
+    verdicts: parsed,
+    calculationIndexes: new Set(batch.drafts.flatMap((exercise, position) => (exercise.exerciseType === "lesson_calculation" ? [position] : []))),
+    hardLeakIndexes,
+  });
+
+  const replacements = new Map<number, LessonExerciseDraft>();
+  const dropIndexes = new Set<number>();
+  const meta = new Map<LessonExerciseDraft, ReviewMeta>();
+  const dropped: LessonReviewReport["dropped"] = [];
+  const counts = { ok: 0, note: 0, fix: 0, drop: 0 };
+  decision.outcomes.forEach((decided, position) => {
+    const original = batch.drafts[position]!;
+    const freshIndex = batch.freshIndexes[position]!;
+    if (decided.kind === "keep") {
+      counts.ok += 1;
+    } else if (decided.kind === "keep_with_note") {
+      counts.note += 1;
+      meta.set(original, { note: { category: decided.category, reasonPl: decided.reasonPl, fixRejected: decided.fixRejected } });
+    } else if (decided.kind === "replace") {
+      counts.fix += 1;
+      const replacement = candidates.get(position)!;
+      const addedVariants = replacement.acceptedAnswers.filter((variant) => !original.acceptedAnswers.includes(variant));
+      replacements.set(freshIndex, replacement);
+      meta.set(replacement, { changed: { category: decided.category, reasonPl: decided.reasonPl, beforePl: exerciseSnippet(original), addedVariants } });
+    } else {
+      counts.drop += 1;
+      dropIndexes.add(freshIndex);
+      dropped.push({ objectiveId: batch.objectiveId, category: decided.category, reasonPl: decided.reasonPl, snippet: exerciseSnippet(original) });
+    }
+  });
+  return {
+    replacements, dropIndexes, meta, dropped, status: decision.status, counts,
+    invalid: invalid + decision.invalidVerdicts, leaks: hardLeakIndexes.size,
+  };
 }
 
 /** Wykonuje fazę przeglądu dla świeżych ćwiczeń przebiegu (opis w nagłówku modułu). */
@@ -345,96 +463,43 @@ export async function reviewFreshExercises(ctx: ReviewPhaseContext): Promise<Rev
   const meta = new Map<LessonExerciseDraft, ReviewMeta>();
   const objectives: LessonReviewReport["objectives"] = [];
   const dropped: LessonReviewReport["dropped"] = [];
-  const identityOptions = lessonIdentityOptionsOf(subject);
+  // Bieżący stan świeżych ćwiczeń: poprawki i usunięcia zagadnień przetworzonych wcześniej
+  // są tłem walidacji kolejnych (dwie poprawki nie mogą zbiec się w ten sam bodziec).
+  const current: (LessonExerciseDraft | undefined)[] = [...ctx.fresh];
 
   for (const batch of batches) {
     const result = settled.get(batch.objectiveId);
     const outcome: ObjectiveOutcome = result?.status === "fulfilled" ? result.value : { kind: "unreviewed", reason: "failed" };
     const slug = batch.objectiveId.split(".").at(-1);
-    if (outcome.kind === "unreviewed") {
-      objectives.push({ objectiveId: batch.objectiveId, status: "unreviewed", reason: outcome.reason });
-      console.log(`[lesson-review] run=${ctx.runId} zagadnienie=${slug} status=unreviewed reason=${outcome.reason} durationMs=${outcome.durationMs ?? 0}`);
+    let reviewed: BatchReview | undefined;
+    let failure: ReviewReason | undefined = outcome.kind === "unreviewed" ? outcome.reason : undefined;
+    if (outcome.kind === "reviewed") {
+      try {
+        reviewed = reviewBatch(ctx, batch, outcome.verdicts, current, hardLeakOf, idOf);
+      } catch {
+        // Nieprzewidziany błąd walidacji poprawek: zagadnienie bez zmian, przebieg trwa.
+        failure = "failed";
+      }
+    }
+    if (reviewed === undefined) {
+      objectives.push({ objectiveId: batch.objectiveId, status: "unreviewed", reason: failure ?? "failed" });
+      console.log(`[lesson-review] run=${ctx.runId} zagadnienie=${slug} status=unreviewed reason=${failure ?? "failed"} durationMs=${outcome.durationMs ?? 0}`);
       continue;
     }
-
-    // Walidacja poprawek: istniejące ćwiczenia szkicu i świeże innych zagadnień jako tło duplikatów.
-    const background = [...ctx.existing, ...ctx.fresh.filter((exercise) => exercise.objectiveId !== batch.objectiveId)];
-    const listen = batch.drafts.filter((exercise) => exercise.exerciseType === "lesson_listen_choice").length;
-    const poolCheck = (rawExercises: readonly unknown[]) =>
-      acceptFreshLessonPool({
-        rawExercises,
-        subject,
-        topic: ctx.topic,
-        material: ctx.material,
-        familyScope: null,
-        existingDrafts: ctx.existing,
-        existingAnswers: new Set(background.map((exercise) => exercise.answer)),
-        existingExerciseIdentities: new Set(background.map((exercise) => lessonExerciseIdentity(exercise, identityOptions))),
-        objectiveLimits: new Map([[batch.objectiveId, { count: batch.drafts.length - listen, listen }]]),
-      }).accepted;
-    let baselineAccepted: LessonExerciseDraft[] | undefined;
-    const baseline = () => (baselineAccepted ??= poolCheck(batch.drafts));
-
-    let invalid = 0;
-    const parsed: ParsedVerdict[] = [];
-    const candidates = new Map<number, LessonExerciseDraft>();
-    const seen = new Set<number>();
-    for (const raw of outcome.verdicts) {
-      const verdict = readVerdict(raw);
-      if (verdict === undefined) {
-        invalid += 1;
-        continue;
-      }
-      if (verdict.verdict !== "fix") {
-        parsed.push(verdict);
-        if (verdict.n >= 1 && verdict.n <= batch.drafts.length) seen.add(verdict.n);
-        continue;
-      }
-      const { exercise, ...rest } = verdict;
-      const index = verdict.n - 1;
-      // Tylko pierwszy werdykt danego n się liczy (duplikat zliczy domena jako nieczytelny).
-      const firstForN = verdict.n >= 1 && verdict.n <= batch.drafts.length && !seen.has(verdict.n);
-      if (firstForN) seen.add(verdict.n);
-      const candidate = firstForN && exercise !== null && batch.drafts[index]!.exerciseType !== "lesson_calculation"
-        ? validatedFix(ctx, batch, index, { ...exercise, objectiveId: idOf(exercise.objectiveId) }, poolCheck, baseline)
-        : undefined;
-      if (candidate !== undefined) candidates.set(index, candidate);
-      parsed.push({ ...rest, fixValid: candidate !== undefined });
+    for (const [freshIndex, replacement] of reviewed.replacements) {
+      replacements.set(freshIndex, replacement);
+      current[freshIndex] = replacement;
     }
-
-    const hardLeakIndexes = new Set(batch.freshIndexes.flatMap((freshIndex, position) => (hardLeakOf.has(freshIndex) ? [position] : [])));
-    const decision = decideObjectiveReview({
-      freshCount: batch.drafts.length,
-      objectiveTotal: ctx.existing.filter((exercise) => exercise.objectiveId === batch.objectiveId).length + batch.drafts.length,
-      verdicts: parsed,
-      calculationIndexes: new Set(batch.drafts.flatMap((exercise, position) => (exercise.exerciseType === "lesson_calculation" ? [position] : []))),
-      hardLeakIndexes,
-    });
-
-    const counts = { ok: 0, note: 0, fix: 0, drop: 0 };
-    decision.outcomes.forEach((decided, position) => {
-      const original = batch.drafts[position]!;
-      const freshIndex = batch.freshIndexes[position]!;
-      if (decided.kind === "keep") {
-        counts.ok += 1;
-      } else if (decided.kind === "keep_with_note") {
-        counts.note += 1;
-        meta.set(original, { note: { category: decided.category, reasonPl: decided.reasonPl, fixRejected: decided.fixRejected } });
-      } else if (decided.kind === "replace") {
-        counts.fix += 1;
-        const replacement = candidates.get(position)!;
-        const addedVariants = replacement.acceptedAnswers.filter((variant) => !original.acceptedAnswers.includes(variant));
-        replacements.set(freshIndex, replacement);
-        meta.set(replacement, { changed: { category: decided.category, reasonPl: decided.reasonPl, beforePl: exerciseSnippet(original), addedVariants } });
-      } else {
-        counts.drop += 1;
-        dropIndexes.add(freshIndex);
-        dropped.push({ objectiveId: batch.objectiveId, category: decided.category, reasonPl: decided.reasonPl, snippet: exerciseSnippet(original) });
-      }
-    });
-    objectives.push({ objectiveId: batch.objectiveId, status: decision.status });
+    for (const freshIndex of reviewed.dropIndexes) {
+      dropIndexes.add(freshIndex);
+      current[freshIndex] = undefined;
+    }
+    for (const [exercise, entry] of reviewed.meta) meta.set(exercise, entry);
+    dropped.push(...reviewed.dropped);
+    objectives.push({ objectiveId: batch.objectiveId, status: reviewed.status });
+    const { counts } = reviewed;
     console.log(
-      `[lesson-review] run=${ctx.runId} zagadnienie=${slug} ok=${counts.ok} note=${counts.note} fix=${counts.fix} drop=${counts.drop} invalid=${invalid + decision.invalidVerdicts} leaks=${hardLeakIndexes.size} status=${decision.status} durationMs=${outcome.durationMs}`,
+      `[lesson-review] run=${ctx.runId} zagadnienie=${slug} ok=${counts.ok} note=${counts.note} fix=${counts.fix} drop=${counts.drop} invalid=${reviewed.invalid} leaks=${reviewed.leaks} status=${reviewed.status} durationMs=${outcome.durationMs ?? 0}`,
     );
   }
 

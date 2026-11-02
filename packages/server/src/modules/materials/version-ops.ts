@@ -61,6 +61,13 @@ export interface SourceVersion {
   lessonContext: Record<string, unknown> | null;
 }
 
+/** Kopia `lesson_context` bez raportu kontroli jakości (pozostałe pola bez zmian). */
+function withoutReviewReport(context: Record<string, unknown> | null | undefined): Record<string, unknown> | null | undefined {
+  if (!context || !("review" in context)) return context;
+  const { review: _review, ...rest } = context;
+  return rest;
+}
+
 /**
  * Szkielet „nowy edytowalny szkic z bieżącej opublikowanej wersji”
  * (architecture.md §12: `POST /…/:id/draft`): blokada wiersza zestawu (serializuje
@@ -72,13 +79,6 @@ export interface SourceVersion {
  * ta funkcja nie wie, czy kopiuje słówka czy ćwiczenia lekcji. Zwraca id nowej
  * wersji; wywołujący odczytuje właściwe DTO.
  */
-/** Kopia `lesson_context` bez raportu kontroli jakości (pozostałe pola bez zmian). */
-function withoutReviewReport(context: Record<string, unknown> | null | undefined): Record<string, unknown> | null | undefined {
-  if (!context || !("review" in context)) return context;
-  const { review: _review, ...rest } = context;
-  return rest;
-}
-
 export async function createVersionFromPublished(
   tx: Tx,
   deckId: string,
