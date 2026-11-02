@@ -14,6 +14,9 @@ import { ManualClock, buildTestServices, handleParentApi, testDatabase, truncate
 const { db, pool } = testDatabase();
 
 afterAll(async () => {
+  // Seed z migracji (singleton) musi przetrwać plik: inne pliki robią na nim UPDATE.
+  const settings = await pool.query("select count(*)::int as count from learning_app.family_settings");
+  expect(settings.rows[0].count).toBe(1);
   await pool.end();
 });
 
@@ -419,8 +422,13 @@ describe("cost report", () => {
       `truncate learning_app.provider_usage_events, learning_app.generation_runs, learning_app.media_assets,
                 learning_app.learning_sessions, learning_app.assignments,
                 learning_app.deck_versions, learning_app.decks,
-                learning_app.child_profiles, learning_app.family_settings cascade`,
+                learning_app.child_profiles cascade`,
     );
+    // Singleton z migracji seed (0001) — nie czyścimy go, tylko przywracamy strefę.
+    await pool.query("update learning_app.family_settings set timezone='Europe/Warsaw'");
+  });
+  afterEach(async () => {
+    await pool.query("update learning_app.family_settings set timezone='Europe/Warsaw'");
   });
 
   async function insertTitledDeck(title: string, kind: "vocabulary" | "lesson"): Promise<string> {
@@ -491,6 +499,21 @@ describe("cost report", () => {
       decks: [],
       children: [],
     });
+  });
+
+  it("follows a non-default family timezone for the month boundary", async () => {
+    await pool.query("update learning_app.family_settings set timezone='UTC'");
+    // 2026-10-31T23:30Z: w UTC to jeszcze październik, w Warszawie już 1 listopada.
+    await insertUsage(validRow({
+      feature: "deck_generation", scope_kind: "none", cost_usd: "0.500000", occurred_at: new Date("2026-10-31T23:30:00.000Z"),
+    }));
+
+    const october = await readParentCosts(services, { month: "2026-10" });
+    const november = await readParentCosts(services, { month: "2026-11" });
+
+    expect(october.timezone).toBe("UTC");
+    expect(october.totals.costUsd).toBe("0.500000");
+    expect(november.totals.costUsd).toBe("0.000000");
   });
 
   it("rejects a future month, a malformed one and extra keys", async () => {

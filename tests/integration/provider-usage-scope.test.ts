@@ -72,7 +72,12 @@ afterEach(async () => {
   await recorder.flush();
   for (const dispose of disposers.splice(0)) await dispose();
 });
-afterAll(() => pool.end());
+afterAll(async () => {
+  // Seed z migracji (singleton) musi przetrwać plik: inne pliki robią na nim UPDATE.
+  const settings = await pool.query("select count(*)::int as count from learning_app.family_settings");
+  expect(settings.rows[0].count).toBe(1);
+  await pool.end();
+});
 
 interface UsageRow {
   feature: string;
