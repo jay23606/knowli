@@ -25,6 +25,14 @@ const openAnswer = (n: number, audio: { state: "ready" | "pending" | "failed"; a
   ...(voiceTone ? { voiceTone } : {}),
 });
 
+const STORY = {
+  sentences: ["Sam has a red bike.", "He rides it to the park.", "The bike is fast.", "Sam is happy."],
+  questions: [{
+    id: "q1", question: "Jaki rower ma Sam?",
+    options: [{ id: "a", text: "czerwony" }, { id: "b", text: "niebieski" }, { id: "c", text: "zielony" }], correctOption: "a",
+  }],
+};
+
 const draft = {
   id: draftId, deckId, editNumber: 2, status: "draft", title: "Mapa", subjectId: "school", topicId: "map", topicVersion: 1,
   subjectTitlePl: "Geografia", objectiveIds: [OBJ], examples: {},
@@ -42,6 +50,9 @@ const draft = {
     { objectiveId: OBJ, cardIndex: 0, audio: { state: "ready", assetId: uuid(91) } },
     { objectiveId: OBJ, cardIndex: 1, audio: { state: "failed" } },
   ],
+  story: STORY,
+  storyEnabled: true,
+  storyAudio: { state: "ready", assetId: uuid(97) } as { state: "ready" | "pending" | "failed"; assetId?: string; previousAssetId?: string },
   assets: [], rejectedCount: 0, coverage: [],
 };
 
@@ -84,9 +95,10 @@ async function openLesson(page: Page, options: { cardRegenerateFails?: boolean; 
     if (path.endsWith("/decks")) return route.fulfill({ json: [{ deckId, title: lesson.title, state: "draft", kind: "lesson", editableVersionId: draftId, publishedVersionId: null }] });
     if (path.endsWith(`/lessons/${deckId}`)) return route.fulfill({ json: { ...lesson, draft: current } });
     if (method === "PATCH" && path.endsWith(`/lesson-drafts/${draftId}`)) {
-      const body = request.postDataJSON() as { exercises: Array<{ voiceTone?: string }> };
+      const body = request.postDataJSON() as { exercises: Array<{ voiceTone?: string }>; story?: typeof STORY | null };
       current = {
         ...current,
+        ...(body.story ? { story: body.story } : {}),
         editNumber: current.editNumber + 1,
         exercises: current.exercises.map((exercise, index) => {
           const { voiceTone: _previous, ...rest } = exercise as typeof exercise & { voiceTone?: string };
@@ -104,6 +116,11 @@ async function openLesson(page: Page, options: { cardRegenerateFails?: boolean; 
         return route.fulfill({ status: 500, json: { code: "internal", message: "Błąd serwera.", retryable: true, requestId: "r" } });
       }
       return route.fulfill({ status: 202, json: { assetId: uuid(96) } });
+    }
+    if (method === "POST" && path.endsWith(`/lesson-drafts/${draftId}/story-audio/regenerate`)) {
+      // nowe nagranie czeka, a poprzednie ujęcie zostaje do odsłuchu (jak z serwera)
+      current = { ...current, storyAudio: { state: "pending", previousAssetId: uuid(97) } };
+      return route.fulfill({ status: 202, json: { assetId: uuid(98) } });
     }
     return route.fulfill({ json: [] });
   });
@@ -264,6 +281,60 @@ test("telefon 320 px: ton i sterowanie nagraniami bez przepełnienia poziomego",
     const box = (await page.getByTestId(id).boundingBox())!;
     expect(box.x, id).toBeGreaterThanOrEqual(-0.5);
     expect(box.x + box.width, id).toBeLessThanOrEqual(320.5);
+  }
+  await expectNoHorizontalOverflow(page);
+});
+
+test("story recording: regenerate posts only the draft id and shows pending with previous take", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const calls = await openLesson(page);
+  const audio = page.getByTestId("lesson-story-audio");
+  await expect(audio).toHaveAttribute("data-audio-state", "ready");
+  await expect(page.getByTestId("lesson-story-audio-listen")).toHaveAccessibleName("Posłuchaj: historyjka na koniec sesji");
+
+  await page.getByTestId("lesson-story-audio-regenerate").click();
+  await expect.poll(() => calls.requests.some((request) => request.path.endsWith("/story-audio/regenerate"))).toBe(true);
+  const call = calls.requests.find((request) => request.path.endsWith("/story-audio/regenerate"))!;
+  expect(call.path).toBe(`/api/v1/parent/lesson-drafts/${draftId}/story-audio/regenerate`);
+  // identyfikator szkicu jest w ścieżce; treść żądania nie niesie innych pól
+  expect(call.body ?? {}).toEqual({});
+
+  await expect(audio).toHaveAttribute("data-audio-state", "pending");
+  await expect(page.getByTestId("lesson-story-audio-pending")).toHaveText(messages.lessons.promptAudioPending);
+  await expect(page.getByTestId("lesson-story-audio-listen-previous")).toBeVisible();
+  await expect(page.getByTestId("lesson-story-audio-listen")).toHaveCount(0);
+});
+
+test("story recording: editing a sentence hides it, editing a question disables regenerate", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await openLesson(page);
+  await expect(page.getByTestId("lesson-story-audio")).toBeVisible();
+
+  // pytanie nie zmienia nagrania, ale niezapisany formularz blokuje „Nagraj ponownie”
+  await page.getByTestId("lesson-story-question-q1").fill("Jaki rower ma Sam dzisiaj?");
+  await expect(page.getByTestId("lesson-story-audio")).toBeVisible();
+  await expect(page.getByTestId("lesson-story-audio-regenerate")).toBeDisabled();
+
+  // zmiana zdania: zapisane nagranie dotyczy starego tekstu, więc znika
+  await page.getByTestId("lesson-story-sentence-0").fill("Sam has a blue bike.");
+  await expect(page.getByTestId("lesson-story-audio")).toHaveCount(0);
+
+  // powrót do zapisanego zdania przywraca nagranie
+  await page.getByTestId("lesson-story-sentence-0").fill("Sam has a red bike.");
+  await expect(page.getByTestId("lesson-story-audio")).toBeVisible();
+});
+
+test("story recording controls fit a 375 px phone", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await openLesson(page);
+  await expect(page.getByTestId("lesson-story-audio")).toBeVisible();
+  await page.getByTestId("lesson-story-audio").scrollIntoViewIfNeeded();
+  for (const id of ["lesson-story-audio-listen", "lesson-story-audio-regenerate"]) {
+    const box = (await page.getByTestId(id).boundingBox())!;
+    // panel rodzica: cele dotykowe ≥ 44 px (Mantine `md`), jak w pozostałych specyfikacjach panelu
+    expect(box.height, id).toBeGreaterThanOrEqual(44);
+    expect(box.x, id).toBeGreaterThanOrEqual(-0.5);
+    expect(box.x + box.width, id).toBeLessThanOrEqual(375.5);
   }
   await expectNoHorizontalOverflow(page);
 });

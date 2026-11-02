@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { defaultMediaSettings } from "../../config";
 import { STYLE_SENTENCES_PL } from "../../providers/tts-style-profile";
-import { requiredAssetsFor, requiredAssetsForLessonCards, requiredAssetsForLessonExercise } from "./media-reconciliation";
+import { requiredAssetForLessonStory, requiredAssetsFor, requiredAssetsForLessonCards, requiredAssetsForLessonExercise } from "./media-reconciliation";
+import type { LessonStory } from "../../domain/lessons/story";
 import { schoolSubject } from "../../domain/lessons/subjects/school/module";
 import { payloadToItem } from "./item-payload";
 
@@ -195,6 +196,46 @@ describe("requiredAssetsForLessonExercise — zdanie feedbacku (feedback_audio)"
       exerciseType: "lesson_choice", stem: "What's the weather like?", answerLocale: "en-GB",
       options: [{ id: "a", text: "It's sunny." }, { id: "b", text: "It's a coat." }], correctOption: "a",
     }, defaultMediaSettings, on)).toEqual([]);
+  });
+});
+
+describe("requiredAssetForLessonStory — nagranie historyjki lekcji", () => {
+  const grammar = { lessonStory: true, answerLocale: "en-GB" };
+  const story: LessonStory = {
+    sentences: ["Tom has a cat.", " It  is small. "],
+    questions: [{ id: "q1", question: "Jaki jest kot?", options: [{ id: "a", text: "mały" }, { id: "b", text: "duży" }, { id: "c", text: "czarny" }], correctOption: "a" }],
+  };
+
+  it("zdania historyjki jako feedback_audio w locale odpowiedzi", () => {
+    const required = requiredAssetForLessonStory(story, grammar, defaultMediaSettings);
+    expect(required?.role).toBe("feedback_audio");
+    expect(required?.kind).toBe("tts");
+    expect(required?.metadata).toMatchObject({ kind: "tts", text: "Tom has a cat. It is small.", locale: "en-GB" });
+  });
+
+  it("styl wypowiedzi nie jest przekazywany: tylko instrukcja języka en-GB", () => {
+    const settings = {
+      ...defaultMediaSettings,
+      tts: { ...defaultMediaSettings.tts, style: "instructions" as const, instructions: { "pl-PL": "Mów po polsku.", "en-GB": "Speak British English." } },
+    };
+    const required = requiredAssetForLessonStory(story, grammar, settings);
+    expect(required?.metadata.instructions).toBe("Speak British English.");
+    expect(String(required?.metadata.instructions)).not.toContain("polsku");
+  });
+
+  it("brak nagrania bez flagi przedmiotu, przedmiotu, historyjki albo tekstu", () => {
+    expect(requiredAssetForLessonStory(story, { ...grammar, lessonStory: false }, defaultMediaSettings)).toBeNull();
+    expect(requiredAssetForLessonStory(story, undefined, defaultMediaSettings)).toBeNull();
+    expect(requiredAssetForLessonStory(undefined, grammar, defaultMediaSettings)).toBeNull();
+    expect(requiredAssetForLessonStory({ ...story, sentences: ["  ", " \t "] }, grammar, defaultMediaSettings)).toBeNull();
+  });
+
+  it("fingerprint zależy od zdań, nie od pytań", () => {
+    const base = requiredAssetForLessonStory(story, grammar, defaultMediaSettings)!.fingerprint;
+    const otherQuestions: LessonStory = { ...story, questions: [{ ...story.questions[0]!, question: "Jaki jest kot Toma?" }] };
+    expect(requiredAssetForLessonStory(otherQuestions, grammar, defaultMediaSettings)!.fingerprint).toBe(base);
+    const otherSentence: LessonStory = { ...story, sentences: ["Tom has a dog.", "It is small."] };
+    expect(requiredAssetForLessonStory(otherSentence, grammar, defaultMediaSettings)!.fingerprint).not.toBe(base);
   });
 });
 

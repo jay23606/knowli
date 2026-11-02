@@ -46,6 +46,7 @@ import {
   regenerateLessonCardAudio,
   regenerateLessonPromptAudio,
   regenerateLessonStory,
+  regenerateLessonStoryAudio,
   regenerateObjective,
   regenerateRevisionAsset,
   removeAssignment,
@@ -116,6 +117,7 @@ vi.mock("@learning/server", async (importActual) => {
     regenerateObjective: vi.fn(),
     regenerateLessonPromptAudio: vi.fn(),
     regenerateLessonCardAudio: vi.fn(),
+    regenerateLessonStoryAudio: vi.fn(),
     regenerateLessonStory: vi.fn(),
     retryGeneration: vi.fn(),
     upsertAssignment: vi.fn(),
@@ -1320,6 +1322,23 @@ describe("parent oRPC router — lesson-drafts", () => {
     expect(regenerateLessonCardAudio).not.toHaveBeenCalled();
   });
 
+  it("regenerateStoryAudio zleca ponowne nagranie historyjki i zwraca 202 {assetId}", async () => {
+    vi.mocked(regenerateLessonStoryAudio).mockResolvedValueOnce({ assetId });
+
+    const response = await call(`/lesson-drafts/${lessonDraftId}/story-audio/regenerate`, jsonInit({}));
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ assetId });
+    expect(regenerateLessonStoryAudio).toHaveBeenCalledWith(services, { lessonDraftId });
+  });
+
+  it("regenerateStoryAudio odrzuca nadmiarowe pole bez wołania przypadku użycia", async () => {
+    const response = await call(`/lesson-drafts/${lessonDraftId}/story-audio/regenerate`, jsonInit({ objectiveId: "obj-1" }));
+
+    expect(response.status).toBe(400);
+    expect(regenerateLessonStoryAudio).not.toHaveBeenCalled();
+  });
+
   const storyRequestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const story = {
     sentences: ["Tom has a dog.", "The dog is brown.", "They run in the park.", "Tom loves his dog."],
@@ -1727,6 +1746,7 @@ describe("parent oRPC router — CSRF (Origin)", () => {
       ],
       [`/lesson-drafts/${lessonDraftId}/prompt-audio/regenerate`, jsonInit({ itemRevisionId: draftId }, evil), vi.mocked(regenerateLessonPromptAudio)],
       [`/lesson-drafts/${lessonDraftId}/card-audio/regenerate`, jsonInit({ objectiveId: "obj-1", cardIndex: 0 }, evil), vi.mocked(regenerateLessonCardAudio)],
+      [`/lesson-drafts/${lessonDraftId}/story-audio/regenerate`, jsonInit({}, evil), vi.mocked(regenerateLessonStoryAudio)],
       [`/generation/${runId}/retry`, { method: "POST", headers: { ...sessionCookie, ...evil } }, vi.mocked(retryGeneration)],
       [
         `/assignments/${childId}/${deckId}`,

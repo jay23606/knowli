@@ -239,6 +239,13 @@
       "when": 1793790000000,
       "tag": "0033_explanation_audio_role",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1793890000000,
+      "tag": "0034_lesson_story_assets",
+      "breakpoints": true
     }
   ]
 }

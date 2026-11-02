@@ -12,17 +12,24 @@ function lesson(overrides: {
   draftPromptAudio?: string[];
   draftCardAudio?: string[];
   draftExplanationAudio?: string[];
+  draftStoryAudio?: string;
+  publishedStoryAudio?: string;
 }): LessonDeckDto {
-  const version = (states: string[], promptAudio: string[] = [], cardAudio: string[] = [], explanationAudio: string[] = []) => ({
+  const version = (states: string[], promptAudio: string[] = [], cardAudio: string[] = [], explanationAudio: string[] = [], storyAudio?: string) => ({
     assets: states.map((state) => ({ state })),
     exercises: [{}, ...promptAudio.map((state) => ({ promptAudio: { state } })), ...explanationAudio.map((state) => ({ explanationAudio: { state } }))],
     cardAudio: cardAudio.map((state) => ({ audio: { state } })),
+    ...(storyAudio ? { storyAudio: { state: storyAudio } } : {}),
   }) as unknown as Version;
   return {
     generation: overrides.generation ?? null,
     storyGeneration: overrides.storyGeneration ?? null,
-    draft: overrides.draftAssets ? version(overrides.draftAssets, overrides.draftPromptAudio, overrides.draftCardAudio, overrides.draftExplanationAudio) : null,
-    published: overrides.publishedAssets ? version(overrides.publishedAssets) : null,
+    draft: overrides.draftAssets
+      ? version(overrides.draftAssets, overrides.draftPromptAudio, overrides.draftCardAudio, overrides.draftExplanationAudio, overrides.draftStoryAudio)
+      : null,
+    published: overrides.publishedAssets
+      ? version(overrides.publishedAssets, [], [], [], overrides.publishedStoryAudio)
+      : null,
   } as unknown as LessonDeckDto;
 }
 
@@ -70,5 +77,23 @@ describe("lessonPollInterval", () => {
     const failed = { draft: { assets: [], exercises: [{ sentenceAudio: { state: "failed" } }] } } as unknown as LessonDeckDto;
     expect(lessonPollInterval(pending)).toBe(3000);
     expect(lessonPollInterval(failed)).toBe(false);
+  });
+
+  it("polls every 3 s while only the story recording is pending", () => {
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftStoryAudio: "pending" }))).toBe(3000);
+  });
+
+  it("stops polling when the story recording is ready", () => {
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftStoryAudio: "ready" }))).toBe(false);
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftStoryAudio: "failed" }))).toBe(false);
+  });
+
+  it("polls every 3 s while the published story recording is pending", () => {
+    expect(lessonPollInterval(lesson({ publishedAssets: ["approved"], publishedStoryAudio: "pending" }))).toBe(3000);
+    expect(lessonPollInterval(lesson({ publishedAssets: ["approved"], publishedStoryAudio: "ready" }))).toBe(false);
+  });
+
+  it("does not poll for a draft without storyAudio", () => {
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"] }))).toBe(false);
   });
 });

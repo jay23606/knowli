@@ -34,6 +34,19 @@ describe("PromptAudioControls — nazwy dostępności", () => {
   });
 });
 
+describe("PromptAudioControls — historyjka", () => {
+  it("story target renders listen with the story label", () => {
+    const markup = renderParentMarkup(
+      <PromptAudioControls audio={{ state: "ready", assetId: ASSET_ID }} target={{ kind: "story" }}
+        targetLabel={messages.lessons.story.audioTarget} lessonDraftId={DRAFT_ID} deckId={DRAFT_ID}
+        canRegenerate locked={false} testId="lesson-story-audio" onPlay={vi.fn()} />,
+    );
+    expect(markup).toContain('data-testid="lesson-story-audio-listen"');
+    expect(markup).toContain('aria-label="Posłuchaj: historyjka na koniec sesji"');
+    expect(markup).toContain('aria-label="Nagraj ponownie: historyjka na koniec sesji"');
+  });
+});
+
 describe("PromptAudioControls — nagranie wyjaśnienia", () => {
   it("kontrolki wyjaśnienia mają odrębną nazwę dostępności i własny testId", () => {
     const markup = renderParentMarkup(

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { ActionIcon, Alert, Button, Group, Loader, Paper, Radio, Stack, Text, TextInput, Title } from "@mantine/core";
 import { modals } from "@mantine/modals";
 import { messages, type GenerationDto, type LessonStoryDto } from "@learning/contracts";
@@ -30,6 +30,7 @@ const numbered = (template: string, n: number) => template.replace("{n}", String
  * należą do edytora; `locked` = niezapisane zmiany albo konflikt wersji.
  * Generowanie, ponowienie porażki i ponowienie zawieszonego runu (`running`)
  * zastępują istniejącą historyjkę, więc wtedy pytają o potwierdzenie.
+ * Slot `audio` (nagranie lektora, etap 2) leży nad zdaniami, poza polami i podglądem.
  */
 export default function LessonStorySection({
   story,
@@ -39,6 +40,7 @@ export default function LessonStorySection({
   busy,
   locked,
   hasExercises,
+  audio,
   onChange,
   onGenerate,
   onRetry,
@@ -51,6 +53,8 @@ export default function LessonStorySection({
   locked: boolean;
   /** Szkic ma zapisane ćwiczenia — bez nich serwer odrzuca generowanie (`validation`). */
   hasExercises: boolean;
+  /** Odsłuch i „Nagraj ponownie” nagrania (edytor); tylko przy niepustej historyjce, nad zdaniami. */
+  audio?: ReactNode;
   onChange(story: LessonStoryDto | null): void;
   onGenerate(): void;
   onRetry(): void;
@@ -131,6 +135,7 @@ export default function LessonStorySection({
         )}
 
         {!story && <Text size="sm" data-testid="lesson-story-empty">{t.empty}</Text>}
+        {story && audio}
         {/* w trakcie runu historyjki pola są zablokowane: zapis starej edycji nadpisałby świeżo wygenerowaną historyjkę */}
         {story && (editable ? <StoryFields story={story} busy={busy || running} onChange={onChange} /> : <StoryPreview story={story} />)}
 

@@ -438,3 +438,5 @@ Etap B:
   jeśli istniejący spec edytora lekcji obejmuje kartę ćwiczenia.
 
 Nota (2026-10-31): nagranie zdania feedbacku gramatyki (`feedback_audio`, design `2026-10-30-lesson-sentence-readback-design.md`) powstaje bez stylu wypowiedzi (`voiceTone` nie dotyczy tej roli); en-GB dostaje tylko instrukcję wymowy języka.
+
+Nota (2026-11-02): nagranie lektora historyjki lekcji (`lesson_story_assets`, design `2026-11-01-lesson-end-story-design.md` §7) też powstaje bez stylu wypowiedzi: to `feedback_audio` w `answerLocale` przedmiotu (en-GB), z samą instrukcją wymowy języka, bez `voiceTone`.

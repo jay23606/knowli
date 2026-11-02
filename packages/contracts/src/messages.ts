@@ -1101,7 +1101,7 @@ export const messages = {
     story: {
       title: "Historyjka na koniec sesji",
       // Etap 1 (#195): sesja dziecka jeszcze nie pokazuje historyjki — etap 3 przywróci opis zachowania dziecka.
-      info: "Dziecko zobaczy historyjkę na koniec sesji w kolejnej wersji aplikacji. Na razie możesz ją przygotować i sprawdzić tutaj. Pytania nie będą liczyć się do postępu.",
+      info: "Dziecko zobaczy historyjkę na koniec sesji w kolejnej wersji aplikacji. Na razie możesz ją przygotować, sprawdzić i odsłuchać tutaj. Pytania nie będą liczyć się do postępu.",
       sentenceLabel: "Zdanie {n}",
       addSentence: "Dodaj zdanie",
       removeSentence: "Usuń zdanie",
@@ -1120,6 +1120,9 @@ export const messages = {
       remove: "Usuń historyjkę",
       empty: "Ta lekcja nie ma jeszcze historyjki.",
       publishedHint: "Utwórz nową wersję, aby dodać lub zmienić historyjkę.",
+      // Nagranie lektora (etap 2): cel w nazwach dostępności przycisków i wskazówka przy porażce w wersji opublikowanej.
+      audioTarget: "historyjka na koniec sesji",
+      publishedAudioFailed: "Utwórz nową wersję lekcji, aby nagrać ponownie.",
     },
   },
   // Zakładka „Źródła” (Etap 2 rozdziału, design 2026-10-30 §3.4): wklejony tekst rozdziału,

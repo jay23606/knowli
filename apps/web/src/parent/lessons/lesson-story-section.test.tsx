@@ -237,4 +237,27 @@ describe("LessonStorySection", () => {
     renderSection({ editable: false, story: null });
     expect(screen.getByTestId("lesson-story-section").textContent).toContain(t.empty);
   });
+
+  it("renders the audio slot in editable and published views", () => {
+    const audio = <div data-testid="audio-slot">audio</div>;
+    renderSection({ audio });
+    expect(screen.getByTestId("audio-slot")).toBeTruthy();
+    // nad zdaniami: slot poprzedza pierwsze pole zdania
+    const slot = screen.getByTestId("audio-slot");
+    expect(slot.compareDocumentPosition(screen.getByTestId("lesson-story-sentence-0")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    cleanup();
+    renderSection({ audio, editable: false });
+    expect(screen.getByTestId("audio-slot")).toBeTruthy();
+    expect(screen.getByTestId("audio-slot").compareDocumentPosition(screen.getByTestId("lesson-story-sentences")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("does not render the audio slot without a story", () => {
+    renderSection({ story: null, audio: <div data-testid="audio-slot">audio</div> });
+    expect(screen.queryByTestId("audio-slot")).toBeNull();
+  });
+
+  it("info mentions listening to the recording", () => {
+    renderSection();
+    expect(screen.getByTestId("lesson-story-section").textContent).toContain(messages.lessons.story.info);
+  });
 });

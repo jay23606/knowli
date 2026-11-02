@@ -383,17 +383,22 @@ test("parent edits generated story and publishes", async ({ page }) => {
   await enterParent(page);
   const deckId = await createLesson(page, `Historyjka ${randomUUID().slice(0, 8)}`);
   await waitForGeneratedStory(page);
+  // nagranie lektora (fake TTS workera) pojawia się po runie historyjki
+  await expect(page.getByTestId("lesson-story-audio-listen")).toBeVisible({ timeout: 120_000 });
 
   const edited = "Sam has a big red bike.";
   await page.getByTestId("lesson-story-sentence-0").fill(edited);
-  // niezapisana zmiana blokuje generowanie od nowa
+  // niezapisana zmiana blokuje generowanie od nowa, a zmienione zdanie ukrywa nagranie starego tekstu
   await expect(page.getByTestId("lesson-story-generate")).toBeDisabled();
+  await expect(page.getByTestId("lesson-story-audio")).toHaveCount(0);
   const saved = page.waitForResponse((r) => r.request().method() === "PATCH" && /\/api\/v1\/parent\/lesson-drafts\//.test(r.url()));
   await page.getByTestId("save-lesson").click();
   const patch = await saved;
   expect(patch.status(), await patch.text()).toBe(200);
   expect((patch.request().postDataJSON() as { story?: { sentences: string[] } }).story?.sentences[0]).toBe(edited);
   await expect(page.getByTestId("lesson-story-sentence-0")).toHaveValue(edited);
+  // po zapisie nagranie nowego tekstu wraca (gotowe albo w trakcie)
+  await expect(page.getByTestId("lesson-story-audio")).toBeVisible();
 
   await expect(page.getByTestId("publish-lesson")).toBeEnabled({ timeout: 120_000 });
   await page.getByTestId("publish-lesson").click();
@@ -402,6 +407,9 @@ test("parent edits generated story and publishes", async ({ page }) => {
   await expect(page.getByTestId("lesson-story-published-hint")).toBeVisible();
   await expect(page.getByTestId("lesson-story-section")).toContainText(edited);
   await expect(page.getByTestId("lesson-story-sentence-0")).toHaveCount(0);
+  // publikacja nie czeka na nagranie; widok odpytuje przy `pending`. Opublikowana wersja nie ma „Nagraj ponownie”.
+  await expect(page.getByTestId("lesson-story-audio-listen")).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByTestId("lesson-story-audio-regenerate")).toHaveCount(0);
 
   const response = await page.request.get(`/api/v1/parent/lessons/${deckId}`);
   expect(response.ok()).toBeTruthy();

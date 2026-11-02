@@ -49,13 +49,14 @@ export function VoiceToneSelect({ value, disabled, styleEnabled, testId, hint = 
   );
 }
 
-/** Nagranie, którego dotyczą przyciski: pytanie ćwiczenia albo karta zagadnienia. */
+/** Nagranie, którego dotyczą przyciski: pytanie ćwiczenia, karta zagadnienia albo historyjka na koniec sesji. */
 export type PromptAudioTarget =
   | { kind: "prompt"; itemRevisionId: string }
-  | { kind: "card"; objectiveId: string; cardIndex: number };
+  | { kind: "card"; objectiveId: string; cardIndex: number }
+  | { kind: "story" };
 
 /**
- * Odsłuch i „Nagraj ponownie” nagrania pytania lub karty (spec tonu TTS §4.5).
+ * Odsłuch i „Nagraj ponownie” nagrania pytania, karty lub historyjki (spec tonu TTS §4.5).
  * `ready` → „Posłuchaj”; `pending` → „Nagrywanie…”; `failed` → komunikat.
  * Przy `pending` i `failed` „Posłuchaj poprzedniego” odtwarza ujęcie, które
  * słyszy dziecko, gdy takie jest. „Nagraj ponownie” jest w każdym stanie: przy
@@ -111,19 +112,23 @@ export default function PromptAudioControls({ audio, target, role, targetLabel, 
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: orpc.lessons.get.queryKey({ input: { deckId } }) }); };
   const promptMutation = useMutation(orpc.lessonDrafts.regeneratePromptAudio.mutationOptions({ onSuccess: refresh }));
   const cardMutation = useMutation(orpc.lessonDrafts.regenerateCardAudio.mutationOptions({ onSuccess: refresh }));
-  const mutation = target.kind === "prompt" ? promptMutation : cardMutation;
+  const storyMutation = useMutation(orpc.lessonDrafts.regenerateStoryAudio.mutationOptions({ onSuccess: refresh }));
+  const mutation = target.kind === "prompt" ? promptMutation : target.kind === "card" ? cardMutation : storyMutation;
   // Błąd dotyczy nagrania sprzed zmiany: gdy stan nagrania się zmieni (zapis szkicu,
   // odpytywanie), komunikat znika zamiast wisieć obok nowego stanu.
   const { reset: resetPrompt } = promptMutation;
   const { reset: resetCard } = cardMutation;
+  const { reset: resetStory } = storyMutation;
   useEffect(() => {
     resetPrompt();
     resetCard();
-  }, [audio.state, audio.assetId, resetPrompt, resetCard]);
+    resetStory();
+  }, [audio.state, audio.assetId, resetPrompt, resetCard, resetStory]);
 
   const regenerate = () => {
     if (target.kind === "prompt") promptMutation.mutate(promptAudioRegenerateInput(lessonDraftId, target.itemRevisionId, role));
-    else cardMutation.mutate({ lessonDraftId, objectiveId: target.objectiveId, cardIndex: target.cardIndex });
+    else if (target.kind === "card") cardMutation.mutate({ lessonDraftId, objectiveId: target.objectiveId, cardIndex: target.cardIndex });
+    else storyMutation.mutate({ lessonDraftId });
   };
 
   const named = (template: string) => template.replace("{target}", () => targetLabel);

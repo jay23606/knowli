@@ -87,6 +87,7 @@ export {
   deckIdOfLessonVersion,
   regenerateLessonPromptAudio,
   regenerateLessonCardAudio,
+  regenerateLessonStoryAudio,
 } from "./modules/materials";
 export {
   lessonObjectiveProgress,

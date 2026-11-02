@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Services } from "../../config";
 import type { Executor } from "../../db/client";
-import { deckVersions, decks, generationRuns, itemRevisions, lessonCardAssets, mediaAssets, revisionAssets } from "../../db/schema";
+import { deckVersions, decks, generationRuns, itemRevisions, lessonCardAssets, lessonStoryAssets, mediaAssets, revisionAssets } from "../../db/schema";
 import { AppError } from "../../errors";
 import { isUiAudioAssetMetadata } from "../../domain/ui-audio-catalog";
 import { mp3DurationMs } from "../../providers/audio/mp3-duration";
 import { wavDurationMs } from "../../providers/audio/wav";
 import { errorCodeOf, MAX_AUTOMATIC_ATTEMPTS, requireGeneration } from "./generation-runtime";
+import type { AssetRole } from "./media-reconciliation";
 
 /** Lease zasobu mediów; deck nie ma lease (CHECK generation_runs_deck_without_lease). */
 const MEDIA_LEASE_MS = 5 * 60_000;
@@ -63,8 +64,9 @@ async function requeueAbortedMediaAsset(services: Services, assetId: string, lea
 
 /**
  * Pending TTS używany wyłącznie przez lekcje z wyłączonym audio (także nagrania
- * kart nauki) nie powinien już wywoływać providera. Wspólny fingerprint zostaje
- * aktywny, jeśli odwołują się do niego słówka lub przedmiot z włączonym TTS.
+ * kart nauki i lektora historyjki) nie powinien już wywoływać providera. Wspólny
+ * fingerprint zostaje aktywny, jeśli odwołują się do niego słówka lub przedmiot
+ * z włączonym TTS (dla historyjki: z flagą `lessonStory`).
  */
 async function supersedeDisabledLessonTts(services: Services, asset: typeof mediaAssets.$inferSelect): Promise<boolean> {
   if (asset.kind !== "tts") return false;
@@ -73,7 +75,8 @@ async function supersedeDisabledLessonTts(services: Services, asset: typeof medi
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${asset.fingerprint}))`);
     const current = (await tx.select().from(mediaAssets).where(eq(mediaAssets.id, asset.id)).for("update"))[0];
     if (current?.state !== "pending") return false;
-    const references = await tx.select({ kind: decks.kind, lessonContext: deckVersions.lessonContext, role: revisionAssets.role })
+    const references: Array<{ kind: string; lessonContext: unknown; role: AssetRole | "story" }> = await tx
+      .select({ kind: decks.kind, lessonContext: deckVersions.lessonContext, role: revisionAssets.role })
       .from(revisionAssets)
       .innerJoin(itemRevisions, eq(itemRevisions.id, revisionAssets.itemRevisionId))
       .innerJoin(deckVersions, eq(deckVersions.id, itemRevisions.deckVersionId))
@@ -85,13 +88,20 @@ async function supersedeDisabledLessonTts(services: Services, asset: typeof medi
       .innerJoin(deckVersions, eq(deckVersions.id, lessonCardAssets.deckVersionId))
       .where(eq(lessonCardAssets.assetId, asset.id));
     references.push(...cardReferences.map((card) => ({ kind: "lesson", lessonContext: card.lessonContext, role: "prompt_audio" as const })));
+    // Lektor historyjki (design „Historyjka lekcji” §7) zależy od flagi `lessonStory` przedmiotu.
+    const storyReferences = await tx.select({ lessonContext: deckVersions.lessonContext })
+      .from(lessonStoryAssets)
+      .innerJoin(deckVersions, eq(deckVersions.id, lessonStoryAssets.deckVersionId))
+      .where(eq(lessonStoryAssets.assetId, asset.id));
+    references.push(...storyReferences.map((story) => ({ kind: "lesson", lessonContext: story.lessonContext, role: "story" as const })));
     if (references.length > 0 && !references.every(reference => {
       const subjectId = (reference.lessonContext as { subjectId?: string } | null)?.subjectId;
       const subject = typeof subjectId === "string" ? services.subjects.getSubject(subjectId) : undefined;
       if (reference.kind !== "lesson" || !subject) return false;
       // Nagranie pytania zależy od `ttsForPrompts`, zdania feedbacku od
       // `ttsForFeedbackSentence`, wyjaśnienie błędu od `exerciseExplanations`,
-      // nagranie odpowiedzi od `ttsForAnswers`.
+      // lektor historyjki od `lessonStory`, nagranie odpowiedzi od `ttsForAnswers`.
+      if (reference.role === "story") return !subject.lessonStory;
       if (reference.role === "prompt_audio") return !subject.ttsForPrompts;
       if (reference.role === "feedback_audio") return !subject.ttsForFeedbackSentence;
       if (reference.role === "explanation_audio") return !subject.exerciseExplanations;

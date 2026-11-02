@@ -1,4 +1,4 @@
-import type { LessonStoryDto } from "@learning/contracts";
+import type { LessonPromptAudioDto, LessonStoryDto } from "@learning/contracts";
 
 /**
  * Czyste operacje formularza historyjki lekcji (edytor rodzica). Limity tu są
@@ -82,4 +82,40 @@ export function storyEquals(a?: LessonStoryDto | null, b?: LessonStoryDto | null
       && question.options.length === other.options.length
       && question.options.every((option, j) => option.id === other.options[j]!.id && option.text === other.options[j]!.text);
   });
+}
+
+const squashWhitespace = (text: string) => text.trim().replace(/\s+/g, " ");
+
+/**
+ * Czy zdania formularza odpowiadają zapisanym (po tej samej normalizacji białych
+ * znaków co tekst nagrania, `storyReadText`) — wtedy zapisane nagranie dotyczy
+ * tego, co rodzic widzi. Pytania i odpowiedzi nie wpływają na nagranie.
+ * `form === undefined` (formularz niezainicjowany) = bez zmian; `null` (usunięta
+ * historyjka) przy zapisanej historyjce = zmiana.
+ */
+export function storySentencesUnchanged(saved: LessonStoryDto | undefined, form: LessonStoryDto | null | undefined): boolean {
+  if (form === undefined) return true;
+  const savedSentences = saved?.sentences ?? [];
+  const formSentences = form?.sentences ?? [];
+  if (savedSentences.length !== formSentences.length) return false;
+  return savedSentences.every((sentence, i) => squashWhitespace(sentence) === squashWhitespace(formSentences[i]!));
+}
+
+/**
+ * Widoczność nagrania historyjki w edytorze. Wersja opublikowana: nagranie
+ * widać zawsze, a przy `failed` także wskazówkę (nagrać ponownie można dopiero
+ * w nowej wersji). Szkic: nagranie widać tylko, gdy zdania formularza są
+ * zapisanymi i żaden run historyjki nie przepnie go za chwilę; wskazówki
+ * w szkicu nie ma (tam jest „Nagraj ponownie”). Bez nagrania nic nie widać.
+ */
+export function storyAudioView({ editable, saved, form, storyGenerating, audio }: {
+  editable: boolean;
+  saved: LessonStoryDto | undefined;
+  form: LessonStoryDto | null | undefined;
+  storyGenerating: boolean;
+  audio: LessonPromptAudioDto | undefined;
+}): { show: boolean; publishedFailedHint: boolean } {
+  if (!audio) return { show: false, publishedFailedHint: false };
+  const show = !editable || (storySentencesUnchanged(saved, form) && !storyGenerating);
+  return { show, publishedFailedHint: show && !editable && audio.state === "failed" };
 }

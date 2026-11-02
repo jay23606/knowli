@@ -4,13 +4,13 @@ import { z } from "zod";
 import type { LessonCardAudioDto, LessonPromptAudioDto } from "@learning/contracts";
 import type { Services } from "../../../config";
 import type { Executor, Tx } from "../../../db/client";
-import { generationRuns, itemRevisions, lessonCardAssets, mediaAssets, revisionAssets } from "../../../db/schema";
+import { generationRuns, itemRevisions, lessonCardAssets, lessonStoryAssets, mediaAssets, revisionAssets } from "../../../db/schema";
 import { AppError } from "../../../errors";
-import { reconcileDraftAssetsTx } from "../media-reconciliation";
+import { reconcileDraftAssetsTx, reconcileLessonStoryAssetTx } from "../media-reconciliation";
 import { lockVersion } from "../version-ops";
 
 /**
- * Nagrania pytań i kart lekcji w panelu rodzica (spec tonu TTS §2.4, §4.5):
+ * Nagrania pytań, kart i historyjki lekcji w panelu rodzica (spec tonu TTS §2.4, §4.5):
  * stan nagrania w DTO szkicu i „Nagraj ponownie”. Nagranie nie jest decyzją
  * rodzica ani warunkiem publikacji; ponowne nagranie to nowa generacja tego
  * samego fingerprintu, którą odsłuch (najnowsza gotowa generacja) podejmuje we
@@ -49,16 +49,22 @@ const notCancelled = sql`not exists (select 1 from ${generationRuns} where ${gen
 
 /**
  * Stan nagrań wersji lekcji: pytania, wyjaśnienia błędu i zdania ćwiczeń słuchowych
- * per rewizja oraz karty w kolejności zagadnień tematu. Wiersz bez żadnej generacji
- * swojego fingerprintu (albo brak wiersza) nie daje wpisu. Jedno zapytanie na rodzaj
- * nagrania dla całej wersji (pytania, wyjaśnienia i zdania czytają ten sam zbiór
- * wierszy `revision_assets`).
+ * per rewizja, karty w kolejności zagadnień tematu oraz lektor historyjki. Wiersz bez
+ * żadnej generacji swojego fingerprintu (albo brak wiersza) nie daje wpisu. Jedno
+ * zapytanie na rodzaj nagrania dla całej wersji (pytania, wyjaśnienia i zdania czytają
+ * ten sam zbiór wierszy `revision_assets`).
  */
 export async function readLessonAudioStates(
   db: Executor,
   versionId: string,
   objectiveOrder: readonly string[],
-): Promise<{ prompts: Map<string, LessonPromptAudioDto>; explanations: Map<string, LessonPromptAudioDto>; sentences: Map<string, LessonPromptAudioDto>; cards: LessonCardAudioDto[] }> {
+): Promise<{
+  prompts: Map<string, LessonPromptAudioDto>;
+  explanations: Map<string, LessonPromptAudioDto>;
+  sentences: Map<string, LessonPromptAudioDto>;
+  cards: LessonCardAudioDto[];
+  story: LessonPromptAudioDto | undefined;
+}> {
   const promptRows = await db
     .select({ itemRevisionId: revisionAssets.itemRevisionId, role: revisionAssets.role, id: mediaAssets.id, state: mediaAssets.state })
     .from(revisionAssets)
@@ -98,7 +104,16 @@ export async function readLessonAudioStates(
   };
   const cards = [...cardsByKey.values()].sort((a, b) =>
     rank(a.objectiveId) - rank(b.objectiveId) || a.objectiveId.localeCompare(b.objectiveId) || a.cardIndex - b.cardIndex);
-  return { prompts, explanations, sentences, cards };
+
+  // Lektor historyjki: jeden wiersz na wersję (design „Historyjka lekcji” §7).
+  const storyRows = await db
+    .select({ id: mediaAssets.id, state: mediaAssets.state })
+    .from(lessonStoryAssets)
+    .innerJoin(mediaAssets, eq(mediaAssets.fingerprint, lessonStoryAssets.expectedFingerprint))
+    .where(and(eq(lessonStoryAssets.deckVersionId, versionId), eq(mediaAssets.kind, "tts"), notCancelled))
+    .orderBy(desc(mediaAssets.generationNumber));
+  const story = storyRows.length > 0 ? audioDto(storyRows) : undefined;
+  return { prompts, explanations, sentences, cards, story };
 }
 
 /** Blokada wersji jak przy edycji szkicu; opublikowana wersja jest niezmienna. */
@@ -173,6 +188,19 @@ const CardAudioInputSchema = z.object({
   cardIndex: z.number().int().nonnegative(),
 });
 
+const StoryAudioInputSchema = z.object({
+  lessonDraftId: z.uuid(),
+});
+
+/**
+ * Pełne uzgodnienie mediów szkicu przed nowym ujęciem pytania lub karty. `keepFailed`:
+ * nieudane zasoby wymagające decyzji rodzica (odpowiedzi, ilustracje) zostają;
+ * nieudane nagrania pytań i kart uzgodnienie i tak zleca ponownie (nie są decyzją rodzica).
+ */
+function reconcileAllDraftAssetsTx(tx: Tx, services: Services, version: { id: string; state: string }): Promise<void> {
+  return reconcileDraftAssetsTx(tx, services, version, { keepFailed: true });
+}
+
 /**
  * Przed nowym ujęciem uzgadnia media szkicu jak zapis (`reconcileDraftAssetsTx`)
  * w tej samej transakcji. Gdy od ostatniego zapisu zmieniła się konfiguracja TTS
@@ -180,21 +208,21 @@ const CardAudioInputSchema = z.object({
  * bieżącej konfiguracji i jego nagranie (nowe zlecenie albo gotowe, wspólne z inną
  * wersją) wraz ze stanem wiersza — kolejnej generacji nie zlecamy (`rebound`).
  * Bez zmiany konfiguracji uzgodnienie zostawia wiersz bez zmian, a wywołujący
- * wskazuje w nim nową generację.
+ * wskazuje w nim nową generację. `reconcile` zawęża uzgodnienie do nagrania,
+ * którego dotyczy operacja (historyjka ma własne); domyślnie całe media szkicu.
  */
 async function reconcileThenNextTx(
   tx: Tx,
   services: Services,
   version: { id: string; state: string },
   readRow: () => Promise<{ expectedFingerprint: string; assetId: string | null } | undefined>,
+  reconcile: (tx: Tx, services: Services, version: { id: string; state: string }) => Promise<void> = reconcileAllDraftAssetsTx,
 ): Promise<{ assetId: string; rebound: boolean }> {
   const before = await readRow();
   if (!before) {
     throw new AppError("not_found");
   }
-  // `keepFailed`: nieudane zasoby wymagające decyzji rodzica (odpowiedzi, ilustracje) zostają;
-  // nieudane nagrania pytań i kart uzgodnienie i tak zleca ponownie (nie są decyzją rodzica).
-  await reconcileDraftAssetsTx(tx, services, version, { keepFailed: true });
+  await reconcile(tx, services, version);
   const after = await readRow();
   if (!after) {
     throw new AppError("not_found");
@@ -265,6 +293,31 @@ export async function regenerateLessonCardAudio(
     )[0];
     const { assetId, rebound } = await reconcileThenNextTx(tx, services, version, readRow);
     if (!rebound) await tx.update(lessonCardAssets).set({ assetId }).where(where);
+    return { assetId };
+  });
+}
+
+/**
+ * „Nagraj ponownie” lektora historyjki w szkicu lekcji (design „Historyjka lekcji”
+ * §7). Brak wersji albo wiersza nagrania (lekcja bez historyjki) → `not_found`;
+ * opublikowana wersja → `immutable`. Wiersz szkicu wskazuje nową generację.
+ */
+export async function regenerateLessonStoryAudio(
+  services: Services,
+  input: z.infer<typeof StoryAudioInputSchema>,
+): Promise<{ assetId: string }> {
+  const valid = StoryAudioInputSchema.parse(input);
+  assertMediaConfigured(services);
+  return services.db.transaction(async (tx) => {
+    const version = await lockDraft(tx, valid.lessonDraftId);
+    const where = eq(lessonStoryAssets.deckVersionId, valid.lessonDraftId);
+    const readRow = async () => (
+      await tx.select({ expectedFingerprint: lessonStoryAssets.expectedFingerprint, assetId: lessonStoryAssets.assetId })
+        .from(lessonStoryAssets).where(where)
+    )[0];
+    // Tylko nagranie historyjki: „Nagraj ponownie” nie zleca przy okazji innych nieudanych nagrań szkicu.
+    const { assetId, rebound } = await reconcileThenNextTx(tx, services, version, readRow, reconcileLessonStoryAssetTx);
+    if (!rebound) await tx.update(lessonStoryAssets).set({ assetId }).where(where);
     return { assetId };
   });
 }

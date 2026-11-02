@@ -2,7 +2,7 @@
 
 Data: 2026-11-01. Wersja 2 po recenzji trzech niezależnych krytyków: architektura
 i dane; reguły nauki i sesja; Kid UI, kontrakty i testy. Status: zatwierdzony
-przez właściciela 2026-11-01; etap 1 zaimplementowany.
+przez właściciela 2026-11-01; etap 1 i etap 2 (nagranie lektora) zaimplementowane.
 Issue: lookassh/knowli#195.
 
 Powiązane dokumenty:
@@ -332,6 +332,31 @@ gdy historyjka istnieje — jak „Wygeneruj od nowa”, bo wynik runu ją zast�
 **Przycisk „Wygeneruj historyjkę”** (`regenerateLessonStory`) odrzuca też
 wersję bez ćwiczeń (`validation`): bez puli bariera ekspozycji nie ma czego
 chronić.
+
+**Nagranie lektora (uzupełnienie etapu 2, 2026-11-02; plan
+`docs/superpowers/plans/2026-11-02-lesson-end-story-stage2.md`):**
+- finalizacja runu historyjki (§6.2 krok 4) uzgadnia **tylko nagranie
+  historyjki** (`reconcileLessonStoryAssetTx`), a nie całe
+  `reconcileDraftAssetsTx`: run zmienia wyłącznie `lesson_context.story`, a
+  pełne uzgadnianie przepinałoby przy okazji inne zasoby szkicu po zmianie
+  konfiguracji, co jest rolą edycji. Wyjątek uzgadniania cofa zapis historyjki
+  i run kończy się istniejącą ścieżką błędu finalizacji (kilka zapytań do tej
+  samej bazy, bez wywołań zewnętrznych);
+- kopia wersji (§6.6) **od razu uzgadnia nagranie** w transakcji kopii:
+  `findOrCreateAsset` zwraca istniejący gotowy zasób o tym samym fingerprincie,
+  bez kosztu TTS, więc nowy szkic od razu pokazuje nagranie i „Nagraj ponownie”.
+  To celowe odstępstwo od kart, które czekają na pierwszy zapis. Lekcje
+  opublikowane w etapie 1 nie mają wiersza (wersja niezmienna) i dostają
+  nagranie w pierwszej nowej wersji;
+- odsłuch w edytorze jest widoczny tylko wtedy, gdy zdania formularza są równe
+  zapisanym po normalizacji białych znaków jak w `storyReadText` (zmiana samych
+  pytań nie zmienia nagrania), a ukryty, gdy run historyjki czeka lub trwa;
+  „Nagraj ponownie” jest zablokowane przy `busy`, `isDirty` i konflikcie;
+- nieudane nagranie w wersji opublikowanej pokazuje wskazówkę „Utwórz nową
+  wersję lekcji, aby nagrać ponownie.”;
+- ścieżka procedury: `POST /lesson-drafts/{lessonDraftId}/story-audio/regenerate`,
+  wejście `{ lessonDraftId }`, wynik `{ assetId }`, status 202; tabela ma
+  numer migracji `0034` (po `0033_explanation_audio_role` z #196).
 
 ### 6.3. Edycja
 

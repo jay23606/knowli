@@ -44,6 +44,7 @@ import {
   readLessonDeck,
   readParentWorkCard,
   regenerateLessonCardAudio,
+  regenerateLessonStoryAudio,
   regenerateLessonPromptAudio,
   regenerateLessonStory,
   regenerateObjective,
@@ -435,6 +436,10 @@ const lessonDraftsRegenerateCardAudio = parentOs.lessonDrafts.regenerateCardAudi
   .use(sameOriginMiddleware)
   .handler(async ({ context, input }) => regenerateLessonCardAudio(context.services, input));
 
+const lessonDraftsRegenerateStoryAudio = parentOs.lessonDrafts.regenerateStoryAudio
+  .use(sameOriginMiddleware)
+  .handler(async ({ context, input }) => regenerateLessonStoryAudio(context.services, input));
+
 const lessonDraftsRegenerateStory = parentOs.lessonDrafts.regenerateStory
   .use(sameOriginMiddleware)
   .handler(async ({ context, input }) => {
@@ -620,6 +625,7 @@ export const parentORpcRouter: Router<ORpcContext> = parentRootOs.router({
     regenerate: lessonDraftsRegenerate,
     regeneratePromptAudio: lessonDraftsRegeneratePromptAudio,
     regenerateCardAudio: lessonDraftsRegenerateCardAudio,
+    regenerateStoryAudio: lessonDraftsRegenerateStoryAudio,
     regenerateStory: lessonDraftsRegenerateStory,
   },
   generation: {

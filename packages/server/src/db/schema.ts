@@ -441,6 +441,27 @@ export const lessonCardAssets = app.table(
   ],
 );
 
+/**
+ * Nagranie lektora historyjki lekcji (design „Historyjka lekcji” §7): historyjka
+ * żyje w `lesson_context.story`, więc jej nagranie wiąże się z wersją, jedno na
+ * wersję. Bez stanu decyzji; wiersz opublikowanej wersji niezmienny (trigger
+ * w migracji 0034).
+ */
+export const lessonStoryAssets = app.table(
+  "lesson_story_assets",
+  {
+    deckVersionId: uuid("deck_version_id")
+      .notNull()
+      .references((): AnyPgColumn => deckVersions.id),
+    assetId: uuid("asset_id").references((): AnyPgColumn => mediaAssets.id),
+    expectedFingerprint: text("expected_fingerprint").notNull(),
+  },
+  (t) => [
+    primaryKey({ name: "lesson_story_assets_pk", columns: [t.deckVersionId] }),
+    index("lesson_story_assets_asset_idx").on(t.assetId),
+  ],
+);
+
 export const generationRuns = app.table(
   "generation_runs",
   {

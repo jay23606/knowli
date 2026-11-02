@@ -10,6 +10,7 @@ import {
   generationRuns,
   itemRevisions,
   lessonCardAssets,
+  lessonStoryAssets,
   mediaAssets,
   revisionAssets,
 } from "../../db/schema";
@@ -23,7 +24,8 @@ import { questionReadText } from "../../domain/lessons/question-read-text";
 import { renderCard } from "../../domain/lessons/card";
 import { cardReadText } from "../../domain/lessons/card-read-text";
 import { resolveLessonTopic } from "../../domain/lessons/topic-resolution";
-import type { DynamicTopicData, LessonTopic } from "../../domain/lessons/types";
+import { storyReadText, type LessonStory } from "../../domain/lessons/story";
+import type { DynamicTopicData, LessonTopic, SubjectModule } from "../../domain/lessons/types";
 
 export type AssetRole = "target_audio" | "example_audio" | "illustration" | "prompt_audio" | "feedback_audio" | "explanation_audio";
 
@@ -256,6 +258,23 @@ export function requiredAssetsForLessonCards(
 }
 
 /**
+ * Nagranie lektora historyjki lekcji (design „Historyjka lekcji” §7): zdania
+ * historyjki (`storyReadText`) w języku odpowiedzi przedmiotu jako
+ * `feedback_audio`, bez stylu wypowiedzi (pozostaje instrukcja języka).
+ * Brak, gdy przedmiot nie ma `lessonStory`, nie ma historyjki albo jej zdania
+ * są puste. Pytania do historyjki nie wchodzą do nagrania ani fingerprintu.
+ */
+export function requiredAssetForLessonStory(
+  story: LessonStory | undefined,
+  subject: Pick<SubjectModule, "lessonStory" | "answerLocale"> | undefined,
+  settings: MediaSettings,
+): RequiredAsset | null {
+  if (subject?.lessonStory !== true || !story) return null;
+  const text = storyReadText(story);
+  return text.trim() === "" ? null : ttsAsset("feedback_audio", text, subject.answerLocale, settings);
+}
+
+/**
  * Zwraca wymagane zasoby rewizji wg rodzaju elementu: ćwiczenie lekcji ma własną
  * strategię (audio odpowiedzi i pytania wg flag przedmiotu), słówko —
  * dotychczasową. Flagi ustala wywołujący z rejestru przedmiotów (dla słówek bez
@@ -357,6 +376,7 @@ export async function reconcileDraftAssetsTx(
     throw new AppError("immutable");
   }
   await reconcileLessonCardAssetsTx(tx, services, settings, version.id);
+  await reconcileLessonStoryAssetTx(tx, services, version);
   const revisions = await tx
     .select({ id: itemRevisions.id, payload: itemRevisions.payload })
     .from(itemRevisions)
@@ -477,6 +497,27 @@ export async function reconcileDraftAssetsTx(
 }
 
 /**
+ * Wspólny krok uzgadniania wiązań nagrań lekcji (karty, historyjka): `null`,
+ * gdy obecne wiązanie ma ten sam fingerprint, a zasób nie jest `failed`
+ * (zostaje bez zmian); w przeciwnym razie id zasobu do związania (gotowy po
+ * fingerprincie albo nowe zlecenie). Nieudane nagranie zlecamy ponownie.
+ */
+async function assetToBind(
+  tx: Tx,
+  settings: MediaSettings,
+  current: { expectedFingerprint: string; assetId: string | null } | undefined,
+  required: RequiredAsset,
+): Promise<string | null> {
+  if (current && current.expectedFingerprint === required.fingerprint && current.assetId !== null) {
+    const asset = (
+      await tx.select({ state: mediaAssets.state, fingerprint: mediaAssets.fingerprint }).from(mediaAssets).where(eq(mediaAssets.id, current.assetId))
+    )[0];
+    if (asset && asset.fingerprint === required.fingerprint && asset.state !== "failed") return null;
+  }
+  return (await findOrCreateAsset(tx, settings, required)).id;
+}
+
+/**
  * Uzgadnia nagrania kart nauki szkicu (design szkoły §12.2) w transakcji
  * edycji: zgodne zostają, zmienione dostają nowy zasób (gotowy po fingerprincie
  * albo nowe zlecenie), zbędne znikają. Nieudane nagranie zlecamy ponownie —
@@ -530,16 +571,11 @@ async function reconcileLessonCardAssetsTx(
   }
   for (const card of required) {
     const current = existingByKey.get(cardKey(card.objectiveId, card.cardIndex));
-    if (current && current.expectedFingerprint === card.asset.fingerprint && current.assetId !== null) {
-      const asset = (
-        await tx.select({ state: mediaAssets.state, fingerprint: mediaAssets.fingerprint }).from(mediaAssets).where(eq(mediaAssets.id, current.assetId))
-      )[0];
-      if (asset && asset.fingerprint === card.asset.fingerprint && asset.state !== "failed") continue;
-    }
-    const asset = await findOrCreateAsset(tx, settings, card.asset);
+    const assetId = await assetToBind(tx, settings, current, card.asset);
+    if (assetId === null) continue;
     if (current) {
       await tx.update(lessonCardAssets)
-        .set({ expectedFingerprint: card.asset.fingerprint, assetId: asset.id })
+        .set({ expectedFingerprint: card.asset.fingerprint, assetId })
         .where(and(
           eq(lessonCardAssets.deckVersionId, versionId),
           eq(lessonCardAssets.objectiveId, card.objectiveId),
@@ -550,10 +586,59 @@ async function reconcileLessonCardAssetsTx(
         deckVersionId: versionId,
         objectiveId: card.objectiveId,
         cardIndex: card.cardIndex,
-        assetId: asset.id,
+        assetId,
         expectedFingerprint: card.asset.fingerprint,
       });
     }
+  }
+}
+
+/**
+ * Uzgadnia nagranie lektora historyjki wersji (design „Historyjka lekcji” §7)
+ * w transakcji wywołującego: zgodne zostaje, zmienione dostaje nowy zasób
+ * (gotowy po fingerprincie albo nowe zlecenie), zbędne znika. Nieudane nagranie
+ * zlecamy ponownie — nie jest decyzją rodzica i nie blokuje publikacji, więc
+ * `keepFailed` go nie dotyczy. Bez ustawień mediów nic nie robi; wersja
+ * opublikowana jest niezmienna.
+ */
+export async function reconcileLessonStoryAssetTx(
+  tx: Tx,
+  services: Services,
+  version: { id: string; state: string },
+): Promise<void> {
+  const settings = services.media;
+  if (!settings) return;
+  if (version.state === "published") {
+    throw new AppError("immutable");
+  }
+  const row = (
+    await tx.select({ lessonContext: deckVersions.lessonContext }).from(deckVersions).where(eq(deckVersions.id, version.id))
+  )[0];
+  const context = row?.lessonContext as { subjectId?: unknown; story?: { sentences?: unknown } | null } | null | undefined;
+  const existing = (await tx.select().from(lessonStoryAssets).where(eq(lessonStoryAssets.deckVersionId, version.id)))[0];
+  const dropRow = async (): Promise<void> => {
+    if (existing) await tx.delete(lessonStoryAssets).where(eq(lessonStoryAssets.deckVersionId, version.id));
+  };
+  // Zestaw słówek nie ma kontekstu lekcji; nieznany przedmiot nie ma historyjki.
+  if (!context || typeof context.subjectId !== "string") return dropRow();
+  const subject = services.subjects.getSubject(context.subjectId);
+  const sentences = context.story?.sentences;
+  const story: LessonStory | undefined =
+    Array.isArray(sentences) && sentences.every((sentence) => typeof sentence === "string")
+      // Pytania pomijamy: na tekst i fingerprint nagrania wpływają tylko zdania.
+      ? { sentences: sentences as string[], questions: [] }
+      : undefined;
+  const required = requiredAssetForLessonStory(story, subject, settings);
+  if (!required) return dropRow();
+
+  const assetId = await assetToBind(tx, settings, existing, required);
+  if (assetId === null) return;
+  if (existing) {
+    await tx.update(lessonStoryAssets)
+      .set({ expectedFingerprint: required.fingerprint, assetId })
+      .where(eq(lessonStoryAssets.deckVersionId, version.id));
+  } else {
+    await tx.insert(lessonStoryAssets).values({ deckVersionId: version.id, assetId, expectedFingerprint: required.fingerprint });
   }
 }
 

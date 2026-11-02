@@ -11,6 +11,8 @@ import {
   setQuestionText,
   setSentence,
   storyEquals,
+  storyAudioView,
+  storySentencesUnchanged,
 } from "./lesson-story-form";
 
 const story = (): LessonStoryDto => ({
@@ -96,5 +98,74 @@ describe("lesson-story-form", () => {
     expect(storyEquals(story(), setOptionText(story(), "q1", "c", "żółty"))).toBe(false);
     expect(storyEquals(story(), addQuestion(story()))).toBe(false);
     expect(storyEquals(story(), addSentence(story()))).toBe(false);
+  });
+});
+
+describe("storySentencesUnchanged", () => {
+  it("is true when there is no form (undefined)", () => {
+    expect(storySentencesUnchanged(story(), undefined)).toBe(true);
+    expect(storySentencesUnchanged(undefined, undefined)).toBe(true);
+  });
+
+  it("is true when only a question changes", () => {
+    expect(storySentencesUnchanged(story(), setQuestionText(story(), "q1", "Inne pytanie?"))).toBe(true);
+  });
+
+  it("is true when only whitespace in a sentence changes", () => {
+    expect(storySentencesUnchanged(story(), setSentence(story(), 0, "  Sam   has a	red bike. "))).toBe(true);
+  });
+
+  it("is false when a sentence changes", () => {
+    expect(storySentencesUnchanged(story(), setSentence(story(), 1, "He walks to the park."))).toBe(false);
+  });
+
+  it("is false when the number of sentences changes", () => {
+    expect(storySentencesUnchanged(story(), addSentence(story()))).toBe(false);
+    expect(storySentencesUnchanged(story(), removeSentence(story(), 3))).toBe(false);
+  });
+
+  it("is false for null when a story is saved", () => {
+    expect(storySentencesUnchanged(story(), null)).toBe(false);
+    expect(storySentencesUnchanged(undefined, null)).toBe(true);
+  });
+});
+
+describe("storyAudioView", () => {
+  const ready = { state: "ready", assetId: "00000000-0000-4000-8000-000000000001" } as const;
+  const failed = { state: "failed" } as const;
+  const base = { editable: true, saved: story(), form: story() as LessonStoryDto | null | undefined, storyGenerating: false, audio: ready };
+
+  it("published view shows the recording; the hint only when failed", () => {
+    const published = { ...base, editable: false, form: undefined };
+    expect(storyAudioView(published)).toEqual({ show: true, publishedFailedHint: false });
+    expect(storyAudioView({ ...published, audio: { state: "pending" } })).toEqual({ show: true, publishedFailedHint: false });
+    expect(storyAudioView({ ...published, audio: failed })).toEqual({ show: true, publishedFailedHint: true });
+  });
+
+  it("published view ignores a running story run", () => {
+    expect(storyAudioView({ ...base, editable: false, form: undefined, storyGenerating: true }).show).toBe(true);
+  });
+
+  it("draft is hidden while the story run is queued or running", () => {
+    expect(storyAudioView({ ...base, storyGenerating: true })).toEqual({ show: false, publishedFailedHint: false });
+  });
+
+  it("draft is hidden when a sentence changed", () => {
+    expect(storyAudioView({ ...base, form: setSentence(story(), 0, "Sam has a blue bike.") }).show).toBe(false);
+    expect(storyAudioView({ ...base, form: null }).show).toBe(false);
+  });
+
+  it("draft is shown on a question-only change and with an untouched form", () => {
+    expect(storyAudioView({ ...base, form: setQuestionText(story(), "q1", "Inne?") }).show).toBe(true);
+    expect(storyAudioView({ ...base, form: undefined }).show).toBe(true);
+  });
+
+  it("draft never shows the published hint, even when the recording failed", () => {
+    expect(storyAudioView({ ...base, audio: failed })).toEqual({ show: true, publishedFailedHint: false });
+  });
+
+  it("nothing is shown without a recording", () => {
+    expect(storyAudioView({ ...base, audio: undefined })).toEqual({ show: false, publishedFailedHint: false });
+    expect(storyAudioView({ ...base, editable: false, form: undefined, audio: undefined })).toEqual({ show: false, publishedFailedHint: false });
   });
 });

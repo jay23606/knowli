@@ -38,7 +38,7 @@ import { poolCoverage, validatePool } from "../../../domain/lessons/pool-validat
 import { solvedSentencesOf, validateLessonStory, type LessonStory } from "../../../domain/lessons/story";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
-import { assertAssetPublishable, mediaPendingError, reconcileBeforePublish, reconcileDraftAssetsTx } from "../media-reconciliation";
+import { assertAssetPublishable, mediaPendingError, reconcileBeforePublish, reconcileDraftAssetsTx, reconcileLessonStoryAssetTx } from "../media-reconciliation";
 import { copyRevisionsSkillsAssets } from "../decks";
 import { supersedeFailedLessonStoryRuns, supersedeLessonRuns } from "../generation-runs";
 import { readDeckSource } from "../source-materials";
@@ -374,6 +374,8 @@ async function readLessonDraftDto(
       assetId: a.assetId,
     }]),
     ...(audio.cards.length > 0 ? { cardAudio: audio.cards } : {}),
+    // Nagranie lektora historyjki; brak pola = lekcja bez historyjki (albo bez nagrania).
+    ...(audio.story ? { storyAudio: audio.story } : {}),
     rejectedCount: context.rejectedCount,
     ...(context.rejectedReasons ? { rejectedReasons: context.rejectedReasons } : {}),
     ...(context.droppedObjectiveCount ? { droppedObjectiveCount: context.droppedObjectiveCount } : {}),
@@ -959,6 +961,12 @@ export async function createLessonDraftFromPublished(
     const newVersionId = await createVersionFromPublished(tx, id, (innerTx, { source, newVersionId }) =>
       copyRevisionsSkillsAssets(innerTx, { sourceVersionId: source.id, newVersionId, deckId: id }),
     );
+    // Historyjka przechodzi z kontekstem wersji; jej nagranie wiąże się od razu.
+    // Gdy gotowy zasób o bieżącym fingerprincie istnieje, kopia nie kosztuje TTS
+    // i szkic pokazuje odsłuch bez czekania na pierwszy zapis; w przeciwnym
+    // razie (zmiana konfiguracji TTS, nieudane ujęcie, lekcja z etapu 1 bez
+    // wiersza) kopia zleca nowe nagranie.
+    await reconcileLessonStoryAssetTx(tx, services, { id: newVersionId, state: "draft" });
     return readLessonDraftDto(tx, services, newVersionId);
   });
 }
