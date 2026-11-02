@@ -41,3 +41,41 @@ describe("getExercisePresentation", () => {
     expect(result.instruction).not.toContain("cat");
   });
 });
+
+describe("getExercisePresentation — historyjka", () => {
+  const base = {
+    sessionId: "10000000-0000-4000-8000-000000000003",
+    ordinal: 5,
+    direction: null,
+    state: "issued" as const,
+    remainingAssessed: 0,
+  };
+  const story = { sentences: ["Sam has a red bike."] };
+
+  it("tells the child to read and listen when the story has a recording", () => {
+    const result = getExercisePresentation({
+      ...base, taskId: "10000000-0000-4000-8000-000000000010", exerciseType: "lesson_story",
+      prompt: { kind: "lesson_story", story, questionAudioAssetId: "10000000-0000-4000-8000-000000000011" },
+    });
+    expect(result).toEqual({ instruction: "Przeczytaj i posłuchaj historyjki.", icon: "book" });
+  });
+
+  it("tells the child only to read when there is no recording", () => {
+    const result = getExercisePresentation({
+      ...base, taskId: "10000000-0000-4000-8000-000000000010", exerciseType: "lesson_story",
+      prompt: { kind: "lesson_story", story },
+    });
+    expect(result).toEqual({ instruction: "Przeczytaj historyjkę.", icon: "book" });
+  });
+
+  it("uses the question text as the instruction", () => {
+    const result = getExercisePresentation({
+      ...base, taskId: "10000000-0000-4000-8000-000000000012", exerciseType: "lesson_story_question",
+      prompt: {
+        kind: "lesson_story_question", question: "Kto ma rower?", story,
+        options: ["a", "b", "c"].map((text, i) => ({ id: `10000000-0000-4000-8000-00000000002${i}`, text })),
+      },
+    });
+    expect(result).toEqual({ instruction: "Kto ma rower?", icon: "book" });
+  });
+});

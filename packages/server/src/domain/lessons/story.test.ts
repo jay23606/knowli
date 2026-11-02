@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   LESSON_STORY_LIMITS,
+  readStoredLessonStory,
   solvedSentencesOf,
+  squashStoryText,
   storyCollisions,
   storyReadText,
   validateLessonStory,
@@ -313,5 +315,41 @@ describe("storyReadText", () => {
     expect(storyReadText({ sentences: [" Tom  has\na cat. ", "It   is small."], questions: [] })).toBe(
       "Tom has a cat. It is small.",
     );
+  });
+});
+
+describe("readStoredLessonStory", () => {
+  it("returns a valid story unchanged", () => {
+    const story = validStory();
+    expect(readStoredLessonStory(story)).toEqual(story);
+  });
+
+  it("squashStoryText trims and merges whitespace", () => {
+    expect(squashStoryText("  Tom \n has   a cat. ")).toBe("Tom has a cat.");
+  });
+
+  it.each<[string, (story: ReturnType<typeof validStory>) => unknown]>([
+    ["null", () => null],
+    ["non-object", () => "story"],
+    ["sentences not strings", (s) => ({ ...s, sentences: [1, 2] })],
+    ["a sentence empty after squash", (s) => ({ ...s, sentences: ["Tom has a cat.", " \n\t "] })],
+    ["no sentences", (s) => ({ ...s, sentences: [] })],
+    ["7 sentences", (s) => ({ ...s, sentences: Array(7).fill("Tom has a cat.") })],
+    ["0 questions", (s) => ({ ...s, questions: [] })],
+    ["3 questions", (s) => ({ ...s, questions: [s.questions[0], s.questions[0], s.questions[0]] })],
+    ["question with 2 options", (s) => ({ ...s, questions: [{ ...s.questions[0], options: s.questions[0].options.slice(0, 2) }] })],
+    ["duplicate option id", (s) => ({
+      ...s,
+      questions: [{ ...s.questions[0], options: s.questions[0].options.map((o) => ({ ...o, id: "a" })) }],
+    })],
+    ["correctOption outside the options", (s) => ({ ...s, questions: [{ ...s.questions[0], correctOption: "zzz" }] })],
+    ["empty question text", (s) => ({ ...s, questions: [{ ...s.questions[0], question: "  " }] })],
+    ["empty question id", (s) => ({ ...s, questions: [{ ...s.questions[0], id: "" }] })],
+    ["empty option text", (s) => ({
+      ...s,
+      questions: [{ ...s.questions[0], options: s.questions[0].options.map((o, i) => (i === 0 ? { ...o, text: "" } : o)) }],
+    })],
+  ])("returns undefined for %s", (_name, mutate) => {
+    expect(readStoredLessonStory(mutate(validStory()))).toBeUndefined();
   });
 });

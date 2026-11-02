@@ -28,6 +28,7 @@ import {
   type LessonScheduleInput,
   type LessonSessionOutcome,
   type LessonSessionTask,
+  type LessonSessionTaskKind,
   type LessonTaskPlan,
   type ObjectivePrecisionSnapshot,
   type ObjectiveProgressSnapshot,
@@ -640,12 +641,13 @@ function planLessonTaskFromSnapshot(
   const { exercises, topic, subject, context } = snapshot;
   const exposedTargetKeys = new Set([...snapshot.exposedTargetKeys, ...plannedPrefix.flatMap((slot) => slot.revealsTargetKeys)]);
   const cardIndexByObjective = new Map(snapshot.cardIndexByObjective);
-  const sessionHistory = [...snapshot.sessionHistory, ...plannedPrefix.map((slot) => ({
+  // Sloty historyjki są doklejane po zaplanowaniu ćwiczeń i nie wchodzą do historii planisty.
+  const sessionHistory = [...snapshot.sessionHistory, ...plannedPrefix.filter((slot) => slot.taskKind !== "story" && slot.taskKind !== "story_question").map((slot) => ({
     ordinal: slot.ordinal,
     itemId: slot.taskKind === "exercise" ? slot.itemId : null,
     objectiveId: String(slot.context.objectiveId ?? ""),
     exerciseType: slot.exerciseType as LessonExerciseType,
-    kind: slot.taskKind,
+    kind: slot.taskKind as LessonSessionTaskKind,
   }))];
   for (const slot of plannedPrefix) {
     if (slot.taskKind === "card") {

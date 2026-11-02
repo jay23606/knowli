@@ -521,6 +521,9 @@ export const messages = {
     listenExplanation: "Posłuchaj wyjaśnienia",
     // „Posłuchaj i wybierz” (#198): polecenie, status blokady i błąd ręcznego odsłuchu.
     lessonListenChoiceInstruction: "Posłuchaj i wybierz, czego brakuje.",
+    // Historyjka na koniec sesji: polecenie zależy od tego, czy jest nagranie lektora.
+    lessonStoryInstructionListen: "Przeczytaj i posłuchaj historyjki.",
+    lessonStoryInstruction: "Przeczytaj historyjkę.",
     lessonListenGap: "luka",
     listenStimulusBlocked: "Dotknij głośnika, aby posłuchać.",
     listenStimulusFailed: "Nie udało się odtworzyć nagrania.",

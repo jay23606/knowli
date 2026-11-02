@@ -10,6 +10,8 @@ import {
   SessionInputSchema,
   KidValidationReasonSchema,
   MAX_TEXT_ATTEMPT_LENGTH,
+  TaskDtoSchema,
+  isLessonStoryTaskType,
 } from "./kid";
 import { messages } from "./messages";
 
@@ -405,5 +407,63 @@ describe("język treści zadań lekcji (angielski — rozdział)", () => {
     expect(TaskPromptSchema.safeParse({ ...open, promptLocale: "pl-PL", answerLocale: "en-GB" }).success).toBe(true);
     expect(TaskPromptSchema.safeParse({ ...open, answerLocale: "pl-PL" }).success).toBe(true);
     expect(TaskPromptSchema.safeParse({ ...open, answerLocale: "de-DE" }).success).toBe(false);
+  });
+});
+
+describe("historyjka na koniec lekcji (etap 3)", () => {
+  const OPT3 = "33333333-3333-4333-8333-333333333333";
+  const options = [UUID, UUID2, OPT3].map((id, index) => ({ id, text: `odpowiedź ${index}` }));
+  const story = { sentences: ["Sam has a red bike.", "He rides it to school."] };
+  const storyPrompt = { kind: "lesson_story", story, contentLocale: "en-GB", questionAudioAssetId: UUID };
+  const questionPrompt = { kind: "lesson_story_question", question: "Kto ma rower?", options, story };
+
+  it("lesson_story prompt accepts sentences, locale and story audio", () => {
+    expect(TaskPromptSchema.safeParse(storyPrompt).success).toBe(true);
+    expect(TaskPromptSchema.safeParse({ kind: "lesson_story", story }).success).toBe(true);
+    expect(TaskPromptSchema.safeParse({ ...questionPrompt, contentLocale: "en-GB", questionAudioAssetId: UUID }).success).toBe(true);
+  });
+
+  it.each([
+    ["lesson_story", storyPrompt],
+    ["lesson_story_question", questionPrompt],
+  ] as const)("%s rejects extra fields (correctOption, targetKey)", (_kind, prompt) => {
+    expect(TaskPromptSchema.safeParse({ ...prompt, correctOption: UUID }).success).toBe(false);
+    expect(TaskPromptSchema.safeParse({ ...prompt, targetKey: "x" }).success).toBe(false);
+  });
+
+  it("lesson_story_question requires exactly three options", () => {
+    expect(TaskPromptSchema.safeParse({ ...questionPrompt, options: options.slice(0, 2) }).success).toBe(false);
+    expect(TaskPromptSchema.safeParse({ ...questionPrompt, options: [...options, { id: "44444444-4444-4444-8444-444444444444", text: "d" }] }).success).toBe(false);
+  });
+
+  it("lesson_story_question rejects extra option fields", () => {
+    const withFlag = options.map((o, index) => (index === 0 ? { ...o, correct: true } : o));
+    expect(TaskPromptSchema.safeParse({ ...questionPrompt, options: withFlag }).success).toBe(false);
+  });
+
+  it("story text rejects an empty sentence list and more than six sentences", () => {
+    expect(TaskPromptSchema.safeParse({ kind: "lesson_story", story: { sentences: [] } }).success).toBe(false);
+    expect(TaskPromptSchema.safeParse({ kind: "lesson_story", story: { sentences: Array(7).fill("A.") } }).success).toBe(false);
+    expect(TaskPromptSchema.safeParse({ kind: "lesson_story", story: { sentences: Array(6).fill("A.") } }).success).toBe(true);
+    expect(TaskPromptSchema.safeParse({ kind: "lesson_story", story: { sentences: [""] } }).success).toBe(false);
+    expect(TaskPromptSchema.safeParse({ kind: "lesson_story", story: { sentences: ["A."], extra: 1 } }).success).toBe(false);
+  });
+
+  it("TaskDto accepts remainingAssessed 0 and closingStory true, rejects closingStory false", () => {
+    const task = {
+      taskId: UUID, sessionId: UUID2, ordinal: 3, exerciseType: "lesson_story", direction: null, state: "issued",
+      prompt: storyPrompt, remainingAssessed: 0,
+    };
+    expect(TaskDtoSchema.safeParse(task).success).toBe(true);
+    expect(TaskDtoSchema.safeParse({ ...task, closingStory: true }).success).toBe(true);
+    expect(TaskDtoSchema.safeParse({ ...task, closingStory: false }).success).toBe(false);
+    expect(TaskDtoSchema.safeParse({ ...task, remainingAssessed: -1 }).success).toBe(false);
+  });
+
+  it("EXERCISE_TYPES contains both story task types", () => {
+    expect(EXERCISE_TYPES as readonly string[]).toEqual(expect.arrayContaining(["lesson_story", "lesson_story_question"]));
+    expect(isLessonStoryTaskType("lesson_story")).toBe(true);
+    expect(isLessonStoryTaskType("lesson_story_question")).toBe(true);
+    expect(isLessonStoryTaskType("lesson_card")).toBe(false);
   });
 });

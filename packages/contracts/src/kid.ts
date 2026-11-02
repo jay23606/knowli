@@ -51,8 +51,18 @@ export const EXERCISE_TYPES = [
   "lesson_group",
   "lesson_cloze",
   "lesson_listen_choice",
+  // Historyjka na koniec sesji lekcji: tekst i pytania o jego treść.
+  "lesson_story",
+  "lesson_story_question",
 ] as const;
 export type ExerciseTypeDto = (typeof EXERCISE_TYPES)[number];
+
+/** Typy zadań historyjki: poza budżetem ocenianych zadań sesji lekcji. */
+export const LESSON_STORY_TASK_TYPES = ["lesson_story", "lesson_story_question"] as const;
+export type LessonStoryTaskTypeDto = (typeof LESSON_STORY_TASK_TYPES)[number];
+export function isLessonStoryTaskType(type: string): type is LessonStoryTaskTypeDto {
+  return (LESSON_STORY_TASK_TYPES as readonly string[]).includes(type);
+}
 
 export const ChoiceOptionSchema = z.object({
   id: UuidSchema,
@@ -98,6 +108,11 @@ export type LessonItem = z.infer<typeof LessonItemSchema>;
  * z widocznej treści. Odczyt nie jest ujawnieniem — bez zdarzenia i ekspozycji.
  */
 const QuestionAudioSchema = UuidSchema.optional();
+
+/** Zdania historyjki (1–6) widoczne dla dziecka; bez klucza i bez pytań. */
+const StoryTextSchema = z.object({ sentences: z.array(z.string().min(1)).min(1).max(6) }).strict();
+/** Opcja pytania do historyjki: tylko `{ id, text }`, bez znacznika poprawności. */
+const StoryOptionSchema = ChoiceOptionSchema.strict();
 
 /**
  * Fragment tekstu „Uzupełnij tekst” (`lesson_cloze`, design szkoły §13.2):
@@ -252,6 +267,22 @@ export const TaskPromptSchema = z.discriminatedUnion("kind", [
       examples: z.array(z.string().min(1)),
     }).strict(),
     // „Posłuchaj karty” (design szkoły §12.3): nagranie widocznej treści karty.
+    questionAudioAssetId: QuestionAudioSchema,
+  }).strict(),
+  // Historyjka na koniec sesji: zdania i opcjonalne nagranie lektora całego tekstu.
+  z.object({
+    kind: z.literal("lesson_story"),
+    story: StoryTextSchema,
+    contentLocale: LessonContentLocaleSchema.optional(),
+    questionAudioAssetId: QuestionAudioSchema,
+  }).strict(),
+  // Pytanie o treść historyjki: dokładnie trzy opcje; poprawna nie wychodzi do dziecka.
+  z.object({
+    kind: z.literal("lesson_story_question"),
+    question: z.string().min(1),
+    options: z.array(StoryOptionSchema).length(3),
+    story: StoryTextSchema,
+    contentLocale: LessonContentLocaleSchema.optional(),
     questionAudioAssetId: QuestionAudioSchema,
   }).strict(),
   z.object({
@@ -469,7 +500,10 @@ export const TaskDtoSchema = z.object({
   state: z.enum(["issued", "answered", "completed", "skipped"]),
   prompt: TaskPromptSchema,
   /** Zadania oceniane łącznie z bieżącym — podstawa komunikatu „Jeszcze N”. */
-  remainingAssessed: z.number().int().positive(),
+  // 0 = zadanie poza budżetem, np. historyjka.
+  remainingAssessed: z.number().int().nonnegative(),
+  // Sesja kończy się historyjką — baner „Jeszcze N i historyjka!”.
+  closingStory: z.literal(true).optional(),
   pendingAttemptId: UuidSchema.optional(),
 });
 export type TaskDto = z.infer<typeof TaskDtoSchema>;

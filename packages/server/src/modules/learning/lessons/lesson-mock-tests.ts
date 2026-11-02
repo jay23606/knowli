@@ -480,7 +480,7 @@ export async function readLessonMockTestSummary(services: Services, sessionId: s
 /**
  * Treść promptu pokazywana w omówieniu — pełne pokrycie typów lekcji przez
  * `switch` z gwardią `never`: dodanie nowego kind lekcji wymusi tu obsługę.
- * Karta (`lesson_card`) nie jest slotem kartkówki, więc nie występuje.
+ * Karta (`lesson_card`) i zadania historyjki nie są slotami kartkówki, więc nie występują.
  */
 function promptText(prompt: TaskPrompt): string {
   switch (prompt.kind) {
@@ -507,6 +507,8 @@ function promptText(prompt: TaskPrompt): string {
     case "lesson_cloze":
       return prompt.instructionPl;
     case "lesson_card":
+    case "lesson_story":
+    case "lesson_story_question":
     case "exposure":
     case "picture_exposure":
     case "listening":

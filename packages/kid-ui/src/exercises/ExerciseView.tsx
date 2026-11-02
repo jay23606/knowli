@@ -61,6 +61,10 @@ export function ExerciseView(props: ExerciseProps) {
     // zmianie zadania, dlatego `key` po `taskId`.
     case "lesson_card":
       return <LessonCardView key={props.task.taskId} {...props} />;
+    // Historyjka: widoki dodają kolejne zadania etapu 3; do tego czasu nic nie rysujemy.
+    case "lesson_story":
+    case "lesson_story_question":
+      return null;
     case "lesson_notice":
       return <LessonNoticeView key={props.task.taskId} {...props} />;
     case "lesson_choice":
