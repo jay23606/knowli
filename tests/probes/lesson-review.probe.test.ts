@@ -38,7 +38,9 @@ import { loadDotEnv, resolveOutsideRepoPath } from "./probe-helpers";
  * Zrzut nie zawiera ćwiczeń szkicu spoza przeglądanej partii (`existing` puste).
  */
 
-const dumpEnv = process.env.UMIEM_PROBE_REVIEW_DUMP;
+// .env wczytany przed decyzją o pominięciu (zrzut może być zdefiniowany w .env); sama spacja = brak.
+loadDotEnv();
+const dumpEnv = process.env.UMIEM_PROBE_REVIEW_DUMP?.trim() || undefined;
 
 interface DumpObjective {
   id: string;
@@ -173,13 +175,17 @@ type Outcome = "ok" | "note" | "fixed" | "dropped" | "unreviewed";
  * (ćwiczenia bez zmian to ten sam obiekt, poprawka ma wpis `changed.beforePl` = skrót
  * oryginału), więc wystarczy jeden przebieg wskaźnikiem.
  */
-function classify(fresh: readonly LessonExerciseDraft[], result: ReviewPhaseResult): Outcome[] {
+function classify(fresh: readonly LessonExerciseDraft[], result: ReviewPhaseResult): { outcomes: Outcome[]; current: (LessonExerciseDraft | undefined)[] } {
   const unreviewed = new Set(result.objectives.filter((objective) => objective.status === "unreviewed").map((objective) => objective.objectiveId));
   let pointer = 0;
+  // Ćwiczenie po przeglądzie (oryginał albo poprawka); usunięte = undefined.
+  const survivors: (LessonExerciseDraft | undefined)[] = [];
   const outcomes = fresh.map((original): Outcome => {
     const current = result.exercises[pointer];
+    survivors.push(undefined);
     if (current === original) {
       pointer += 1;
+      survivors[survivors.length - 1] = current;
       if (unreviewed.has(original.objectiveId)) return "unreviewed";
       return result.meta.get(original)?.note !== undefined ? "note" : "ok";
     }
@@ -187,6 +193,7 @@ function classify(fresh: readonly LessonExerciseDraft[], result: ReviewPhaseResu
     if (current !== undefined && changed !== undefined && current.objectiveId === original.objectiveId &&
       current.exerciseType === original.exerciseType && changed.beforePl === exerciseSnippet(original)) {
       pointer += 1;
+      survivors[survivors.length - 1] = current;
       return "fixed";
     }
     return "dropped";
@@ -195,7 +202,7 @@ function classify(fresh: readonly LessonExerciseDraft[], result: ReviewPhaseResu
   if (outcomes.filter((outcome) => outcome === "dropped").length !== result.droppedCount) {
     throw new Error("Liczba usuniętych z uzgodnienia różni się od droppedCount fazy przeglądu");
   }
-  return outcomes;
+  return { outcomes, current: survivors };
 }
 
 interface WireUsage {
@@ -224,11 +231,15 @@ interface RunMetrics {
   bad: number;
   good: number;
   fixedOrDroppedBad: number;
+  /** Złe ćwiczenia usunięte dopiero przez regułę twardą (krytyk ich nie naprawił ani nie usunął). */
+  removedByHardRuleBad: number;
   noteOnlyBad: number;
   missedBad: number;
   goodTouched: number;
   goodNoted: number;
   unreviewedLabelled: number;
+  /** Twarde ujawnienia tuż po fazie przeglądu, przed regułą twardą. */
+  hardLeaksBeforeRule: number;
   hardLeaksAfter: number;
   hardRuleDropped: number;
   coverageGaps: string[];
@@ -295,6 +306,12 @@ describe.skipIf(!dumpEnv)("próba „tylko przegląd” krytyka lekcji na prawdz
 
     const wire: WireUsage[] = [];
     const pending: Promise<void>[] = [];
+
+    line("");
+    line(`=== Próba „tylko przegląd”: ${subject.titlePl} ===`);
+    line(`zagadnień=${dump.objectives.length} ćwiczeń=${fresh.length} etykiety: złe=${badIndexes.size} dobre=${goodIndexes.size} powtórzeń=${runs}`);
+
+    const metrics: RunMetrics[] = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
       const response = await originalFetch(input, init);
@@ -312,12 +329,6 @@ describe.skipIf(!dumpEnv)("próba „tylko przegląd” krytyka lekcji na prawdz
       }
       return response;
     };
-
-    line("");
-    line(`=== Próba „tylko przegląd”: ${subject.titlePl} ===`);
-    line(`zagadnień=${dump.objectives.length} ćwiczeń=${fresh.length} etykiety: złe=${badIndexes.size} dobre=${goodIndexes.size} powtórzeń=${runs}`);
-
-    const metrics: RunMetrics[] = [];
     try {
       for (let run = 1; run <= runs; run += 1) {
         const eventsBefore = events.length;
@@ -347,11 +358,19 @@ describe.skipIf(!dumpEnv)("próba „tylko przegląd” krytyka lekcji na prawdz
         const durationMs = Date.now() - started;
         await Promise.all(pending.splice(0));
 
-        const outcomes = classify(fresh, result);
+        const { outcomes, current } = classify(fresh, result);
         const count = (indexes: ReadonlySet<number>, wanted: readonly Outcome[]) => [...indexes].filter((index) => wanted.includes(outcomes[index]!)).length;
+        const reviewChanged = (index: number) => outcomes[index] === "fixed" || outcomes[index] === "dropped";
 
         // Reguła twarda po przeglądzie, jak w generowaniu; ćwiczeń szkicu spoza partii brak.
         const resolution = resolveGenerationLeaks({ existing: [], fresh: result.exercises, existingExamples: examples, newExamples: {}, objectiveOrder, subject });
+        const hardLeaksBeforeRule = findExposureLeaks({ exercises: result.exercises, examples, objectiveOrder, subject, mode: "generation" })
+          .filter((leak) => leak.kind === "hard").length;
+        // Zrzucone ćwiczenia usunięte dopiero przez regułę twardą (po tożsamości obiektu po przeglądzie).
+        const removedByRule = new Set(fresh.flatMap((_exercise, index) => {
+          const survivor = current[index];
+          return survivor !== undefined && resolution.droppedFresh.includes(survivor) ? [index] : [];
+        }));
         const hardLeaksAfter = findExposureLeaks({ exercises: resolution.keptFresh, examples, objectiveOrder, subject, mode: "generation" })
           .filter((leak) => leak.kind === "hard").length;
         const gaps = lessonCoverageGaps({ subject, exercises: resolution.keptFresh, examples, objectiveIds: objectiveOrder })
@@ -365,11 +384,14 @@ describe.skipIf(!dumpEnv)("próba „tylko przegląd” krytyka lekcji na prawdz
           bad: badIndexes.size,
           good: goodIndexes.size,
           fixedOrDroppedBad: count(badIndexes, ["fixed", "dropped"]),
-          noteOnlyBad: count(badIndexes, ["note"]),
-          missedBad: count(badIndexes, ["ok", "unreviewed"]),
-          goodTouched: count(goodIndexes, ["fixed", "dropped"]),
+          removedByHardRuleBad: [...badIndexes].filter((index) => !reviewChanged(index) && removedByRule.has(index)).length,
+          noteOnlyBad: [...badIndexes].filter((index) => outcomes[index] === "note" && !removedByRule.has(index)).length,
+          missedBad: [...badIndexes].filter((index) => (outcomes[index] === "ok" || outcomes[index] === "unreviewed") && !removedByRule.has(index)).length,
+          // Dobre ćwiczenie zmienione/usunięte przez krytyka albo usunięte przez regułę twardą.
+          goodTouched: [...goodIndexes].filter((index) => reviewChanged(index) || removedByRule.has(index)).length,
           goodNoted: count(goodIndexes, ["note"]),
           unreviewedLabelled: count(new Set([...badIndexes, ...goodIndexes]), ["unreviewed"]),
+          hardLeaksBeforeRule,
           hardLeaksAfter,
           hardRuleDropped: resolution.droppedFresh.length,
           coverageGaps: gaps,
@@ -385,9 +407,16 @@ describe.skipIf(!dumpEnv)("próba „tylko przegląd” krytyka lekcji na prawdz
 
         line("");
         line(`--- Przebieg ${run}/${runs} ---`);
-        line(`złe: naprawione/usunięte ${entry.fixedOrDroppedBad}/${entry.bad} (próg ${Math.ceil(0.9 * entry.bad)}), tylko uwaga ${entry.noteOnlyBad}, pominięte ${entry.missedBad}`);
-        line(`dobre: zmienione/usunięte ${entry.goodTouched}/${entry.good} (próg ≤ 1), z uwagą ${entry.goodNoted}; etykietowane bez przeglądu: ${entry.unreviewedLabelled}`);
-        line(`twarde ujawnienia po regule: ${entry.hardLeaksAfter} (reguła usunęła ${entry.hardRuleDropped})`);
+        line(`złe: naprawione/usunięte ${entry.fixedOrDroppedBad}/${entry.bad} (próg ${Math.ceil(0.9 * entry.bad)}), usunięte regułą twardą ${entry.removedByHardRuleBad}, tylko uwaga ${entry.noteOnlyBad}, pominięte ${entry.missedBad}`);
+        line(`dobre: zmienione/usunięte (też regułą twardą) ${entry.goodTouched}/${entry.good} (próg ≤ 1), z uwagą ${entry.goodNoted}; etykietowane bez przeglądu: ${entry.unreviewedLabelled}`);
+        line(`twarde ujawnienia: po przeglądzie ${entry.hardLeaksBeforeRule}, po regule twardej ${entry.hardLeaksAfter} (reguła usunęła ${entry.hardRuleDropped})`);
+        for (const index of removedByRule) {
+          const exercise = fresh[index]!;
+          const label = badIndexes.has(index) ? "złe" : goodIndexes.has(index) ? "dobre" : undefined;
+          if (label === undefined) continue;
+          const nth = fresh.filter((candidate, at) => candidate.objectiveId === exercise.objectiveId && at <= index).length;
+          line(`  usunięte regułą twardą (${label}): ${exercise.objectiveId.split(".").at(-1)} n=${nth} (po przeglądzie: ${outcomes[index]})`);
+        }
         line(`braki pokrycia po scaleniu i regule twardej: ${gaps.length === 0 ? "brak" : ""}`);
         for (const gap of gaps) line(`  - ${gap}`);
         line(`zagadnienia: ${result.objectives.map((objective) => `${objective.objectiveId.split(".").at(-1)}=${objective.status}${"reason" in objective && objective.reason ? `(${objective.reason})` : ""}`).join(", ")}`);
@@ -412,9 +441,9 @@ describe.skipIf(!dumpEnv)("próba „tylko przegląd” krytyka lekcji na prawdz
     const total = (pick: (item: RunMetrics) => number) => metrics.reduce((sum, item) => sum + pick(item), 0);
     line("");
     line("=== Łącznie ===");
-    line(`przebiegi=${metrics.length}; złe naprawione/usunięte ${total((m) => m.fixedOrDroppedBad)}/${total((m) => m.bad)}; ` +
+    line(`przebiegi=${metrics.length}; złe naprawione/usunięte ${total((m) => m.fixedOrDroppedBad)}/${total((m) => m.bad)}; usunięte regułą twardą ${total((m) => m.removedByHardRuleBad)}; ` +
       `tylko uwaga ${total((m) => m.noteOnlyBad)}; pominięte ${total((m) => m.missedBad)}; ` +
-      `dobre zmienione/usunięte ${total((m) => m.goodTouched)}; twarde ujawnienia po regule ${total((m) => m.hardLeaksAfter)}; ` +
+      `dobre zmienione/usunięte ${total((m) => m.goodTouched)}; twarde ujawnienia po przeglądzie ${total((m) => m.hardLeaksBeforeRule)}, po regule ${total((m) => m.hardLeaksAfter)}; ` +
       `przebiegi z brakami pokrycia ${metrics.filter((m) => m.coverageGaps.length > 0).length}`);
     line(`wywołania=${total((m) => m.calls)}; czas=${(total((m) => m.durationMs) / 1000).toFixed(1)} s; tokeny we/wy=${total((m) => m.promptTokens)}/${total((m) => m.completionTokens)}; ` +
       `z cache=${total((m) => m.cachedTokens)}; koszt=${total((m) => m.costUsd) > 0 ? `${total((m) => m.costUsd).toFixed(4)} USD` : "n/d"}`);
@@ -424,6 +453,8 @@ describe.skipIf(!dumpEnv)("próba „tylko przegląd” krytyka lekcji na prawdz
     for (const entry of metrics) {
       if (entry.bad > 0) {
         expect(entry.fixedOrDroppedBad, `przebieg ${entry.run}: złe naprawione lub usunięte`).toBeGreaterThanOrEqual(Math.ceil(0.9 * entry.bad));
+      }
+      if (entry.good > 0) {
         expect(entry.goodTouched, `przebieg ${entry.run}: dobre zmienione lub usunięte`).toBeLessThanOrEqual(1);
       }
       expect(entry.hardLeaksAfter, `przebieg ${entry.run}: twarde ujawnienia po regule`).toBe(0);
