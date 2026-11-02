@@ -105,6 +105,17 @@
   overflow-wrap: anywhere;
 }
 
+/* „Pokaż ćwiczenie {n}” przy ostrzeżeniu o ujawnionym rozwiązaniu: cel dotykowy ≥ 48 px, tekst może się łamać. */
+.pp-lesson-leak-show {
+  min-height: 48px;
+  height: auto;
+  max-width: 100%;
+}
+
+.pp-lesson-leak-show .mantine-Button-label {
+  white-space: normal;
+}
+
 .pp-lesson-explain {
   background: var(--mantine-color-default-hover);
 }

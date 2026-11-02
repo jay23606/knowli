@@ -235,7 +235,7 @@ test("rozdział angielskiego: powody odrzuceń pod licznikiem i rodzaj zagadnien
   };
   await openLesson(page, { data: { ...lesson, draft: chapter, published: null, assignments: [] } as unknown as typeof lesson });
   await expect(page.getByTestId("rejected-count")).toContainText("12");
-  // Lista jest podpisana jako powody sprawdzania słów z materiału (nie wszystkie odrzucenia).
+  // Lista jest podpisana jako powody odrzuceń przy generowaniu (słownik rozdziału i ujawnione rozwiązania), nie wszystkie odrzucenia.
   await expect(page.getByTestId("rejected-reasons-label")).toHaveText(messages.lessons.rejectedReasonsLabel);
   await expect(page.getByRole("list", { name: messages.lessons.rejectedReasonsLabel })).toBeVisible();
   // do 5 najczęstszych, malejąco; remis alfabetycznie; na końcu odrzucenia bez wypisanego powodu
@@ -593,3 +593,98 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 1280, height: 800 
     }
   });
 }
+
+/** Ćwiczenie samodzielne (otwarte) zagadnienia z podaną odpowiedzią. */
+const openAnswer = (n: number, objectiveId: string, answer: string) => ({
+  id: uuid(n), revisionId: uuid(n + 50), exerciseType: "lesson_open_answer", objectiveId,
+  instructionPl: "Powiedz całe zdanie.", prompt: `Co robi on (${n})?`, answer, acceptedAnswers: [], focus: ["plays"],
+});
+
+/**
+ * Szkic z ujawnionymi rozwiązaniami (spec etapu przeglądu lekcji §8): ćwiczenie 5 powtarza przykład karty
+ * zagadnienia, ćwiczenie 6 rozwiązanie ćwiczenia 3 (inne zagadnienie), ćwiczenie 7 — ćwiczenie 5 (miękko).
+ */
+const leakyLesson = {
+  ...lesson,
+  published: null,
+  draft: {
+    ...version(draftId, "draft", 2),
+    exercises: [
+      choice(1, OBJ_A), gap(2, OBJ_A), choice(3, OBJ_B), gap(4, OBJ_B),
+      openAnswer(5, OBJ_A, "He plays football every day."),
+      openAnswer(6, OBJ_A, "plays"),
+      openAnswer(7, OBJ_A, "He plays football every day."),
+    ],
+    coverage: [{ objectiveId: OBJ_A, stage: "independent", required: 2, actual: 1, excluded: 2 }],
+    exposureLeaks: [
+      { exerciseId: uuid(5), kind: "hard", source: { kind: "card_example", objectiveId: OBJ_A } },
+      { exerciseId: uuid(6), kind: "hard", source: { kind: "exercise", exerciseId: uuid(3) } },
+      { exerciseId: uuid(7), kind: "soft", source: { kind: "exercise", exerciseId: uuid(5) } },
+    ],
+  },
+} as unknown as typeof lesson;
+
+for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+  test(`ujawnione rozwiązania w ${viewport.width}×${viewport.height}: ostrzeżenia w nagłówku karty, brak z wykluczeniem, „Pokaż ćwiczenie”`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await openLesson(page, { data: leakyLesson });
+    const phone = viewport.width < 600;
+
+    // lista braków: etap z wykluczonymi ćwiczeniami ma osobny komunikat
+    const expectedGap = messages.lessons.coverageGapExcluded
+      .replace("{objective}", "Końcówka -s w 3. osobie").replace("{stage}", messages.lessons.stages.independent)
+      .replace("{actual}", "1").replace("{excluded}", "2").replace("{required}", "2");
+    await expect(page.getByTestId("coverage-gap-0")).toHaveText(expectedGap);
+
+    // telefon: etapy zwinięte — rozwiń etap samodzielny pierwszego zagadnienia
+    if (phone) await page.getByTestId(`stage-${OBJ_A}-independent`).getByRole("button").first().click();
+
+    const cardLeak = page.getByTestId("exercise-leak-4");
+    await expect(cardLeak).toBeVisible();
+    await expect(cardLeak).toContainText(messages.lessons.exposureLeakCard.replace("{objective}", "Końcówka -s w 3. osobie"));
+    await expect(cardLeak).toHaveAttribute("data-leak-kind", "hard");
+    await expect(cardLeak).not.toHaveAttribute("role", "alert");
+    await expect(page.getByTestId("exercise-leak-4-show")).toHaveCount(0);
+    await expect(page.getByTestId("exercise-4")).toHaveAttribute("aria-describedby", "exercise-leak-4");
+    // ostrzeżenie jest w nagłówku karty: nad podglądem treści (karta zwinięta)
+    const alertBox = (await cardLeak.boundingBox())!;
+    const previewBox = (await page.getByTestId("exercise-4").locator(".pp-lesson-ex-preview").boundingBox())!;
+    expect(alertBox.y + alertBox.height).toBeLessThanOrEqual(previewBox.y + 1);
+
+    const softLeak = page.getByTestId("exercise-leak-6");
+    await expect(softLeak).toContainText(messages.lessons.exposureLeakSoft.replace("{n}", "5"));
+    await expect(softLeak).toHaveAttribute("data-leak-kind", "soft");
+
+    const hardLeak = page.getByTestId("exercise-leak-5");
+    await expect(hardLeak).toContainText(messages.lessons.exposureLeakExercise.replace("{n}", "3"));
+    const show = page.getByTestId("exercise-leak-5-show");
+    await expect(show).toHaveText(messages.lessons.exposureLeakShow.replace("{n}", "3"));
+    const showBox = (await show.boundingBox())!;
+    expect(showBox.height).toBeGreaterThanOrEqual(48);
+    expect(showBox.x + showBox.width).toBeLessThanOrEqual(viewport.width + 0.5);
+    await expectNoHorizontalOverflow(page);
+
+    // „Pokaż ćwiczenie 3”: rozwija zagadnienie i etap źródła (telefon: oba były zwinięte) i pokazuje jego kartę
+    if (phone) await expect(page.getByTestId("exercise-2")).toBeHidden();
+    await show.click();
+    await expect(page.getByTestId("exercise-2")).toBeVisible();
+    await expect(page.getByTestId("exercise-2")).toBeInViewport();
+    await expectNoHorizontalOverflow(page);
+  });
+}
+
+test("ujawnione rozwiązanie: zmiana ćwiczenia zamienia treść ostrzeżenia na prośbę o zapis", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openLesson(page, { data: leakyLesson });
+  await expect(page.getByTestId("exercise-leak-4")).toContainText(messages.lessons.exposureLeakCard.replace("{objective}", "Końcówka -s w 3. osobie"));
+  await page.getByTestId("exercise-edit-4").click();
+  await page.getByTestId("exercise-answer-4").fill("He plays chess every day.");
+  await expect(page.getByTestId("exercise-leak-4")).toHaveText(messages.lessons.exposureLeakStale);
+  await expectNoHorizontalOverflow(page);
+});
+
+test("opublikowana lekcja bez szkicu nie pokazuje ostrzeżeń o ujawnionych rozwiązaniach", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openLesson(page, { data: { ...lesson, draft: null } as unknown as typeof lesson });
+  await expect(page.locator('[data-testid^="exercise-leak-"]')).toHaveCount(0);
+});

@@ -9,6 +9,7 @@ import {
   LessonStorySchema,
   type AssignmentDto,
   type CoverageGapDto,
+  type ExposureLeakDto,
   type GenerationDto,
   type LessonDeckDto,
   type LessonDraftDto,
@@ -32,6 +33,7 @@ import {
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
+import { findExposureLeaks } from "../../../domain/lessons/exposure-leaks";
 import { lessonCoverageGaps, lessonPoolMinimums } from "../../../domain/lessons/lesson-coverage";
 import { materialCreationMode, requiresParentSubjectTitle } from "../../../domain/lessons/material-creation";
 import { poolCoverage, validatePool, withoutRedundantAcceptedVariants } from "../../../domain/lessons/pool-validation";
@@ -290,6 +292,23 @@ async function readLessonDraftDto(
   const coverage: CoverageGapDto[] = draftSubject
     ? lessonCoverageGaps({ subject: draftSubject, exercises: drafts, examples: context.examples, objectiveIds: context.objectiveIds })
     : poolCoverage(drafts, context.objectiveIds, lessonPoolMinimums({}));
+  // Ujawnione rozwiązania (spec etapu przeglądu lekcji §8): tylko edytowalny szkic — wersja opublikowana
+  // jest niezmienna, więc rodzic nie ma czego poprawić; indeksy z domeny mapujemy na id ćwiczeń.
+  const exposureLeaks: ExposureLeakDto[] = draftSubject && version.state !== "published"
+    ? findExposureLeaks({
+        exercises: drafts,
+        examples: context.examples,
+        objectiveOrder: context.objectiveIds,
+        subject: draftSubject,
+        mode: "coverage",
+      }).map((leak) => ({
+        exerciseId: revisions[leak.index]!.itemId,
+        kind: leak.kind,
+        source: leak.source.kind === "card_example"
+          ? { kind: "card_example" as const, objectiveId: leak.source.objectiveId }
+          : { kind: "exercise" as const, exerciseId: revisions[leak.source.index]!.itemId },
+      }))
+    : [];
 
   return {
     id: version.id,
@@ -347,6 +366,7 @@ async function readLessonDraftDto(
     ...(context.rejectedReasons ? { rejectedReasons: context.rejectedReasons } : {}),
     ...(context.droppedObjectiveCount ? { droppedObjectiveCount: context.droppedObjectiveCount } : {}),
     coverage,
+    ...(exposureLeaks.length > 0 ? { exposureLeaks } : {}),
   };
 }
 

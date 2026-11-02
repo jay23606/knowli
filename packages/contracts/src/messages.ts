@@ -844,8 +844,9 @@ export const messages = {
     gradingProviderNone: "Ocena dowolnych odpowiedzi jest wyłączona (brak modelu oceniającego).",
     coverageIncomplete: "Brak pokrycia — uzupełnij ćwiczenia brakujących etapów przed publikacją.",
     rejectedCount: "Odrzucono ćwiczeń przy generowaniu: {n}",
-    // Powody zlicza tylko sprawdzanie słów z materiału; resztę odrzuceń zbiera „inne powody”.
-    rejectedReasonsLabel: "Powody odrzuceń przy sprawdzaniu słów z materiału",
+    // Powody pochodzą z dwóch źródeł: słownika rozdziału (słowa spoza materiału) i ujawnionych
+    // rozwiązań (ćwiczenia samodzielne); resztę odrzuceń zbiera „inne powody”.
+    rejectedReasonsLabel: "Powody odrzuceń przy generowaniu",
     rejectedReason: "{reason} ×{n}",
     rejectedOtherReasons: "inne powody: {n}",
     droppedObjectiveCount: "Pominięto zagadnień z modelu: {n}",
@@ -1122,6 +1123,12 @@ export const messages = {
     coverageTitle: "Pokrycie etapów",
     coverageOk: "Wszystkie etapy mają wymagane ćwiczenia.",
     coverageGap: "{objective} · {stage}: jest {actual}, trzeba {required}",
+    coverageGapExcluded: "{objective} · {stage}: jest {actual} ({excluded} z rozwiązaniem widocznym wcześniej), trzeba {required}",
+    exposureLeakCard: "Rozwiązanie widać wcześniej na karcie zagadnienia „{objective}”, więc to ćwiczenie nie sprawdza samodzielnej odpowiedzi. Zmień zdanie albo usuń ćwiczenie; brakujące ćwiczenia możesz dogenerować.",
+    exposureLeakExercise: "Rozwiązanie widać wcześniej w ćwiczeniu {n}, więc to ćwiczenie nie sprawdza samodzielnej odpowiedzi. Zmień zdanie albo usuń jedno z ćwiczeń; brakujące ćwiczenia możesz dogenerować.",
+    exposureLeakSoft: "Tę samą odpowiedź ma ćwiczenie {n} — jako sprawdzenie samodzielne liczy się tylko jedno z nich.",
+    exposureLeakShow: "Pokaż ćwiczenie {n}",
+    exposureLeakStale: "Zapisz zmiany, aby sprawdzić to ponownie.",
     regenerateObjectiveLabel: "Dogeneruj ćwiczenia dla tej reguły",
     regenerateCount: "Ile dogenerować",
     regenerateSubmit: "Dogeneruj",
