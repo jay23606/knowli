@@ -281,9 +281,9 @@ describe("usage recorder", () => {
     expect(await usageRows()).toEqual([]);
   });
 
-  it("writes a session row with the clock time and the priced cost", async () => {
+  /** Zakończona sesja dziecka na świeżym zestawie. */
+  async function insertSession(childId: string): Promise<string> {
     const { deckId, versionId } = await insertDeck();
-    const childId = await insertChild();
     const assignmentId = randomUUID();
     await pool.query("insert into learning_app.assignments (id, child_id, deck_id) values ($1, $2, $3)", [assignmentId, childId, deckId]);
     await pool.query("insert into learning_app.learning_policies (id, config) values ('default', '{}') on conflict do nothing");
@@ -294,6 +294,12 @@ describe("usage recorder", () => {
        values ($1, $2, $3, $4, $5, 'default', false, 'ended', now(), 10)`,
       [sessionId, childId, assignmentId, deckId, versionId],
     );
+    return sessionId;
+  }
+
+  it("writes a session row with the clock time and the priced cost", async () => {
+    const childId = await insertChild();
+    const sessionId = await insertSession(childId);
 
     withUsageScope({ sessionId, childId }, () => recorder.record(imageEvent));
     await recorder.flush();
@@ -366,11 +372,14 @@ describe("usage recorder", () => {
     await insertUsage(validRow({ ...detailed, occurred_at: at, scope_kind: "session", child_id: childId, cost_usd: "0.001000" }));
     await insertUsage(validRow({ ...detailed, occurred_at: at, scope_kind: "session", child_id: childId, cost_usd: "0.002000" }));
     await insertUsage(validRow({ ...detailed, occurred_at: at, scope_kind: "session", child_id: otherChildId, cost_usd: "0.003000" }));
+    // Wiersz przypisany tylko przez sesję dziecka (child_id puste) też podlega zgrubieniu.
+    const sessionId = await insertSession(childId);
+    await insertUsage(validRow({ ...detailed, occurred_at: at, scope_kind: "session", session_id: sessionId, cost_usd: "0.004000" }));
 
     await deleteChild(services, childId);
 
-    const anonymized = await query("select * from learning_app.provider_usage_events where cost_usd in (0.001, 0.002) order by cost_usd");
-    expect(anonymized).toHaveLength(2);
+    const anonymized = await query("select * from learning_app.provider_usage_events where cost_usd in (0.001, 0.002, 0.004) order by cost_usd");
+    expect(anonymized).toHaveLength(3);
     for (const row of anonymized) {
       expect((row.occurred_at as Date).toISOString()).toBe("2026-09-30T22:00:00.000Z");
       expect(row).toMatchObject({
@@ -387,7 +396,7 @@ describe("usage recorder", () => {
         scope_kind: "session",
       });
     }
-    expect(anonymized.map((row) => row.cost_usd)).toEqual(["0.001000", "0.002000"]);
+    expect(anonymized.map((row) => row.cost_usd)).toEqual(["0.001000", "0.002000", "0.004000"]);
 
     const untouched = await query("select * from learning_app.provider_usage_events where cost_usd = 0.003");
     expect(untouched[0]).toMatchObject({ child_id: otherChildId, operation: "grade", model: "google/gemini-3.8-flash", images: 1 });

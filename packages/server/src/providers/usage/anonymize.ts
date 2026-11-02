@@ -2,7 +2,8 @@ import { sql } from "drizzle-orm";
 import type { Executor } from "../../db/client";
 
 /**
- * Zgrubienie kosztów usuwanego profilu (spec §5.3): czas zdarzenia schodzi do
+ * Zgrubienie kosztów usuwanego profilu (spec §5.3; wiersze przypisane do dziecka
+ * wprost albo przez jego sesje): czas zdarzenia schodzi do
  * początku miesiąca lokalnego, a pola szczegółowe i identyfikatory dziecka
  * znikają; kwoty i `scope_kind` zostają, więc sumy miesięczne się zgadzają.
  * Wywołuj w transakcji usunięcia profilu, przed `DELETE` (potem `ON DELETE SET NULL`
@@ -23,5 +24,6 @@ export async function anonymizeChildUsage(tx: Executor, childId: string, timezon
            session_id = null,
            child_id = null
      where child_id = ${childId}
+        or session_id in (select id from learning_app.learning_sessions where child_id = ${childId})
   `);
 }

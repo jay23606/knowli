@@ -6,7 +6,13 @@ import { currentUsageScope, scopeKindOf, type UsageEvent, type UsageRecorder, ty
 import { priceUsage } from "./pricing";
 import type { UsagePrices } from "./prices-env";
 
-const FOREIGN_KEY_VIOLATION = "23503";
+/**
+ * Błędy, po których koszt zapisujemy ponownie bez przypisania: naruszenie klucza
+ * obcego (zakres wskazuje zniknięty wiersz) oraz deadlock z równoległym
+ * usunięciem profilu (insert trzyma KEY SHARE na sesji i czeka na profil, który
+ * kasuje `deleteChild`).
+ */
+const RETRY_UNSCOPED = new Set(["23503", "40P01"]);
 
 /** Kod SQLSTATE błędu bazy; Drizzle opakowuje błąd sterownika w `cause`. */
 function sqlState(error: unknown): string | undefined {
@@ -52,11 +58,11 @@ export function createDrizzleUsageRecorder(input: {
       await db.insert(providerUsageEvents).values(row);
     } catch (error) {
       const code = sqlState(error);
-      if (code !== FOREIGN_KEY_VIOLATION) {
+      if (code === undefined || !RETRY_UNSCOPED.has(code)) {
         safeLog("usage_record_failed");
         return;
       }
-      // Zakres wskazuje wiersz, który zniknął (np. usunięty profil): koszt zostaje bez przypisania.
+      // Zakres wskazuje wiersz, który zniknął albo znika (usunięty profil): koszt zostaje bez przypisania.
       try {
         await db.insert(providerUsageEvents).values({
           ...row,
@@ -109,7 +115,8 @@ export function createDrizzleUsageRecorder(input: {
       }
     },
     async flush() {
-      await Promise.allSettled([...pending]);
+      // Pętla: zapisy dodane w trakcie czekania też muszą się skończyć.
+      while (pending.size > 0) await Promise.allSettled([...pending]);
     },
   };
 }

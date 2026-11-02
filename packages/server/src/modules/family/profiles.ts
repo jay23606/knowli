@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq, sql } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import {
   ChildInputSchema,
   ChildPatchSchema,
@@ -9,7 +9,7 @@ import {
   type ChildInput,
   type ChildPatch,
 } from "@learning/contracts";
-import { childProfiles, familySettings } from "../../db/schema";
+import { childProfiles, familySettings, learningSessions } from "../../db/schema";
 import { AppError } from "../../errors";
 import type { Services } from "../../config";
 import { anonymizeChildUsage } from "../../providers/usage/anonymize";
@@ -61,11 +61,16 @@ export async function updateChild(services: Services, childId: string, input: Ch
 export async function deleteChild(services: Services, childId: string): Promise<void> {
   const id = UuidSchema.parse(childId);
   await services.db.transaction(async (tx) => {
-    // Blokada wiersza profilu: równoległe inserty kosztów z kluczem obcym czekają
-    // na KEY SHARE, a po commicie dostają 23503 i zapisują się bez przypisania —
-    // żaden wiersz kosztu nie ominie zgrubienia.
-    const locked = await tx.execute(sql`select id from learning_app.child_profiles where id = ${id} for update`);
-    if (locked.rows.length === 0) {
+    // Kolejność blokad jak w triggerach FK insertu kosztu (najpierw sesja, potem
+    // profil), żeby równoległy zapis kosztu nie zakleszczył się z kaskadą usunięcia.
+    // Wstawki, które zdążą przed blokadą, zgrubia UPDATE poniżej; te po niej
+    // czekają na KEY SHARE, po commicie dostają 23503 i zapisują się bez
+    // przypisania (recorder ponawia też po deadlocku 40P01).
+    await tx.select({ id: learningSessions.id }).from(learningSessions)
+      .where(eq(learningSessions.childId, id)).orderBy(learningSessions.id).for("update");
+    const locked = await tx.select({ id: childProfiles.id }).from(childProfiles)
+      .where(eq(childProfiles.id, id)).for("update");
+    if (locked.length === 0) {
       throw new AppError("not_found");
     }
     const timezoneRow = (await tx.select({ timezone: familySettings.timezone }).from(familySettings).limit(1))[0];
