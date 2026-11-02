@@ -405,8 +405,15 @@ function listenSentenceOf(ex: LessonExerciseDraft): string | null {
   });
 }
 
-/** Wyraz zaraz za luką `lesson_listen_choice` (także w cudzysłowie); lukę zamkniętą interpunkcją pomija. */
-const LISTEN_WORD_AFTER_GAP = /_{2,}\s+["'\u2018\u201c]?([A-Za-z]+)/u;
+/**
+ * Wyraz zaraz za luką `lesson_listen_choice` (także w cudzysłowie); lukę zamkniętą
+ * interpunkcją pomija. Regex zakotwiczony na tekście za luką — bez nawrotów po podkreśleniach.
+ */
+function wordAfterGap(stem: string): string | undefined {
+  const gap = /_{2,}/.exec(stem);
+  if (!gap) return undefined;
+  return /^\s+["'\u2018\u201c]?([A-Za-z]+)/u.exec(stem.slice(gap.index + gap[0].length))?.[1];
+}
 
 /** Wyraz zaczynający się głoską s, z albo sz (snakes, zoo, shoes, także miękkie c: city). */
 const SIBILANT_ONSET = /^(?:s|z|c[eiy])/i;
@@ -464,7 +471,7 @@ function validateListenChoice(
       }
     }
   }
-  const nextWord = LISTEN_WORD_AFTER_GAP.exec(stem)?.[1];
+  const nextWord = wordAfterGap(stem);
   if (nextWord !== undefined && SIBILANT_ONSET.test(nextWord)) {
     for (let i = 0; i < options.length; i++) {
       for (let j = i + 1; j < options.length; j++) {
