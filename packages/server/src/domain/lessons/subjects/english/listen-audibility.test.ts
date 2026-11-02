@@ -33,6 +33,7 @@ describe("listenChoiceSibilantErrors — końcówka -s przed sybilantem za luką
     ["He ___ sleeping.", "He's", "He"],
     ["She ___ “snakes”.", "like", "likes"],
     ["She ___ „snakes”.", "like", "likes"],
+    ["He says “___” softly.", "cat", "cats"],
     ["He ___ xylophones.", "play", "plays"],
     ["She ___ psychology.", "study", "studies"],
   ])("odrzuca sybilant za luką przy opcjach różnych o -s: %s (%s / %s)", (stem, first, second) => {
@@ -42,6 +43,7 @@ describe("listenChoiceSibilantErrors — końcówka -s przed sybilantem za luką
   it.each([
     ["He ___ football.", "play", "plays"],
     ["He ___, sadly.", "play", "plays"],
+    ["He says “___”, sadly.", "cat", "cats"],
     ["___ she like snakes?", "Do", "Does"],
     ["She ___ socks.", "watch", "watches"],
     ["She ___ salsa.", "dance", "dances"],

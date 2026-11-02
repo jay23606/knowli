@@ -8,13 +8,14 @@ import type { LessonExerciseDraft } from "../../types";
  */
 
 /**
- * Wyraz zaraz za luką (także w cudzysłowie); lukę zamkniętą interpunkcją pomija.
+ * Wyraz zaraz za luką (także w cudzysłowie, również gdy cudzysłów zamyka lukę: “___” softly);
+ * lukę zamkniętą interpunkcją pauzy (przecinek, kropka) pomija.
  * Regex zakotwiczony na tekście za luką — bez nawrotów po podkreśleniach.
  */
 function wordAfterGap(stem: string): string | undefined {
   const gap = /_{2,}/.exec(stem);
   if (!gap) return undefined;
-  return /^\s+["'\u2018\u201c\u201e]?([A-Za-z]+)/u.exec(stem.slice(gap.index + gap[0].length))?.[1];
+  return /^["'\u2019\u201d]?\s+["'\u2018\u201c\u201e]?([A-Za-z]+)/u.exec(stem.slice(gap.index + gap[0].length))?.[1];
 }
 
 /**
