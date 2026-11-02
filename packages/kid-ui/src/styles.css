@@ -182,8 +182,6 @@
      zapas pod 65 także przy innym silniku tekstu. Samo 60ch dawało ok. 80 znaków
      i w kolumnie 720 px nie ograniczało wiersza. */
   --kid-reading-measure: 44ch;
-  /* Minimum dotykowego celu (Material 3): stała kolumna odsłuchu w nagłówku. */
-  --kid-touch-target: 48px;
   /* Window units. KidPage scales a large window with CSS zoom (inline
      --kid-zoom), and zoom multiplies vh/dvh/svh/vw by the scale, so every
      window-relative length is written calc(N * var(--kid-dvh)) etc. Each token
@@ -2380,14 +2378,14 @@
 /* Nagłówek jak na karcie, ale kolumna odsłuchu stoi zawsze (także pusta, bez
    nagrania): tytuł zostaje na środku, a ani brak nagrania, ani wynik pytania
    nie przesuwają tekstu. */
-.kid-lesson-story__header {
+.kid-ui .kid-lesson-story__header {
   display: grid;
-  grid-template-columns: var(--kid-touch-target) minmax(0, 1fr) var(--kid-touch-target);
+  grid-template-columns: 48px minmax(0, 1fr) 48px;
   align-items: center;
   gap: 8px;
 }
 
-.kid-lesson-story__title {
+.kid-ui .kid-lesson-story__title {
   grid-column: 2;
   margin: 0;
   font-family: var(--kid-font-display);
@@ -2398,9 +2396,9 @@
   overflow-wrap: anywhere;
 }
 
-.kid-lesson-story__listen {
+.kid-ui .kid-lesson-story__listen {
   grid-column: 3;
-  min-block-size: var(--kid-touch-target);
+  min-block-size: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
