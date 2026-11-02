@@ -234,6 +234,26 @@ describe("lessonPoolJsonSchema — wyjaśnienie błędu (explanationPl)", () => 
     expect(JSON.stringify(lessonPoolJsonSchema({ ...wide, exerciseExplanations: false }))).toBe(base);
     expect(base).not.toContain("explanationPl");
   });
+
+  it("z obiema flagami (voiceTones i exerciseExplanations) każda gałąź poza kalkulacją ma oba pola wymagane", () => {
+    const schema = lessonPoolJsonSchema({ ...wide, voiceTones: true, exerciseExplanations: true }) as any;
+    const branches = schema.properties.exercises.items.anyOf;
+    expect(branches).toHaveLength(6);
+    for (const branch of branches) {
+      const type = branch.properties.exerciseType.enum[0];
+      if (type === "lesson_calculation") {
+        expect(branch.properties).not.toHaveProperty("voiceTone");
+        expect(branch.properties).not.toHaveProperty("explanationPl");
+        continue;
+      }
+      expect(branch.properties.voiceTone).toEqual({ type: ["null", "string"], enum: [null, "cheerful", "curious", "gentle"] });
+      expect(branch.properties.explanationPl).toEqual({ type: ["string", "null"] });
+      expect(branch.required).toEqual(expect.arrayContaining(["voiceTone", "explanationPl"]));
+      // ścisła gałąź: wymagane są dokładnie wszystkie pola, bez duplikatów
+      expect(new Set(branch.required).size).toBe(branch.required.length);
+      expect([...branch.required].sort()).toEqual(Object.keys(branch.properties).sort());
+    }
+  });
 });
 
 describe("lessonPoolJsonSchema — cytaty w gałęziach pary/grupy/luki zależą od groundingRequired", () => {

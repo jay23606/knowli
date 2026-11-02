@@ -166,6 +166,15 @@ export interface SubjectPromptProfile {
  * / `promptLocale`), a `validateExercise` jest już wywoływany w kontekście
  * przedmiotu, więc powielanie locale w szkicu byłoby redundancją (DRY/YAGNI).
  */
+/**
+ * Pola ćwiczenia, z których przedmiot liczy tekst ekspozycji (`SubjectModule.exposureText`).
+ * Wąski widok: pasuje i do szkicu (`LessonExerciseDraft`), i do payloadu zapisanej rewizji.
+ */
+export type LessonExposureSource = Pick<
+  LessonExerciseDraft,
+  "exerciseType" | "stem" | "answer" | "options" | "correctOption" | "clozeText" | "gapAnswers"
+>;
+
 export interface LessonExerciseDraft {
   readonly exerciseType: LessonExerciseType;
   readonly objectiveId: string;
@@ -274,9 +283,10 @@ export interface SubjectModule {
   readonly instructionIsStimulus?: boolean;
   /**
    * Tekst, z którego liczony jest `target_key` ćwiczenia (ekspozycja). Brak =
-   * `answer`. Wołany przy zapisie rewizji szkicu (generacja i edycja rodzica).
+   * `answer`. Wołany przy zapisie rewizji szkicu (generacja i edycja rodzica)
+   * i przy ładowaniu rewizji do sesji (payload rewizji ma te same pola).
    */
-  exposureText?(draft: LessonExerciseDraft): string;
+  exposureText?(draft: LessonExposureSource): string;
   /**
    * Normalizacja tekstu przed liczeniem `target_key` (np. bez końcowej
    * interpunkcji, z prostym apostrofem). Obowiązuje każdy tekst ekspozycji

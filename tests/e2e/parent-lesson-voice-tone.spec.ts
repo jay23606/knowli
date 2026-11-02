@@ -154,9 +154,9 @@ test("ton lektora trafia do patcha bez stanu nagrań, a „Nagraj ponownie” wo
 test("„Nagraj ponownie” wyjaśnienia wysyła rolę explanation_audio dla rewizji ćwiczenia", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const calls = await openLesson(page, { explanations: true });
-  const controls = page.getByTestId("exercise-0").getByTestId("lesson-explanation-audio");
+  const controls = page.getByTestId("exercise-0").getByTestId("lesson-explanation-audio-0");
   await expect(controls).toHaveAttribute("data-audio-state", "ready");
-  await controls.getByTestId("lesson-explanation-audio-regenerate").click();
+  await controls.getByTestId("lesson-explanation-audio-0-regenerate").click();
   await expect.poll(() => calls.requests.filter((request) => request.method === "POST" && request.path.endsWith("/prompt-audio/regenerate")).length).toBe(1);
   const call = calls.requests.find((request) => request.path.endsWith("/prompt-audio/regenerate"))!;
   expect(call.path).toBe(`/api/v1/parent/lesson-drafts/${draftId}/prompt-audio/regenerate`);

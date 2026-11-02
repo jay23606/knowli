@@ -1,5 +1,5 @@
 import { computeTargetKey } from "../target-key";
-import type { LessonExerciseDraft, SubjectModule } from "./types";
+import type { LessonExerciseDraft, LessonExposureSource, SubjectModule } from "./types";
 
 /**
  * `target_key` tekstu ujawnianego dziecku w lekcji (np. przykład na karcie):
@@ -20,7 +20,7 @@ export function lessonTextTargetKey(
  */
 export function exerciseExposureText(
   subject: Pick<SubjectModule, "exposureText">,
-  draft: LessonExerciseDraft,
+  draft: LessonExposureSource,
 ): string {
   return subject.exposureText?.(draft) ?? draft.answer;
 }

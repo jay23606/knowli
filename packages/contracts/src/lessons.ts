@@ -17,8 +17,8 @@ import { CalculationSpecSchema } from "./lesson-calculation";
  * notice 2–3 zdania × 1–15 segmentów.
  */
 
-/** Limity współdzielone z `domain/lessons/pool-validation.ts`. */
-const MAX_TEXT_LENGTH = 120;
+/** Limity współdzielone z `domain/lessons/pool-validation.ts`. Pole tekstowe ćwiczenia, także wyjaśnienie błędu (`explanationPl`). */
+export const MAX_LESSON_TEXT_LENGTH = 120;
 /** Odpowiedź wzorcowa i warianty: dłuższy limit pod odpowiedzi przedmiotów szkolnych. */
 export const MAX_LESSON_ANSWER_LENGTH = 300;
 /** Maks. długość cytatu źródłowego ćwiczenia szkolnego (osobna stała od limitu odpowiedzi). */
@@ -86,7 +86,7 @@ export const LessonExerciseTypeSchema = z.enum(LESSON_EXERCISE_TYPES);
 const LessonStageSchema = z.enum(["intro", "guided", "productive", "independent"]);
 
 /** Pole tekstowe ćwiczenia (payload „Data Models”): niepuste, ≤ 120 znaków. */
-const text = z.string().min(1).max(MAX_TEXT_LENGTH);
+const text = z.string().min(1).max(MAX_LESSON_TEXT_LENGTH);
 
 /**
  * Katalog przedmiotów do formularza rodzica (design „Przedmiot i katalog”).
@@ -361,7 +361,7 @@ export const LessonExerciseInputSchema = z.object({
   ).min(MIN_NOTICE_SENTENCES).max(MAX_NOTICE_SENTENCES).optional(),
   answer: z.string().min(1).max(MAX_LESSON_ANSWER_LENGTH),
   acceptedAnswers: z.array(z.string().min(1).max(MAX_LESSON_ANSWER_LENGTH)).max(MAX_ACCEPTED_ANSWERS),
-  focus: z.array(z.string().min(1).max(MAX_TEXT_LENGTH)),
+  focus: z.array(z.string().min(1).max(MAX_LESSON_TEXT_LENGTH)),
   options: z.array(ExerciseOptionSchema).min(MIN_OPTIONS).max(MAX_OPTIONS).optional(),
   correctOption: z.string().min(1).optional(),
   items: z.array(ExerciseItemSchema).min(MIN_ORDER_ITEMS).max(MAX_ORDER_ITEMS).optional(),

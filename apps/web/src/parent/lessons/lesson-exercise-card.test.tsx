@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { messages, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
+import { MAX_LESSON_TEXT_LENGTH, messages, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
 import LessonExerciseCard from "./LessonExerciseCard";
 import { createLessonSnapshot } from "./lesson-editor-state";
 import { renderParentMarkup } from "../test-render";
@@ -22,7 +22,10 @@ function listenExercise(): LessonDraftDto["exercises"][number] {
   };
 }
 
-function render(sentenceAudio: LessonPromptAudioDto | null, { open = false, editable = true } = {}): string {
+function render(
+  sentenceAudio: LessonPromptAudioDto | null,
+  { open = false, editable = true, explanations = false, errors = undefined as string[] | undefined } = {},
+): string {
   const draft = {
     id: "00000000-0000-4000-8000-000000000001", deckId: "00000000-0000-4000-8000-000000000002", editNumber: 1, status: "review",
     title: "T", subjectId: "english_grammar", topicId: "present_simple", topicVersion: 1, objectiveIds: [OBJ], examples: {},
@@ -30,8 +33,8 @@ function render(sentenceAudio: LessonPromptAudioDto | null, { open = false, edit
   } as unknown as LessonDraftDto;
   const ex = createLessonSnapshot(draft, () => "k").form.exercises[0]!;
   return renderParentMarkup(
-    <LessonExerciseCard ex={ex} index={0} editable={editable} busy={false} open={open} changed={false} hadAudio={false} errors={undefined}
-      audio={null} voiceTones={{ styleEnabled: true }} promptAudio={null} explanations={false} explanationAudio={null} sentenceAudio={sentenceAudio} lessonDraftId={draft.id} deckId={draft.deckId}
+    <LessonExerciseCard ex={ex} index={0} editable={editable} busy={false} open={open} changed={false} hadAudio={false} errors={errors}
+      audio={null} voiceTones={{ styleEnabled: true }} promptAudio={null} explanations={explanations} explanationAudio={null} sentenceAudio={sentenceAudio} lessonDraftId={draft.id} deckId={draft.deckId}
       itemRevisionId="rev" audioLocked={false} calculation={null} onToggle={vi.fn()} onMutate={vi.fn()} onRemove={vi.fn()} onPlay={vi.fn()} />,
   );
 }
@@ -76,5 +79,32 @@ describe("LessonExerciseCard: Posłuchaj i wybierz", () => {
     expect(markup).not.toContain('data-testid="exercise-instruction-0"');
     expect(markup).not.toContain('data-testid="exercise-visual-0"');
     expect(markup).not.toContain('data-testid="exercise-voice-tone-0"');
+  });
+});
+
+describe("LessonExerciseCard: wyjaśnienie błędu", () => {
+  it("licznik pokazuje limit pól tekstowych ćwiczenia", () => {
+    const markup = render(null, { open: true, explanations: true });
+    expect(markup).toContain('data-testid="exercise-explanation-count-0"');
+    expect(markup).toContain(`>0/${MAX_LESSON_TEXT_LENGTH}<`);
+    expect(markup).toContain(`maxLength="${MAX_LESSON_TEXT_LENGTH}"`);
+  });
+
+  it("błąd walidacji wyjaśnienia jest też przy polu, bez prefiksu pola; inne błędy tylko w alercie", () => {
+    const markup = render(null, {
+      open: true, explanations: true,
+      errors: ["explanationPl: wyjaśnienie ma mieć dokładnie jedno zdanie", "Odpowiedź nie może być pusta."],
+    });
+    expect(markup).toContain('data-testid="exercise-errors-0"');
+    const field = markup.slice(markup.indexOf(messages.lessons.explanationLabel));
+    expect(field).toContain("aria-invalid=\"true\"");
+    expect(field).toContain(">wyjaśnienie ma mieć dokładnie jedno zdanie<");
+    expect(field).not.toContain(">explanationPl:");
+  });
+
+  it("bez błędów wyjaśnienia pole nie jest oznaczone jako błędne", () => {
+    const markup = render(null, { open: true, explanations: true, errors: ["Odpowiedź nie może być pusta."] });
+    const field = markup.slice(markup.indexOf(messages.lessons.explanationLabel));
+    expect(field).not.toContain("aria-invalid=\"true\"");
   });
 });
