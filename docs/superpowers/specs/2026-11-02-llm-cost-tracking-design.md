@@ -11,7 +11,9 @@ Data: 2026-11-02. Decyzje właściciela (czat 2026-11-02):
 - przy usunięciu profilu dziecka jego wiersze kosztów są zgrubiane (§5.4).
 
 Wersja po review trzech krytyków (zgodność z kodem; architektura, prywatność i
-pieniądze; cel, testy i zakres) — rozstrzygnięcia w §9.
+pieniądze; cel, testy i zakres) — rozstrzygnięcia w §9. Drobne korekty po
+review planu: media przez `one_run_per_asset`, `AudioInput.durationMs`, hak
+zamknięcia web, blokada profilu przy zgrubieniu, „Koszty” w menu.
 
 ## 1. Problem i zakres
 
@@ -120,8 +122,9 @@ CHECK-a `generation_runs_kind_shape`, dedupe, lease ani supersede. Unikalny
 indeks `one_run_per_asset` sprawia, że zasób ma jeden run, więc współdzielony
 zasób jest opłacony raz i przypisany talii, która go zleciła.
 
-Runy sprzed migracji mają `origin_deck_id = NULL` i trafiają do „Inne”; dziennik
-i tak zaczyna się od zera.
+Runy zlecone przed migracją mają `origin_deck_id = NULL`; jeśli wykonają się po
+wdrożeniu, ich koszt trafi do „Wspólne (interfejs)” razem z głosem UI —
+świadome, krótkotrwałe przybliżenie (dziennik i tak zaczyna się od zera).
 
 ## 4. Zapis
 
@@ -148,7 +151,7 @@ parametr w każdej metodzie portów LLM, TTS, STT, pronunciation, images i grade
 | Punkt wejścia | Zakres | `scope_kind` |
 | --- | --- | --- |
 | `materials/generation-worker.ts` — gałąź runu `deck`/`lesson` w `execute` | `{ generationRunId, deckId }` (talia z `deck_version_id`) | `run` |
-| `materials/generation-worker.ts` / `media-generation.ts` — run mediów po `claimMediaRun` (zwraca też `id` runu i `origin_deck_id`) | `{ generationRunId, deckId: origin_deck_id }` | `run` |
+| `materials/generation-worker.ts` — run mediów (run odczytany po `asset_id`, unikalny indeks `one_run_per_asset`) | `{ generationRunId, deckId: origin_deck_id }` | `run` |
 | `materials/deck-cover.ts` `generateDeckCover` | `{ deckId }` | `deck` |
 | `learning/lessons/lesson-attempts.ts` — wywołanie gradera (ok. l. 1462) | `{ sessionId, childId }` z `phase1.start.session` | `session` |
 | `learning/session-activity.ts` — początek `settleAcceptedSessionActivity` (wołany fire-and-forget) | `{ sessionId, childId }` (dziecko dociągnięte z sesji) | `session` |
@@ -187,7 +190,10 @@ Odczyt z ciała OpenRouter to czysta funkcja `usageFromPayload(payload)` w
 liczbą ≥ 0; w każdym innym wypadku tokeny (jeśli są) i brak kosztu. Nie rzuca.
 Obrazy OpenAI zapisują tokeny z `usage` odpowiedzi, jeśli są (kwota i tak ze
 stawki za obraz). Długość audio TTS: z nagłówka WAV (`audio/wav.ts`) albo MP3
-(`audio/mp3-duration.ts`); Azure: z nagłówka WAV wejścia.
+(`audio/mp3-duration.ts`). Wejście STT i wymowy: `AudioInput` dostaje opcjonalne
+`durationMs`, które przypadki użycia wypełniają z `normalizeAudioInput` (działa też
+dla WebM); bez niego adapter próbuje nagłówka WAV, a gdy się nie da — wiersz bez
+`audio_ms` (wycena `unknown`).
 
 Jeśli zadanie 0 pokaże, że czat lub STT OpenRouter zwraca `cost` tylko na
 żądanie, `withChatRequestExtras` dokłada `usage: { include: true }` wyłącznie
@@ -222,8 +228,13 @@ listy „Nazwane wyjątki — nie kopiuj” w `AGENTS.md`.
 Składanie: worker tworzy pulę i bazę **przed** adapterami
 (`apps/worker/src/composition.ts`) i przekazuje recorder do fabryk; kolejność
 zamknięcia w `apps/worker/src/main.ts`: `loop.stop()` → `usage.flush()` →
-`pool.end()`. Web składa recorder razem z providerami; nie ma haka zamknięcia,
-więc zapisy w locie przy restarcie procesu web mogą przepaść — przyjęte.
+`pool.end()`. Web składa recorder razem z providerami; `disposeServerServices`
+(`apps/web/src/composition.ts`) woła `usage.flush()` przed `pool.end()`. Zapisy w
+locie przy nagłym zabiciu procesu web mogą przepaść — przyjęte.
+
+Cały `record` jest w `try/catch`: wyjątek recordera (np. w wycenie) nigdy nie
+dociera do adaptera, bo zmieniłby wynik (ponowienie runu lekcji, „nieocenione”
+w graderze).
 
 ### 4.4 Wycena i stawki
 
@@ -314,8 +325,10 @@ w strefie `family_settings.timezone`, liczony czystą funkcją domenową obok
 ### 5.4 Usunięcie profilu dziecka — zgrubienie
 
 Decyzja właściciela 2026-11-02. W tej samej transakcji, w której
-`family/profiles.ts` `deleteChild` usuwa profil, przed usunięciem, wiersze
-dziecka (`child_id = :id`) są zgrubiane:
+`family/profiles.ts` `deleteChild` usuwa profil, najpierw blokuje się wiersz
+profilu (`FOR UPDATE` — równoległy zapis kosztu czeka, a po commicie dostaje
+23503 i idzie ścieżką bez przypisania), potem wiersze dziecka (`child_id = :id`)
+są zgrubiane:
 
 - `occurred_at` → początek miesiąca w strefie rodziny;
 - `operation`, `model`, `http_status`, `input_tokens`, `output_tokens`,
@@ -335,8 +348,10 @@ powiązać z dzieckiem.
 
 ## 6. Panel rodzica
 
-Nowa sekcja `costs` w `PARENT_SECTIONS` (`/parent/costs`), pozycja „Koszty” w
-nawigacji `ParentShell`. Mantine i TanStack Query zgodnie z
+Nowa sekcja `costs` w `PARENT_SECTIONS` (`/parent/costs`). Decyzja właściciela
+2026-11-02: „Koszty” to pozycja menu panelu (`parent-menu`), a nie szósta
+zakładka — dolny pasek na telefonie ma już pięć zakładek i nie zmieści szóstej
+przy 320–360 px. Pasek zakładek pozostaje bez zmian. Mantine i TanStack Query zgodnie z
 `2026-10-29-parent-ui-mantine`.
 
 ### 6.1 Nagłówek
@@ -361,7 +376,8 @@ Zawsze: „Ceny netto usług, bez VAT i opłat za doładowanie.”
    („1,2 mln tokenów”, „38 min audio”, „12 obrazów”, „4 300 znaków”), koszt,
    udział %.
 2. **Materiały** — talie z kolumnami: nazwa, typ (lekcja/słówka), generowanie,
-   lektor, ilustracje i okładka, **razem od początku**, **w wybranym miesiącu**.
+   lektor, ilustracje i okładka (te trzy od początku), **razem od początku**,
+   **w wybranym miesiącu**.
    Sortowanie po „razem” malejąco; kliknięcie otwiera talię w edytorze. Na
    końcu „Wspólne (interfejs)” i „Inne”, jeśli niezerowe. Pod tabelą: „Koszt
    wspólnego nagrania lub obrazu liczy się raz — dla zestawu, który je zlecił.”
@@ -370,6 +386,7 @@ Zawsze: „Ceny netto usług, bez VAT i opłat za doładowanie.”
    końcu „Usunięte profile”, jeśli niezerowe. Podpis: „Bez kosztu przygotowania
    materiałów.”
 
+Średnia na sesję liczona na serwerze w mikrodolarach (pusta przy zerze sesji).
 Kwoty: USD, dwa miejsca po przecinku, polski format liczb; dodatnia poniżej
 0,01 to „< 0,01 USD”. Kwota zawierająca szacunek ma „≈”; wiersz z wywołaniami
 `unknown` dostaje dopisek „+N bez ceny”. Pusty miesiąc: „Brak płatnych wywołań w
