@@ -950,7 +950,8 @@ test.describe("cloze with a word bank: sentence readback dock geometry", () => {
           return [rect("kid-material"), rect("kid-feedback-dock")] as const;
         });
         const materialBottom = materialBox.y + materialBox.height;
-        const geometry = `material ${JSON.stringify(materialBox)}, dock ${JSON.stringify(dockWithMaterial)} at ${label}`;        if (pageScrolls) {
+        const geometry = `material ${JSON.stringify(materialBox)}, dock ${JSON.stringify(dockWithMaterial)} at ${label}`;
+        if (pageScrolls) {
           expect(materialBottom, `material bottom above the dock: ${geometry}`).toBeLessThanOrEqual(dockWithMaterial.y + 1);
           // Materiał ma naturalną wysokość (nie jest ściśnięty przez dok) — przewija strona.
           expect(materialBox.height, `material height: ${geometry}`).toBeGreaterThanOrEqual(MIN_VISIBLE_MATERIAL);

@@ -147,7 +147,9 @@ async function expectClozeGeometry(page: Page, testInfo: TestInfo, shotPrefix: s
     if (viewport.height < 480 && viewport.width >= 600) {
       expect(pool!.x, `bank beside the text: ${placed}`).toBeGreaterThanOrEqual(textNow!.x + textNow!.width - 1);
     } else {
+      // Pod tekstem i blisko niego (odstęp siatki), nie zepchnięty na dół ekranu.
       expect(pool!.y, `bank below the text: ${placed}`).toBeGreaterThanOrEqual(textNow!.y + textNow!.height - 1);
+      expect(pool!.y - (textNow!.y + textNow!.height), `bank right below the text: ${placed}`).toBeLessThan(120);
     }
     await expectGapsClearOfText(page, label);
     await page.screenshot({ path: testInfo.outputPath(`${shotPrefix}-${label}.png`) });
@@ -188,15 +190,31 @@ test("cloze in low landscape: the active gap and the word bank are on screen tog
   for (let gap = 0; gap < 3; gap += 1) await page.getByTestId("kid-lesson-cloze-option").first().click();
   const active = page.getByTestId("kid-lesson-cloze-gap").nth(3);
   await expect(active).toHaveAttribute("aria-pressed", "true");
-  await active.scrollIntoViewIfNeeded();
-  // Oba prostokąty w jednej chwili: przyklejony bank stoi obok tekstu, gdziekolwiek jest aktywna luka.
-  const [gapBox, poolBox] = await boxesNow(page, [
-    "[data-testid='kid-lesson-cloze-gap'][aria-pressed='true']", "[data-testid='kid-lesson-cloze-pool']",
-  ]);
-  const screen = { x: 0, y: 0, ...viewport };
-  const details = `gap ${JSON.stringify(gapBox)}, bank ${JSON.stringify(poolBox)} at 844x390`;
-  expectBoxWithin(gapBox!, screen, `active gap in the viewport: ${details}`);
-  expectBoxWithin(poolBox!, screen, `bank in the viewport: ${details}`);
+  const expectBankBesideActiveGap = async (state: string) => {
+    await page.evaluate(() => {
+      document.querySelector(".kid-page")!.scrollTop = 0;
+    });
+    await active.scrollIntoViewIfNeeded();
+    // Prostokąty w jednej chwili: przyklejony bank stoi obok tekstu, gdziekolwiek jest aktywna luka.
+    const [gapBox, poolBox, textBox] = await boxesNow(page, [
+      "[data-testid='kid-lesson-cloze-gap'][aria-pressed='true']", "[data-testid='kid-lesson-cloze-pool']",
+      "[data-testid='kid-lesson-cloze-text']",
+    ]);
+    const screen = { x: 0, y: 0, ...viewport };
+    const details = `gap ${JSON.stringify(gapBox)}, bank ${JSON.stringify(poolBox)}, text ${JSON.stringify(textBox)} at 844x390 ${state}`;
+    expectBoxWithin(gapBox!, screen, `active gap in the viewport: ${details}`);
+    expectBoxWithin(poolBox!, screen, `bank in the viewport: ${details}`);
+    // Strona przewinęła się za początek tekstu, a bank został na ekranie (przyklejony), nie przy początku tekstu.
+    expect(textBox!.y, `text scrolled past its start: ${details}`).toBeLessThan(0);
+    expect(poolBox!.y - textBox!.y, `bank stuck below the text start: ${details}`).toBeGreaterThan(1);
+  };
+  await expectBankBesideActiveGap("without a notice");
+  // Komunikat z akcjami (`data-action-notice`, np. błąd odsłuchu) nie robi z ramy kontenera przewijania
+  // w trybie przewijanej strony — inaczej `position: sticky` banku wiązałby się z nieprzewijaną ramą.
+  // Atrybut ustawiony wprost: lekcja luk w fixture nie ma nagrania, którego błąd pokazałby komunikat.
+  await page.evaluate(() => document.querySelector("main.kid-learning")!.setAttribute("data-action-notice", "true"));
+  await expect(page.locator("main.kid-learning")).toHaveAttribute("data-action-notice", "true");
+  await expectBankBesideActiveGap("with an action notice");
 });
 
 test("cloze (English chapter, contentLocale en-GB): lang-wrapped text, gaps and bank fit every form factor", async ({ page }, testInfo) => {

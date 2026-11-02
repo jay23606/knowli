@@ -89,16 +89,18 @@ const TILES = "[data-testid='kid-lesson-match-left'], [data-testid='kid-lesson-m
  * Końce każdej linii i środki kropek, przeliczone z pikseli wewnętrznych SVG
  * (bez `viewBox`) na ekran: lewy prostokąt SVG + współrzędna × `currentCSSZoom`.
  * Leżą na środku krawędzi zwróconej do pasa: lewy kafelek — prawa krawędź,
- * prawy — lewa (prostokąty kafelków w pikselach ekranu, tolerancja 1,5 px × zoom).
+ * prawy — lewa (prostokąty kafelków w pikselach ekranu, tolerancja 1,5 px × zoom,
+ * najwyżej 2 px — spec §8). Liczba linii i kropek jest sprawdzana w tej samej
+ * próbie, więc pusty SVG nie przechodzi.
  */
-async function expectLinesOnTiles(page: Page, label: string): Promise<void> {
+async function expectLinesOnTiles(page: Page, label: string, expected: { lines: number; dots: number }): Promise<void> {
   await expect(async () => {
-    const misses = await page.evaluate(() => {
+    const { misses, lines, dots } = await page.evaluate(() => {
       const svg = document.querySelector<SVGSVGElement>("[data-testid='kid-lesson-match-lines']");
-      if (svg === null) return ["no svg"];
+      if (svg === null) return { misses: ["no svg"], lines: 0, dots: 0 };
       const zoom = svg.currentCSSZoom;
       const svgRect = svg.getBoundingClientRect();
-      const tolerance = 1.5 * zoom;
+      const tolerance = Math.min(2, 1.5 * zoom);
       const anchor = (side: string, id: string | null) => {
         const tile = document.querySelector(`[data-testid='kid-lesson-match-${side}'][data-item-id='${id}']`);
         if (tile === null) return null;
@@ -115,22 +117,30 @@ async function expectLinesOnTiles(page: Page, label: string): Promise<void> {
         }
       };
       const number = (element: Element, name: string) => Number(element.getAttribute(name));
-      for (const line of svg.querySelectorAll("[data-testid='kid-lesson-match-line']")) {
+      const lineElements = svg.querySelectorAll("[data-testid='kid-lesson-match-line']");
+      const dotElements = svg.querySelectorAll("[data-testid='kid-lesson-match-dot']");
+      for (const line of lineElements) {
         const leftId = line.getAttribute("data-left-id");
         const rightId = line.getAttribute("data-right-id");
         check("line start", "left", leftId, number(line, "x1"), number(line, "y1"));
         check("line end", "right", rightId, number(line, "x2"), number(line, "y2"));
       }
-      for (const dot of svg.querySelectorAll("[data-testid='kid-lesson-match-dot']")) {
+      for (const dot of dotElements) {
         check("dot", dot.getAttribute("data-side") ?? "", dot.getAttribute("data-item-id"), number(dot, "cx"), number(dot, "cy"));
       }
-      return misses;
+      return { misses, lines: lineElements.length, dots: dotElements.length };
     });
+    expect({ lines, dots }, `line and dot counts at ${label}`).toEqual(expected);
     expect(misses, `lines and dots on the tiles at ${label}`).toEqual([]);
   }).toPass({ timeout: 5_000 });
 }
 
-/** Żadne słowo widocznego tekstu lewych kafelków nie jest rozbite na dwa wiersze (Range per słowo). */
+/**
+ * Żadne słowo widocznego tekstu lewych kafelków nie jest rozbite na dwa wiersze (Range per słowo).
+ * Tylko lewa kolumna: Chromium nie dzieli polskich słów przy `hyphens: auto` (sprawdzone
+ * 2026-11-02, dzieli tylko angielskie), więc długie opisy po prawej chroni jedynie mniejszy
+ * padding kafelka poniżej 360 px, a nie gwarancja przeglądarki.
+ */
 async function splitLeftWords(page: Page): Promise<string[]> {
   return page.getByTestId("kid-lesson-match-left").evaluateAll((tiles) => {
     const split: string[] = [];
@@ -157,6 +167,8 @@ test("match: two columns, long descriptions and lines fit every form factor", as
   await expect(page.getByTestId("kid-lesson-match-left")).toHaveCount(5);
   await expect(page.getByTestId("kid-lesson-match-right")).toHaveCount(7);
   // Dwie pary przed pomiarem, w tym najdłuższy opis: „równik” → LONG_RIGHT, „południk zerowy” → Greenwich.
+  // Prawe kafelki po `data-item-id`, nie `nth`: kolejność prawej kolumny to kolejność zadania, a test ma
+  // trafić konkretny opis (najdłuższy, z nazwą dostępną sprawdzaną niżej), niezależnie od pozycji w fixture.
   await page.getByTestId("kid-lesson-match-left").nth(0).click();
   await page.locator(`[data-testid='kid-lesson-match-right'][data-item-id='${uid(30)}']`).click();
   await page.getByTestId("kid-lesson-match-left").nth(1).click();
@@ -181,7 +193,7 @@ test("match: two columns, long descriptions and lines fit every form factor", as
     const right = (await page.getByTestId("kid-lesson-match-right").first().boundingBox())!;
     expect(right.x, `right column beside the left one at ${label}`).toBeGreaterThan(left.x + left.width);
     expect(await splitLeftWords(page), `left words split across lines at ${label}`).toEqual([]);
-    await expectLinesOnTiles(page, label);
+    await expectLinesOnTiles(page, label, { lines: 2, dots: 12 });
 
     // Zaznaczenie wolnego kafelka i jego zdjęcie nie przesuwa kafelków; podpowiedź stoi w zarezerwowanym wierszu.
     const free = page.getByTestId("kid-lesson-match-left").nth(2);
@@ -213,12 +225,12 @@ test("match: lines stay on the tiles at scale 1.6, after a resize and after a st
     await page.getByTestId("kid-lesson-match-right").nth(index).click();
   }
   await expect(page.getByTestId("kid-lesson-match-line")).toHaveCount(3);
-  await expectLinesOnTiles(page, "2560x1440 at scale 1.6");
+  await expectLinesOnTiles(page, "2560x1440 at scale 1.6", { lines: 3, dots: 12 });
 
   await page.setViewportSize({ width: 390, height: 844 });
   await waitForKidScale(page, 1);
   await nextFrames(page);
-  await expectLinesOnTiles(page, "390x844 after the resize");
+  await expectLinesOnTiles(page, "390x844 after the resize", { lines: 3, dots: 12 });
 
   // Zmiana wysokości kafelków bez renderu Reacta: współrzędne przelicza tylko ResizeObserver.
   // Selektor o specyficzności reguły compact (`.kid-ui .kid-lesson-block.kid-lesson-pair__item`),
@@ -230,7 +242,7 @@ test("match: lines stay on the tiles at scale 1.6, after a resize and after a st
   for (const [index, height] of heightsAfter.entries()) {
     expect(height, `tile ${index} grew with the style change`).toBeGreaterThan(heightsBefore[index]! + 10);
   }
-  await expectLinesOnTiles(page, "390x844 after the style change");
+  await expectLinesOnTiles(page, "390x844 after the style change", { lines: 3, dots: 12 });
 });
 
 test("group: three bins, eight items and check fit every form factor", async ({ page }, testInfo) => {

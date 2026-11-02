@@ -1128,7 +1128,8 @@ async function expectCardTakesFreeSpace(page: Page, row: CardSpaceCase) {
   // footer clearance (24) and the slack (8), minus the rest of the panel around the card.
   const expected = Math.floor(before.frameHeight - before.contentBottom - 24 - 8
     - (after.overlay!.bottom - after.overlay!.top - after.card));
-  const details = `${label}: ${JSON.stringify({ expected, before, after, settled, firstCardHeight: probe.firstCardHeight })}`;  expect(before.display, `the ${row.frame} frame: ${details}`).toBe(row.frame === "compact" ? "flex" : "grid");
+  const details = `${label}: ${JSON.stringify({ expected, before, after, settled, firstCardHeight: probe.firstCardHeight })}`;
+  expect(before.display, `the ${row.frame} frame: ${details}`).toBe(row.frame === "compact" ? "flex" : "grid");
   expect(after.natural, `the card content is taller than the old limit: ${details}`).toBeGreaterThan(CARD_LIMIT);
   if (row.fits === "whole") {
     // Fonts other than the ones measured (fixture comment) would show up here first, not as a scrolling card.
