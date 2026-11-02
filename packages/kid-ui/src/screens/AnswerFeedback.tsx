@@ -6,7 +6,7 @@ import { lessonFeedbackView } from "./lesson-feedback-view";
 import { KidIcon } from "../components/KidIcon";
 import { useFeedbackCooldown } from "./useFeedbackCooldown";
 import { ActionButton } from "../components/ActionButton";
-import { AnswerSegments, SpellingPill } from "../components/AnswerSegments";
+import { LessonAnswerComparison, SpellingPill } from "../components/AnswerSegments";
 import { m } from "motion/react";
 import { kidFeedbackTitleAnimate, kidFeedbackTitleInitial, kidFeedbackTitleTransition } from "../motion/kid-motion";
 
@@ -138,27 +138,19 @@ export function AnswerFeedbackContent({ dto, busy }: Pick<AnswerFeedbackProps, "
             </div>
           );
         })()}
-        {/* Feedback lekcji: odpowiedź dziecka z zaznaczonymi segmentami, podpowiedź
-            kategorii i poprawna odpowiedź. Kolor nie jest jedynym nośnikiem —
-            każdy wiersz ma etykietę tekstową. */}
+        {/* Feedback lekcji: podpowiedź kategorii, a pod nią odpowiedź dziecka
+            i poprawna odpowiedź z zaznaczonymi literami. Kolor nie jest jedynym
+            nośnikiem — każdy wiersz ma etykietę tekstową. */}
         {lesson !== null && (lesson.answerSegments !== null || lesson.correctText !== null || lesson.hint !== null) && (
           <div className="kid-lesson-feedback" data-testid="kid-lesson-feedback">
             {lesson.hint !== null && (
               <p className="kid-lesson-feedback__hint" data-testid="kid-lesson-feedback-hint">{lesson.hint}</p>
             )}
-            {lesson.answerSegments !== null && (
-              <AnswerSegments
-                segments={lesson.answerSegments}
-                label={messages.kid.lessonYourAnswer}
-                testid="kid-lesson-answer-segments"
-              />
-            )}
-            {lesson.correctText !== null && (
-              <div className="kid-spelling-row" data-testid="kid-lesson-correct">
-                <span className="kid-spelling-row-label">{messages.kid.lessonCorrectAnswer}</span>
-                <span className="kid-spelling-pill kid-spelling-pill--expected" lang="en-GB">{lesson.correctText}</span>
-              </div>
-            )}
+            <LessonAnswerComparison
+              answerSegments={lesson.answerSegments}
+              correctText={lesson.correctText}
+              correctSegments={lesson.correctSegments}
+            />
           </div>
         )}
       </div>

@@ -21,6 +21,17 @@ describe("lessonFeedbackView — mapowanie feedbacku lekcji na model widoku", ()
     expect(view!.technical).toBe(false);
   });
 
+  it("poprawna odpowiedź z zaznaczonymi literami przechodzi z DTO; bez nich — null", () => {
+    const correctSegments = [
+      { text: "she play", state: "plain" as const },
+      { text: "s", state: "pill" as const },
+      { text: " football", state: "plain" as const },
+    ];
+    const dto: FeedbackDto = { kind: "lesson_almost", answerSegments: segments, correctText: "she plays football", correctSegments };
+    expect(lessonFeedbackView(dto)!.correctSegments).toEqual(correctSegments);
+    expect(lessonFeedbackView({ kind: "lesson_almost", correctText: "she plays football" })!.correctSegments).toBeNull();
+  });
+
   it("lesson_hint: segmenty + podpowiedź hintPl + poprawna odpowiedź", () => {
     const dto: FeedbackDto = {
       kind: "lesson_hint",

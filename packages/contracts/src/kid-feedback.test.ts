@@ -65,6 +65,27 @@ describe("segmenty odpowiedzi lekcji — kategoria „nie na temat” (Etap 6 sz
   });
 });
 
+describe("poprawna odpowiedź lekcji z zaznaczonymi literami (correctSegments)", () => {
+  const answerSegments = [{ text: "h", state: "plain" }, { text: "a", state: "pill" }, { text: "useboat", state: "plain" }];
+  const correctSegments = [{ text: "h", state: "plain" }, { text: "o", state: "pill" }, { text: "useboat", state: "plain" }];
+
+  it("przyjmuje correctSegments składające się na correctText przy lesson_almost i lesson_hint", () => {
+    expect(FeedbackDtoSchema.safeParse({ kind: "lesson_almost", correctText: "houseboat", answerSegments, correctSegments }).success).toBe(true);
+    expect(FeedbackDtoSchema.safeParse({ kind: "lesson_hint", hintPl: "Sprawdź litery w tym słowie.", correctText: "houseboat", answerSegments, correctSegments }).success).toBe(true);
+  });
+
+  it("odrzuca correctSegments, które nie składają się na correctText albo bez correctText", () => {
+    expect(FeedbackDtoSchema.safeParse({ kind: "lesson_almost", correctText: "house boat", correctSegments }).success).toBe(false);
+    expect(FeedbackDtoSchema.safeParse({ kind: "lesson_almost", correctSegments }).success).toBe(false);
+  });
+
+  it("odrzuca correctSegments przy innych rodzajach i segmenty „nie na temat”", () => {
+    expect(FeedbackDtoSchema.safeParse({ kind: "incorrect", correctText: "houseboat", correctSegments }).success).toBe(false);
+    const offTopic = [{ text: "houseboat", state: "offtopic" }];
+    expect(FeedbackDtoSchema.safeParse({ kind: "lesson_almost", correctText: "houseboat", correctSegments: offTopic }).success).toBe(false);
+  });
+});
+
 describe("wyjaśnienie ćwiczenia lekcji w feedbacku (spec 2026-11-01 §4.5)", () => {
   const AUDIO = "33333333-3333-4333-8333-333333333333";
   const hintPl = "Po he, she, it dodajemy -s.";

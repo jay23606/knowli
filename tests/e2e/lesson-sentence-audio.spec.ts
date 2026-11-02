@@ -629,11 +629,11 @@ test("a failed manual replay during readback stops the ring and shows the messag
 });
 
 /**
- * Układ grupy przycisków zdania z container query doku (spec §4.3): gdy treść
- * doku ma mniej niż 480 px szerokości (px wewnętrzne, jak w `@container`),
- * żółw stoi pod „Posłuchaj zdania” (odstęp 8 px, ta sama lewa krawędź), a „?”
- * komunikatu zaczyna się na wysokości górnego przycisku; szerszy dok ma oba
- * w jednym wierszu, żółw po prawej. Próg z pomiaru doku, nie z okna.
+ * Układ grupy przycisków zdania z container query doku (spec §4.3, makieta
+ * 2026-11-02): przyciski zawsze stoją w jednym wierszu, żółw po prawej. Gdy
+ * treść doku ma mniej niż 480 px szerokości (px wewnętrzne, jak w `@container`),
+ * przyciski i „?” tworzą pierwszy wiersz doku, a karta wyniku stoi pod nimi na
+ * całą szerokość; szerszy dok ma kartę obok przycisków. Próg z pomiaru doku, nie z okna.
  */
 async function expectSentenceGroupLayout(page: Page, label: string): Promise<void> {
   const dock = page.getByTestId("kid-feedback-dock");
@@ -645,14 +645,19 @@ async function expectSentenceGroupLayout(page: Page, label: string): Promise<voi
   const sentence = await boxOf(dock.getByTestId("kid-sentence-audio"));
   const slow = await boxOf(dock.getByTestId("kid-sentence-audio-slow"));
   const guidance = await boxOf(dock.getByTestId("kid-guidance-play"));
-  const details = `dock content ${contentWidth}px, sentence ${JSON.stringify(sentence)}, slow ${JSON.stringify(slow)}, guidance ${JSON.stringify(guidance)} at ${label}`;
+  const card = await boxOf(dock.getByTestId("kid-feedback"));
+  const dockBox = await boxOf(dock);
+  const details = `dock content ${contentWidth}px, sentence ${JSON.stringify(sentence)}, slow ${JSON.stringify(slow)}, guidance ${JSON.stringify(guidance)}, card ${JSON.stringify(card)} at ${label}`;
+  expect(Math.abs(slow.y - sentence.y), `row: same top: ${details}`).toBeLessThanOrEqual(1);
+  expect(slow.x, `row: slow right of sentence: ${details}`).toBeGreaterThanOrEqual(sentence.x + sentence.width - 1);
   if (contentWidth < 480) {
-    expect(slow.y, `column: slow under sentence: ${details}`).toBeGreaterThanOrEqual(sentence.y + sentence.height + 8 * zoom - 1);
-    expect(Math.abs(slow.x - sentence.x), `column: same left edge: ${details}`).toBeLessThanOrEqual(1);
-    expect(Math.abs(guidance.y - sentence.y), `column: guidance at the top button: ${details}`).toBeLessThanOrEqual(1);
+    expect(Math.abs(guidance.y - sentence.y), `toolbar: guidance in the button row: ${details}`).toBeLessThanOrEqual(1);
+    expect(card.y, `toolbar: card under the buttons: ${details}`).toBeGreaterThanOrEqual(sentence.y + sentence.height - 1);
+    // Karta ma całą szerokość treści doku (padding 10 px z każdej strony).
+    expect(card.width, `toolbar: card spans the dock: ${details}`).toBeGreaterThanOrEqual((contentWidth - 1) * zoom);
+    expect(card.x, `toolbar: card starts at the dock padding: ${details}`).toBeLessThanOrEqual(dockBox.x + 10 * zoom + 1);
   } else {
-    expect(Math.abs(slow.y - sentence.y), `row: same top: ${details}`).toBeLessThanOrEqual(1);
-    expect(slow.x, `row: slow right of sentence: ${details}`).toBeGreaterThanOrEqual(sentence.x + sentence.width - 1);
+    expect(card.y, `row: card beside the buttons: ${details}`).toBeLessThan(sentence.y + sentence.height);
   }
 }
 

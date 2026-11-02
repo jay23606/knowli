@@ -108,7 +108,7 @@ export function ExerciseFeedbackDock({
       data-compact={compact || undefined}
       className={`${classes.dock} ${compact ? classes.compact : ""} ${classes[tone]}`}
     >
-      <div className={classes.scroll}>
+      <div className={sentenceAudio ? `${classes.scroll} ${classes.withSentence}` : classes.scroll}>
         <span className={classes.badge} data-testid="kid-feedback-tone-icon" data-icon={FEEDBACK_TONE_ICONS[tone]} aria-hidden="true">
           <KidIcon name={FEEDBACK_TONE_ICONS[tone]} />
         </span>

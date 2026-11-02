@@ -77,6 +77,102 @@ function SegmentLegend({ segments }: { segments: readonly SpellingSegment[] }): 
   );
 }
 
+/** Słowo (części z zaznaczonymi literami), odstęp albo cały fragment „nie na temat”. */
+type AnswerToken =
+  | { kind: "word"; parts: SpellingSegment[] }
+  | { kind: "space"; text: string }
+  | { kind: "offtopic"; segment: SpellingSegment };
+
+/**
+ * Dzieli segmenty na słowa i odstępy, żeby słowo złożone z kilku segmentów
+ * (zaznaczona litera w środku) łamało się tylko na odstępach. Fragment „nie
+ * na temat” zostaje jednym zaznaczeniem z jedną etykietą dla czytnika.
+ */
+export function answerTokens(segments: readonly SpellingSegment[]): AnswerToken[] {
+  const tokens: AnswerToken[] = [];
+  let open: SpellingSegment[] | null = null;
+  for (const segment of segments) {
+    if (segment.state === "offtopic") {
+      tokens.push({ kind: "offtopic", segment });
+      open = null;
+      continue;
+    }
+    for (const piece of segment.text.split(/(\s+)/u)) {
+      if (piece === "") continue;
+      if (/^\s/u.test(piece)) {
+        tokens.push({ kind: "space", text: piece });
+        open = null;
+      } else if (open === null) {
+        open = [{ text: piece, state: segment.state }];
+        tokens.push({ kind: "word", parts: open });
+      } else {
+        open.push({ text: piece, state: segment.state });
+      }
+    }
+  }
+  return tokens;
+}
+
+function AnswerLine({ segments, variant }: { segments: readonly SpellingSegment[]; variant: "given" | "expected" }): ReactElement {
+  let pill = 0;
+  return (
+    <>
+      {answerTokens(segments).map((token, index) => {
+        if (token.kind === "space") return <span key={index}>{token.text}</span>;
+        if (token.kind === "offtopic") {
+          return <SpellingPill key={index} segment={token.segment} index={pill++} variant={variant} animation="pop" />;
+        }
+        return (
+          <span key={index} className="kid-lesson-word">
+            {token.parts.map((part, partIndex) => part.state === "plain"
+              ? <span key={partIndex}>{part.text}</span>
+              : <SpellingPill key={partIndex} segment={part} index={pill++} variant={variant} animation="pop" />)}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+/**
+ * Feedback lekcji: odpowiedź dziecka i poprawna odpowiedź z zaznaczonymi
+ * literami (makieta 2026-11-02). Krótkie odpowiedzi (po jednym słowie) stoją
+ * w dwóch wierszach z etykietami z boku, dłuższe — pod etykietami na całą
+ * szerokość. Tekst łamie się tylko między słowami. Kolor nie jest jedynym
+ * nośnikiem: zaznaczenie ma obwódkę i podkreślenie, a wiersz etykietę.
+ */
+export function LessonAnswerComparison({ answerSegments, correctText, correctSegments }: {
+  answerSegments: readonly SpellingSegment[] | null;
+  correctText: string | null;
+  correctSegments: readonly SpellingSegment[] | null;
+}): ReactElement | null {
+  const given = answerSegments !== null && answerSegments.length > 0 ? answerSegments : null;
+  if (given === null && correctText === null) return null;
+  const singleWord = (text: string) => !/\s/u.test(text.trim());
+  const inline = (given === null || singleWord(given.map((segment) => segment.text).join(""))) &&
+    (correctText === null || singleWord(correctText));
+  return (
+    <div className="kid-lesson-compare" data-layout={inline ? "inline" : "stacked"} data-testid="kid-lesson-compare">
+      {given !== null && (
+        <>
+          <span className="kid-spelling-row-label kid-lesson-compare__label">{messages.kid.lessonYourAnswer}</span>
+          <span className="kid-lesson-compare__answer" data-testid="kid-lesson-answer-segments">
+            <AnswerLine segments={given} variant="given" />
+          </span>
+        </>
+      )}
+      {correctText !== null && (
+        <>
+          <span className="kid-spelling-row-label kid-lesson-compare__label">{messages.kid.lessonCorrectAnswer}</span>
+          <span className="kid-lesson-compare__answer kid-lesson-compare__answer--expected" data-testid="kid-lesson-correct" lang="en-GB">
+            <AnswerLine segments={correctSegments ?? [{ text: correctText, state: "plain" }]} variant="expected" />
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * Odpowiedź dziecka z zaznaczonymi segmentami pod etykietą tekstową (kolor
  * nie jest jedynym nośnikiem — pigułka ma obwódkę). Układ `word` to
