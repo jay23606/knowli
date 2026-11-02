@@ -15,6 +15,7 @@ import { LessonNoticeView } from "./LessonNoticeView";
 import { LessonOrderView } from "./LessonOrderView";
 import { LessonSentenceView } from "./LessonSentenceView";
 import { LessonShortAnswerView } from "./LessonShortAnswerView";
+import { LessonStoryView } from "./LessonStoryView";
 
 afterEach(cleanup);
 
@@ -49,6 +50,59 @@ describe("lesson exercise views", () => {
   it("lesson card without recording has no header row", () => {
     renderKid(<LessonCardView {...makeExerciseProps(task({ kind: "lesson_card", card: { title: "Reguła", body: "Dodaj -s", examples: [] } }))} />);
     expect(screen.queryByTestId("kid-lesson-card-header")).toBeNull();
+  });
+
+  const story = (questionAudioAssetId?: string): TaskPrompt => ({
+    kind: "lesson_story",
+    story: { sentences: ["Sam has a red bike.", "He rides it to school."] },
+    contentLocale: "en-GB",
+    ...(questionAudioAssetId === undefined ? {} : { questionAudioAssetId }),
+  });
+
+  it("story view renders the title, sentences with lang, the questions lead-in and next", () => {
+    renderKid(<LessonStoryView {...makeExerciseProps(task(story()))} />);
+    expect(screen.getByTestId("kid-lesson-story").tagName).toBe("ARTICLE");
+    expect(screen.getByTestId("kid-lesson-story-title").textContent).toBe("Historyjka");
+    const text = screen.getByTestId("kid-lesson-story-text");
+    expect(text.textContent).toBe("Sam has a red bike. He rides it to school.");
+    expect(text.getAttribute("lang")).toBe("en-GB");
+    const lead = screen.getByTestId("kid-lesson-story-lead");
+    expect(lead.textContent).toBe("Potem odpowiesz na pytania.");
+    expect(lead.getAttribute("lang")).toBeNull();
+    const next = screen.getByTestId("kid-lesson-next");
+    expect(next.tagName).toBe("BUTTON");
+    expect(next.textContent).toBe("Dalej");
+    expect(document.activeElement).toBe(next);
+  });
+
+  it("story view shows the listen button beside the title only with a recording", () => {
+    renderKid(
+      <ExerciseGuidanceProvider value={<button type="button" data-testid="listen-story">listen</button>}>
+        <LessonStoryView {...makeExerciseProps(task(story("asset-story")))} />
+      </ExerciseGuidanceProvider>,
+    );
+    const listen = screen.getByTestId("listen-story");
+    expect(screen.getByTestId("kid-lesson-story-listen").contains(listen)).toBe(true);
+    expect(screen.getByTestId("kid-lesson-story-header").contains(listen)).toBe(true);
+    // Odsłuch tylko w nagłówku, nie drugi raz w wierszu instrukcji ramy.
+    expect(screen.getAllByTestId("listen-story")).toHaveLength(1);
+  });
+
+  it("story view keeps the empty listen column without a recording", () => {
+    renderKid(<LessonStoryView {...makeExerciseProps(task(story()))} />);
+    const header = screen.getByTestId("kid-lesson-story-header");
+    const column = screen.getByTestId("kid-lesson-story-listen");
+    expect(header.contains(column)).toBe(true);
+    expect(column.childElementCount).toBe(0);
+    expect(header.contains(screen.getByTestId("kid-lesson-story-title"))).toBe(true);
+  });
+
+  it("story view next completes the presentation", () => {
+    const props = makeExerciseProps(task(story("asset-story")));
+    renderKid(<LessonStoryView {...props} />);
+    fireEvent.click(screen.getByTestId("kid-lesson-next"));
+    expect(props.handlers.onComplete).toHaveBeenCalledOnce();
+    expect(props.handlers.onAnswerChoice).not.toHaveBeenCalled();
   });
 
   it("choice answers immediately by option id", () => {

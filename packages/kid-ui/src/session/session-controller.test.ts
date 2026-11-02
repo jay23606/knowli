@@ -4508,3 +4508,113 @@ describe("LearningSessionController — „Posłuchaj i wybierz” (lesson_liste
     }
   });
 });
+
+describe("LearningSessionController — historyjka lekcji (lesson_story)", () => {
+  const storyPrompt = (questionAudioAssetId?: string): TaskDto["prompt"] => ({
+    kind: "lesson_story",
+    story: { sentences: ["Sam has a red bike.", "He rides it to school."] },
+    contentLocale: "en-GB",
+    ...(questionAudioAssetId === undefined ? {} : { questionAudioAssetId }),
+  });
+  const storyTask = (taskId = "ts", questionAudioAssetId: string | null = "asset-story") =>
+    taskDto(taskId, storyPrompt(questionAudioAssetId ?? undefined), 0);
+
+  it("autoplays the story once after the pane mounts and stays silent on failure", async () => {
+    const harness = await startAtTask(baseState(), storyTask());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Nic nie gra przed zamontowaniem panelu.
+    expect(harness.media.playUrls).toEqual([]);
+    // Obce zadanie: bez odtworzenia.
+    await harness.controller.autoPlayStoryAudio("other");
+    expect(harness.media.playUrls).toEqual([]);
+    // Zablokowane autoodtwarzanie: cicho, bez komunikatu i bez błędu ekranu.
+    harness.media.rejectNextPlays = 1;
+    await harness.controller.autoPlayStoryAudio("ts");
+    await harness.controller.autoPlayStoryAudio("ts");
+    expect(harness.media.playUrls).toEqual(["https://media.test/asset-story"]);
+    expect(harness.controller.getScreen()).toMatchObject({ kind: "learning", error: null, offline: false, busy: false, storyAudioPlaying: null });
+    expect((harness.controller.getScreen() as LearningScreen).questionAudioError ?? false).toBe(false);
+    expect(harness.state.disclosures).toHaveLength(0);
+
+    // Błąd sieci przy pliku też jest cichy: bez trybu offline.
+    const network = await startAtTask(baseState(), storyTask());
+    vi.spyOn(network.media.player, "play").mockRejectedValueOnce(new TypeError("fetch failed"));
+    await network.controller.autoPlayStoryAudio("ts");
+    expect(network.controller.getScreen()).toMatchObject({ kind: "learning", error: null, offline: false, storyAudioPlaying: null });
+    expect((network.controller.getScreen() as LearningScreen).questionAudioError ?? false).toBe(false);
+
+    // Bez nagrania nic nie gra; inny typ zadania też nie.
+    const silent = await startAtTask(baseState(), storyTask("ts", null));
+    await silent.controller.autoPlayStoryAudio("ts");
+    expect(silent.media.playUrls).toEqual([]);
+    const card = await startAtTask(baseState(), taskDto("tc", { kind: "lesson_card", card: { title: "Reguła", body: "Dodaj -s", examples: [] }, questionAudioAssetId: "asset-card" }));
+    await card.controller.autoPlayStoryAudio("tc");
+    expect(card.media.playUrls).toEqual([]);
+  });
+
+  it("story playback state is set while autoplay runs and cleared after it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const harness = await startAtTask(baseState(), storyTask(), { playGate: gate });
+    expect((harness.controller.getScreen() as LearningScreen).storyAudioPlaying ?? null).toBeNull();
+    const playing = harness.controller.autoPlayStoryAudio("ts");
+    expect(harness.controller.getScreen()).toMatchObject({ storyAudioPlaying: "ts" });
+    release();
+    await playing;
+    expect(harness.controller.getScreen()).toMatchObject({ storyAudioPlaying: null });
+    // Zatrzask: kolejne zamontowanie tego samego zadania już nie gra.
+    await harness.controller.autoPlayStoryAudio("ts");
+    expect(harness.media.playUrls).toEqual(["https://media.test/asset-story"]);
+  });
+
+  it("a manual listen during autoplay takes over and clears the story playback state", async () => {
+    const harness = await startAtTask(baseState(), storyTask(), { playGate: new Promise<void>(() => {}) });
+    const auto = harness.controller.autoPlayStoryAudio("ts");
+    expect(harness.controller.getScreen()).toMatchObject({ storyAudioPlaying: "ts" });
+    void harness.controller.playQuestionAudio();
+    expect(harness.controller.getScreen()).toMatchObject({ storyAudioPlaying: null });
+    await auto;
+    // Spóźniony koniec przerwanego autoodtwarzania nie rusza stanu nowego odsłuchu.
+    expect(harness.controller.getScreen()).toMatchObject({ storyAudioPlaying: null, questionAudioError: false });
+    expect(harness.media.playUrls).toEqual(["https://media.test/asset-story", "https://media.test/asset-story"]);
+  });
+
+  it("next stops story playback", async () => {
+    const harness = await startAtTask(baseState(), storyTask(), { playGate: new Promise<void>(() => {}) });
+    const playing = harness.controller.autoPlayStoryAudio("ts");
+    expect(harness.controller.getScreen()).toMatchObject({ storyAudioPlaying: "ts" });
+    let releaseCompletion!: () => void;
+    const completionGate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+    const completion = vi.spyOn(harness.api, "completePresentation").mockImplementation(async (taskId) => {
+      await completionGate;
+      return makeApi(harness.state).completePresentation(taskId);
+    });
+    const stopsBefore = harness.media.stops;
+    const advancing = harness.controller.completePresentation();
+    expect(harness.media.stops).toBeGreaterThan(stopsBefore);
+    expect(harness.controller.getScreen()).toMatchObject({ storyAudioPlaying: null });
+    expect(completion).toHaveBeenCalledWith("ts");
+    releaseCompletion();
+    await advancing;
+    await playing;
+    expect(harness.state.presentations).toEqual(["ts"]);
+  });
+
+  it("completePresentation accepts lesson_story", async () => {
+    const harness = await startAtTask(baseState(), storyTask("ts", null));
+    await harness.controller.completePresentation();
+    expect(harness.state.presentations).toEqual(["ts"]);
+  });
+
+  it("remainingFor hides the banner at zero and shows 1–3", async () => {
+    const harness = await startAtTask(baseState(), storyTask());
+    const choice = (remaining: number) => taskDto("tq", { kind: "lesson_choice", instructionPl: "Wybierz", stem: "He ___.", options: [{ id: "o1", text: "goes" }] }, remaining);
+    expect(harness.controller.remainingFor(choice(0))).toBeNull();
+    expect(harness.controller.remainingFor(storyTask())).toBeNull();
+    expect(harness.controller.remainingFor(choice(1))).toBe(1);
+    expect(harness.controller.remainingFor(choice(2))).toBe(2);
+    expect(harness.controller.remainingFor(choice(3))).toBe(3);
+    expect(harness.controller.remainingFor(choice(4))).toBeNull();
+    expect(harness.controller.remainingFor(null)).toBeNull();
+  });
+});

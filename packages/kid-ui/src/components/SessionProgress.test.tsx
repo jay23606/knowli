@@ -34,6 +34,18 @@ describe("SessionProgress", () => {
     expect(screen.queryByTestId("kid-streak-star")).toBeNull();
   });
 
+  it("closing story label says Jeszcze N i historyjka!", () => {
+    renderKid(<SessionProgress remaining={2} total={6} done={4} closingStory />);
+    expect(screen.getByTestId("kid-remaining").textContent).toBe("Jeszcze 2 i historyjka!");
+  });
+
+  it("default label stays Jeszcze N i koniec!", () => {
+    const { rerender } = renderKid(<SessionProgress remaining={3} total={6} done={3} />);
+    expect(screen.getByTestId("kid-remaining").textContent).toBe("Jeszcze 3 i koniec!");
+    rerender(<SessionProgress remaining={3} total={6} done={3} closingStory={false} />);
+    expect(screen.getByTestId("kid-remaining").textContent).toBe("Jeszcze 3 i koniec!");
+  });
+
   it("drops a hidden star when a streak milestone is reached", () => {
     renderKid(<SessionProgress remaining={null} total={5} done={3} milestone={1} />);
     const star = screen.getByTestId("kid-streak-star");

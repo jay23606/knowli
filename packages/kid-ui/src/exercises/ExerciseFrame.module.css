@@ -170,13 +170,14 @@
   }
 
   /* Odstęp dostaje tylko mysz lub touchpad (duży monitor ze skalą), poza
-     powiększeniem gestem i zadaniami z dużą ilustracją lub kartą: zajmują one
-     większość wysokości, więc odstęp byłby częściowy i znikałby przy werdykcie
+     powiększeniem gestem i zadaniami z dużą ilustracją, kartą lub historyjką
+     (pytanie historyjki odstęp zachowuje): zajmują one większość wysokości,
+     więc odstęp byłby częściowy i znikałby przy werdykcie
      (wyższy panel mowy), przesuwając słowo i przycisk nagrywania. Tablet
      dotykowy ma 0: otwarta klawiatura nie może go zmienić, a na krótszym oknie
      odstęp kosztowałby 16–25% ramy. */
   @media (hover: hover) and (pointer: fine) {
-    :global(.kid-page:not([data-zoomed="true"])) .root:not([data-prompt-kind="exposure"]):not([data-prompt-kind="picture_exposure"]):not([data-prompt-kind="picture_recall"]):not([data-prompt-kind="picture_speech"]):not([data-prompt-kind="lesson_card"]) {
+    :global(.kid-page:not([data-zoomed="true"])) .root:not([data-prompt-kind="exposure"]):not([data-prompt-kind="picture_exposure"]):not([data-prompt-kind="picture_recall"]):not([data-prompt-kind="picture_speech"]):not([data-prompt-kind="lesson_card"]):not([data-prompt-kind="lesson_story"]) {
       --frame-offset: var(--kid-compact-frame-offset);
     }
   }

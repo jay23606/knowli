@@ -164,14 +164,21 @@ export function LearnScreen({
   // Komunikaty błędu z akcjami (audio zadania / instrukcji) rozpychają pasek
   // statusu i włączają przewijanie ramy ćwiczenia — styluje to styles.css.
   // „Posłuchaj pytania” (design szkoły §11.4) w tym samym miejscu co odsłuch polecenia;
-  // karta nauki stawia go w nagłówku za tytułem jako „Posłuchaj karty” (§12.4).
+  // karta nauki stawia go w nagłówku za tytułem jako „Posłuchaj karty” (§12.4),
+  // historyjka jako „Posłuchaj historyjki” (pierścień także przy autoodtwarzaniu).
+  const storyAudio = task?.prompt.kind === "lesson_story" || task?.prompt.kind === "lesson_story_question";
+  const cardAudio = task?.prompt.kind === "lesson_card";
   const questionAudioButton = task !== null && questionAudioOf(task) !== null
     ? <QuestionAudioButton key={task.taskId} onPlay={() => controller.playQuestionAudio()}
-        label={task.prompt.kind === "lesson_card" ? messages.kid.listenLessonCard : messages.kid.listenLessonQuestion}
+        label={cardAudio ? messages.kid.listenLessonCard : storyAudio ? messages.kid.listenLessonStory : messages.kid.listenLessonQuestion}
+        {...(storyAudio ? { playing: screen.storyAudioPlaying === task.taskId } : {})}
         disabled={offline || busy || screen.processing || screen.recordingPhase !== "idle"} />
     : null;
   const questionAudioError = questionAudioButton !== null && screen.questionAudioError === true;
-  const cardAudio = task?.prompt.kind === "lesson_card";
+  const questionAudioErrorText = cardAudio ? messages.kid.cardAudioUnavailable
+    : storyAudio ? messages.kid.storyAudioUnavailable : messages.kid.questionAudioUnavailable;
+  const questionAudioRetryText = cardAudio ? messages.kid.cardAudioRetry
+    : storyAudio ? messages.kid.storyAudioRetry : messages.kid.questionAudioRetry;
   const actionNotice = screen.taskAudioError != null || (screen.guidanceError && instructionAudioKey) || questionAudioError ? "true" : "false";
   const micAvailable = screen.session.mode !== "mock_test" && screen.session.microphoneEnabled && !screen.micDenied;
   const micState = screen.session.mode === "mock_test" ? "off"
@@ -232,9 +239,14 @@ export function LearnScreen({
   // nie efekt keyed taskId: przy AnimatePresence mode="wait" nowy panel
   // montuje się dopiero po wyjściu poprzedniego, a nagrywanie nie może
   // wystartować przed pokazaniem bodźca.
+  // Historyjka: nagranie lektora gra samo raz po zamontowaniu panelu (kontroler
+  // trzyma zatrzask na `taskId` i milczy przy zablokowanym autoodtwarzaniu).
   const handlePaneMount = (mountedTaskId: string) => {
-    if (mountedTaskId === task?.taskId && (autoPromptKind === "speech" || autoPromptKind === "picture_speech")) {
+    if (mountedTaskId !== task?.taskId) return;
+    if (autoPromptKind === "speech" || autoPromptKind === "picture_speech") {
       void controller.autoCaptureSpeech();
+    } else if (autoPromptKind === "lesson_story") {
+      void controller.autoPlayStoryAudio(mountedTaskId);
     }
   };
 
@@ -327,7 +339,7 @@ export function LearnScreen({
         <IconActionButton ref={endButtonRef} variant="text" data-testid="kid-end" aria-label={messages.kid.end} title={messages.kid.end} aria-haspopup="dialog" aria-expanded={endConfirmOpen} disabled={busy} onClick={openEndConfirm}>
           <KidIcon name="close" />
         </IconActionButton>
-        <SessionProgress remaining={remaining} total={progress.total} done={progressDone(progress.total, task?.remainingAssessed ?? null)} milestone={progress.milestone} />
+        <SessionProgress remaining={remaining} total={progress.total} done={progressDone(progress.total, task?.remainingAssessed ?? null)} milestone={progress.milestone} closingStory={task?.closingStory === true} />
         <details className="kid-microphone-status" data-microphone-state={micState}>
           <summary aria-label={micLabel} data-testid="kid-microphone-status">
             <KidIcon name={micState === "off" || micState === "unavailable" ? "microphone-off" : "microphone"} />
@@ -346,7 +358,7 @@ export function LearnScreen({
           </p>
         )}
         {screen.guidanceError && instructionAudioKey && <div className="kid-notice" data-testid="kid-guidance-error"><p>{messages.errors.picture_guidance_unavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.playGuidance(instructionAudioKey).catch(() => undefined)}>{messages.errors.picture_audio_retry}</ActionButton><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.endNow()}>{messages.kid.end}</ActionButton></div>}
-        {questionAudioError && <div className="kid-notice" role="alert" data-testid="kid-question-audio-error"><p>{cardAudio ? messages.kid.cardAudioUnavailable : messages.kid.questionAudioUnavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" data-testid="kid-question-audio-retry" onClick={() => void controller.playQuestionAudio()}>{cardAudio ? messages.kid.cardAudioRetry : messages.kid.questionAudioRetry}</ActionButton></div>}
+        {questionAudioError && <div className="kid-notice" role="alert" data-testid="kid-question-audio-error"><p>{questionAudioErrorText}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" data-testid="kid-question-audio-retry" onClick={() => void controller.playQuestionAudio()}>{questionAudioRetryText}</ActionButton></div>}
         {/* „Posłuchaj i wybierz”: sam komunikat — ponawia głośnik w poleceniu, a „Pomiń” jest w zadaniu. */}
         {screen.taskAudioError && listenChoice && <div className="kid-notice" role="alert" data-testid="kid-task-audio-error"><p>{messages.kid.listenStimulusFailed}</p></div>}
         {screen.taskAudioError && !listenChoice && <div className="kid-notice" role="alert" data-testid="kid-task-audio-error"><p>{screen.taskAudioError === "blocked" ? messages.errors.picture_audio_blocked : messages.errors.picture_audio_unavailable}</p><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" data-testid="kid-task-audio-retry" onClick={() => void controller.playTaskAudio()}>{messages.errors.picture_audio_retry}</ActionButton><ActionButton priority="secondary" fullWidth={false} size="sm" type="button" onClick={() => void controller.endNow()}>{messages.kid.end}</ActionButton></div>}

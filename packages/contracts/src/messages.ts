@@ -524,6 +524,8 @@ export const messages = {
     // Historyjka na koniec sesji: polecenie zależy od tego, czy jest nagranie lektora.
     lessonStoryInstructionListen: "Przeczytaj i posłuchaj historyjki.",
     lessonStoryInstruction: "Przeczytaj historyjkę.",
+    lessonStoryTitle: "Historyjka",
+    lessonStoryQuestionsNext: "Potem odpowiesz na pytania.",
     lessonListenGap: "luka",
     listenStimulusBlocked: "Dotknij głośnika, aby posłuchać.",
     listenStimulusFailed: "Nie udało się odtworzyć nagrania.",
@@ -536,6 +538,9 @@ export const messages = {
     questionAudioRetry: "Odtwórz pytanie",
     cardAudioUnavailable: "Nie udało się odtworzyć karty. Przeczytaj ją albo spróbuj jeszcze raz.",
     cardAudioRetry: "Odtwórz kartę",
+    listenLessonStory: "Posłuchaj historyjki",
+    storyAudioUnavailable: "Nie udało się odtworzyć historyjki. Przeczytaj ją albo spróbuj jeszcze raz.",
+    storyAudioRetry: "Odtwórz historyjkę",
     understand: "Rozumiem",
     instructionExposure: "Poznaj nowe słowo",
     instructionListening: "Posłuchaj i wybierz",
@@ -573,6 +578,8 @@ export const messages = {
     // picture_recognition: aria głośniczka odsłuchu poprawnego słowa w feedbackzie.
     listenCorrectWord: "Posłuchaj poprawnego słowa",
     remaining: "Jeszcze {n} i koniec!",
+    // Sesja z historyjką na końcu: baner zapowiada historyjkę zamiast końca.
+    remainingStory: "Jeszcze {n} i historyjka!",
     end: "Koniec",
     // Potwierdzenie ✕ „Koniec” w nagłówku sesji.
     endConfirmTitle: "Kończymy na dziś?",
