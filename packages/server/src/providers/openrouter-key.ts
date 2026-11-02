@@ -31,7 +31,7 @@ export function isSecureOpenRouterEndpoint(baseUrl: string | undefined): boolean
  */
 export function endpointKeyFromEnv(
   env: Record<string, string | undefined>,
-  prefix: "UMIEM_LLM" | "UMIEM_TTS" | "UMIEM_GRADER",
+  prefix: "UMIEM_LLM" | "UMIEM_TTS" | "UMIEM_GRADER" | "UMIEM_REVIEWER",
   baseUrl: string | undefined,
 ): string | undefined {
   const towardOpenRouter = isOpenRouterEndpoint(baseUrl);

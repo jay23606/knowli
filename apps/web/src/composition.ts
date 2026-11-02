@@ -11,6 +11,7 @@ import {
   fakeLessonSpeechDeps,
   fakeSpeechDeps,
   generationPublicServiceFromEnv,
+  reviewerPublicServiceFromEnv,
   graderFromEnv,
   imageProviderFromEnv,
   lessonSpeechFromEnv,
@@ -74,6 +75,8 @@ function initialize(): ServerServices {
   const imageProvider = imageProviderFromEnv(env, usage, "deck_cover");
   // zły adres LLM nie wywraca web (etykieta to tylko opis): wtedy bez informacji o usłudze
   const generationService = generationPublicServiceFromEnv(env);
+  // jak wyżej: opis krytyka (env procesu web), gdy jest gotowy; bez informacji, gdy wyłączony
+  const reviewService = reviewerPublicServiceFromEnv(env);
   return {
     services: createServices({
       db,
@@ -89,6 +92,7 @@ function initialize(): ServerServices {
       ...(sessionActivity ? { sessionActivity } : {}),
       // web nie ma LLM (generuje worker): opisuje konfigurację wspólną z workerem
       ...(generationService ? { generationService } : {}),
+      ...(reviewService ? { reviewService } : {}),
       ...(usage ? { usage } : {}),
     }),
     pool,

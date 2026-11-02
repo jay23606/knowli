@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withConfigDefaults } from "@learning/server";
 import { createWorkerLoop, workerLoopSettingsFromEnv } from "./loop";
 
 afterEach(() => vi.useRealTimers());
+
+describe("budżety domyślne a próg zdrowia workera", () => {
+  it("przebieg generacji lekcji plus faza krytyka mieszczą się w WORKER_HEALTH_STALE_MS", () => {
+    const env = withConfigDefaults({});
+    const budget = Number(env.UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS) + Number(env.UMIEM_REVIEWER_PHASE_BUDGET_MS);
+    expect(budget).toBeLessThan(workerLoopSettingsFromEnv(env).staleMs);
+  });
+});
 
 describe("createWorkerLoop", () => {
   it("validates a positive stale threshold and supplies defaults", () => {
