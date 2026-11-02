@@ -11,6 +11,11 @@ describe("parent routes", () => {
     expect(routeFromPath("/parent/progress")).toEqual({ section: "progress" });
     expect(routeFromPath("/parent/work-card")).toEqual({ section: "work-card" });
     expect(routeFromPath("/parent/sources")).toEqual({ section: "sources" });
+    expect(routeFromPath("/parent/costs")).toEqual({ section: "costs" });
+  });
+
+  it("builds the costs address", () => {
+    expect(routePath({ section: "costs" })).toBe("/parent/costs");
   });
 
   it("reads an open deck and the new lesson form", () => {

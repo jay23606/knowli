@@ -6,6 +6,7 @@ import { hashKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { messages } from "@learning/contracts";
 import { ApiCallError, callParent, errorMessage, parentClient } from "./api";
 import ChildEditor from "./ChildEditor";
+import CostsPanel from "./CostsPanel";
 import DecksPanel from "./DecksPanel";
 import LeaveEditorDialog, { GLOBAL_DIALOG_Z_INDEX } from "./LeaveEditorDialog";
 import ProgressPanel from "./ProgressPanel";
@@ -214,6 +215,8 @@ export default function ParentApp() {
           <ChildEditor childrenList={childrenList} onChanged={refreshChildren} registerEditorState={leaveGuard.register} />
         ) : section === "progress" ? (
           <ProgressPanel childrenList={childrenList} decks={decks} />
+        ) : section === "costs" ? (
+          <CostsPanel onNavigate={navigate} />
         ) : (
           <WorkCardPanel childrenList={childrenList} />
         )}

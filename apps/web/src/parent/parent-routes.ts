@@ -3,7 +3,13 @@
  * Czysta logika: odczyt widoku z adresu i adres widoku.
  */
 
-export const PARENT_SECTIONS = ["decks", "sources", "children", "progress", "work-card"] as const;
+/** Sekcje z zakładką w pasku nawigacji. */
+export const TAB_SECTIONS = ["decks", "sources", "children", "progress", "work-card"] as const;
+
+export type TabSection = (typeof TAB_SECTIONS)[number];
+
+/** Wszystkie sekcje adresowalne: zakładki oraz Koszty (pozycja menu, nie zakładka). */
+export const PARENT_SECTIONS = [...TAB_SECTIONS, "costs"] as const;
 
 export type ParentSection = (typeof PARENT_SECTIONS)[number];
 

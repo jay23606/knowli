@@ -56,7 +56,7 @@ test("telefon: dolny pasek sekcji przy dolnej krawędzi i menu z akcjami", async
     const menu = page.getByTestId("parent-menu");
     expect((await menu.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     await menu.click();
-    for (const id of ["to-learning", "parent-logout"]) {
+    for (const id of ["to-costs", "to-learning", "parent-logout"]) {
       await expect(page.getByTestId(id)).toBeVisible();
       expect((await page.getByTestId(id).boundingBox())!.height).toBeGreaterThanOrEqual(44);
     }
@@ -70,8 +70,7 @@ test("od 600 px: zakładki pod nagłówkiem, akcje w nagłówku", async ({ page 
     await page.setViewportSize(viewport);
     await openSignedInPanel(page);
     await expectNoHorizontalOverflow(page);
-    await expect(page.getByTestId("parent-menu")).toHaveCount(0);
-    for (const id of [...TABS, "to-learning", "parent-logout", "color-scheme-menu"]) {
+    for (const id of [...TABS, "to-learning", "parent-logout", "color-scheme-menu", "parent-menu"]) {
       const box = await page.getByTestId(id).boundingBox();
       expect(box, `${id} @${viewport.width}`).not.toBeNull();
       expect(box!.height, `${id} @${viewport.width}`).toBeGreaterThanOrEqual(44);
@@ -85,6 +84,11 @@ test("od 600 px: zakładki pod nagłówkiem, akcje w nagłówku", async ({ page 
     }));
     expect(tabs.scrollWidth, `pasek zakładek @${viewport.width}`).toBeLessThanOrEqual(tabs.clientWidth);
     expect(tabs.scrollHeight, `pasek zakładek @${viewport.width}`).toBeLessThanOrEqual(tabs.clientHeight);
+    // „Koszty” to pozycja menu ⋯ w nagłówku (nie szósta zakładka)
+    await page.getByTestId("parent-menu").click();
+    await expect(page.getByTestId("to-costs")).toBeVisible();
+    expect((await page.getByTestId("to-costs").boundingBox())!.height, `to-costs @${viewport.width}`).toBeGreaterThanOrEqual(44);
+    await page.keyboard.press("Escape");
   }
 });
 

@@ -16,12 +16,12 @@ import {
 import { useMediaQuery } from "@mantine/hooks";
 import { messages } from "@learning/contracts";
 import { ParentIcon, type ParentIconName } from "./ParentIcon";
-import { PARENT_SECTIONS, sectionPath, type ParentSection } from "./parent-routes";
+import { TAB_SECTIONS, sectionPath, type ParentSection, type TabSection } from "./parent-routes";
 import { plainClick } from "./plain-click";
 import { useVirtualKeyboardOpen } from "./virtual-keyboard";
 import "./parent-shell.css";
 
-const SECTION_META: Record<ParentSection, { label: string; icon: ParentIconName; testId: string }> = {
+const SECTION_META: Record<TabSection, { label: string; icon: ParentIconName; testId: string }> = {
   decks: { label: messages.decks.title, icon: "layers", testId: "tab-decks" },
   sources: { label: messages.sources.tab, icon: "file-text", testId: "tab-sources" },
   children: { label: messages.children.title, icon: "users", testId: "tab-children" },
@@ -86,7 +86,7 @@ export function ParentShell({ section, onNavigate, onToLearning, onLogout, child
   const { colorScheme } = useMantineColorScheme();
 
   const navLinks = (variant: "tab" | "bottom") =>
-    PARENT_SECTIONS.map((item) => {
+    TAB_SECTIONS.map((item) => {
       const meta = SECTION_META[item];
       const active = item === section;
       return (
@@ -111,6 +111,27 @@ export function ParentShell({ section, onNavigate, onToLearning, onLogout, child
         </a>
       );
     });
+
+  const toCosts = (event: MouseEvent) => {
+    if (!plainClick(event)) return;
+    event.preventDefault();
+    onNavigate("costs");
+  };
+
+  /** „Koszty” to pozycja menu (nie szósta zakładka): wspólna dla obu klas szerokości. */
+  const costsItem = (
+    <Menu.Item
+      component="a"
+      href={sectionPath("costs")}
+      leftSection={<ParentIcon name="wallet" />}
+      data-testid="to-costs"
+      aria-current={section === "costs" ? "page" : undefined}
+      onClick={toCosts}
+      mih={48}
+    >
+      {messages.costs.menuItem}
+    </Menu.Item>
+  );
 
   const toLearning = (event: MouseEvent) => {
     if (!plainClick(event)) return;
@@ -137,6 +158,7 @@ export function ParentShell({ section, onNavigate, onToLearning, onLogout, child
                   </ActionIcon>
                 </Menu.Target>
                 <Menu.Dropdown>
+                  {costsItem}
                   <Menu.Item component="a" href="/" leftSection={<ParentIcon name="play" />} data-testid="to-learning" onClick={toLearning} mih={48}>
                     {messages.auth.toLearning}
                   </Menu.Item>
@@ -168,6 +190,14 @@ export function ParentShell({ section, onNavigate, onToLearning, onLogout, child
                 <Button variant="subtle" color="gray" size="md" leftSection={<ParentIcon name="log-out" />} data-testid="parent-logout" onClick={onLogout}>
                   {messages.auth.logoutButton}
                 </Button>
+                <Menu position="bottom-end" width={220} shadow="lg" radius="lg">
+                  <Menu.Target>
+                    <ActionIcon variant="subtle" color="gray" size={44} radius="md" aria-label={messages.parentShell.more} data-testid="parent-menu">
+                      <ParentIcon name="more-vertical" className="pp-shell-more" />
+                    </ActionIcon>
+                  </Menu.Target>
+                  <Menu.Dropdown>{costsItem}</Menu.Dropdown>
+                </Menu>
               </Group>
             )}
           </Group>

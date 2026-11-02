@@ -166,6 +166,7 @@ test("usunięcie profilu wymaga potwierdzenia w oknie; anulowanie niczego nie us
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText(messages.children.removeConfirm);
   await expect(dialog).toContainText(messages.children.removeKeepsLessonThemes);
+  await expect(dialog).toContainText(messages.children.removeKeepsCostTotals);
   await expect(page.getByTestId("child-remove-cancel")).toBeFocused();
   await page.getByTestId("child-remove-cancel").click();
   await expect(dialog).toHaveCount(0);
