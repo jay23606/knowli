@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_LESSON_STT_MODEL, defaultMediaSettings, graderFromEnv, lessonSpeechFromEnv, mediaSettingsFromEnv, sessionActivityFromEnv, ttsInstructionsFor, ttsVoiceFor } from "./config";
+import { DEFAULT_LESSON_STT_MODEL, defaultMediaSettings, graderFromEnv, lessonSpeechFromEnv, mediaSettingsFromEnv, sessionActivityFromEnv, speechFromEnv, ttsInstructionsFor, ttsVoiceFor } from "./config";
 import { createTestRecorder } from "./providers/usage/test-recorder";
 
 describe("mediaSettingsFromEnv", () => {
@@ -254,5 +254,31 @@ describe("fabryki czatu — zapis kosztów (usage)", () => {
     await deps.provider.review({ tasks: [] }, AbortSignal.timeout(1000)).catch(() => undefined);
     expect(rec.events).toHaveLength(1);
     expect(rec.events[0]).toMatchObject({ feature: "session_activity_review", operation: "review", provider: "openrouter", outcome: "ok" });
+  });
+});
+
+describe("fabryki mowy — zapis kosztów (usage)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("factory passes usage to adapter (lessonSpeechFromEnv)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ text: "ok", usage: { seconds: 2, cost: 0.0001 } }), { status: 200 })));
+    const rec = createTestRecorder();
+    const deps = lessonSpeechFromEnv({ UMIEM_LESSON_STT_BASE_URL: "https://openrouter.ai/api/v1", UMIEM_LESSON_STT_API_KEY: "k" }, rec)!;
+    await deps.stt.transcribe({ bytes: new Uint8Array([1]), mimeType: "audio/wav", locale: "pl-PL", durationMs: 2000 });
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ feature: "lesson_stt", provider: "openrouter", audioMs: 2000, providerCostUsd: 0.0001 });
+  });
+
+  it("factory passes usage to adapter (speechFromEnv: STT i wymowa)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ RecognitionStatus: "Success", DisplayText: "cat", NBest: [{ Confidence: 0.9, AccuracyScore: 80 }] }), { status: 200 })));
+    const rec = createTestRecorder();
+    const deps = speechFromEnv({ AZURE_SPEECH_KEY: "k", AZURE_SPEECH_REGION: "westeurope" }, rec)!;
+    const audio = { bytes: new Uint8Array([1]), mimeType: "audio/webm", locale: "en-GB", durationMs: 1500 };
+    await deps.stt.transcribe(audio);
+    await deps.pronunciation.assess(audio, "cat");
+    expect(rec.events.map((event) => [event.feature, event.provider, event.audioMs])).toEqual([
+      ["speech_stt", "azure", 1500],
+      ["pronunciation", "azure", 1500],
+    ]);
   });
 });

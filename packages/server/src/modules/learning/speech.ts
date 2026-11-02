@@ -305,7 +305,11 @@ export async function submitSpeechAttempt(
     return reserved.dto;
   }
 
-  const analyze: AudioInput = { ...normalized, locale: reserved.targetLocale };
+  const analyze: AudioInput = {
+    ...normalized,
+    locale: reserved.targetLocale,
+    durationMs: Math.round(normalized.durationSeconds * 1000),
+  };
   const evidence = services.speech ? await analyzeSpeech(services, analyze, reserved.key, signal) : unavailableEvidence();
   const grade = assessSpeechEvidence(evidence, reserved.key, {
     ...reserved.frozen,

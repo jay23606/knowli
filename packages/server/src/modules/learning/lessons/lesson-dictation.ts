@@ -85,7 +85,12 @@ export async function dictateLessonAnswer(
   const deps = services.lessonSpeech!;
   const deadline = AbortSignal.any([AbortSignal.timeout(deps.timeoutMs ?? SPEECH_ANALYSIS_TIMEOUT_MS), ...(signal ? [signal] : [])]);
   const transcription: DictationTranscription = await deps.stt
-    .transcribe({ bytes: normalized.bytes, mimeType: normalized.mimeType, locale: reserved.locale }, deadline)
+    .transcribe({
+      bytes: normalized.bytes,
+      mimeType: normalized.mimeType,
+      locale: reserved.locale,
+      durationMs: Math.round(normalized.durationSeconds * 1000),
+    }, deadline)
     .then(
       (result) => (deadline.aborted ? { status: "failed" as const, text: null, confidence: null } : result),
       (error: unknown) => {

@@ -1,5 +1,8 @@
 import type { AudioInput, PronunciationProvider, PronunciationResult } from "../../ports/ai";
 import { AppError } from "../../errors";
+import type { UsageRecorder } from "../../ports/usage";
+import { audioMsOf } from "../usage/audio-ms";
+import { recordHttpError, recordResponse, recordTransportFailure, recordUnreadable } from "../usage/record-http";
 import { z } from "zod";
 
 /**
@@ -12,6 +15,8 @@ import { z } from "zod";
 export interface AzurePronunciationOptions {
   subscriptionKey: string;
   region: string;
+  /** Zapis kosztów wywołań (spec cost-tracking §4.2); bez niego adapter działa jak dotąd. */
+  usage?: UsageRecorder;
   fetchImpl?: (
     url: string,
     init: { method: "POST"; headers: Record<string, string>; body: Uint8Array; signal?: AbortSignal },
@@ -64,6 +69,10 @@ export function createAzurePronunciationProvider(options: AzurePronunciationOpti
         }),
         "utf8",
       ).toString("base64");
+      // jedno żądanie HTTP = jeden zapis; catch transportu zapisuje tylko, gdy odpowiedzi nie było
+      const audioMs = audioMsOf(audio);
+      const base = { feature: "pronunciation" as const, provider: "azure", ...(audioMs === undefined ? {} : { audioMs }) };
+      let recorded = false;
       try {
         const response = await doFetch(url, {
           method: "POST",
@@ -77,12 +86,27 @@ export function createAzurePronunciationProvider(options: AzurePronunciationOpti
           signal,
         });
         if (response.status === 401 || response.status === 403) {
+          recorded = true;
+          recordHttpError(options.usage, base, response.status);
           throw new AppError("internal", { message: "azure speech credentials rejected" });
         }
         if (!response.ok) {
+          recorded = true;
+          recordHttpError(options.usage, base, response.status);
           return failed();
         }
-        const payload = ResponseSchema.parse(await response.json());
+        let body: unknown;
+        try {
+          body = await response.json();
+        } catch (error) {
+          recorded = true;
+          recordUnreadable(options.usage, base, response.status);
+          throw error;
+        }
+        // płatna odpowiedź jest zapisana zanim kształt zostanie zwalidowany
+        recorded = true;
+        recordResponse(options.usage, base, response.status, body);
+        const payload = ResponseSchema.parse(body);
         const best = payload.NBest?.[0];
         if (payload.RecognitionStatus !== "Success" || !best) {
           return { status: "no_speech", overallScore: null, recognizedText: null };
@@ -107,6 +131,7 @@ export function createAzurePronunciationProvider(options: AzurePronunciationOpti
             : {}),
         };
       } catch (error) {
+        if (!recorded) recordTransportFailure(options.usage, base);
         if (error instanceof AppError) throw error;
         return failed();
       }

@@ -1,6 +1,9 @@
 import type { AudioInput, SttProvider, TranscriptionResult } from "../../ports/ai";
 import { AppError } from "../../errors";
+import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
 import { isOpenRouterEndpoint } from "../chat-request-options";
+import { audioMsOf } from "../usage/audio-ms";
+import { recordHttpError, recordResponse, recordTransportFailure, recordUnreadable } from "../usage/record-http";
 
 /**
  * Adapter transkrypcji w formacie OpenAI `POST {baseUrl}/audio/transcriptions`
@@ -17,6 +20,8 @@ export interface OpenAiCompatibleSttOptions {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** Zapis kosztów wywołań (spec cost-tracking §4.2); bez niego adapter działa jak dotąd. */
+  usage?: UsageRecorder;
   fetchImpl?: (
     url: string,
     init: { method: "POST"; headers: Record<string, string>; body: string; signal?: AbortSignal },
@@ -75,39 +80,65 @@ export function createOpenAiCompatibleSttProvider(options: OpenAiCompatibleSttOp
   const doFetch = options.fetchImpl ?? ((url, init) => fetch(url, init as RequestInit));
   const endpoint = `${withoutTrailingSlashes(options.baseUrl)}/audio/transcriptions`;
   const openRouter = isOpenRouterEndpoint(options.baseUrl);
+  const provider = providerFromBaseUrl(options.baseUrl);
   return {
     name: options.model,
     transcribe: async (audio: AudioInput, signal?: AbortSignal): Promise<TranscriptionResult> => {
-      const request = (responseFormat: "verbose_json" | "json") => doFetch(endpoint, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${options.apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          model: options.model,
-          input_audio: { data: Buffer.from(audio.bytes).toString("base64"), format: formatOf(audio.mimeType) },
-          language: languageOf(audio.locale),
-          temperature: 0,
-          response_format: responseFormat,
-          ...(responseFormat === "verbose_json" ? { timestamp_granularities: ["word"] } : {}),
-          ...(openRouter ? { provider: { zdr: true, data_collection: "deny" } } : {}),
-        }),
-        ...(signal ? { signal } : {}),
-      });
+      // każde żądanie HTTP (także ponowienie z `json` po 400) to osobny zapis
+      const audioMs = audioMsOf(audio);
+      const base = { feature: "lesson_stt" as const, provider, model: options.model, ...(audioMs === undefined ? {} : { audioMs }) };
+      let recorded = false;
+      const request = (responseFormat: "verbose_json" | "json") => {
+        recorded = false;
+        return doFetch(endpoint, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${options.apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            model: options.model,
+            input_audio: { data: Buffer.from(audio.bytes).toString("base64"), format: formatOf(audio.mimeType) },
+            language: languageOf(audio.locale),
+            temperature: 0,
+            response_format: responseFormat,
+            ...(responseFormat === "verbose_json" ? { timestamp_granularities: ["word"] } : {}),
+            ...(openRouter ? { provider: { zdr: true, data_collection: "deny" } } : {}),
+          }),
+          ...(signal ? { signal } : {}),
+        });
+      };
       try {
         let response = await request("verbose_json");
         // część modeli nie zwraca verbose_json (np. gpt-4o-transcribe) — wtedy sam tekst
         if (response.status === 400) {
+          recorded = true;
+          recordHttpError(options.usage, base, response.status);
           await response.body?.cancel().catch(() => undefined);
           response = await request("json");
         }
         if (response.status === 401 || response.status === 403) {
+          recorded = true;
+          recordHttpError(options.usage, base, response.status);
           throw new AppError("internal", { message: "speech-to-text credentials rejected" });
         }
-        if (!response.ok) return failed();
-        const payload = (await response.json()) as TranscriptionPayload;
+        if (!response.ok) {
+          recorded = true;
+          recordHttpError(options.usage, base, response.status);
+          return failed();
+        }
+        let payload: TranscriptionPayload;
+        try {
+          payload = (await response.json()) as TranscriptionPayload;
+        } catch (error) {
+          recorded = true;
+          recordUnreadable(options.usage, base, response.status);
+          throw error;
+        }
+        recorded = true;
+        recordResponse(options.usage, base, response.status, payload);
         const raw = typeof payload.text === "string" ? stripAudioEventTags(payload.text) : "";
         if (raw === "") return { status: "no_speech", text: null, confidence: null };
         return { status: "ok", text: raw, confidence: confidenceOf(payload) };
       } catch (error) {
+        if (!recorded) recordTransportFailure(options.usage, base);
         if (error instanceof AppError) throw error;
         return failed();
       }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOpenAiImageProvider } from "./openai";
+import { createTestRecorder, createThrowingRecorder } from "../usage/test-recorder";
 
 function okResponse(b64: string) {
   return new Response(JSON.stringify({ data: [{ b64_json: b64 }] }), { status: 200 });
@@ -63,5 +64,75 @@ describe("createOpenAiImageProvider", () => {
     const failure = provider.generate(REQUEST);
     await expect(failure).rejects.toThrow(/400/);
     await expect(failure).rejects.not.toThrow(/credit_balance_exhausted/);
+  });
+});
+
+describe("createOpenAiImageProvider — zapis kosztów", () => {
+  const b64 = Buffer.from("img").toString("base64");
+
+  it("jeden b64_json: event ok z images 1 i tokenami z usage, feature illustration", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: b64 }], usage: { input_tokens: 40, output_tokens: 1056 } }), { status: 200 })));
+    const rec = createTestRecorder();
+    const provider = createOpenAiImageProvider({ apiKey: "k", usage: rec });
+    await provider.generate(REQUEST);
+    expect(rec.events).toEqual([
+      { feature: "illustration", provider: "openai", model: "gpt-image-1-mini", outcome: "ok", httpStatus: 200, images: 1, inputTokens: 40, outputTokens: 1056 },
+    ]);
+  });
+
+  it("bez usage w odpowiedzi: tylko images", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse(b64)));
+    const rec = createTestRecorder();
+    await createOpenAiImageProvider({ apiKey: "k", usage: rec }).generate(REQUEST);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "ok", images: 1 });
+    expect(rec.events[0]!.inputTokens).toBeUndefined();
+  });
+
+  it("opcja feature deck_cover", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse(b64)));
+    const rec = createTestRecorder();
+    await createOpenAiImageProvider({ apiKey: "k", usage: rec, feature: "deck_cover" }).generate(REQUEST);
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ feature: "deck_cover", outcome: "ok" });
+  });
+
+  it("odpowiedź bez obrazu: event zapisany (opłacone), potem błąd", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })));
+    const rec = createTestRecorder();
+    await expect(createOpenAiImageProvider({ apiKey: "k", usage: rec }).generate(REQUEST)).rejects.toThrow("openai images returned no data");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "ok", images: 0 });
+  });
+
+  it("HTTP 500: jeden event failed", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("x", { status: 500 })));
+    const rec = createTestRecorder();
+    await expect(createOpenAiImageProvider({ apiKey: "k", usage: rec }).generate(REQUEST)).rejects.toThrow("provider_http_500");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 500 });
+  });
+
+  it("abort: jeden event failed bez kodu", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new DOMException("aborted", "AbortError"); }));
+    const rec = createTestRecorder();
+    await expect(createOpenAiImageProvider({ apiKey: "k", usage: rec }).generate(REQUEST)).rejects.toThrow("aborted");
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed" });
+    expect(rec.events[0]!.httpStatus).toBeUndefined();
+  });
+
+  it("nieczytelne ciało 2xx: jeden event failed z kodem 200", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not json", { status: 200 })));
+    const rec = createTestRecorder();
+    await expect(createOpenAiImageProvider({ apiKey: "k", usage: rec }).generate(REQUEST)).rejects.toThrow();
+    expect(rec.events).toHaveLength(1);
+    expect(rec.events[0]).toMatchObject({ outcome: "failed", httpStatus: 200 });
+  });
+
+  it("recorder, który rzuca, nie zmienia wyniku; bez recordera działa jak dotąd", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse(b64)));
+    await expect(createOpenAiImageProvider({ apiKey: "k", usage: createThrowingRecorder() }).generate(REQUEST)).resolves.toMatchObject({ mimeType: "image/webp" });
+    await expect(createOpenAiImageProvider({ apiKey: "k" }).generate(REQUEST)).resolves.toMatchObject({ mimeType: "image/webp" });
   });
 });

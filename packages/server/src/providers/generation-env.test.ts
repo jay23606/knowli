@@ -400,3 +400,39 @@ describe("createGenerationDepsFromEnv — zapis kosztów (usage)", () => {
     await expect(deps!.llm.generateDeck(DECK_INPUT)).resolves.toEqual({ items: [] });
   });
 });
+
+describe("createGenerationDepsFromEnv — zapis kosztów mediów (usage)", () => {
+  const MEDIA_ENV = {
+    OPENAI_API_KEY: "sk-main",
+    UMIEM_TTS_BASE_URL: "https://openrouter.ai/api/v1",
+    UMIEM_TTS_API_KEY: "or-tts-key",
+    UMIEM_TTS_MODEL: "google/gemini-3.8-flash-tts",
+  };
+  const IMAGE_INPUT = { prompt: "apple", model: "gpt-image-1-mini", size: "1024x1024", quality: "low", format: "webp" };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("factory passes usage to adapter (tts i obrazy)", async () => {
+    const rec = createTestRecorder();
+    const deps = createGenerationDepsFromEnv(MEDIA_ENV, rec)!;
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(480), { status: 200, headers: { "content-type": "audio/pcm;rate=24000;channels=1" } })));
+    await deps.tts.synthesize({ text: "pies", locale: "pl-PL", voice: "Kore", format: "wav" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: "aW1n" }] }), { status: 200 })));
+    await deps.image.generate(IMAGE_INPUT);
+    expect(rec.events).toHaveLength(2);
+    expect(rec.events[0]).toMatchObject({ feature: "tts", provider: "openrouter", outcome: "ok" });
+    expect(rec.events[1]).toMatchObject({ feature: "illustration", provider: "openai", outcome: "ok", images: 1 });
+  });
+
+  it("imageProviderFromEnv przekazuje usage i feature", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: "aW1n" }] }), { status: 200 })));
+    const rec = createTestRecorder();
+    await imageProviderFromEnv({ OPENAI_API_KEY: "sk-main" }, rec, "deck_cover")!.generate(IMAGE_INPUT);
+    await imageProviderFromEnv({ OPENAI_API_KEY: "sk-main" }, rec)!.generate(IMAGE_INPUT);
+    expect(rec.events.map((event) => event.feature)).toEqual(["deck_cover", "illustration"]);
+  });
+
+  it("bez usage fabryka nic nie zapisuje i działa jak dotąd", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: "aW1n" }] }), { status: 200 })));
+    await expect(imageProviderFromEnv({ OPENAI_API_KEY: "sk-main" })!.generate(IMAGE_INPUT)).resolves.toMatchObject({ mimeType: "image/webp" });
+  });
+});

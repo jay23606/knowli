@@ -1,10 +1,15 @@
 import type { TtsProvider, TtsSynthesizeInput } from "../../ports/ai";
+import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
+import { mp3DurationMs } from "../audio/mp3-duration";
 import { normalizeWav, pcmToWav, wavDurationMs } from "../audio/wav";
+import { recordHttpError, recordResponse, recordTransportFailure, recordUnreadable } from "../usage/record-http";
 
 export interface OpenAiTtsOptions {
   apiKey: string;
   model?: string;
   baseUrl?: string;
+  /** Zapis kosztów wywołań (spec cost-tracking §4.2); bez niego adapter działa jak dotąd. */
+  usage?: UsageRecorder;
 }
 
 const DEFAULT_MODEL = "gpt-4o-mini-tts";
@@ -26,6 +31,21 @@ function pcmFormatOf(contentType: string): { sampleRate: number; channels: numbe
 }
 
 /**
+ * Długość odebranego audio do zapisu kosztów; liczona zanim format zostanie
+ * zwalidowany, więc nigdy nie rzuca (nieznany format = brak `audioMs`).
+ */
+function receivedAudioMs(bytes: Uint8Array, format: "mp3" | "wav", contentType: string): number | undefined {
+  try {
+    if (format === "mp3") return mp3DurationMs(bytes) ?? undefined;
+    const pcm = pcmFormatOf(contentType);
+    const wav = /^audio\/(wav|x-wav|wave)\b/i.test(contentType) ? normalizeWav(bytes) : pcm && pcmToWav(bytes, pcm);
+    return (wav ? wavDurationMs(wav) : null) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Adapter TTS (/v1/audio/speech). Głos bierze z żądania (fingerprint uwzględnia
  * provider/model/głos). Format `wav` prosi o surowe PCM (jedyny format Gemini
  * TTS na OpenRouter) i opakowuje je nagłówkiem WAV; `instructions` (np. język
@@ -34,30 +54,50 @@ function pcmFormatOf(contentType: string): { sampleRate: number; channels: numbe
 export function createOpenAiTtsProvider(options: OpenAiTtsOptions): TtsProvider {
   const model = options.model ?? DEFAULT_MODEL;
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
+  const provider = providerFromBaseUrl(baseUrl);
   return {
     name: "openai",
     model,
     async synthesize(input: TtsSynthesizeInput, signal?: AbortSignal) {
-      const response = await fetch(`${baseUrl}/audio/speech`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${options.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: input.model || model,
-          voice: input.voice,
-          input: input.text,
-          response_format: input.format === "wav" ? "pcm" : input.format,
-          ...(input.instructions === undefined ? {} : { instructions: input.instructions }),
-        }),
-        signal,
-      });
+      const requestModel = input.model || model;
+      // jedno żądanie HTTP = jeden zapis; płatność dotyczy znaków tekstu
+      const base = { feature: "tts" as const, provider, model: requestModel, characters: input.text.length };
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/audio/speech`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${options.apiKey}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: requestModel,
+            voice: input.voice,
+            input: input.text,
+            response_format: input.format === "wav" ? "pcm" : input.format,
+            ...(input.instructions === undefined ? {} : { instructions: input.instructions }),
+          }),
+          signal,
+        });
+      } catch (error) {
+        recordTransportFailure(options.usage, base);
+        throw error;
+      }
       if (!response.ok) {
+        recordHttpError(options.usage, base, response.status);
         throw new Error(`provider_http_${response.status}`);
       }
-      const bytes = new Uint8Array(await response.arrayBuffer());
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await response.arrayBuffer());
+      } catch (error) {
+        recordUnreadable(options.usage, base, response.status);
+        throw error;
+      }
       const contentType = response.headers.get("content-type") ?? "";
+      // opłacone audio jest zapisane zanim format zostanie zwalidowany
+      const audioMs = receivedAudioMs(bytes, input.format, contentType);
+      recordResponse(options.usage, { ...base, ...(audioMs === undefined ? {} : { audioMs }) }, response.status, undefined);
       if (input.format === "mp3") {
         // Jawnie inny typ audio (np. PCM Gemini przy pominiętym UMIEM_TTS_FORMAT=wav)
         // zostałby zapisany jako niedekodowalne „mp3” bez ponowienia.

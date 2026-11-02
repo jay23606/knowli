@@ -14,6 +14,10 @@ describe("usageFromPayload", () => {
     expect(usageFromPayload({ usage: { seconds: 1.04, cost: 0.0000636 } })).toEqual({ providerCostUsd: 0.0000636 });
   });
 
+  it("usage obrazów (input_tokens/output_tokens) daje tokeny", () => {
+    expect(usageFromPayload({ usage: { input_tokens: 12, output_tokens: 1056 } })).toEqual({ inputTokens: 12, outputTokens: 1056 });
+  });
+
   it("brak usage → pusty wynik", () => {
     expect(usageFromPayload({ choices: [] })).toEqual({});
     expect(usageFromPayload({ usage: null })).toEqual({});

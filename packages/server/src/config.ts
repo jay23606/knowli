@@ -283,15 +283,15 @@ export function createServices(
  * (arch §11); bez kluczy zależność pozostaje nieobecna i próby ustne kończą
  * się wynikiem technicznym zamiast udawanej oceny.
  */
-export function speechFromEnv(env: Record<string, string | undefined>): SpeechDeps | undefined {
+export function speechFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): SpeechDeps | undefined {
   const subscriptionKey = env.AZURE_SPEECH_KEY;
   const region = env.AZURE_SPEECH_REGION;
   if (!subscriptionKey || !region) {
     return undefined;
   }
   return {
-    stt: createAzureSttProvider({ subscriptionKey, region }),
-    pronunciation: createAzurePronunciationProvider({ subscriptionKey, region }),
+    stt: createAzureSttProvider({ subscriptionKey, region, ...(usage ? { usage } : {}) }),
+    pronunciation: createAzurePronunciationProvider({ subscriptionKey, region, ...(usage ? { usage } : {}) }),
   };
 }
 
@@ -303,7 +303,7 @@ export const DEFAULT_LESSON_STT_MODEL = "elevenlabs/scribe-v2";
  * i opcjonalnego `_MODEL` (domyślnie {@link DEFAULT_LESSON_STT_MODEL}). Adres
  * i klucz razem albo wcale; https poza test/development jak dla gradera.
  */
-export function lessonSpeechFromEnv(env: Record<string, string | undefined>): LessonSpeechDeps | undefined {
+export function lessonSpeechFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): LessonSpeechDeps | undefined {
   const baseUrl = env.UMIEM_LESSON_STT_BASE_URL;
   const apiKey = env.UMIEM_LESSON_STT_API_KEY;
   const present = [baseUrl, apiKey].filter((v) => v !== undefined && v !== "").length;
@@ -320,7 +320,7 @@ export function lessonSpeechFromEnv(env: Record<string, string | undefined>): Le
   }
   const model = env.UMIEM_LESSON_STT_MODEL?.trim() || DEFAULT_LESSON_STT_MODEL;
   return {
-    stt: createOpenAiCompatibleSttProvider({ baseUrl: baseUrl!, apiKey: apiKey!, model }),
+    stt: createOpenAiCompatibleSttProvider({ baseUrl: baseUrl!, apiKey: apiKey!, model, ...(usage ? { usage } : {}) }),
     publicService: model,
   };
 }

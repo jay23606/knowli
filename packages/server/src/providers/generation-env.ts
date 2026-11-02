@@ -110,10 +110,16 @@ export function generationPublicServiceFromEnv(env: Record<string, string | unde
 }
 
 /** Opcjonalny provider obrazów dla procesu web; nie wymaga LLM ani TTS. */
-export function imageProviderFromEnv(env: Record<string, string | undefined>) {
+export function imageProviderFromEnv(
+  env: Record<string, string | undefined>,
+  usage?: UsageRecorder,
+  feature?: "illustration" | "deck_cover",
+) {
   if (env.UMIEM_FAKE_PROVIDERS === "1") return fakeGenerationDeps(createLocalMediaStore(env.MEDIA_ROOT ?? "./data/media")).image;
   const apiKey = openAiKeyFromEnv(env);
-  return apiKey ? createOpenAiImageProvider({ apiKey }) : undefined;
+  return apiKey
+    ? createOpenAiImageProvider({ apiKey, ...(usage ? { usage } : {}), ...(feature ? { feature } : {}) })
+    : undefined;
 }
 
 /**
@@ -168,8 +174,8 @@ export function createGenerationDepsFromEnv(
     }),
     // TTS (np. OpenRouter /audio/speech): model z UMIEM_TTS_MODEL, tym samym,
     // który wchodzi do fingerprintu nagrań (mediaSettingsFromEnv).
-    tts: createOpenAiTtsProvider({ ...openAiCompatibleEndpointFromEnv(env, "UMIEM_TTS", apiKey), model: nonEmpty(env.UMIEM_TTS_MODEL) }),
-    image: createOpenAiImageProvider({ apiKey }),
+    tts: createOpenAiTtsProvider({ ...openAiCompatibleEndpointFromEnv(env, "UMIEM_TTS", apiKey), model: nonEmpty(env.UMIEM_TTS_MODEL), ...(usage ? { usage } : {}) }),
+    image: createOpenAiImageProvider({ apiKey, feature: "illustration", ...(usage ? { usage } : {}) }),
     mediaStore,
     lessonExecution,
     graderAvailable: graderConfigured(env),

@@ -90,6 +90,9 @@ interface Fakes {
 
 type MutableFakes = Fakes & { providers: { stt: SttProvider; pronunciation: PronunciationProvider } };
 
+/** `durationMs` widziane przez STT: przypadek użycia wypełnia je z metadanych nagrania (koszty mowy). */
+const seenDurationsMs: (number | undefined)[] = [];
+
 /** Fake-providery zwracają jeden i ten sam obiekt stanu — mutacje widać w domknięciach. */
 function makeFakes(clock: ManualClock, overrides: Partial<Fakes> = {}): MutableFakes {
   const fakes = {
@@ -103,8 +106,9 @@ function makeFakes(clock: ManualClock, overrides: Partial<Fakes> = {}): MutableF
   fakes.providers = {
     stt: {
       name: "fake-stt",
-      transcribe: async (_audio, signal) => {
+      transcribe: async (audio, signal) => {
         fakes.calls.stt += 1;
+        seenDurationsMs.push(audio.durationMs);
         if (fakes.gate) await fakes.gate;
         if (fakes.hangUntilAbort && signal) {
           await new Promise((resolve) => signal.addEventListener("abort", () => resolve(null)));
@@ -446,6 +450,7 @@ describe("ocena mowy bez trwałego audio (integracja)", () => {
     fakes.transcription = { status: "ok", text: "Thursday", confidence: 0.95 };
     const attempt = await submitSpeechAttempt(services, { taskId: task.taskId, clientAttemptId: randomUUID() }, wavInput(1));
     expect(attempt.feedback?.referenceAudioAvailable).toBe(true);
+    expect(seenDurationsMs.at(-1)).toBeCloseTo(1000, -1);
 
     const first = await authorizeFeedbackAudio(services, attempt.attemptId);
     const replay = await authorizeFeedbackAudio(services, attempt.attemptId);
