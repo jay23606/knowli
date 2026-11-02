@@ -29,10 +29,10 @@ const DATA: DynamicTopicData = {
 };
 
 const WORDS_TYPES: LessonExerciseType[] = [
-  "lesson_card", "lesson_match", "lesson_group", "lesson_choice", "lesson_cloze", "lesson_gap", "lesson_open_answer",
+  "lesson_card", "lesson_match", "lesson_group", "lesson_choice", "lesson_listen_choice", "lesson_cloze", "lesson_gap", "lesson_open_answer",
 ];
 const FRAME_TYPES: LessonExerciseType[] = [
-  "lesson_card", "lesson_match", "lesson_order", "lesson_choice", "lesson_cloze", "lesson_gap", "lesson_open_answer",
+  "lesson_card", "lesson_match", "lesson_order", "lesson_choice", "lesson_listen_choice", "lesson_cloze", "lesson_gap", "lesson_open_answer",
 ];
 
 describe("przedmiot english_chapter", () => {
@@ -65,7 +65,7 @@ describe("przedmiot english_chapter", () => {
     expect(englishChapterSubject.spokenAnswers).toBeUndefined();
     expect(englishChapterSubject.normalizer).toBe(englishNormalizer);
     expect([...englishChapterSubject.exerciseTypes].sort()).toEqual([
-      "lesson_card", "lesson_choice", "lesson_cloze", "lesson_gap", "lesson_group", "lesson_match", "lesson_open_answer", "lesson_order",
+      "lesson_card", "lesson_choice", "lesson_cloze", "lesson_gap", "lesson_group", "lesson_listen_choice", "lesson_match", "lesson_open_answer", "lesson_order",
     ]);
     expect(englishChapterSubject.errorCategories).toEqual([
       { code: "wrong_word", labelPl: "Pomylone słowo" },
@@ -131,6 +131,18 @@ describe("przedmiot english_chapter", () => {
     expect(prompts.objectivesRules).not.toContain("and their Polish meaning");
     expect(prompts.gradingRole).toContain("at most 'almost'");
     expect(prompts.almostDefinition).toContain("errorCategory null");
+  });
+
+  it("profil promptów opisuje regułę wyboru ze słuchu (bodziec to nagranie, nie polecenie)", () => {
+    const rules = englishChapterSubject.prompts.fieldRules ?? "";
+    expect(rules).toContain("lesson_listen_choice");
+    expect(rules).toMatch(/at most 12 words/);
+    expect(rules).toMatch(/exactly one gap/);
+    expect(rules).toMatch(/recording/);
+    expect(rules).toMatch(/never start an option with an apostrophe/i);
+    expect(rules).toContain("each option is a word or phrase from the chapter material, as in lesson_choice");
+    expect(rules).not.toContain("checkedElements");
+    expect(rules).toMatch(/instructionPl.*hint.*visualSubject/s);
   });
 
   it("buildDynamicTopic przypisuje typy według rodzaju zagadnienia (brak rodzaju = słowa)", () => {

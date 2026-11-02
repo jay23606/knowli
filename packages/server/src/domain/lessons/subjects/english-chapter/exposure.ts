@@ -54,6 +54,7 @@ function correctOptionText(draft: LessonExerciseDraft): string {
 export function chapterExposureText(draft: LessonExerciseDraft): string {
   switch (draft.exerciseType) {
     case "lesson_choice":
+    case "lesson_listen_choice":
       return normalizeChapterExposureText(fillStem(draft.stem, correctOptionText(draft)));
     case "lesson_gap":
       return normalizeChapterExposureText(fillStem(draft.stem, draft.answer));

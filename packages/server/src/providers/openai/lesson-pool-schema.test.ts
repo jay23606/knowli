@@ -104,6 +104,21 @@ describe("lessonPoolJsonSchema", () => {
     }
   });
 
+  it("dopuszcza lesson_listen_choice w zwykłej gałęzi tylko dla celu, który go wymienia", () => {
+    const withListen = lessonPoolJsonSchema({
+      ...input,
+      exerciseTypes: [...input.exerciseTypes, "lesson_listen_choice"],
+      objectives: [{ ...input.objectives[0]!, exerciseTypes: ["lesson_choice", "lesson_listen_choice", "lesson_gap"] }],
+      listenChoicePerObjective: 2,
+    }) as any;
+    const branch = withListen.properties.exercises.items;
+    expect(branch.properties.exerciseType.enum).toEqual(["lesson_choice", "lesson_listen_choice", "lesson_gap"]);
+    // Zwykła gałąź niesie stem, options i correctOption potrzebne typowi słuchowemu.
+    expect(branch.required).toEqual(expect.arrayContaining(["stem", "options", "correctOption", "focus"]));
+    const without = lessonPoolJsonSchema(input) as any;
+    expect(without.properties.exercises.items.properties.exerciseType.enum).not.toContain("lesson_listen_choice");
+  });
+
   it("rejects empty objective sets and objectives with no supported pool types", () => {
     expect(() => lessonPoolJsonSchema({ ...input, objectives: [] })).toThrow(/at least one objective/);
     expect(() => lessonPoolJsonSchema({

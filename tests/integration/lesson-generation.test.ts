@@ -208,12 +208,84 @@ describe("generowanie puli lekcji (integracja)", () => {
     expect(roles).toEqual([{ role: "feedback_audio" }]);
   });
 
+  it("szkic gramatyki zawiera ćwiczenia wyboru ze słuchu na cel, bez odrzuceń, a port dostaje dodatek poza podziałem etapów", async () => {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const services = lessonServices(fakes);
+
+    const { runId } = await createLesson(services, command());
+    await executeLessonGeneration(services, runId);
+
+    const run = await readGeneration(services, runId);
+    expect(run.state).toBe("succeeded");
+    expect(fakes.llm.lessonRequests[0]!.listenChoicePerObjective).toBe(2);
+    const versionId = run.deckVersionId!;
+    const [version] = await query<{ lesson_context: { rejectedCount: number } }>(
+      "select lesson_context from learning_app.deck_versions where id = $1",
+      [versionId],
+    );
+    expect(version!.lesson_context.rejectedCount).toBe(0);
+    const revisions = await query<{ payload: Record<string, unknown> }>(
+      "select payload from learning_app.item_revisions where deck_version_id = $1 and payload->>'exerciseType' = 'lesson_listen_choice'",
+      [versionId],
+    );
+    expect(revisions).toHaveLength(2);
+    for (const { payload } of revisions) {
+      expect(payload).not.toHaveProperty("instructionPl");
+      expect(payload).not.toHaveProperty("hint");
+      expect(payload).not.toHaveProperty("visualSubject");
+    }
+  });
+
+  it("świeże wyjście modelu: polecenie, podpowiedź i piktogram ćwiczenia słuchowego są usuwane zamiast odrzucać ćwiczenie", async () => {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const services = lessonServices(fakes);
+    fakes.llm.queueLesson({
+      exercises: [{
+        exerciseType: "lesson_listen_choice",
+        objectiveId: "english_grammar.present_simple.third_person_s",
+        instructionPl: "Wybierz słowo.",
+        stem: "He ___ football every day.",
+        hint: "play",
+        visualSubject: "boy",
+        answer: "plays",
+        acceptedAnswers: [],
+        focus: ["plays"],
+        options: [{ id: "a", text: "plays" }, { id: "b", text: "play" }],
+        correctOption: "a",
+      }],
+    });
+
+    const { runId } = await createLesson(services, command());
+    await executeLessonGeneration(services, runId);
+
+    const run = await readGeneration(services, runId);
+    expect(run.state).toBe("succeeded");
+    const versionId = run.deckVersionId!;
+    const [version] = await query<{ lesson_context: { rejectedCount: number } }>(
+      "select lesson_context from learning_app.deck_versions where id = $1",
+      [versionId],
+    );
+    expect(version!.lesson_context.rejectedCount).toBe(0);
+    const revisions = await query<{ payload: Record<string, unknown> }>(
+      "select payload from learning_app.item_revisions where deck_version_id = $1",
+      [versionId],
+    );
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]!.payload).toMatchObject({ exerciseType: "lesson_listen_choice", stem: "He ___ football every day." });
+    expect(revisions[0]!.payload).not.toHaveProperty("hint");
+    expect(revisions[0]!.payload).not.toHaveProperty("visualSubject");
+    expect(revisions[0]!.payload).not.toHaveProperty("instructionPl");
+  });
+
   it("pełna generacja wielocelowa przekazuje bodźce wcześniejszych partii do deduplikacji ćwiczeń", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
     const services = lessonServices(fakes);
 
-    // Dwa cele, pula 20 → 2 partie po 10 ćwiczeń. Gramatyka deduplikuje
+    // Dwa cele, pula 20 → 2 partie po 10 ćwiczeń podziału etapów plus 2 ćwiczenia
+    // wyboru ze słuchu na cel (dodatek poza podziałem). Gramatyka deduplikuje
     // ćwiczenia po bodźcu, więc wcześniejszy kontekst zawiera ich tożsamości,
     // a nie zakaz odpowiedzi takich jak do/does.
     const { runId } = await createLesson(
@@ -235,20 +307,20 @@ describe("generowanie puli lekcji (integracja)", () => {
     const [first, second] = fakes.llm.lessonRequests;
     expect(first!.existingAnswers ?? []).toEqual([]);
     expect(second!.existingAnswers ?? []).toEqual([]);
-    expect(second!.existingExercises ?? []).toHaveLength(10);
+    expect(second!.existingExercises ?? []).toHaveLength(12);
 
     const run = await readGeneration(services, runId);
     const revisions = await query<{ payload: LessonExerciseDraft }>(
       "select payload from learning_app.item_revisions where deck_version_id = $1",
       [run.deckVersionId!],
     );
-    expect(revisions.length).toBe(20);
+    expect(revisions.length).toBe(24);
     const firstObjectiveExercises = revisions
       .map((row) => row.payload)
       .filter((exercise) => exercise.objectiveId === "english_grammar.present_simple.affirmative_base");
-    expect(firstObjectiveExercises).toHaveLength(10);
+    expect(firstObjectiveExercises).toHaveLength(12);
     expect(second!.existingExercises).toEqual(firstObjectiveExercises.map((exercise) => lessonExerciseStimulusRecord(exercise)));
-    expect(new Set(revisions.map(({ payload }) => lessonExerciseIdentity(payload))).size).toBe(20);
+    expect(new Set(revisions.map(({ payload }) => lessonExerciseIdentity(payload))).size).toBe(24);
   });
 
   it("wariant acceptedAnswers redundantny wobec odpowiedzi (skrót przeczenia „to be”) jest porzucany, nie zabija ćwiczenia", async () => {

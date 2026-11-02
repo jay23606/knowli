@@ -4,6 +4,8 @@ import type { Services } from "../../../config";
 import { DEFAULT_DICTATION_POLICY } from "../../../domain/lessons/dictation";
 import { AppError } from "../../../errors";
 import { lessonTextTargetKey } from "../../../domain/lessons/exposure-key";
+import { feedbackSentenceText } from "../../../domain/lessons/feedback-sentence-text";
+import { listenStimulusAssetId } from "./listen-stimulus";
 import { renderCalculationPrompt } from "../../../domain/lessons/calculation";
 import { renderCard } from "../../../domain/lessons/card";
 import { clozeParts, fillCloze } from "../../../domain/lessons/cloze";
@@ -215,8 +217,11 @@ export function materializeExercise(
     independentCheck: plan.independentCheck,
     reason: plan.reason,
     // Nagranie zdania po odpowiedzi trafia wyłącznie do prywatnego klucza (nie do promptu dziecka)
-    // i nie istnieje w kartkówce, by nie zdradzać odpowiedzi.
-    ...(subject.ttsForFeedbackSentence && !mockTest && exercise.feedbackAudioAssetId ? { feedbackAudioAssetId: exercise.feedbackAudioAssetId } : {}),
+    // i nie istnieje w kartkówce, by nie zdradzać odpowiedzi. Zadanie słuchowe bierze je
+    // z `listenStimulusAssetId` (jedna reguła gotowości bodźca) w swojej gałęzi.
+    ...(payload.exerciseType !== "lesson_listen_choice" && subject.ttsForFeedbackSentence && !mockTest && exercise.feedbackAudioAssetId
+      ? { feedbackAudioAssetId: exercise.feedbackAudioAssetId }
+      : {}),
     // Migawka celu: ścieżka oceny nie musi szukać celu w katalogu (tematy dynamiczne).
     ...(objective ? { objectiveSnapshot: { objectiveTitlePl: objective.titlePl, topicId: topic.id, topicVersion: topic.version, descriptionEn: objective.descriptionEn, errorCategories: [...objective.errorCategories], hints: { ...objective.hints }, topicTitlePl: topic.titlePl, extraErrorCategories: topic.extraErrorCategories.map((c) => ({ ...c })) } } : {}),
   };
@@ -280,6 +285,43 @@ export function materializeExercise(
         prompt,
         answerKey: { ...baseKey, ...(correct ? { correctOptionId: correct.id } : {}), optionValues: Object.fromEntries(options.map((o) => [o.id, o.text])) },
         exposures: [exercise.targetKey],
+      };
+    }
+    case "lesson_listen_choice": {
+      // „Posłuchaj i wybierz” (#198): opcje jak `lesson_choice`; polecenie z katalogu
+      // komunikatów w Kid UI, więc prompt nie niesie `instructionPl`, podpowiedzi ani
+      // id nagrania (odsłania je serwer po zapisie ekspozycji `audio_issued`).
+      const stimulusAssetId = listenStimulusAssetId(exercise, subject, mockTest ? "mock_test" : "training");
+      if (stimulusAssetId === null) {
+        // Selektor planuje zadanie wyłącznie z gotowym nagraniem (ta sama reguła) — naruszenie niezmiennika.
+        throw new AppError("internal", { message: "listen choice without a ready stimulus recording" });
+      }
+      const sentence = feedbackSentenceText(payload);
+      if (sentence === null) {
+        throw new AppError("internal", { message: "listen choice without a sentence" });
+      }
+      const options = seededShuffle((payload.options ?? []).map((o) => ({ id: randomUUID(), text: o.text, correct: o.id === payload.correctOption })), shuffleSeed);
+      const correct = options.find((o) => o.correct);
+      const prompt: TaskPrompt = {
+        kind: "lesson_listen_choice",
+        stem: payload.stem ?? "",
+        options: options.map((o) => ({ id: o.id, text: o.text })),
+        ...contentLocale,
+      };
+      // Ekspozycja celu i pełnego zdania (spec §3.4): zdanie słyszane w nagraniu nie
+      // może potem „niewidziane” kwalifikować ćwiczenia samodzielnego o tej odpowiedzi.
+      const sentenceTargetKey = lessonTextTargetKey(subject, sentence);
+      return {
+        ...common,
+        prompt,
+        answerKey: {
+          ...baseKey,
+          feedbackAudioAssetId: stimulusAssetId,
+          sentenceTargetKey,
+          ...(correct ? { correctOptionId: correct.id } : {}),
+          optionValues: Object.fromEntries(options.map((o) => [o.id, o.text])),
+        },
+        exposures: [...new Set([exercise.targetKey, sentenceTargetKey])],
       };
     }
     case "lesson_short_answer": {

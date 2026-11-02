@@ -10,6 +10,13 @@ import type { LearningObjective, LessonTopic } from "../../../types";
  * Pokrycie etapów ocenianych w każdym celu: prowadzony (choice/short_answer/order),
  * produktywny (gap/error_fix/transform), samodzielny (open_answer). `lesson_notice`
  * dodajemy tam, gdzie dziecko może wskazać zmieniające się słowo.
+ *
+ * `lesson_listen_choice` (wybór ze słuchu, #198) mają cele, w których różnica
+ * formy jest słyszalna: forma podstawowa (play/plays), -s w 3. osobie,
+ * przeczenie (don't/doesn't) i pytanie (Do/Does). Nie mają go: pisownia
+ * -es/-ies (różnica tylko w zapisie), krótkie odpowiedzi (cel ćwiczy odpowiedź
+ * w całości) i forma podstawowa po does/doesn't (reguła zapisu: brak -s po does
+ * jest słabo słyszalny w szybkiej mowie).
  */
 
 const PREFIX = "english_grammar.present_simple";
@@ -39,6 +46,7 @@ const affirmativeBase: LearningObjective = {
     "lesson_card",
     "lesson_notice",
     "lesson_choice",
+    "lesson_listen_choice",
     "lesson_gap",
     "lesson_open_answer",
   ],
@@ -69,6 +77,7 @@ const thirdPersonS: LearningObjective = {
     "lesson_card",
     "lesson_notice",
     "lesson_choice",
+    "lesson_listen_choice",
     "lesson_gap",
     "lesson_open_answer",
   ],
@@ -137,6 +146,7 @@ const negative: LearningObjective = {
   exerciseTypes: [
     "lesson_card",
     "lesson_choice",
+    "lesson_listen_choice",
     "lesson_gap",
     "lesson_transform",
     "lesson_open_answer",
@@ -172,6 +182,7 @@ const question: LearningObjective = {
   exerciseTypes: [
     "lesson_card",
     "lesson_choice",
+    "lesson_listen_choice",
     "lesson_order",
     "lesson_gap",
     "lesson_transform",

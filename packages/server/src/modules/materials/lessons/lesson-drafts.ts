@@ -29,7 +29,7 @@ import {
   defaultPoolSize,
   type StageMix,
 } from "../../../domain/lessons/lesson-policy";
-import { materialCreationMode } from "../../../domain/lessons/material-creation";
+import { materialCreationMode, stripListenChoiceExtras } from "../../../domain/lessons/material-creation";
 import { answersEquivalent, keywordsAnswer, MAX_TEXT_LENGTH, validatePool, withoutRedundantAcceptedVariants } from "../../../domain/lessons/pool-validation";
 import {
   lessonExerciseIdentity,
@@ -493,6 +493,69 @@ function batchesForObjectives(
   return objectiveIds.map((objectiveId, index) => ({ objectiveId, count: counts[index]!, existingAnswers: [], existingExercises: [] }));
 }
 
+/** Najwięcej ćwiczeń `lesson_listen_choice` na cel w szkicu — dodatek ponad podział etapów (decyzja #198). */
+const LISTEN_CHOICE_PER_OBJECTIVE = 2;
+
+/**
+ * Ile ćwiczeń słuchowych generator może jeszcze dodać do celu: limit na cel minus ćwiczenia
+ * słuchowe tego celu już w szkicu (dogenerowanie) i we wcześniejszych partiach runu. 0, gdy
+ * przedmiot nie nagrywa zdań albo typ nie leży na liście celu.
+ */
+export function listenChoiceAllowance(
+  subject: SubjectModule,
+  objective: { id: string; exerciseTypes: readonly string[] },
+  existingExercises: readonly LessonExerciseStimulus[],
+): number {
+  if (!subject.ttsForFeedbackSentence || !subject.exerciseTypes.includes("lesson_listen_choice") || !objective.exerciseTypes.includes("lesson_listen_choice")) {
+    return 0;
+  }
+  const existing = existingExercises.filter((exercise) => exercise.objectiveId === objective.id && exercise.exerciseType === "lesson_listen_choice").length;
+  return Math.max(0, LISTEN_CHOICE_PER_OBJECTIVE - existing);
+}
+
+/** Limity jednego celu w runie: zamówiona liczba ćwiczeń etapów i przyznany dodatek słuchowy. */
+export interface ObjectiveGenerationLimits {
+  readonly count: number;
+  readonly listen: number;
+}
+
+/**
+ * Egzekwuje dodatek słuchowy po walidacji: na cel najwyżej `listen` nowych ćwiczeń
+ * `lesson_listen_choice`, a gdy dodatek przyznano (`listen > 0`), najwyżej `count` pozostałych —
+ * podniesiony w prompcie limit partii nie może dać dodatkowych ćwiczeń etapów. Zachowuje
+ * pierwsze wystąpienia (kolejność wejścia); nadmiar wraca jako odrzucenia z powodem.
+ */
+export function capListenChoiceOverflow(
+  exercises: readonly LessonExerciseDraft[],
+  limits: ReadonlyMap<string, ObjectiveGenerationLimits>,
+): { kept: LessonExerciseDraft[]; rejected: { exercise: LessonExerciseDraft; errors: string[] }[] } {
+  const listenSeen = new Map<string, number>();
+  const otherSeen = new Map<string, number>();
+  const kept: LessonExerciseDraft[] = [];
+  const rejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
+  for (const exercise of exercises) {
+    const limit = limits.get(exercise.objectiveId);
+    if (exercise.exerciseType === "lesson_listen_choice") {
+      const seen = listenSeen.get(exercise.objectiveId) ?? 0;
+      const allowed = limit?.listen ?? 0;
+      if (seen >= allowed) {
+        rejected.push({ exercise, errors: [`exerciseType: ponad limit ${LISTEN_CHOICE_PER_OBJECTIVE} ćwiczeń „lesson_listen_choice” na regułę (wolne miejsca: ${allowed})`] });
+        continue;
+      }
+      listenSeen.set(exercise.objectiveId, seen + 1);
+    } else if (limit !== undefined && limit.listen > 0) {
+      const seen = otherSeen.get(exercise.objectiveId) ?? 0;
+      if (seen >= limit.count) {
+        rejected.push({ exercise, errors: [`exerciseType: ćwiczenie ponad zamówioną liczbę ${limit.count} dla reguły`] });
+        continue;
+      }
+      otherSeen.set(exercise.objectiveId, seen + 1);
+    }
+    kept.push(exercise);
+  }
+  return { kept, rejected };
+}
+
 /** Składa `LessonPoolInput` dla jednego celu z danych rejestru (port nie zna przedmiotu). */
 export function buildPoolInput(
   subject: SubjectModule,
@@ -510,6 +573,7 @@ export function buildPoolInput(
   const interestsRule = subject.prompts.interestsRule;
   const withInterests = interestsRule !== undefined && interests !== undefined && interests.length > 0;
   const objective = topic.objectives.find((o) => o.id === objectiveId)!;
+  const listenAllowance = listenChoiceAllowance(subject, objective, existingExercises);
   return {
     subjectId: subject.id,
     subjectTitle: subject.titlePl,
@@ -538,6 +602,9 @@ export function buildPoolInput(
     ...(withInterests ? { interests: [...interests] } : {}),
     countPerObjective: count,
     stageCounts: poolStageCounts(subject, objective.exerciseTypes, count),
+    // Wybór ze słuchu to dodatek poza podziałem etapów i liczbą partii: tylko przedmiot z nagraniami zdań
+    // i cel, którego lista zawiera typ, pomniejszony o ćwiczenia słuchowe celu już w szkicu/partiach.
+    ...(listenAllowance > 0 ? { listenChoicePerObjective: listenAllowance } : {}),
     ...(subject.usesV3Payload === true ? { minDistinctOpenAnswers: DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE } : {}),
     graderAvailable,
     groundingRequired: subject.sourceQuotes === true,
@@ -1150,6 +1217,20 @@ async function existingAnswersOf(tx: Tx, versionId: string): Promise<string[]> {
     .filter((a): a is string => typeof a === "string");
 }
 
+/** Ćwiczenia już zapisane w wersji szkicu (kontekst walidacji dogenerowania, np. krzyżowa reguła ćwiczeń słuchowych). */
+async function existingDraftsOf(tx: Executor, versionId: string): Promise<LessonExerciseDraft[]> {
+  const rows = await tx
+    .select({ payload: itemRevisions.payload })
+    .from(itemRevisions)
+    .where(eq(itemRevisions.deckVersionId, versionId));
+  return rows.flatMap(({ payload }) => {
+    if (!payload || typeof payload !== "object") return [];
+    const value = payload as Record<string, unknown>;
+    if (typeof value.objectiveId !== "string" || typeof value.exerciseType !== "string" || typeof value.answer !== "string") return [];
+    return [toExerciseDraft(value)];
+  });
+}
+
 /** Funkcjonalne bodźce ćwiczeń już zapisanych w wersji szkicu. */
 async function existingExercisesOf(tx: Executor, versionId: string, subject: SubjectModule): Promise<LessonExerciseStimulus[]> {
   const rows = await tx
@@ -1258,6 +1339,8 @@ export async function executeLessonGeneration(services: Services, runId: string,
   // pozostaje egzekwatorem (advisory list z surowych odpowiedzi, deduplikowana).
   const earlierAnswers: string[] = [];
   const earlierExercises: LessonExerciseStimulus[] = [];
+  // Limity celów runu (zamówiona liczba i przyznany dodatek słuchowy) — egzekwowane po walidacji.
+  const objectiveLimits = new Map<string, ObjectiveGenerationLimits>();
   const examples: Record<string, string[]> = {};
   const executionPolicy = deps.lessonExecution ?? DEFAULT_LESSON_GENERATION_POLICY;
   const runDeadlineAtMs = runStartedAtMs + executionPolicy.runTimeoutMs;
@@ -1338,6 +1421,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
           : [],
         input.interests,
       );
+      objectiveLimits.set(batch.objectiveId, { count: batch.count, listen: poolInput.listenChoicePerObjective ?? 0 });
       const result = await control.call((signal) => deps.llm.generateLessonPool(poolInput, signal));
       await control.assertCurrent();
       console.log(`[lesson] run=${runId} partia=${batch.objectiveId} durationMs=${Date.now() - batchStartedAtMs}`);
@@ -1397,6 +1481,8 @@ export async function executeLessonGeneration(services: Services, runId: string,
       .map(toExerciseDraft)
       .map((draft) => withoutVoiceToneUnlessAllowed(draft, subject))
       .map(withoutEmptyOptionalArrays)
+      // Ćwiczenie słuchowe nie ma polecenia, podpowiedzi ani piktogramu: dodatek modelu usuwamy, nie odrzucamy ćwiczenia.
+      .map(stripListenChoiceExtras)
       .map((draft) => (input.regenerate ? scopeFamiliesToRun(draft, runId) : draft))
       .map((draft) => {
         const sanitized = withoutRedundantAcceptedVariants(draft, subject.normalizer);
@@ -1414,7 +1500,10 @@ export async function executeLessonGeneration(services: Services, runId: string,
     // Walidacja puli z materiałem (przedmiot: uziemienie cytatów, rodziny pytań)
     // przed walidacją semantyczną — odrzucone ćwiczenia liczą się do rejectedCount.
     const grounded = splitByPoolExtra(subject, stripParentAddedFlags(refined.kept), input.material);
-    const poolResult = validatePool(grounded.kept, subject, topic);
+    // Dogenerowanie dopisuje do szkicu: krzyżowa reguła ćwiczeń słuchowych widzi też ćwiczenia już w szkicu
+    // (inaczej konflikt zdania z odpowiedzią tekstową wyszedłby dopiero przy publikacji).
+    const existingDrafts = input.regenerate ? await existingDraftsOf(services.db, input.deckVersionId) : [];
+    const poolResult = validatePool(grounded.kept, subject, topic, { existingExercises: existingDrafts });
     const valid = poolResult.valid;
     const rejected = [...grounded.extraRejected, ...poolResult.rejected];
     // Duplikaty wobec odpowiedzi już w puli: odrzucamy valid, których odpowiedź
@@ -1424,7 +1513,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
       JSON.stringify([exercise.objectiveId, exercise.exerciseType, exercise.stimulus]),
     ));
     const identityOptions = lessonIdentityOptionsOf(subject);
-    const uniqueValid: LessonExerciseDraft[] = [];
+    const deduplicated: LessonExerciseDraft[] = [];
     let dupAgainstExisting = 0;
     for (const ex of valid) {
       const clash = subject.poolDeduplication === "exercise"
@@ -1433,9 +1522,13 @@ export async function executeLessonGeneration(services: Services, runId: string,
       if (clash) {
         dupAgainstExisting += 1;
       } else {
-        uniqueValid.push(ex);
+        deduplicated.push(ex);
       }
     }
+    // Dodatek słuchowy: najwyżej przyznana liczba na cel, a ćwiczenia etapów nie ponad zamówione.
+    const capped = capListenChoiceOverflow(deduplicated, objectiveLimits);
+    const uniqueValid = capped.kept;
+    rejected.push(...capped.rejected);
     const rejectedCount = shapeRejected + outOfScopeCount + refined.rejectedCount + rejected.length + dupAgainstExisting;
 
     console.log(

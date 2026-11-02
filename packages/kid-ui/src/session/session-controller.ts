@@ -111,6 +111,12 @@ export interface LearningScreen {
   error: string | null;
   guidanceError?: boolean;
   taskAudioError?: "blocked" | "failed" | null;
+  /**
+   * Bodziec „Posłuchaj i wybierz” (`lesson_listen_choice`) wydanego zadania: `pending` — czeka na
+   * pierwszy odsłuch, `blocked` — autoodtwarzanie zablokowane, `unavailable` — nagranie niedostępne
+   * (dziecko może pominąć), `open` — odsłuchano, opcje aktywne. Brak = zadanie bez bodźca.
+   */
+  listenStimulus?: { taskId: string; state: "pending" | "blocked" | "unavailable" | "open"; playing: boolean } | null;
   /** „Posłuchaj pytania” nie odtworzyło nagrania (komunikat w pasku statusu, nie w wierszu instrukcji). */
   questionAudioError?: boolean;
   /** Dyktowanie odpowiedzi lekcji; brak = zadanie bez dyktowania. */
@@ -166,6 +172,13 @@ type AnswerPayload =
 const POLL_INTERVAL_MS = 1_000;
 const POLL_DEADLINE_MS = 90_000;
 const REMAINING_BANNER_FROM = 3;
+/** „Posłuchaj i wybierz”: bez startu odtwarzania po tym czasie od żądania autoryzacji — „Pomiń”. */
+const LISTEN_NO_START_MS = 6_000;
+/** Zapas odblokowania opcji, gdy `ended` nie nadejdzie: długość nagrania + 1 s albo 8 s. */
+const LISTEN_UNLOCK_MARGIN_MS = 1_000;
+const LISTEN_UNLOCK_FALLBACK_MS = 8_000;
+
+type ListenStimulus = NonNullable<LearningScreen["listenStimulus"]>;
 
 export function messageForError(error: unknown): string {
   if (error instanceof KidApiError) {
@@ -292,6 +305,13 @@ export class LearningSessionController {
   #countdownHandle: ReturnType<typeof setInterval> | null = null;
   #playbackGeneration = 0;
   /**
+   * Stopery bodźca „Posłuchaj i wybierz” (brak startu 6 s, zapas odblokowania) —
+   * należą do jednej generacji odtwarzania; każde #stopPlayback je kasuje.
+   */
+  #listenTimers: ReturnType<typeof setTimeout>[] = [];
+  /** Generacja odtwarzania, która ustawiła `listenStimulus.playing`; null = nic nie gra. */
+  #listenPlayingGeneration: number | null = null;
+  /**
    * Numer ostatniego przebiegu odczytu zdania. Licznik jest niezależny od
    * `#playbackGeneration`, bo `#stopPlayback` podbija tę generację przy każdym
    * innym odtwarzaniu; numer przebiegu odróżnia od siebie kolejne odczyty
@@ -371,6 +391,9 @@ export class LearningSessionController {
 
   #stopPlayback(): void {
     this.#playbackGeneration += 1;
+    // Przerwane odtwarzanie bodźca nie odblokowuje opcji i nie zostawia pierścienia dźwięku.
+    this.#clearListenTimers();
+    this.#releaseListenPlaying(this.#listenPlayingGeneration);
     if (this.#guidance) this.#guidance.stop();
     else this.#media.player.stop();
     // Wskaźnik odczytu zdania gaśnie synchronicznie przy każdym innym
@@ -383,17 +406,58 @@ export class LearningSessionController {
     }
   }
 
+  #clearListenTimers(): void {
+    for (const timer of this.#listenTimers) clearTimeout(timer);
+    this.#listenTimers = [];
+  }
+
+  /**
+   * Zmienia stan bodźca bieżącego zadania „Posłuchaj i wybierz” (tworzy go jako
+   * `pending`, gdy brak). `open` raz osiągnięty zostaje do końca zadania.
+   */
+  #patchListenStimulus(taskId: string, patch: Partial<Omit<ListenStimulus, "taskId">>): void {
+    const screen = this.#learning();
+    if (!screen || screen.task?.taskId !== taskId || screen.task.prompt.kind !== "lesson_listen_choice") return;
+    const current: ListenStimulus = screen.listenStimulus?.taskId === taskId
+      ? screen.listenStimulus
+      : { taskId, state: "pending", playing: false };
+    const next: ListenStimulus = {
+      taskId,
+      state: current.state === "open" ? "open" : patch.state ?? current.state,
+      playing: patch.playing ?? current.playing,
+    };
+    if (screen.listenStimulus?.taskId === taskId && next.state === current.state && next.playing === current.playing) return;
+    this.#setLearning({ listenStimulus: next });
+  }
+
+  /** Gasi `playing`, jeśli ustawiła je ta generacja odtwarzania (nowsza zostaje nietknięta). */
+  #releaseListenPlaying(generation: number | null): void {
+    if (generation === null || this.#listenPlayingGeneration !== generation) return;
+    this.#listenPlayingGeneration = null;
+    const stimulus = this.#learning()?.listenStimulus;
+    if (stimulus?.playing) this.#setLearning({ listenStimulus: { ...stimulus, playing: false } });
+  }
+
+  /** Start odtwarzania bodźca lub odczytu zdania zadania „Posłuchaj i wybierz” zapala pierścień. */
+  #markListenPlaying(generation: number, taskId: string): void {
+    if (generation !== this.#playbackGeneration) return;
+    const task = this.#learning()?.task;
+    if (task?.taskId !== taskId || task.prompt.kind !== "lesson_listen_choice") return;
+    this.#listenPlayingGeneration = generation;
+    this.#patchListenStimulus(taskId, { playing: true });
+  }
+
   /**
    * Odtwarza plik audio rejestrując rzeczywisty odsłuch w lokalnym raporcie.
-   * `options.onStarted` wołany w tym samym start-callbacku odtwarzacza co pomiar
+   * `options.onStarted` (z długością w ms, gdy znana) wołany w tym samym start-callbacku odtwarzacza co pomiar
    * aktywności; `options.rate` trafia do odtwarzacza (brak = tempo 1, bez opcji).
    */
-  async #playCountedAudio(url: string, assetId: string, options: { rate?: number; onStarted?: () => void } = {}): Promise<void> {
+  async #playCountedAudio(url: string, assetId: string, options: { rate?: number; onStarted?: (durationMs: number | null) => void } = {}): Promise<void> {
     const playback = ++this.#countedPlaybackSeq;
     const onStarted = (durationMs: number | null): void => {
       this.#openCountedPlayback = playback;
       this.#activity?.playbackStarted(assetId, durationMs);
-      options.onStarted?.();
+      options.onStarted?.(durationMs);
     };
     try {
       if (options.rate === undefined) await this.#media.player.play(url, onStarted);
@@ -941,6 +1005,8 @@ export class LearningSessionController {
         error: null,
         taskAudioError: null,
         questionAudioError: false,
+        // „Posłuchaj i wybierz”: opcje czekają na pierwszy odsłuch nowego zadania.
+        listenStimulus: task.prompt.kind === "lesson_listen_choice" ? { taskId: task.taskId, state: "pending", playing: false } : null,
       };
       this.#emit();
       // Pierwsze otrzymane zadanie uruchamia lokalny pomiar (design §2) — także
@@ -960,6 +1026,14 @@ export class LearningSessionController {
       // łapiemy cicho — pozostaje widoczny przycisk odsłuchu
       if (task.exerciseType === "exposure" || task.exerciseType === "listening") {
         void this.playTaskAudio().catch(() => undefined);
+      }
+      // „Posłuchaj i wybierz”: zdanie jest treścią zadania — gramy je raz od razu
+      // (także zadanie z prefetchu; nie w kartkówce i nie przy pendingAttemptId).
+      if (task.prompt.kind === "lesson_listen_choice" && this.#screen.session.mode !== "mock_test") {
+        void this.playListenStimulus({ auto: true }).catch(() => undefined);
+        // Po powrocie z offline (`markOffline` → `retry`) zadanie zostaje — bez ponownego
+        // pobrania i autoodtwarzania (spec §8); nieotwarty bodziec przechodzi w `blocked`.
+        this.#setResume(this.#listenResume(task.taskId), true);
       }
     } catch (error) {
       if (epoch !== this.#epoch || this.#screen.kind !== "learning") return;
@@ -1106,6 +1180,7 @@ export class LearningSessionController {
       this.cancelRecording();
     }
     this.#stopPlayback();
+    this.#interruptListenStimulus();
   }
 
   /** Zamknięcie potwierdzenia „Koniec”: znosi blokadę auto-startu, niczego nie uruchamia. */
@@ -1138,6 +1213,11 @@ export class LearningSessionController {
   }
 
   async answerChoice(optionId: string): Promise<void> {
+    // „Posłuchaj i wybierz”: bez odsłuchu odpowiedź byłaby nieoceniona — opcje czekają na `open`.
+    // Kartkówka nigdy nie dostaje tego typu (serwer go wyklucza), więc strażnik jej nie blokuje.
+    const screen = this.#learning();
+    if (screen?.task?.prompt.kind === "lesson_listen_choice" &&
+        (screen.listenStimulus?.taskId !== screen.task.taskId || screen.listenStimulus.state !== "open")) return;
     await this.#submitAnswer({ modality: "choice", optionId });
   }
 
@@ -1222,7 +1302,11 @@ export class LearningSessionController {
     if (!screen?.task || screen.busy || screen.offline) return;
     const epoch = this.#epoch;
     const taskId = screen.task.taskId;
+    // Komunikat o audio zadania gaśnie przy odpowiedzi tylko w „Posłuchaj i wybierz” (nie wisi nad
+    // feedbackiem pominięcia); w pozostałych typach zostaje, żeby układ był stabilny do werdyktu.
+    const clearTaskAudioError = screen.task.prompt.kind === "lesson_listen_choice";
     this.#setLearning({ busy: true, transitioning: true, questionAudioError: false,
+      ...(clearTaskAudioError ? { taskAudioError: null } : {}),
       pendingChoiceId: input.modality === "choice" ? input.optionId : null });
     this.#activity?.recordInteraction();
     this.#activity?.pause("technical_wait");
@@ -1364,6 +1448,7 @@ export class LearningSessionController {
     const run = ++this.#sentenceRun;
     const attemptId = feedback.attemptId;
     const epoch = this.#epoch;
+    const taskId = screen.task!.taskId;
     // Poprzednie odtwarzanie (np. pytanie, odczyt w innym tempie) ustępuje;
     // „Dalej”, nowe zadanie i każde inne odtwarzanie przerywają odczyt przez #stopPlayback.
     const playbackGeneration = this.#beginPlayback();
@@ -1378,6 +1463,8 @@ export class LearningSessionController {
       await this.#playCountedAudio(this.#api.mediaUrl(assetId), assetId, {
         ...(rate === "slow" ? { rate: SLOW_PLAYBACK_RATE } : {}),
         onStarted: () => {
+          // „Posłuchaj i wybierz”: odczyt gra z przycisku w poleceniu — pierścień dźwięku na czas odczytu.
+          this.#markListenPlaying(playbackGeneration, taskId);
           const now = currentFeedback();
           if (now) this.#setLearning({ feedback: { ...now, sentencePlaying: rate, sentenceAudioError: null } });
         },
@@ -1387,6 +1474,7 @@ export class LearningSessionController {
       // utratę połączenia wykrywają inne ścieżki kontrolera (§4.1 pkt 5).
       failed = true;
     }
+    this.#releaseListenPlaying(playbackGeneration);
     const now = currentFeedback();
     finished = true;
     if (!now) return;
@@ -1464,6 +1552,10 @@ export class LearningSessionController {
     if (this.#autoCaptureActive) this.cancelRecording();
     const screen = this.#learning();
     if (!screen?.task || screen.offline || screen.recordingPhase !== "idle" || screen.processing) return;
+    if (screen.task.prompt.kind === "lesson_listen_choice") {
+      await this.playListenStimulus();
+      return;
+    }
     const task = screen.task;
     this.#setLearning({ taskAudioError: null });
     const playbackGeneration = this.#beginPlayback();
@@ -1526,6 +1618,135 @@ export class LearningSessionController {
         this.#setLearning({ taskAudioError: (error as { name?: unknown } | null)?.name === "NotAllowedError" ? "blocked" : "failed" });
       }
     }
+  }
+
+  /**
+   * Przerwany bodziec „Posłuchaj i wybierz” (potwierdzenie końca, tło, utrata fokusu):
+   * `#stopPlayback` kasuje stoper braku startu, a nieotwarty bodziec zostałby w cichym
+   * `pending` z zablokowanymi opcjami, a bodziec już `blocked` — bez licznika „Pomiń”.
+   * Przechodzi więc ścieżką wznowienia z offline: `blocked` (status i wyróżniony głośnik),
+   * a po 6 s „Pomiń”. Bodziec otwarty i zadanie z wynikiem zostają bez zmian.
+   */
+  #interruptListenStimulus(): void {
+    const screen = this.#learning();
+    const stimulus = screen?.listenStimulus;
+    if (!screen?.task || screen.offline || screen.feedback !== null || stimulus?.taskId !== screen.task.taskId ||
+        (stimulus.state !== "pending" && stimulus.state !== "blocked")) return;
+    void this.#listenResume(stimulus.taskId)();
+  }
+
+  /**
+   * Wznowienie zadania słuchowego po powrocie z offline: bez autoodtwarzania. Bodziec, który
+   * nie był otwarty (`pending` albo już `blocked`), przechodzi w `blocked` — status i wyróżniony głośnik — a po
+   * 6 s bez naciśnięcia w `unavailable` („Pomiń”), jak przy zablokowanym autoodtwarzaniu.
+   */
+  #listenResume(taskId: string): () => Promise<void> {
+    return async () => {
+      const stimulus = this.#learning()?.listenStimulus;
+      if (stimulus?.taskId !== taskId || (stimulus.state !== "pending" && stimulus.state !== "blocked")) return;
+      // Także już zablokowany bodziec: #stopPlayback skasował jego licznik, więc uzbrajamy go od nowa.
+      this.#patchListenStimulus(taskId, { state: "blocked", playing: false });
+      const epoch = this.#epoch;
+      this.#listenTimers.push(setTimeout(() => {
+        const current = this.#learning();
+        if (epoch !== this.#epoch || !current || current.offline || current.feedback !== null ||
+            current.listenStimulus?.taskId !== taskId || current.listenStimulus.state !== "blocked") return;
+        this.#patchListenStimulus(taskId, { state: "unavailable" });
+      }, LISTEN_NO_START_MS));
+    };
+  }
+
+  /**
+   * Bodziec „Posłuchaj i wybierz” (`lesson_listen_choice`, spec §8): autoryzacja
+   * nagrania (`audio_issued` przed wydaniem id), potem odtworzenie. Opcje otwiera
+   * (`open`) dopiero koniec odtwarzania przy niezmienionej generacji — przerwanie
+   * rozstrzyga `play()` tak samo jak koniec, więc go nie odblokowuje — albo zapas
+   * `durationMs + 1 s` (8 s bez długości) od startu. Bez startu po 6 s od żądania
+   * autoryzacji: `unavailable` („Pomiń”, przycisk nadal działa). `NotAllowedError`:
+   * `blocked` przy autoodtwarzaniu (status, po 6 s „Pomiń”), `unavailable`
+   * z komunikatem przy ręcznym naciśnięciu. Odmowa autoryzacji i błąd pliku:
+   * `unavailable` — cicho przy autoodtwarzaniu, z komunikatem przy ręcznym naciśnięciu. Błąd sieci: zwykła
+   * ścieżka offline, a ponowienie niczego samo nie odtwarza. Po odpowiedzi nic nie
+   * robi — odczyt zdania z feedbacku gra `playSentenceAudio`.
+   */
+  async playListenStimulus(options: { auto?: boolean } = {}): Promise<void> {
+    const auto = options.auto === true;
+    const screen = this.#learning();
+    const task = screen?.task;
+    if (!screen || !task || task.prompt.kind !== "lesson_listen_choice" || screen.feedback !== null ||
+        screen.offline || screen.busy || screen.processing || screen.recordingPhase !== "idle") return;
+    const taskId = task.taskId;
+    const epoch = this.#epoch;
+    const generation = this.#beginPlayback();
+    const previous = this.#learning()?.listenStimulus;
+    // Nowa próba gasi status blokady; `unavailable` zostaje („Pomiń”) do udanego odsłuchu.
+    this.#setLearning({
+      taskAudioError: null,
+      listenStimulus: {
+        taskId,
+        state: previous?.taskId === taskId && previous.state !== "blocked" ? previous.state : "pending",
+        playing: false,
+      },
+    });
+    const stale = (): boolean => {
+      const current = this.#learning();
+      return generation !== this.#playbackGeneration || epoch !== this.#epoch || !current ||
+        current.task?.taskId !== taskId || current.feedback !== null || current.offline;
+    };
+    this.#listenTimers.push(setTimeout(() => {
+      if (!stale()) this.#patchListenStimulus(taskId, { state: "unavailable" });
+    }, LISTEN_NO_START_MS));
+    const fail = (error: unknown): void => {
+      if (isNetworkError(error)) {
+        this.#clearListenTimers();
+        // Ponowienie po powrocie sieci zostawia zadanie i przycisk — bez autoodtwarzania.
+        this.#setResume(this.#listenResume(taskId), true);
+        this.#handleFailure(error);
+        return;
+      }
+      const blocked = (error as { name?: unknown } | null)?.name === "NotAllowedError";
+      if (blocked && auto) {
+        // Zablokowane autoodtwarzanie: status i wyróżniony głośnik. Licznik 6 s biegnie dalej,
+        // więc bez naciśnięcia pojawia się „Pomiń”. Gdy licznik już wygasł (spóźniona autoryzacja),
+        // „Pomiń” zostaje — powrót do `blocked` nie miałby już licznika.
+        const expired = this.#learning()?.listenStimulus?.state === "unavailable";
+        this.#patchListenStimulus(taskId, { state: expired ? "unavailable" : "blocked", playing: false });
+        return;
+      }
+      // Ręczne naciśnięcie zablokowane albo błąd: „Pomiń” od razu, a przy ręcznym widoczny komunikat.
+      this.#clearListenTimers();
+      this.#patchListenStimulus(taskId, { state: "unavailable", playing: false });
+      if (!auto) this.#setLearning({ taskAudioError: blocked ? "blocked" : "failed" });
+    };
+    let assetId: string;
+    try {
+      const authorization = await this.#api.authorizeDisclosure(taskId, "audio");
+      if (stale()) return;
+      if (!authorization.audioAssetId) throw new Error("Listen stimulus unavailable");
+      assetId = authorization.audioAssetId;
+    } catch (error) {
+      if (!stale()) fail(error);
+      return;
+    }
+    try {
+      await this.#playCountedAudio(this.#api.mediaUrl(assetId), assetId, { onStarted: (durationMs) => {
+        if (stale()) return;
+        this.#clearListenTimers();
+        this.#markListenPlaying(generation, taskId);
+        const unlockMs = durationMs !== null && durationMs > 0 ? durationMs + LISTEN_UNLOCK_MARGIN_MS : LISTEN_UNLOCK_FALLBACK_MS;
+        this.#listenTimers.push(setTimeout(() => {
+          if (!stale()) this.#patchListenStimulus(taskId, { state: "open", playing: false });
+        }, unlockMs));
+      } });
+    } catch (error) {
+      this.#releaseListenPlaying(generation);
+      if (!stale()) fail(error);
+      return;
+    }
+    this.#releaseListenPlaying(generation);
+    if (stale()) return;
+    this.#clearListenTimers();
+    this.#patchListenStimulus(taskId, { state: "open", playing: false });
   }
 
   /**
@@ -2139,6 +2360,8 @@ export class LearningSessionController {
    */
   pauseActivity(reason: "background" | "blur" | "offline" = "background"): void {
     this.#stopPlayback();
+    // Offline wznawia bodziec po „Spróbuj ponownie” (#listenResume).
+    if (reason !== "offline") this.#interruptListenStimulus();
     this.#activity?.pause(reason);
     this.#saveActivityDraft();
   }

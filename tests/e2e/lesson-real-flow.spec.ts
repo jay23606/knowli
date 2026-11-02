@@ -14,8 +14,10 @@ import {
   type TaskDto,
 } from "@learning/contracts";
 import { createDatabase } from "@learning/server";
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { endSessionFromHeader } from "./helpers/kid-session";
+import { silentWavBuffer } from "./helpers/kid-ui-fixture";
+import { listenAudioPlays, stubListenAudio } from "./helpers/lesson-audio";
 import { readTestRunConfig } from "../test-run-config";
 
 const CHILD_NAME = `Obieg lekcji ${randomUUID().slice(0, 8)}`;
@@ -46,14 +48,34 @@ async function enterParent(page: Page): Promise<void> {
   await expect(page.getByTestId("tab-decks")).toBeVisible();
 }
 
+/**
+ * Czeka, aż nagrania zdań wszystkich ćwiczeń „Posłuchaj i wybierz” szkicu
+ * (`feedback_audio` z fake TTS workera) będą gotowe. Publikacja na nie nie czeka,
+ * a plan sesji treningowej zamraża się przy starcie — bez tego obecność slotu
+ * słuchowego zależałaby od tempa workera. Zwraca id gotowych nagrań.
+ */
+async function waitForListenSentenceAudio(page: Page, deckId: string): Promise<string[]> {
+  let assetIds: string[] = [];
+  await expect.poll(async () => {
+    const deck = LessonDeckDtoSchema.parse(await (await page.request.get(`/api/v1/parent/lessons/${deckId}`)).json());
+    const listen = (deck.draft?.exercises ?? []).filter((exercise) => exercise.exerciseType === "lesson_listen_choice");
+    const states = listen.map((exercise) => exercise.sentenceAudio?.state ?? "missing");
+    if (states.every((state) => state === "ready")) {
+      assetIds = listen.map((exercise) => exercise.sentenceAudio!.assetId!);
+    }
+    return states.filter((state) => state !== "ready");
+  }, { timeout: 120_000 }).toEqual([]);
+  return assetIds;
+}
+
 async function createAssignedLesson(
   page: Page,
-  options: { objectiveIds?: readonly string[]; suffix?: string } = {},
-): Promise<{ childId: string; deckId: string; versionId: string; childName: string; lessonTitle: string }> {
+  options: { objectiveIds?: readonly string[]; suffix?: string; labels?: { childName: string; lessonTitle: string } } = {},
+): Promise<{ childId: string; deckId: string; versionId: string; childName: string; lessonTitle: string; listenAssetIds: string[] }> {
   const objectiveIds = options.objectiveIds ?? [OBJECTIVE_ID];
   const exampleObjectiveId = objectiveIds.includes(OBJECTIVE_ID) ? OBJECTIVE_ID : objectiveIds[0]!;
-  const childName = options.suffix ? `Obieg wielocelowy ${options.suffix}` : CHILD_NAME;
-  const lessonTitle = options.suffix ? `Present Simple wielocelowy ${options.suffix}` : LESSON_TITLE;
+  const childName = options.labels?.childName ?? (options.suffix ? `Obieg wielocelowy ${options.suffix}` : CHILD_NAME);
+  const lessonTitle = options.labels?.lessonTitle ?? (options.suffix ? `Present Simple wielocelowy ${options.suffix}` : LESSON_TITLE);
   await page.getByTestId("tab-children").click();
   await page.getByTestId("child-name").fill(childName);
   await page.getByTestId("child-add").click();
@@ -114,6 +136,7 @@ async function createAssignedLesson(
   await expect(page.getByTestId(`example-line-${exampleObjectiveId}-0`)).toHaveValue(APPROVED_EXAMPLE);
   await expect(page.getByTestId("publish-lesson")).toBeEnabled({ timeout: 120_000 });
   await expect(page.locator(`[data-testid^="exercise-audio-state-"]`, { hasText: "generowanie" })).toHaveCount(0, { timeout: 120_000 });
+  const listenAssetIds = await waitForListenSentenceAudio(page, deckId);
 
   const publish = page.waitForResponse((response) =>
     response.request().method() === "POST" && /\/api\/v1\/parent\/lesson-drafts\/.+\/publish$/.test(new URL(response.url()).pathname),
@@ -136,7 +159,35 @@ async function createAssignedLesson(
   await childAssignment.locator('[data-testid^="assign-submit-"]').click();
   expect((await assignment).status()).toBe(204);
 
-  return { childId: childId!, deckId, versionId: versionId!, childName, lessonTitle };
+  return { childId: childId!, deckId, versionId: versionId!, childName, lessonTitle, listenAssetIds };
+}
+
+/**
+ * Odsłuch w przeglądarce dziecka: żądania nagrań idą do prawdziwego serwera
+ * (status zostaje zapisany), ale przeglądarka dostaje cichy WAV, bo fake TTS
+ * zwraca bajty, których nie da się zdekodować; `play()` zastępuje atrapa
+ * kończąca odtwarzanie po 50 ms (headless nie gwarantuje odtworzenia).
+ * Dziennik `log` zachowuje kolejność: `auth:<taskId>` przy wysłaniu
+ * autoryzacji odsłuchu, `media:<assetId>:<status>` przy pobraniu nagrania.
+ */
+async function prepareKidAudio(page: Page): Promise<{ log: string[] }> {
+  const log: string[] = [];
+  await stubListenAudio(page, "end");
+  page.on("request", (request) => {
+    const match = /^\/api\/v1\/kid\/tasks\/([0-9a-f-]{36})\/disclosures$/.exec(new URL(request.url()).pathname);
+    if (request.method() === "POST" && match) log.push(`auth:${match[1]}`);
+  });
+  await page.route("**/api/v1/media/**", async (route) => {
+    const response = await route.fetch();
+    const assetId = new URL(route.request().url()).pathname.split("/").pop();
+    log.push(`media:${assetId}:${response.status()}`);
+    if (!response.ok()) {
+      await route.fulfill({ response });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "audio/wav", body: silentWavBuffer() });
+  });
+  return { log };
 }
 
 async function openKidLesson(page: Page, childId: string, deckId: string): Promise<ReturnType<typeof SessionDtoSchema.parse>> {
@@ -202,7 +253,8 @@ async function answerGuided(page: Page, task: TaskDto): Promise<{ attempt: Attem
   const attemptResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && /\/tasks\/.+\/attempts$/.test(new URL(response.url()).pathname),
   );
-  if (task.prompt.kind === "lesson_choice") {
+  if (task.prompt.kind === "lesson_choice" || task.prompt.kind === "lesson_listen_choice") {
+    // Opcje „Posłuchaj i wybierz” otwiera dopiero koniec autoodtwarzania (atrapa z `prepareKidAudio`).
     const text = task.prompt.options.find((option) => option.id === correctOptionId)?.text;
     expect(text).toBeTruthy();
     const option = page.getByRole("button", { name: text!, exact: true });
@@ -262,6 +314,7 @@ test("approved lesson survives reload and support without duplicate or independe
   const kidContext = await browser.newContext({ locale: "pl-PL", viewport: { width: 390, height: 844 } });
   try {
     const kid = await kidContext.newPage();
+    await prepareKidAudio(kid);
     taskResponses = captureTaskResponses(kid);
     const started = await openKidLesson(kid, childId, deckId);
     expect(started.deckVersionId).toBe(versionId);
@@ -277,6 +330,11 @@ test("approved lesson survives reload and support without duplicate or independe
     while (completedGuidedTaskIds.length < 2 && steps < 12) {
       if (task.prompt.kind === "lesson_card") {
         task = await advanceLessonCard(kid, task);
+      } else if (task.prompt.kind === "lesson_listen_choice") {
+        // Slot słuchowy (po pierwszym zwykłym zadaniu celu) jest wspomagany i poza ścieżką etapów —
+        // nie liczy się do zadań prowadzonych tego scenariusza; pełny przebieg ma osobny test.
+        const { nextTask } = await answerGuided(kid, task);
+        task = nextTask;
       } else {
         const { attempt, nextTask } = await answerGuided(kid, task);
         expect(attempt.taskId).toBe(task.taskId);
@@ -494,6 +552,7 @@ test("question, negative and short-answer objectives complete a no-audio child a
   const kidContext = await browser.newContext({ locale: "pl-PL", viewport: { width: 390, height: 844 } });
   try {
     const kid = await kidContext.newPage();
+    await prepareKidAudio(kid);
     taskResponses = captureTaskResponses(kid);
     const started = await openKidLesson(kid, childId, deckId);
     expect(started.deckVersionId).toBe(versionId);
@@ -558,6 +617,123 @@ test("question, negative and short-answer objectives complete a no-audio child a
     const progress = (await (await page.request.get(`/api/v1/parent/lessons/${deckId}/progress?childId=${childId}`)).json() as unknown[])
       .map((row) => ObjectiveProgressDtoSchema.parse(row));
     expect(progress.find((row) => row.objectiveId === assessedObjectiveId)).toMatchObject({ status: "learning" });
+  } finally {
+    await kidContext.close();
+  }
+});
+
+test("listen choice slot follows the first assessed task with autoplay, readback and a parent work-card step", async ({ page, browser }) => {
+  test.setTimeout(240_000);
+  const suffix = randomUUID().slice(0, 8);
+  await enterParent(page);
+  const { childId, deckId, childName, listenAssetIds } = await createAssignedLesson(page, {
+    labels: { childName: `Obieg słuchowy ${suffix}`, lessonTitle: `Present Simple słuchowy ${suffix}` },
+  });
+  // Fake provider dokłada do 2 ćwiczeń słuchowych na cel; wszystkie nagrania są gotowe przed startem sesji.
+  expect(listenAssetIds.length).toBeGreaterThan(0);
+  const published = LessonDeckDtoSchema.parse(await (await page.request.get(`/api/v1/parent/lessons/${deckId}`)).json()).published!;
+  expect(published.exercises.filter((exercise) => exercise.exerciseType === "lesson_listen_choice")).toHaveLength(listenAssetIds.length);
+
+  const kidContext = await browser.newContext({ locale: "pl-PL", viewport: { width: 390, height: 844 } });
+  try {
+    const kid = await kidContext.newPage();
+    const audio = await prepareKidAudio(kid);
+    taskResponses = captureTaskResponses(kid);
+    const started = await openKidLesson(kid, childId, deckId);
+    const sessionId = started.sessionId;
+
+    // Karty i „Zauważ” wprowadzają cel; slot słuchowy przychodzi zaraz po pierwszym zwykłym zadaniu celu.
+    let task = await currentTask(kid);
+    const regularTaskIds: string[] = [];
+    let previousTaskId: string | null = null;
+    for (let step = 0; step < 10 && task.prompt.kind !== "lesson_listen_choice"; step += 1) {
+      previousTaskId = task.taskId;
+      if (task.prompt.kind === "lesson_card") {
+        task = await advanceLessonCard(kid, task);
+      } else {
+        expect(regularTaskIds, "slot słuchowy powinien przyjść po pierwszym zwykłym zadaniu").toHaveLength(0);
+        if (task.prompt.kind !== "lesson_notice") regularTaskIds.push(task.taskId);
+        const { attempt, nextTask } = await answerGuided(kid, task);
+        expect(attempt).toMatchObject({ taskId: task.taskId, taskState: "answered" });
+        task = nextTask;
+      }
+    }
+    if (task.prompt.kind !== "lesson_listen_choice") throw new Error(`Oczekiwano zadania słuchowego, otrzymano ${task.prompt.kind}`);
+    expect(regularTaskIds).toHaveLength(1);
+    expect(previousTaskId).toBe(regularTaskIds[0]);
+    const listenTask = task;
+    const listenRows = await query<{ exercise_type: string; reason: string | null }>(
+      "select exercise_type, context->>'reason' as reason from learning_app.session_tasks where id = $1 and session_id = $2",
+      [listenTask.taskId, sessionId],
+    );
+    expect(listenRows).toEqual([{ exercise_type: "lesson_listen_choice", reason: "listen_practice" }]);
+
+    // Kid DTO bez id nagrania; polecenie z katalogu i przycisk odsłuchu w poleceniu.
+    expect(listenTask.prompt).not.toHaveProperty("audioAssetId");
+    await expect(kid.getByTestId("kid-exercise")).toContainText("Posłuchaj i wybierz, czego brakuje.");
+    await expect(kid.getByTestId("kid-play")).toHaveAccessibleName("Posłuchaj zdania");
+    await expect(kid.getByTestId("kid-lesson-stem")).toHaveAttribute("lang", "en-GB");
+
+    // Autoodtwarzanie: jedna autoryzacja odsłuchu, potem pobranie nagrania z prawdziwego serwera.
+    const authIndex = () => audio.log.indexOf(`auth:${listenTask.taskId}`);
+    const mediaAfterAuth = () => authIndex() < 0 ? undefined : audio.log.slice(authIndex() + 1).find((entry) => entry.startsWith("media:"));
+    await expect.poll(mediaAfterAuth).toBeTruthy();
+    // Żadne nagranie zdania nie zostało pobrane przed autoryzacją.
+    expect(audio.log.slice(0, authIndex()).filter((entry) => listenAssetIds.some((assetId) => entry.startsWith(`media:${assetId}:`)))).toEqual([]);
+    const [, stimulusAssetId, mediaStatus] = mediaAfterAuth()!.split(":");
+    expect(mediaStatus).toBe("200");
+    expect(listenAssetIds).toContain(stimulusAssetId);
+    const sealedAudio = await query<{ count: string }>(
+      "select count(*)::text as count from learning_app.learning_events where task_id = $1 and kind = 'audio_issued' and sealed = true",
+      [listenTask.taskId],
+    );
+    expect(Number(sealedAudio[0]!.count)).toBeGreaterThanOrEqual(1);
+    await expect.poll(() => listenAudioPlays(kid)).toBe(1);
+
+    // Odpowiedź po odsłuchu: wspomagana, oceniona; feedback odczytuje zdanie tym samym nagraniem.
+    const { attempt, nextTask } = await (async () => {
+      const attemptPromise = kid.waitForResponse((response) =>
+        response.request().method() === "POST" && new URL(response.url()).pathname === `/api/v1/kid/tasks/${listenTask.taskId}/attempts`,
+      );
+      const correctOptionId = await readCorrectOption(listenTask.taskId);
+      const text = listenTask.prompt.kind === "lesson_listen_choice" ? listenTask.prompt.options.find((option) => option.id === correctOptionId)?.text : undefined;
+      expect(text).toBeTruthy();
+      const option = kid.getByRole("button", { name: text!, exact: true });
+      await expect(option).toBeEnabled();
+      await option.click({ noWaitAfter: true });
+      const parsed = AttemptDtoSchema.parse(await (await attemptPromise).json());
+      await expect(kid.getByTestId("kid-feedback")).toContainText("Świetnie!");
+      // Odczyt zdania: drugie pobranie tego samego nagrania i drugie odtworzenie, bez nowej autoryzacji.
+      await expect.poll(() => audio.log.filter((entry) => entry === `media:${stimulusAssetId}:200`).length).toBe(2);
+      await expect.poll(() => listenAudioPlays(kid)).toBe(2);
+      expect(audio.log.filter((entry) => entry === `auth:${listenTask.taskId}`)).toHaveLength(1);
+      await kid.getByTestId("kid-next").click();
+      await expect(kid.locator("main[data-task-id]")).not.toHaveAttribute("data-task-id", listenTask.taskId);
+      return { attempt: parsed, nextTask: await currentTask(kid) };
+    })();
+    expect(attempt).toMatchObject({ taskId: listenTask.taskId, taskState: "answered", feedback: { correctAudioAssetId: stimulusAssetId } });
+    expect(nextTask.prompt.kind).not.toBe("lesson_listen_choice");
+    const assessment = await query<{ outcome: string; independent: boolean }>(
+      "select outcome, independent from learning_app.assessments where attempt_id = $1 and skill = 'objective'",
+      [attempt.attemptId],
+    );
+    expect(assessment).toEqual([{ outcome: "correct", independent: false }]);
+
+    const endResponse = kid.waitForResponse((response) =>
+      response.request().method() === "POST" && new URL(response.url()).pathname === `/api/v1/kid/sessions/${sessionId}/end`,
+    );
+    await endSessionFromHeader(kid);
+    expect((await endResponse).ok()).toBe(true);
+    await expect(kid.getByTestId("kid-summary")).toBeVisible();
+
+    // Nadzór rodzica: krok słuchowy na karcie pracy dziecka jak każdy inny typ.
+    await page.getByTestId("editor-back").click();
+    await page.getByTestId("tab-work-card").click();
+    await expect(page.getByTestId("work-card")).toBeVisible();
+    await page.getByRole("button", { name: childName, exact: true }).click();
+    const listenStep = page.getByTestId("work-card-step").filter({ hasText: "Posłuchaj i wybierz" });
+    await expect(listenStep).toHaveCount(1);
+    await expect(listenStep).toContainText("Odpowiedziano");
   } finally {
     await kidContext.close();
   }

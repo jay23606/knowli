@@ -39,6 +39,7 @@ import {
   groupExercisesByObjectiveAndStage,
   keywordsAnswerOf,
   lessonExerciseChanged,
+  missingListenAudioCount,
   lessonThemesPatch,
   nextRequiredElementId,
   toLessonDraftPatch,
@@ -72,7 +73,8 @@ export function lessonPollInterval(deck: LessonDeckDto | undefined): number | fa
   const visible = deck.draft ?? deck.published;
   const assetsPending = visible?.assets.some((asset) => asset.state === "pending") ?? false;
   // nagrania pytań i kart nie są w `assets` (serwer je pomija) — ich stan niosą ćwiczenia i `cardAudio`
-  const promptAudioPending = visible?.exercises.some((exercise) => exercise.promptAudio?.state === "pending") ?? false;
+  // (zdanie „Posłuchaj i wybierz” — `sentenceAudio` — jest tak samo poza `assets`)
+  const promptAudioPending = visible?.exercises.some((exercise) => exercise.promptAudio?.state === "pending" || exercise.sentenceAudio?.state === "pending") ?? false;
   const cardAudioPending = visible?.cardAudio?.some((card) => card.audio.state === "pending") ?? false;
   if (generating || assetsPending) return 1000;
   return promptAudioPending || cardAudioPending ? 3000 : false;
@@ -735,6 +737,8 @@ export default function LessonEditor({
     const asset = unchanged ? savedAudio : null;
     // nagranie pytania: tak samo tylko dla ćwiczenia bez zmian od zapisu (zmiana tekstu lub tonu unieważnia nagranie)
     const promptAudio = unchanged ? active?.exercises.find((e) => e.id === ex.id)?.promptAudio ?? null : null;
+    // nagranie zdania „Posłuchaj i wybierz”: tak samo tylko dla ćwiczenia bez zmian; bez „Nagraj ponownie” (nowa wersja lekcji ponawia)
+    const sentenceAudio = unchanged ? active?.exercises.find((e) => e.id === ex.id)?.sentenceAudio ?? null : null;
     return (
       <LessonExerciseCard
         key={ex.clientKey}
@@ -749,6 +753,7 @@ export default function LessonEditor({
         audio={asset ? { state: asset.state, assetId: asset.assetId ?? null } : null}
         voiceTones={active?.voiceTones}
         promptAudio={promptAudio}
+        sentenceAudio={sentenceAudio}
         lessonDraftId={active?.id ?? ""}
         deckId={deckId}
         itemRevisionId={baseRevisionId}
@@ -966,6 +971,7 @@ export default function LessonEditor({
     </Accordion>
   );
 
+  const missingListenAudio = active ? missingListenAudioCount(active.exercises) : 0;
   const coverage = active && (
     <Paper withBorder radius="lg" p="md" data-testid="coverage-section">
       <Title order={2} fz="md" mb={6}>{messages.lessons.coverageTitle}</Title>
@@ -985,6 +991,11 @@ export default function LessonEditor({
             </li>
           ))}
         </ul>
+      )}
+      {missingListenAudio > 0 && (
+        <Text size="sm" mt="xs" data-testid="listen-missing-audio">
+          {messages.lessons.listenChoiceMissingAudioCount.replace("{n}", String(missingListenAudio))}
+        </Text>
       )}
     </Paper>
   );

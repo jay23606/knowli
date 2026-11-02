@@ -30,6 +30,7 @@ export const CHAPTER_EXERCISE_TYPES: readonly LessonExerciseType[] = [
   "lesson_group",
   "lesson_cloze",
   "lesson_choice",
+  "lesson_listen_choice",
   "lesson_order",
   "lesson_gap",
   "lesson_open_answer",
@@ -37,8 +38,8 @@ export const CHAPTER_EXERCISE_TYPES: readonly LessonExerciseType[] = [
 
 /** Typy zagadnienia według rodzaju (§4.2): grupa słów albo rama zdaniowa. */
 const TYPES_BY_KIND: Readonly<Record<DynamicObjectiveKind, readonly LessonExerciseType[]>> = {
-  words: ["lesson_card", "lesson_match", "lesson_group", "lesson_choice", "lesson_cloze", "lesson_gap", "lesson_open_answer"],
-  frame: ["lesson_card", "lesson_match", "lesson_order", "lesson_choice", "lesson_cloze", "lesson_gap", "lesson_open_answer"],
+  words: ["lesson_card", "lesson_match", "lesson_group", "lesson_choice", "lesson_listen_choice", "lesson_cloze", "lesson_gap", "lesson_open_answer"],
+  frame: ["lesson_card", "lesson_match", "lesson_order", "lesson_choice", "lesson_listen_choice", "lesson_cloze", "lesson_gap", "lesson_open_answer"],
 };
 
 /** Kategorie przedmiotu; brakujące słowo i szyk to bazowe `incomplete` i `wrong_order`. */

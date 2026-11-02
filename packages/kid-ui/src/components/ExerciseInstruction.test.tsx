@@ -40,3 +40,15 @@ it("puts the guidance slot after the instruction text", () => {
   expect(header.contains(guidance)).toBe(true);
   expect(text.compareDocumentPosition(guidance) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
+
+it("shows the sound ring and the active marker while the stimulus plays, and an attention marker", () => {
+  const { rerender } = renderKid(<ExerciseInstruction instruction="Posłuchaj" icon="ear" audio={{ onPlay: vi.fn(), disabled: false }} />);
+  const button = screen.getByTestId("kid-play");
+  expect(button.hasAttribute("data-sound-active")).toBe(false);
+  expect(screen.queryByTestId("kid-sound-ring")).toBeNull();
+  expect(button.hasAttribute("data-attention")).toBe(false);
+  rerender(<ExerciseInstruction instruction="Posłuchaj" icon="ear" audio={{ onPlay: vi.fn(), disabled: false, playing: true, attention: true }} />);
+  expect(button.getAttribute("data-sound-active")).toBe("true");
+  expect(screen.getByTestId("kid-sound-ring")).toBeTruthy();
+  expect(button.getAttribute("data-attention")).toBe("true");
+});

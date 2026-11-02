@@ -6,7 +6,7 @@ import {
 } from "@learning/server";
 import type { AttemptDto, AttemptInput, TaskDto } from "@learning/contracts";
 import { lessonWorld } from "../fixtures/lesson-world";
-import { buildTestServices, ManualClock, testDatabase, truncateCoreTables } from "./helpers";
+import { buildTestServices, grammarWithoutSentenceAudio, ManualClock, testDatabase, truncateCoreTables } from "./helpers";
 import { fakeGeneration } from "./fakes";
 
 /**
@@ -33,7 +33,7 @@ async function generatedGrammarLesson(feedbackSentence = true) {
   const fakes = await fakeGeneration();
   cleanup.push(fakes.dispose);
   const services = createServices({ db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps,
-    ...(feedbackSentence ? {} : { subjects: createSubjectRegistry([{ ...englishGrammarSubject, ttsForFeedbackSentence: false }]) }),
+    ...(feedbackSentence ? {} : { subjects: createSubjectRegistry([grammarWithoutSentenceAudio]) }),
   });
   const run = await createLesson(services, {
     subjectId: "english_grammar", topicId: "present_simple", objectiveIds: [OBJECTIVE],

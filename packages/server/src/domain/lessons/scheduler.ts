@@ -1,6 +1,6 @@
 import type { LessonExerciseType, LessonStage } from "./types";
 import type { ProgressStatus } from "../types";
-import { stageOf } from "./stages";
+import { outsideStagePath, stageOf } from "./stages";
 import type { LessonPolicy } from "./lesson-policy";
 
 /**
@@ -14,6 +14,7 @@ import type { LessonPolicy } from "./lesson-policy";
  *   1. cykl wsparcia,
  *   2. należne niezależne sprawdzenie na ćwiczeniu niewidzianym,
  *   3. okno sprawdzianu — etap samodzielny dla nieopanowanych,
+ *      (3b. trener precyzji, 3c. slot ćwiczenia słuchowego — poza ścieżką etapów),
  *   4. kontynuacja celu w toku na jego etapie,
  *   5. wprowadzenie nowego celu (karty + notice),
  *   6. utrwalanie.
@@ -48,6 +49,11 @@ export interface LessonExerciseCandidate {
   readonly questionType?: string;
   /** Tekst pytania i elementów wymaganych (dopasowanie pomylonej pary do pytania porównawczego). */
   readonly searchText?: string;
+  /**
+   * `lesson_listen_choice`: czy nagranie zdania-bodźca jest gotowe (spec #198 §7.1).
+   * Brak wartości = niegotowe — slot słuchowy pomija takiego kandydata.
+   */
+  readonly stimulusAudioReady?: boolean;
 }
 
 /** Ostatnia ocena odpowiedzi otwartej celu sprzed sesji (wiedza i precyzja; trener precyzji). */
@@ -120,7 +126,8 @@ export type LessonTaskReason =
   | "continue"
   | "introduce"
   | "reinforce"
-  | "precision_practice";
+  | "precision_practice"
+  | "listen_practice";
 
 /** Decyzja selektora: karta prezentacji/wsparcia albo konkretne ćwiczenie. */
 export type LessonTaskPlan =
@@ -239,7 +246,9 @@ function initialStatus(objectiveId: string, input: LessonScheduleInput): Progres
   if (input.initialProgress !== undefined) return input.initialProgress[objectiveId]?.status;
   // Kompatybilność aktywnych sesji sprzed snapshotu: pierwszy krok wprowadzenia
   // dowodzi, że cel był nowy. Produkt aktywny od początku nie wraca do guided.
-  const first = input.sessionHistory.filter((t) => t.objectiveId === objectiveId && t.kind !== "support_card")
+  // Typy spoza ścieżki etapów (zadanie słuchowe, słowa kluczowe) nie świadczą o nowości celu.
+  const first = input.sessionHistory
+    .filter((t) => t.objectiveId === objectiveId && t.kind !== "support_card" && !outsideStagePath(t.exerciseType))
     .slice().sort((a, b) => a.ordinal - b.ordinal)[0];
   if (first && (first.kind === "card" || stageOf(first.exerciseType) === "intro" || stageOf(first.exerciseType) === "guided")) return "not_assessed";
   return input.progress[objectiveId]?.status;
@@ -277,6 +286,13 @@ function buildSessionState(
       continue;
     }
     // kind === "exercise"
+    if (outsideStagePath(task.exerciseType)) {
+      // Poza ścieżką etapów: wynik neutralny dla etapu, serii i wsparcia (spec #198 §3.3).
+      // Słowa kluczowe zachowują dotychczasowe oznaczenie celu jako wprowadzonego;
+      // zadanie słuchowe wychodzi zawsze po zwykłym zadaniu celu, więc go nie potrzebuje.
+      if (task.exerciseType === "lesson_keywords") state.introduced = true;
+      continue;
+    }
     state.introduced = true;
     if (task.exerciseType === "lesson_notice") {
       state.noticeSeen = true;
@@ -337,11 +353,12 @@ function pickExercise(
 ): LessonExerciseCandidate | null {
   const indexed = input.exercises.map((candidate, index) => ({ candidate, index }));
 
-  // Słowa kluczowe wydaje wyłącznie para trenera precyzji (precisionPracticePlan).
+  // Typy spoza ścieżki etapów wydają wyłącznie ich własne priorytety: słowa
+  // kluczowe — para trenera precyzji, zadanie słuchowe — slot słuchowy.
   const matching = indexed.filter(
     ({ candidate }) =>
       candidate.objectiveId === objectiveId && stageOf(candidate.exerciseType) === stage &&
-      candidate.exerciseType !== "lesson_keywords",
+      !outsideStagePath(candidate.exerciseType),
   );
   if (matching.length === 0) return null;
 
@@ -493,6 +510,43 @@ function precisionPracticePlan(input: LessonScheduleInput): LessonTaskPlan | nul
   return null;
 }
 
+/** Najwyżej tyle zadań słuchowych w sesji — nie wypierają ćwiczeń produktywnych (spec #198 §3.2). */
+const MAX_LISTEN_TASKS_PER_SESSION = 2;
+
+/**
+ * Slot ćwiczenia słuchowego (spec #198 §3.2): dodatkowe zadanie wyboru ze
+ * słuchu, poza ścieżką etapów. Cel dostaje je najwyżej raz w sesji i dopiero
+ * po swoim pierwszym zwykłym ocenianym zadaniu (wydanym lub zaplanowanym), więc
+ * sesja nie zaczyna się serią zadań słuchowych — także dla celów kontynuowanych
+ * i opanowanych. Sesja ma ich najwyżej `MAX_LISTEN_TASKS_PER_SESSION` i nigdy dwóch
+ * z rzędu (ostatnie zadanie sesji nie może być słuchowe). Cel
+ * czekający na cykl wsparcia nie dostaje slotu (wsparcie ma pierwszeństwo).
+ * Kandydat wymaga gotowego nagrania (`stimulusAudioReady === true`). Działa
+ * dynamicznie i w planie sesji (`planningMode`).
+ */
+function listenPracticePlan(input: LessonScheduleInput): LessonTaskPlan | null {
+  if (input.assessedRemaining <= 0) return null;
+  const isListen = (task: LessonSessionTask) => task.kind === "exercise" && task.exerciseType === "lesson_listen_choice";
+  if (input.sessionHistory.filter(isListen).length >= MAX_LISTEN_TASKS_PER_SESSION) return null;
+  // Bez dwóch zadań słuchowych z rzędu (np. po dwóch należnych sprawdzeniach na starcie planu).
+  const last = input.sessionHistory.reduce<LessonSessionTask | undefined>(
+    (latest, task) => (latest === undefined || task.ordinal > latest.ordinal ? task : latest), undefined);
+  if (last !== undefined && isListen(last)) return null;
+  for (const objectiveId of input.objectiveOrder) {
+    if (!hasAssessedThisSession(objectiveId, input)) continue;
+    if (input.sessionHistory.some((task) => task.objectiveId === objectiveId && isListen(task))) continue;
+    if (buildSessionState(objectiveId, input).supportPending || awaitsSupportExercise(objectiveId, input)) continue;
+    const candidates = input.exercises
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(({ candidate }) =>
+        candidate.exerciseType === "lesson_listen_choice" && candidate.objectiveId === objectiveId &&
+        candidate.stimulusAudioReady === true && !itemIssuedThisSession(candidate.itemId, input.sessionHistory));
+    const candidate = orderBySeen(candidates, input)[0]?.candidate;
+    if (candidate) return exercisePlan(candidate, "listen_practice", false);
+  }
+  return null;
+}
+
 export function selectLessonTask(input: LessonScheduleInput): LessonTaskPlan | null {
   // Koniec sesji: brak puli albo wyczerpany budżet ocenianych (karty też nie).
   if (input.exercises.length === 0 || input.assessedRemaining <= 0) {
@@ -560,6 +614,10 @@ export function selectLessonTask(input: LessonScheduleInput): LessonTaskPlan | n
   const precisionPractice = precisionPracticePlan(input);
   if (precisionPractice) return precisionPractice;
 
+  // Priorytet 3c: slot ćwiczenia słuchowego (poza ścieżką etapów).
+  const listenPractice = listenPracticePlan(input);
+  if (listenPractice) return listenPractice;
+
   // Priorytet 4: kontynuacja celu w toku na jego bieżącym etapie.
   for (const id of input.objectiveOrder) {
     const state = states.get(id)!;
@@ -575,7 +633,8 @@ export function selectLessonTask(input: LessonScheduleInput): LessonTaskPlan | n
     if (!fromPrior && !hasAssessedThisSession(id, input)) continue;
     if (input.planningMode) {
       const plannedAtStage = input.sessionHistory.filter((task) =>
-        task.objectiveId === id && task.kind === "exercise" && stageOf(task.exerciseType) === state.stage,
+        task.objectiveId === id && task.kind === "exercise" && !outsideStagePath(task.exerciseType) &&
+        stageOf(task.exerciseType) === state.stage,
       ).length;
       // Do not expose every distinct productive answer before a later
       // confirmation can become due; only real outcomes may advance stages.
@@ -646,13 +705,17 @@ function isContinuedFromPriorSession(objectiveId: string, input: LessonScheduleI
   return status !== undefined && status !== "not_assessed";
 }
 
-/** Czy w tej sesji wydano już ocenione (poza intro) ćwiczenie tego celu. */
+/**
+ * Czy w tej sesji wydano (lub zaplanowano) już zwykłe ocenione ćwiczenie tego
+ * celu — poza intro i poza typami spoza ścieżki etapów.
+ */
 function hasAssessedThisSession(objectiveId: string, input: LessonScheduleInput): boolean {
   return input.sessionHistory.some(
     (t) =>
       t.objectiveId === objectiveId &&
       t.kind === "exercise" &&
-      stageOf(t.exerciseType) !== "intro",
+      stageOf(t.exerciseType) !== "intro" &&
+      !outsideStagePath(t.exerciseType),
   );
 }
 
@@ -698,18 +761,22 @@ function needsIntroductionSteps(
  */
 function pendingSupportExercise(input: LessonScheduleInput): LessonTaskPlan | null {
   for (const id of input.objectiveOrder) {
-    const tasks = input.sessionHistory
-      .filter((t) => t.objectiveId === id)
-      .slice()
-      .sort((a, b) => a.ordinal - b.ordinal);
-    const last = tasks[tasks.length - 1];
-    if (!last || last.kind !== "support_card") continue;
+    if (!awaitsSupportExercise(id, input)) continue;
     const candidate = pickExercise(id, "guided", input, { respectGrader: true });
     if (candidate) {
       return exercisePlan(candidate, "support", false);
     }
   }
   return null;
+}
+
+/** Czy ostatnim zadaniem celu w sesji jest karta wsparcia (czeka ćwiczenie cyklu). */
+function awaitsSupportExercise(objectiveId: string, input: LessonScheduleInput): boolean {
+  const tasks = input.sessionHistory
+    .filter((t) => t.objectiveId === objectiveId)
+    .slice()
+    .sort((a, b) => a.ordinal - b.ordinal);
+  return tasks[tasks.length - 1]?.kind === "support_card";
 }
 
 function exercisePlan(

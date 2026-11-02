@@ -84,6 +84,12 @@ export interface LessonPoolInput {
   /** Łączna liczba ćwiczeń per cel i jej rozkład na etapy. */
   readonly countPerObjective: number;
   readonly stageCounts: LlmLessonStageCounts;
+  /**
+   * Ile DODATKOWYCH ćwiczeń `lesson_listen_choice` (0–2) wolno wygenerować na cel partii: leżą poza
+   * podziałem etapów i poza `countPerObjective`, a prompt podnosi o nie limit partii. Brak pola = adapter
+   * nie prosi o ten typ (przedmiot bez nagrań zdań albo cel bez typu na liście).
+   */
+  readonly listenChoicePerObjective?: number;
   /** Ile miejsc etapu samodzielnego zastrzec dla różnych pytań otwartych (przedmioty v3). */
   readonly minDistinctOpenAnswers?: number;
   readonly graderAvailable: boolean;

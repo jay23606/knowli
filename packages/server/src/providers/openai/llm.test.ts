@@ -449,6 +449,64 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
   });
 });
 
+describe("createOpenAiLlmProvider.generateLessonPool — wybór ze słuchu (lesson_listen_choice)", () => {
+  const LISTEN_INPUT: LessonPoolInput = {
+    ...INPUT,
+    exerciseTypes: ["lesson_card", "lesson_choice", "lesson_listen_choice", "lesson_gap", "lesson_open_answer"],
+    objectives: [{ ...INPUT.objectives[0]!, exerciseTypes: ["lesson_card", "lesson_choice", "lesson_listen_choice", "lesson_gap"] }],
+  };
+  const systemPromptOf = async (input: LessonPoolInput): Promise<string> => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(input);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
+    return body.messages.find((message) => message.role === "system")!.content;
+  };
+
+  it("podnosi limit partii o dodatkowe ćwiczenia słuchowe i opisuje je poza podziałem etapów", async () => {
+    const system = await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 2 });
+    expect(system).toContain(`at most ${LISTEN_INPUT.countPerObjective + 2} exercises per objective in this batch`);
+    expect(system).toContain("up to 2 extra lesson_listen_choice exercises per objective, outside the stage split");
+    expect(system).toContain("only for an objective whose allowed exerciseType list contains lesson_listen_choice");
+    // Menu etapów pozostaje bez zmian: typ słuchowy nie należy do żadnego etapu podziału.
+    const menus = system.slice(system.indexOf("aiming for this stage split:"), system.indexOf("The stage type lists are a menu"));
+    expect(menus).not.toContain("lesson_listen_choice");
+  });
+
+  it("opisuje pola typu obok lesson_choice, gdy przedmiot go wspiera", async () => {
+    const system = await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 2 });
+    expect(system).toContain("lesson_listen_choice requires stem with exactly one ___");
+    expect(system).toContain("2 to 3 options");
+    expect(system).toContain("instructionPl, hint and visualSubject must be null for lesson_listen_choice");
+  });
+
+  it("bez pola listenChoicePerObjective prompt zachowuje dotychczasowy limit i nie ma zdania o dodatkach", async () => {
+    const system = await systemPromptOf(LISTEN_INPUT);
+    expect(system).toContain(`Return at most ${LISTEN_INPUT.countPerObjective} exercises per objective in this batch, aiming for this stage split:`);
+    expect(system).not.toContain("extra lesson_listen_choice");
+    expect(await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 0 })).toBe(system);
+  });
+
+  it("przedmiot bez typu nie dostaje opisu pól typu", async () => {
+    expect(await systemPromptOf(INPUT)).not.toContain("lesson_listen_choice");
+  });
+
+  it("bez przyznanego dodatku (pole brak/0) prompt nie opisuje pól typu ani nie wymienia go wśród dozwolonych", async () => {
+    for (const input of [LISTEN_INPUT, { ...LISTEN_INPUT, listenChoicePerObjective: 0 }]) {
+      const system = await systemPromptOf(input);
+      expect(system).not.toContain("lesson_listen_choice requires stem");
+      expect(system).not.toContain("lesson_listen_choice");
+    }
+  });
+
+  it("przycina dodatek do 0–2", async () => {
+    const system = await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 5 });
+    expect(system).toContain(`at most ${LISTEN_INPUT.countPerObjective + 2} exercises per objective in this batch`);
+    expect(system).toContain("up to 2 extra lesson_listen_choice exercises per objective");
+    expect(await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: -3 })).toBe(await systemPromptOf(LISTEN_INPUT));
+  });
+});
+
 describe("createOpenAiLlmProvider — ton lektora (stage B)", () => {
   const RULE = "voiceTone: choose only when it clearly fits";
   type Body = { response_format: { json_schema: { schema: any } }; messages: Array<{ role: string; content: string }> };

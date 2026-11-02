@@ -18,7 +18,7 @@ import type { AudioPlaybackOptions, AudioPlayer, MicrophonePermission, PlatformM
 import { LevelMonitorUnavailableError } from "../media/platform";
 import { createMemoryPreferences, MIC_DENIED_KEY, type LocalPreferences } from "../storage";
 import { createMemoryActivityDraftStore } from "./activity-draft-store";
-import { LearningSessionController, messageForError } from "./session-controller";
+import { LearningSessionController, messageForError, type LearningScreen } from "./session-controller";
 import { format } from "../format";
 
 /**
@@ -700,6 +700,26 @@ describe("LearningSessionController", () => {
     harness.media.player.play = async () => { throw new Error("decode failed"); };
     await harness.controller.playTaskAudio();
     expect(harness.controller.getScreen()).toMatchObject({ taskAudioError: "failed" });
+  });
+
+  it("komunikat o audio zadania obrazkowego zostaje po wysłaniu odpowiedzi (stabilny układ do werdyktu)", async () => {
+    const state = baseState();
+    const speech = taskDto("picture-speech-audio-error-keep", {
+      kind: "picture_speech", audioAssetId: "asset-pattern", visual: { kind: "color", color: "#ff0000" },
+    });
+    state.attempts = [attemptDto({ taskId: speech.taskId, modality: "skip", taskState: "answered", feedback: { kind: "not_assessed" } })];
+    const harness = await startAtTask(state, speech);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(harness.api, "submitAnswer").mockImplementation(async (input) => { await gate; return makeApi(harness.state).submitAnswer(input); });
+    harness.media.player.play = async () => { throw new Error("decode failed"); };
+    await harness.controller.playTaskAudio();
+    expect(harness.controller.getScreen()).toMatchObject({ taskAudioError: "failed" });
+    const pending = harness.controller.skip();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(harness.controller.getScreen()).toMatchObject({ busy: true, taskAudioError: "failed" });
+    release();
+    await pending;
   });
 
   it("nie odtwarza autoryzacji, która wróciła już po zmianie karty", async () => {
@@ -3734,5 +3754,569 @@ describe("LearningSessionController — odczyt zdania po odpowiedzi w lekcji", (
       await harness.controller.playGuidance("recall").catch(() => undefined);
       expect(failure(harness)).toEqual({ rate: "normal", seq: 1 });
     });
+  });
+});
+
+describe("LearningSessionController — „Posłuchaj i wybierz” (lesson_listen_choice)", () => {
+  // Fake API autoryzuje każde ujawnienie tym samym nagraniem.
+  const STIMULUS_URL = "https://media.test/88888888-8888-4888-8888-888888888888";
+  const SENTENCE = "abababab-abab-4bab-8bab-abababababab";
+  const SENTENCE_URL = `https://media.test/${SENTENCE}`;
+  const listen = (taskId = "tl") => taskDto(taskId, {
+    kind: "lesson_listen_choice", stem: "He ___ football.", contentLocale: "en-GB",
+    options: [{ id: "o1", text: "plays" }, { id: "o2", text: "play" }],
+  });
+  const choice = (taskId = "tc") => taskDto(taskId, { kind: "lesson_choice", instructionPl: "Wybierz", stem: "He ___.", options: [{ id: "o1", text: "goes" }] });
+  const flush = () => vi.advanceTimersByTimeAsync(0);
+  type Play = { url: string; onStarted?: (durationMs: number | null) => void; resolve: () => void; reject: (error: unknown) => void };
+
+  /** Kontroler z odtwarzaczem, którego start, koniec i błąd steruje test. */
+  async function startListen(state: ApiState, task: TaskDto, mode: "training" | "mock_test" = "training") {
+    state.tasks = [task];
+    const harness = makeHarness(state);
+    const plays: Play[] = [];
+    vi.spyOn(harness.media.player, "play").mockImplementation((url, onStarted) => new Promise<void>((resolve, reject) => {
+      harness.media.playUrls.push(url);
+      plays.push({ url, ...(onStarted ? { onStarted } : {}), resolve, reject });
+    }));
+    await harness.controller.start();
+    await harness.controller.selectProfile(PROFILE_A.childId);
+    if (mode === "mock_test") {
+      await harness.controller.startMockTest(DECK.deckId);
+      await harness.controller.beginMockTest();
+    } else {
+      await harness.controller.startLearning(DECK.deckId);
+    }
+    await flush();
+    return { ...harness, plays };
+  }
+
+  const screenOf = (harness: { controller: LearningSessionController }) => harness.controller.getScreen() as LearningScreen;
+  const stimulusOf = (harness: { controller: LearningSessionController }) => screenOf(harness).listenStimulus;
+
+  it("po wyświetleniu autoryzuje raz i odtwarza zdanie; opcje otwiera dopiero koniec odsłuchu", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      const harness = await startListen(state, listen());
+      expect(state.disclosures).toEqual([{ taskId: "tl", kind: "audio" }]);
+      expect(harness.plays.map((play) => play.url)).toEqual([STIMULUS_URL]);
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "pending", playing: false });
+      harness.plays[0]!.onStarted?.(3_000);
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "pending", playing: true });
+      harness.plays[0]!.resolve();
+      await flush();
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "open", playing: false });
+      expect(screenOf(harness)).toMatchObject({ error: null, offline: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("powtórka w połowie nie odblokowuje opcji — dopiero koniec drugiego odsłuchu", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      const harness = await startListen(state, listen());
+      harness.plays[0]!.onStarted?.(3_000);
+      void harness.controller.playTaskAudio();
+      await flush();
+      expect(state.disclosures).toHaveLength(2);
+      expect(harness.plays).toHaveLength(2);
+      // przerwane odtwarzanie rozstrzyga się jak koniec — nie może otworzyć opcji
+      harness.plays[0]!.resolve();
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("pending");
+      // zapas pierwszego odsłuchu (3000 + 1000 ms) nie działa po przerwaniu
+      await vi.advanceTimersByTimeAsync(4_500);
+      expect(stimulusOf(harness)?.state).toBe("pending");
+      harness.plays[1]!.onStarted?.(3_000);
+      expect(stimulusOf(harness)).toMatchObject({ state: "pending", playing: true });
+      harness.plays[1]!.resolve();
+      await flush();
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "open", playing: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bez zdarzenia końca otwiera opcje po długości nagrania + 1 s", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = await startListen(baseState(), listen());
+      harness.plays[0]!.onStarted?.(3_000);
+      await vi.advanceTimersByTimeAsync(3_999);
+      expect(stimulusOf(harness)?.state).toBe("pending");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(stimulusOf(harness)?.state).toBe("open");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bez znanej długości nagrania zapas wynosi 8 s", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = await startListen(baseState(), listen());
+      harness.plays[0]!.onStarted?.(null);
+      await vi.advanceTimersByTimeAsync(7_999);
+      expect(stimulusOf(harness)?.state).toBe("pending");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(stimulusOf(harness)?.state).toBe("open");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("autoryzacja wisząca 6 s daje „unavailable” (Pomiń), a przycisk nadal działa", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      let release!: () => void;
+      state.disclosureGate = new Promise<void>((resolve) => { release = resolve; });
+      const harness = await startListen(state, listen());
+      await vi.advanceTimersByTimeAsync(5_999);
+      expect(stimulusOf(harness)?.state).toBe("pending");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "unavailable", playing: false });
+      expect(screenOf(harness)).toMatchObject({ error: null, offline: false });
+      expect(screenOf(harness).taskAudioError ?? null).toBeNull();
+      // ręczna powtórka: nowa autoryzacja; spóźniona pierwsza nic nie odtwarza
+      void harness.controller.playListenStimulus();
+      await flush();
+      expect(state.disclosures).toHaveLength(2);
+      release();
+      await flush();
+      expect(harness.plays).toHaveLength(1);
+      harness.plays[0]!.onStarted?.(2_000);
+      harness.plays[0]!.resolve();
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("open");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("spóźniona autoryzacja po „Pomiń”: zablokowane autoodtwarzanie nie cofa do „blocked”, udane otwiera opcje", async () => {
+    for (const outcome of ["blocked", "played"] as const) {
+      vi.useFakeTimers();
+      try {
+        const state = baseState();
+        let release!: () => void;
+        state.disclosureGate = new Promise<void>((resolve) => { release = resolve; });
+        const harness = await startListen(state, listen());
+        await vi.advanceTimersByTimeAsync(6_000);
+        expect(stimulusOf(harness)?.state, outcome).toBe("unavailable");
+        release();
+        await flush();
+        expect(harness.plays, outcome).toHaveLength(1);
+        if (outcome === "blocked") {
+          harness.plays[0]!.reject(Object.assign(new Error("blocked"), { name: "NotAllowedError" }));
+          await flush();
+          // „Pomiń” zostaje — licznik już wygasł, więc powrót do „blocked” nie miałby wyjścia.
+          expect(stimulusOf(harness), outcome).toEqual({ taskId: "tl", state: "unavailable", playing: false });
+          await vi.advanceTimersByTimeAsync(10_000);
+          expect(stimulusOf(harness)?.state, outcome).toBe("unavailable");
+        } else {
+          harness.plays[0]!.onStarted?.(2_000);
+          harness.plays[0]!.resolve();
+          await flush();
+          expect(stimulusOf(harness)?.state, outcome).toBe("open");
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("NotAllowedError daje „blocked”; ręczne naciśnięcie odtwarza i otwiera opcje", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = await startListen(baseState(), listen());
+      harness.plays[0]!.reject(Object.assign(new Error("blocked"), { name: "NotAllowedError" }));
+      await flush();
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "blocked", playing: false });
+      expect(screenOf(harness).taskAudioError ?? null).toBeNull();
+      expect(screenOf(harness).error).toBeNull();
+      void harness.controller.playTaskAudio();
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("pending");
+      harness.plays[1]!.onStarted?.(2_000);
+      harness.plays[1]!.resolve();
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("open");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("„blocked” bez naciśnięcia: po 6 s od żądania „unavailable” (Pomiń), przycisk nadal działa", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = await startListen(baseState(), listen());
+      harness.plays[0]!.reject(Object.assign(new Error("blocked"), { name: "NotAllowedError" }));
+      await flush();
+      await vi.advanceTimersByTimeAsync(5_900);
+      expect(stimulusOf(harness)?.state).toBe("blocked");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "unavailable", playing: false });
+      expect(screenOf(harness).taskAudioError ?? null).toBeNull();
+      void harness.controller.playListenStimulus();
+      await flush();
+      harness.plays[1]!.onStarted?.(2_000);
+      harness.plays[1]!.resolve();
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("open");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ręczne naciśnięcie zablokowane przez przeglądarkę: „unavailable” (Pomiń) i widoczny komunikat, bez pętli „blocked”", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      const harness = await startListen(state, listen());
+      harness.plays[0]!.reject(Object.assign(new Error("blocked"), { name: "NotAllowedError" }));
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("blocked");
+      void harness.controller.playListenStimulus();
+      await flush();
+      harness.plays[1]!.reject(Object.assign(new Error("blocked"), { name: "NotAllowedError" }));
+      await flush();
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "unavailable", playing: false });
+      expect(screenOf(harness)).toMatchObject({ error: null, offline: false, taskAudioError: "blocked" });
+      // „Pomiń” wysyła pominięcie i gasi komunikat o nagraniu (feedback nie niesie starego błędu).
+      state.attempts = [attemptDto({ taskId: "tl", modality: "skip", taskState: "answered", feedback: { kind: "not_assessed" } })];
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      vi.spyOn(harness.api, "submitAnswer").mockImplementation(async (input) => { await gate; return makeApi(harness.state).submitAnswer(input); });
+      const pending = harness.controller.skip();
+      await flush();
+      // komunikat gaśnie już przy wysłaniu (tylko w „Posłuchaj i wybierz”), przed werdyktem
+      expect(screenOf(harness)).toMatchObject({ busy: true });
+      expect(screenOf(harness).taskAudioError ?? null).toBeNull();
+      release();
+      await pending;
+      await flush();
+      expect(state.submissions).toMatchObject([{ taskId: "tl", modality: "skip" }]);
+      expect(screenOf(harness).taskAudioError ?? null).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("odmowa autoryzacji (409) przy autoodtwarzaniu: „unavailable” bez ekranu błędu; ręczna — widoczny komunikat", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      state.disclosureError = new KidApiError("conflict", false);
+      const harness = await startListen(state, listen());
+      expect(harness.plays).toEqual([]);
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "unavailable", playing: false });
+      expect(screenOf(harness)).toMatchObject({ error: null, offline: false, busy: false });
+      expect(screenOf(harness).taskAudioError ?? null).toBeNull();
+      await harness.controller.playTaskAudio();
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("unavailable");
+      expect(screenOf(harness)).toMatchObject({ error: null, taskAudioError: "failed" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("błąd pliku przy autoodtwarzaniu jest cichy, ręczny daje komunikat", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = await startListen(baseState(), listen());
+      harness.plays[0]!.reject(new Error("decode failed"));
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("unavailable");
+      expect(screenOf(harness).taskAudioError ?? null).toBeNull();
+      void harness.controller.playListenStimulus();
+      await flush();
+      harness.plays[1]!.reject(new Error("decode failed"));
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("unavailable");
+      expect(screenOf(harness).taskAudioError).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("błąd sieci idzie ścieżką offline; ponowienie nie autoodtwarza i zostawia zadanie", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      state.disclosureError = new TypeError("fetch failed");
+      const harness = await startListen(state, listen());
+      expect(screenOf(harness)).toMatchObject({ offline: true, task: { taskId: "tl" } });
+      expect(stimulusOf(harness)?.state).toBe("pending");
+      state.disclosureError = undefined;
+      const nextTaskCalls = state.nextTaskCalls;
+      await harness.controller.retry();
+      await flush();
+      expect(screenOf(harness)).toMatchObject({ offline: false, busy: false, task: { taskId: "tl" } });
+      expect(state.disclosures).toHaveLength(1);
+      expect(state.nextTaskCalls).toBe(nextTaskCalls);
+      expect(harness.plays).toEqual([]);
+      // Bez odsłuchu po powrocie: status i wyróżniony głośnik zamiast cichego „pending”.
+      expect(stimulusOf(harness)?.state).toBe("blocked");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("po powrocie z offline (markOffline → retry) bez ponownego autoodtwarzania; stan bodźca zostaje", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      const harness = await startListen(state, listen());
+      const nextTaskCalls = state.nextTaskCalls;
+      // offline w trakcie autoodtwarzania: przerwane odtwarzanie nie otwiera opcji
+      harness.plays[0]!.onStarted?.(3_000);
+      harness.controller.markOffline();
+      harness.plays[0]!.resolve();
+      await harness.controller.retry();
+      await flush();
+      expect(screenOf(harness)).toMatchObject({ offline: false, busy: false, task: { taskId: "tl" } });
+      // Bodziec nieotwarty: „blocked” (status + wyróżniony głośnik), po 6 s „Pomiń”.
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "blocked", playing: false });
+      await vi.advanceTimersByTimeAsync(5_900);
+      expect(stimulusOf(harness)?.state).toBe("blocked");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "unavailable", playing: false });
+      expect(state.disclosures).toHaveLength(1);
+      expect(state.nextTaskCalls).toBe(nextTaskCalls);
+      expect(harness.plays).toHaveLength(1);
+      // ręczne odsłuchanie otwiera opcje; kolejne offline → retry ich nie resetuje
+      void harness.controller.playListenStimulus();
+      await flush();
+      harness.plays[1]!.onStarted?.(2_000);
+      harness.plays[1]!.resolve();
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("open");
+      harness.controller.markOffline();
+      await harness.controller.retry();
+      await flush();
+      expect(screenOf(harness)).toMatchObject({ offline: false, task: { taskId: "tl" } });
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "open", playing: false });
+      expect(state.disclosures).toHaveLength(2);
+      expect(state.nextTaskCalls).toBe(nextTaskCalls);
+      expect(harness.plays).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("przerwany odsłuch (potwierdzenie końca, tło, blur) przechodzi w „blocked”, a po 6 s w „Pomiń”", async () => {
+    for (const interrupt of ["endConfirm", "background", "blur"] as const) {
+      vi.useFakeTimers();
+      try {
+        const harness = await startListen(baseState(), listen());
+        harness.plays[0]!.onStarted?.(3_000);
+        if (interrupt === "endConfirm") harness.controller.holdForEndConfirm();
+        else harness.controller.pauseActivity(interrupt);
+        harness.plays[0]!.resolve();
+        await flush();
+        // Przerwanie nie otwiera opcji i nie zostawia cichego „pending” bez wyjścia.
+        expect(stimulusOf(harness), interrupt).toEqual({ taskId: "tl", state: "blocked", playing: false });
+        if (interrupt === "endConfirm") harness.controller.releaseEndConfirm();
+        await vi.advanceTimersByTimeAsync(5_900);
+        expect(stimulusOf(harness)?.state, interrupt).toBe("blocked");
+        await vi.advanceTimersByTimeAsync(100);
+        expect(stimulusOf(harness)?.state, interrupt).toBe("unavailable");
+        expect(harness.plays, interrupt).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("kolejne przerwanie bodźca już zablokowanego uzbraja „Pomiń” od nowa", async () => {
+    for (const second of ["blur", "endConfirm", "offlineRetry"] as const) {
+      vi.useFakeTimers();
+      try {
+        const harness = await startListen(baseState(), listen());
+        // zablokowane autoodtwarzanie → „blocked” z licznikiem 6 s
+        harness.plays[0]!.reject(Object.assign(new Error("blocked"), { name: "NotAllowedError" }));
+        await flush();
+        expect(stimulusOf(harness)?.state, second).toBe("blocked");
+        await vi.advanceTimersByTimeAsync(3_000);
+        if (second === "blur") harness.controller.pauseActivity("blur");
+        else if (second === "endConfirm") {
+          harness.controller.holdForEndConfirm();
+          harness.controller.releaseEndConfirm();
+        } else {
+          harness.controller.markOffline();
+          await harness.controller.retry();
+        }
+        await flush();
+        expect(stimulusOf(harness)?.state, second).toBe("blocked");
+        // licznik liczy od przerwania, nie zostaje skasowany
+        await vi.advanceTimersByTimeAsync(5_900);
+        expect(stimulusOf(harness)?.state, second).toBe("blocked");
+        await vi.advanceTimersByTimeAsync(100);
+        expect(stimulusOf(harness)?.state, second).toBe("unavailable");
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("przerwanie nie rusza bodźca otwartego ani pauzy offline", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = await startListen(baseState(), listen());
+      // pauza offline ma własne wznowienie (#listenResume po „Spróbuj ponownie”)
+      harness.controller.pauseActivity("offline");
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("pending");
+      void harness.controller.playListenStimulus();
+      await flush();
+      harness.plays[1]!.onStarted?.(2_000);
+      harness.plays[1]!.resolve();
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("open");
+      harness.controller.holdForEndConfirm();
+      harness.controller.pauseActivity("blur");
+      await flush();
+      expect(stimulusOf(harness)?.state).toBe("open");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("zadanie listen z prefetchu po „Dalej” dostaje dokładnie jedną autoryzację", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      state.attempts = [attemptDto({ taskId: "tl", modality: "choice", taskState: "answered", feedback: { kind: "great" } })];
+      const harness = await startListen(state, listen("tl"));
+      harness.plays[0]!.onStarted?.(2_000);
+      harness.plays[0]!.resolve();
+      await flush();
+      state.tasks = [listen("tl2")];
+      await harness.controller.answerChoice("o1");
+      await flush();
+      // następne zadanie pobrane w tle przy feedbacku — jeszcze bez autoryzacji
+      expect(state.tasks).toEqual([]);
+      expect(state.disclosures).toEqual([{ taskId: "tl", kind: "audio" }]);
+      const nextTaskCalls = state.nextTaskCalls;
+      await harness.controller.continueLearning();
+      await flush();
+      expect(state.nextTaskCalls).toBe(nextTaskCalls);
+      expect(screenOf(harness)).toMatchObject({ task: { taskId: "tl2" }, listenStimulus: { taskId: "tl2", state: "pending" } });
+      expect(state.disclosures).toEqual([{ taskId: "tl", kind: "audio" }, { taskId: "tl2", kind: "audio" }]);
+      expect(harness.plays).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("w trakcie autoryzacji nie da się odpowiedzieć, a spóźniona autoryzacja po zmianie zadania nic nie odtwarza", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      let release!: () => void;
+      state.disclosureGate = new Promise<void>((resolve) => { release = resolve; });
+      const harness = await startListen(state, listen());
+      expect(stimulusOf(harness)?.state).toBe("pending");
+      await harness.controller.answerChoice("o1");
+      expect(state.submissions).toEqual([]);
+      state.tasks = [choice()];
+      await harness.controller.skip();
+      expect(state.submissions).toMatchObject([{ taskId: "tl", modality: "skip" }]);
+      await harness.controller.continueLearning();
+      expect(screenOf(harness)).toMatchObject({ task: { taskId: "tc" }, listenStimulus: null });
+      release();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(harness.plays).toEqual([]);
+      expect(state.disclosures).toHaveLength(1);
+      expect(screenOf(harness)).toMatchObject({ task: { taskId: "tc" }, listenStimulus: null, error: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("zmiana zadania gasi odtwarzanie i stopery poprzedniego — nowe zadanie czeka na własny odsłuch", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      const harness = await startListen(state, listen("tl"));
+      harness.plays[0]!.onStarted?.(3_000);
+      state.tasks = [listen("tl2")];
+      await harness.controller.skip();
+      expect(stimulusOf(harness)).toMatchObject({ taskId: "tl", playing: false });
+      await harness.controller.continueLearning();
+      await flush();
+      expect(screenOf(harness)).toMatchObject({ task: { taskId: "tl2" }, listenStimulus: { taskId: "tl2", state: "pending" } });
+      expect(state.disclosures).toEqual([{ taskId: "tl", kind: "audio" }, { taskId: "tl2", kind: "audio" }]);
+      // stoper zapasu poprzedniego zadania (4000 ms) nie otwiera nowego
+      harness.plays[0]!.resolve();
+      await vi.advanceTimersByTimeAsync(4_500);
+      expect(stimulusOf(harness)).toMatchObject({ taskId: "tl2", state: "pending" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stan „open” zostaje po nieocenionej próbie; odczyt zdania po odpowiedzi pokazuje odtwarzanie", async () => {
+    vi.useFakeTimers();
+    try {
+      const state = baseState();
+      state.attempts = [
+        attemptDto({ taskId: "tl", modality: "choice", taskState: "issued", feedback: { kind: "not_assessed" } }),
+        attemptDto({ taskId: "tl", modality: "choice", taskState: "answered", feedback: { kind: "great", correctAudioAssetId: SENTENCE } }),
+      ];
+      const harness = await startListen(state, listen());
+      harness.plays[0]!.onStarted?.(2_000);
+      harness.plays[0]!.resolve();
+      await flush();
+      await harness.controller.answerChoice("o1");
+      await harness.controller.continueLearning();
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "open", playing: false });
+      await harness.controller.answerChoice("o1");
+      await flush();
+      expect(state.submissions).toHaveLength(2);
+      // automatyczny odczyt zdania z feedbacku (bez nowej autoryzacji bodźca)
+      expect(harness.plays.map((play) => play.url)).toEqual([STIMULUS_URL, SENTENCE_URL]);
+      expect(state.disclosures).toHaveLength(1);
+      harness.plays[1]!.onStarted?.(2_000);
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "open", playing: true });
+      harness.plays[1]!.resolve();
+      await flush();
+      expect(stimulusOf(harness)).toEqual({ taskId: "tl", state: "open", playing: false });
+      // po odpowiedzi przycisk bodźca nie autoryzuje ponownie
+      await harness.controller.playListenStimulus();
+      expect(state.disclosures).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bez autoodtwarzania w kartkówce, przy pendingAttemptId i w zwykłym wyborze", async () => {
+    vi.useFakeTimers();
+    try {
+      const mock = baseState();
+      const mockHarness = await startListen(mock, listen(), "mock_test");
+      expect(screenOf(mockHarness)).toMatchObject({ task: { taskId: "tl" }, session: { mode: "mock_test" } });
+      expect(mock.disclosures).toEqual([]);
+      expect(mockHarness.plays).toEqual([]);
+
+      const pending = baseState();
+      const harness = await startListen(pending, { ...listen(), pendingAttemptId: "99999999-9999-4999-8999-999999999999" });
+      expect(pending.disclosures).toEqual([]);
+      expect(harness.plays).toEqual([]);
+
+      const plain = baseState();
+      const choiceHarness = await startListen(plain, choice());
+      expect(screenOf(choiceHarness)).toMatchObject({ task: { taskId: "tc" } });
+      expect(stimulusOf(choiceHarness) ?? null).toBeNull();
+      expect(plain.disclosures).toEqual([]);
+      expect(choiceHarness.plays).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

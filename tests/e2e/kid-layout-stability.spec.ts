@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { installKidUiFixture, type KidUiFixture } from "./helpers/kid-ui-fixture";
 import { completedRecallFixture } from "./helpers/kid-fixtures";
+import { boxes, expectRectsUnchanged, nextFrames } from "./helpers/kid-frame";
+import { lessonAudioFixture, listenChoiceTask, openLessonTask, stubListenAudio } from "./helpers/lesson-audio";
 
 const childId = "10000000-0000-4000-8000-000000000001";
 const deckId = "10000000-0000-4000-8000-000000000002";
@@ -305,6 +307,54 @@ test("lesson_choice pictogram keeps geometry across viewports", async ({ page })
     }
   }
 });
+
+/**
+ * „Posłuchaj i wybierz” (spec 2026-11-01 §8): przycisk odsłuchu w poleceniu zostaje na miejscu po odpowiedzi
+ * (odtwarza wtedy nagranie z feedbacku), a zdanie i opcje nie przesuwają się, gdy pojawia się dok wyniku.
+ * Najgorszy przypadek treści (zdanie 193 znaki, 4 opcje); telefon i desktop.
+ */
+for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+  test(`lesson_listen_choice keeps the play button, sentence and options in place under the dock at ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    const listenTaskId = "10000000-0000-4000-8000-000000000041";
+    const listenOptionIds = ["42", "43", "44", "45"].map((suffix) => `10000000-0000-4000-8000-0000000000${suffix}`);
+    await stubListenAudio(page, "end");
+    await installKidUiFixture(page, {
+      ...lessonAudioFixture({ childId, deckId, sessionId, deckVersionId: "10000000-0000-4000-8000-000000000005" },
+        [listenChoiceTask(sessionId, listenTaskId, listenOptionIds)]),
+      disclosure: { taskId: listenTaskId, stepId: "d1", kind: "audio", reveal: null, audioAssetId: "10000000-0000-4000-8000-000000000046" },
+      attempts: [{ attemptId, taskId: listenTaskId, state: "completed", modality: "choice", taskState: "answered", stepId: "s1",
+        receivedAt: "2026-11-01T10:00:00.000Z", completedAt: "2026-11-01T10:00:01.000Z",
+        feedback: { kind: "great", correctAudioAssetId: "10000000-0000-4000-8000-000000000047" } }],
+    });
+    await openLessonTask(page, "kid-lesson-stem");
+    await page.setViewportSize(viewport);
+    const options = page.getByTestId("kid-option");
+    await expect(options).toHaveCount(4);
+    for (const option of await options.all()) await expect(option).toBeEnabled();
+    await page.evaluate(async () => { await document.fonts.ready; });
+    await nextFrames(page);
+
+    const measure = async () => ({
+      play: await boxes(page, "[data-testid='kid-play']"),
+      stem: await boxes(page, "[data-testid='kid-lesson-stem']"),
+      options: await boxes(page, "[data-testid='kid-option']"),
+    });
+    const before = await measure();
+    await options.first().click();
+    await expect(page.getByTestId("kid-feedback-dock")).toBeVisible();
+    await expect(page.getByTestId("kid-feedback")).toContainText("Świetnie");
+    await expect(options.first()).toHaveClass(/kid-option--correct/);
+    await nextFrames(page);
+    const after = await measure();
+
+    const label = `${viewport.width}x${viewport.height}`;
+    expectRectsUnchanged(before.play, after.play, `play button under the dock at ${label}`, 2);
+    expectRectsUnchanged(before.stem, after.stem, `sentence under the dock at ${label}`, 2);
+    expectRectsUnchanged(before.options, after.options, `options under the dock at ${label}`, 2);
+    await expect(page.getByTestId("kid-play")).toBeEnabled();
+    await expect(page.getByTestId("kid-next")).toBeInViewport();
+  });
+}
 
 test("choice selection and transition feedback appear while the answer request is still pending", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

@@ -4,9 +4,10 @@ import { englishGrammarSubject } from "../../../domain/lessons/subjects/english-
 import { englishChapterSubject } from "../../../domain/lessons/subjects/english-chapter/module";
 import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
 import { evaluateChoice, type LessonAnswerKey } from "../../../domain/lessons/evaluate";
-import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
+import { lessonExerciseTargetKey, lessonTextTargetKey } from "../../../domain/lessons/exposure-key";
 import { computeTargetKey } from "../../../domain/target-key";
 import { materializeCard, materializeExercise, seededShuffle, shuffleUnsolved, type LoadedExercise } from "./lesson-materialize";
+import { listenStimulusAssetId } from "./listen-stimulus";
 
 /**
  * P1-1: `correctOption` kontraktu (pool-validation) niesie ID OPCJI dla
@@ -530,6 +531,71 @@ describe("materializeExercise — nagranie zdania feedbacku w prywatnym kluczu",
   it("przedmiot bez flagi nie niesie id w kluczu", () => {
     const task = materializeExercise({ independentCheck: false, reason: "practice" }, "f3", exercise, topic, { ...subject, ttsForFeedbackSentence: false });
     expect(task.answerKey).not.toHaveProperty("feedbackAudioAssetId");
+  });
+});
+
+describe("„Posłuchaj i wybierz” (lesson_listen_choice) — bodziec i materializacja", () => {
+  const sentenceId = "33333333-3333-4333-8333-333333333333";
+  const payload = {
+    exerciseType: "lesson_listen_choice",
+    objectiveId: "english_grammar.present_simple.third_person_s",
+    stem: "She ___ football.",
+    options: [{ id: "a", text: "plays" }, { id: "b", text: "play" }],
+    correctOption: "a",
+    answer: "plays",
+    acceptedAnswers: [],
+    focus: ["plays"],
+    answerLocale: subject.answerLocale,
+    promptLocale: subject.promptLocale,
+  } as LoadedExercise["payload"];
+  const exercise: LoadedExercise = { ...loaded(payload), feedbackAudioAssetId: sentenceId };
+  const listenTask = (input: LoadedExercise = exercise, moduleOfSubject = subject, options: { mockTest?: boolean } = {}) =>
+    materializeExercise({ independentCheck: false, reason: "listen_practice" }, "listen-1", input, topic, moduleOfSubject, options);
+
+  it("listenStimulusAssetId: gotowe nagranie tylko w treningu przedmiotu z nagraniem zdań", () => {
+    expect(listenStimulusAssetId(exercise, subject, "training")).toBe(sentenceId);
+    expect(listenStimulusAssetId(exercise, subject, "mock_test")).toBeNull();
+    expect(listenStimulusAssetId(exercise, { ...subject, ttsForFeedbackSentence: false }, "training")).toBeNull();
+    expect(listenStimulusAssetId({ ...exercise, feedbackAudioAssetId: null }, subject, "training")).toBeNull();
+    expect(listenStimulusAssetId(loaded(payload), subject, "training")).toBeNull();
+  });
+
+  it("prompt ze zdaniem i tasowanymi opcjami, bez polecenia, podpowiedzi i id nagrania", () => {
+    const task = listenTask({ ...exercise, payload: { ...payload, instructionPl: "Nie pokazuj.", hint: "Nie pokazuj." } });
+    expect(TaskPromptSchema.safeParse(task.prompt).success).toBe(true);
+    expect(task.prompt).toEqual({ kind: "lesson_listen_choice", stem: "She ___ football.", options: expect.any(Array), contentLocale: "en-GB" });
+    const options = task.prompt.kind === "lesson_listen_choice" ? task.prompt.options : [];
+    expect(options.map((o) => o.text).sort()).toEqual(["play", "plays"]);
+    expect(options.some((o) => o.id === "a" || o.id === "b")).toBe(false);
+    expect(JSON.stringify(task.prompt)).not.toContain(sentenceId);
+  });
+
+  it("klucz jak wybór + id nagrania i klucz zdania; ekspozycje celu i zdania", () => {
+    const task = listenTask();
+    const key = answerKeyOf(task);
+    expect(evaluateChoice(key.correctOptionId!, key)).toBe(true);
+    const sentenceTargetKey = lessonTextTargetKey(subject, "She plays football.");
+    expect(task.answerKey).toMatchObject({ feedbackAudioAssetId: sentenceId, sentenceTargetKey, targetKey: "tk-1", reason: "listen_practice" });
+    expect(task.exposures).toEqual(["tk-1", sentenceTargetKey]);
+    expect(task.context).toMatchObject({ reason: "listen_practice", independentCheck: false });
+  });
+
+  it("klucz zdania równy target_key (rozdział) nie dubluje ekspozycji", () => {
+    const chapterPayload = { ...payload, objectiveId: "chapter.words" } as LoadedExercise["payload"];
+    const targetKey = lessonExerciseTargetKey(englishChapterSubject, chapterPayload as never);
+    const task = listenTask({ ...exercise, payload: chapterPayload, targetKey }, englishChapterSubject);
+    expect(task.answerKey.sentenceTargetKey).toBe(targetKey);
+    expect(task.exposures).toEqual([targetKey]);
+  });
+
+  it("brak gotowego nagrania albo kartkówka to naruszenie niezmiennika (AppError internal)", () => {
+    const codeOf = (run: () => unknown): unknown => {
+      try { run(); } catch (error) { return (error as { code?: unknown }).code; }
+      return "no error";
+    };
+    expect(codeOf(() => listenTask({ ...exercise, feedbackAudioAssetId: null }))).toBe("internal");
+    expect(codeOf(() => listenTask(exercise, subject, { mockTest: true }))).toBe("internal");
+    expect(codeOf(() => listenTask(exercise, { ...subject, ttsForFeedbackSentence: false }))).toBe("internal");
   });
 });
 
