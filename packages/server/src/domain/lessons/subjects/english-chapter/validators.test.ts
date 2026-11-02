@@ -419,5 +419,15 @@ describe("wybór ze słuchu w przedmiocie rozdziału", () => {
     expect(validateLessonExercise(listen({ instructionPl: "Dziś pada deszcz. Wybierz słowo." }), englishChapterSubject, TOPIC)).not.toEqual([]);
     expect(validateChapterExercise(listen({ hint: "rain" }), TOPIC)).not.toEqual([]);
   });
+
+  it("odrzuca końcówkę -s przed sybilantem za luką (reguła wymowy wspólna z gramatyką)", () => {
+    const merging = listen({
+      stem: "My ___ sleep a lot.",
+      options: [{ id: "a", text: "cats" }, { id: "b", text: "cat" }],
+      answer: "cats",
+      focus: ["cats"],
+    });
+    expect(validateChapterExercise(merging, TOPIC).some((e) => e.includes("różnica niesłyszalna"))).toBe(true);
+  });
 });
 

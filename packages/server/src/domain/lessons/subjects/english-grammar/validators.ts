@@ -1,5 +1,6 @@
 import type { LessonExerciseDraft, LessonTopic } from "../../types";
 import { normalizeTokens } from "../../normalize";
+import { listenChoiceSibilantErrors } from "../english/listen-audibility";
 import { englishNormalizer } from "../english/normalizer";
 
 /**
@@ -550,6 +551,7 @@ export function validateEnglishGrammarExercise(
   const errors: string[] = [];
 
   validateVisualPronoun(ex, errors);
+  errors.push(...listenChoiceSibilantErrors(ex));
 
   if (ex.exerciseType === "lesson_open_answer" && ex.prompt !== undefined) {
     if ([ex.answer, ...ex.acceptedAnswers].some((answer) => equivalentText(ex.prompt!, answer))) {
