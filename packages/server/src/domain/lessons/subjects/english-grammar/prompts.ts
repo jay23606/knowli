@@ -64,15 +64,17 @@ export const englishGrammarPrompts: SubjectPromptProfile = {
   // Tematy zdań z zainteresowań dziecka (#197, spec §5.1); same tematy idą w wiadomości użytkownika jako dane.
   interestsRule:
     "Sentence themes: the parent listed a few topics the child enjoys (they may be in Polish — " +
-    "use simple English nouns for them). Set about one in three of all exercises in these topics — never more than half — " +
-    "and rotate through all the listed topics, but only in lesson_choice, lesson_gap, lesson_listen_choice, lesson_order, " +
-    "lesson_error_fix and in the examples. A lesson_listen_choice sentence is only heard, so use a theme there " +
+    "use simple English nouns for them). Use these topics only in lesson_choice, lesson_gap, lesson_listen_choice, lesson_order, " +
+    "lesson_error_fix, lesson_transform and in the examples. In every objective, set about two in five of its exercises of these types " +
+    "in these topics, so that about one in three of all exercises has a theme — never more than half — " +
+    "and rotate through all the listed topics. A lesson_listen_choice sentence is only heard, so use a theme there " +
     "only as a word an English narrator reads naturally. Never use a theme in lesson_open_answer or in any " +
     "exercise with visualSubject. A theme word is never the checked element, never the subject of a sentence " +
     "and never any word that decides the checked form (keep subjects from the material or pronouns): " +
     "write He likes dinosaurs. or It is a big dinosaur., never The dinosaur eats apples., The dinosaur is big. or Minecraft is fun.; " +
     "and it never changes the grammar objective; keep the material vocabulary " +
     "first and add at most one simple concrete theme noun per sentence (ball, goal, dinosaur). " +
+    "A themed sentence must sound natural to a native speaker (We are at a football match.), never an odd phrase such as He is with a ball. " +
     "The name of a game, film, book or character may appear as a plain noun (She likes Minecraft. He plays Minecraft after school.), " +
     "but never quote or retell its story, lines or dialogue. " +
     "Never name real people, never add violence or " +
