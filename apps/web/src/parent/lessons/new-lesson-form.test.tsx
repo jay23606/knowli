@@ -52,11 +52,12 @@ const values = (overrides: Partial<NewLessonValues> = {}): NewLessonValues => ({
 });
 
 /** Formularz z wczytanym katalogiem, w którym pierwszym przedmiotem jest podany (renderowanie statyczne nie wykonuje zapytań). */
-function renderWithCatalog(first: unknown, extras: { children?: unknown[]; generationService?: string } = {}): string {
+function renderWithCatalog(first: unknown, extras: { children?: unknown[]; generationService?: string; reviewService?: string } = {}): string {
   const queryClient = new QueryClient();
   queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, {
     subjects: [first],
     ...(extras.generationService ? { generationService: extras.generationService } : {}),
+    ...(extras.reviewService ? { reviewService: extras.reviewService } : {}),
   } as unknown as SubjectCatalogDto);
   if (extras.children) queryClient.setQueryData(orpc.children.list.queryOptions().queryKey, extras.children as never);
   return renderParentMarkup(<NewLessonForm onCreated={vi.fn()} onCancel={vi.fn()} registerEditorState={vi.fn()} />, queryClient);
@@ -427,6 +428,19 @@ describe("NewLessonForm", () => {
       expect(buildCommand(values(), path).command).not.toHaveProperty("interests");
       expect(buildCommand(values(), path, undefined, undefined).command).not.toHaveProperty("interests");
       expect(buildCommand(values(), path, undefined, ["dinozaury"]).command).toMatchObject({ interests: ["dinozaury"] });
+    });
+
+    it("informacja o automatycznej kontroli jakości tylko, gdy katalog podaje jej usługę", () => {
+      const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
+      const withReview = renderWithCatalog(grammar, { reviewService: REVIEW });
+      expect(withReview).toContain('data-testid="lesson-review-service"');
+      expect(withReview).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
+      for (const first of [grammar, school, chapter]) {
+        expect(renderWithCatalog(first)).not.toContain('data-testid="lesson-review-service"');
+      }
+      // tematy zdań: notka wspomina kontrolę jakości (gdy włączona)
+      expect(messages.lessons.themesService).toContain("automatyczna kontrola jakości");
+      expect(messages.lessons.themesServiceUnknown).toContain("automatyczna kontrola jakości");
     });
 
     it("sekcja dla gramatyki: pole, przyciski tylko dla dzieci z listą, notka z nazwą usługi", () => {

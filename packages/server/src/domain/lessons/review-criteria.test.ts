@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { REVIEW_CATEGORY_VALUES, messages } from "@learning/contracts";
 import {
   HARD_REVIEW_CATEGORIES,
   NOTE_ONLY_REVIEW_CATEGORIES,
@@ -96,5 +97,12 @@ describe("findingText", () => {
     expect(findingText(3, { kind: "exercise", text: "She plays." })).toBe(
       'exercise 3: its solution equals the solution of an existing exercise "She plays."',
     );
+  });
+});
+
+describe("kategorie kontroli w kontraktach", () => {
+  it("lustro kategorii w kontraktach i etykiety panelu rodzica odpowiadają domenie", () => {
+    expect([...REVIEW_CATEGORY_VALUES]).toEqual([...REVIEW_CATEGORIES]);
+    expect(Object.keys(messages.lessons.reviewCategory).sort()).toEqual([...REVIEW_CATEGORIES].sort());
   });
 });

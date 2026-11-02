@@ -8,6 +8,7 @@ import {
   createServices,
   editLessonDraft,
   executeLessonGeneration,
+  lessonCatalog,
   publishLessonDraft,
   readGeneration,
   readLessonDeck,
@@ -106,7 +107,7 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
   afterAll(() => pool.end());
 
   /** Usługi z produkcyjnym rejestrem; krytyk gotowy (domyślnie „wszystko ok”), chyba że podano inny stan. */
-  async function world(options: { reviewer?: ReviewerDeps | null; execution?: LessonGenerationPolicy; policy?: Partial<ReviewerDeps["policy"]> } = {}) {
+  async function world(options: { reviewer?: ReviewerDeps | null; execution?: LessonGenerationPolicy; policy?: Partial<ReviewerDeps["policy"]>; reviewService?: string } = {}) {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
     const reviewer = new FakeLessonReviewer();
@@ -114,7 +115,10 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       fakes.deps.reviewer = options.reviewer ?? { state: "ready", provider: reviewer, policy: { ...POLICY, ...options.policy } };
     }
     if (options.execution) fakes.deps.lessonExecution = options.execution;
-    const services = createServices({ db: testDatabase().db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps });
+    const services = createServices({
+      db: testDatabase().db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps,
+      ...(options.reviewService ? { reviewService: options.reviewService } : {}),
+    });
     return { fakes, services, reviewer };
   }
 
@@ -160,6 +164,26 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
   const shown = (input: LessonReviewInput, n: number): Raw => ({ ...input.exercises[n - 1]!.exercise });
   const nOf = (input: LessonReviewInput, predicate: (exercise: Raw) => boolean) =>
     input.exercises.find(({ exercise }) => predicate(exercise as Raw))!.n;
+
+  /** Szkic po generacji: krytyk poprawia pierwszy wybór (ambiguous) i daje uwagę luce (too_hard). */
+  async function fixedDraft(options: { reviewService?: string } = {}) {
+    const { fakes, services, reviewer } = await world(options);
+    const FIXED = "Zdanie numer 1 ma jedną lukę. Wybierz słowo.";
+    reviewer.behavior = (input) => {
+      if (reviewer.inputs.length !== 1) return verdictsFor(input, {});
+      const choiceN = nOf(input, (exercise) => exercise.exerciseType === "lesson_choice");
+      const gapN = nOf(input, (exercise) => exercise.exerciseType === "lesson_gap");
+      return verdictsFor(input, {
+        [choiceN]: { n: choiceN, verdict: "fix", category: "ambiguous", reasonPl: "Doprecyzowano.", exercise: { ...shown(input, choiceN), instructionPl: FIXED } },
+        [gapN]: { n: gapN, verdict: "note", category: "too_hard", reasonPl: "Trudne słowo." },
+      });
+    };
+    const { deckId, draft } = await generateChapter(services, TWO_OBJECTIVES);
+    const fixed = draft.exercises.find((exercise) => exercise.instructionPl === FIXED)!;
+    const report = (await reportOf(draft.id))!;
+    const noted = draft.exercises.find((exercise) => exercise.id === report.notes[0]!.exerciseId)!;
+    return { fakes, services, deckId, draft, fixed, noted, report };
+  }
 
   describe("zgodność z main i stany krytyka", () => {
     /** Ten sam scenariusz: tłumaczenie ujawnione przez kartę, a przy dogenerowaniu nowy przykład ujawniający istniejące tłumaczenie. */
@@ -688,25 +712,6 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
   });
 
   describe("raport przy kolejnych zmianach szkicu", () => {
-    async function fixedDraft() {
-      const { fakes, services, reviewer } = await world();
-      const FIXED = "Zdanie numer 1 ma jedną lukę. Wybierz słowo.";
-      reviewer.behavior = (input) => {
-        if (reviewer.inputs.length !== 1) return verdictsFor(input, {});
-        const choiceN = nOf(input, (exercise) => exercise.exerciseType === "lesson_choice");
-        const gapN = nOf(input, (exercise) => exercise.exerciseType === "lesson_gap");
-        return verdictsFor(input, {
-          [choiceN]: { n: choiceN, verdict: "fix", category: "ambiguous", reasonPl: "Doprecyzowano.", exercise: { ...shown(input, choiceN), instructionPl: FIXED } },
-          [gapN]: { n: gapN, verdict: "note", category: "too_hard", reasonPl: "Trudne słowo." },
-        });
-      };
-      const { deckId, draft } = await generateChapter(services, TWO_OBJECTIVES);
-      const fixed = draft.exercises.find((exercise) => exercise.instructionPl === FIXED)!;
-      const report = (await reportOf(draft.id))!;
-      const noted = draft.exercises.find((exercise) => exercise.id === report.notes[0]!.exerciseId)!;
-      return { fakes, services, deckId, draft, fixed, noted, report };
-    }
-
     it("odciski changed/notes zgodne z bazą; PATCH innego ćwiczenia ich nie zmienia; PATCH poprawionego — wpis zostaje, odcisk różny", async () => {
       const { services, deckId, draft, fixed, noted, report } = await fixedDraft();
       const fingerprints = await dbFingerprints(draft.id);
@@ -770,6 +775,95 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       expect(await reportOf(copy.id)).toBeUndefined();
       expect(await reportOf(draft.id)).toBeDefined();
       expect(copy.examples).toEqual(draft.examples);
+    });
+  });
+
+  describe("raport w DTO panelu rodzica", () => {
+    it("po generacji: zmiany i uwagi istniejących ćwiczeń, tytuły zagadnień, model; bez odcisków", async () => {
+      const { draft, fixed, noted, report } = await fixedDraft();
+      const titles = draft.dynamicTopic!.objectives.map((objective) => objective.titlePl);
+      expect(titles).toEqual(["Ubrania", "Pogoda"]);
+      expect(draft.review).toEqual({
+        status: "reviewed",
+        model: "fake-reviewer-1",
+        objectives: draft.objectiveIds.map((objectiveId, i) => ({ objectiveId, title: titles[i], status: "reviewed" })),
+        changed: [{ exerciseId: fixed.id, category: "ambiguous", reasonPl: "Doprecyzowano.", beforePl: report.changed[0]!.beforePl, addedVariants: [] }],
+        dropped: [],
+        notes: [{ exerciseId: noted.id, category: "too_hard", reasonPl: "Trudne słowo.", fixRejected: false }],
+        toppedUp: 0,
+      });
+      expect(JSON.stringify(draft.review)).not.toContain("fingerprint");
+    });
+
+    it("wpisy ćwiczeń zmienionych albo usuniętych po kontroli znikają z DTO, choć raport w kontekście zostaje", async () => {
+      const { services, deckId, draft, fixed, noted } = await fixedDraft();
+      const edited = await editLessonDraft(services, draft.id, {
+        expectedEditNumber: draft.editNumber,
+        exercises: editInputs(draft.exercises
+          .filter((exercise) => exercise.id !== noted.id)
+          .map((exercise) => (exercise.id === fixed.id ? { ...exercise, instructionPl: "Rodzic zmienił polecenie. Wybierz słowo." } : exercise))),
+      });
+      expect(edited.review).toMatchObject({ status: "reviewed", changed: [], notes: [] });
+      expect((await readLessonDeck(services, deckId)).draft!.review).toMatchObject({ changed: [], notes: [] });
+      const stored = (await reportOf(draft.id))!;
+      expect(stored.changed.map((entry) => entry.exerciseId)).toEqual([fixed.id]);
+      expect(stored.notes.map((entry) => entry.exerciseId)).toEqual([noted.id]);
+    });
+
+    it("wersja opublikowana nie ma raportu w DTO", async () => {
+      const { services, deckId, draft } = await fixedDraft();
+      await publishLessonDraft(services, draft.id, draft.editNumber);
+      const deck = await readLessonDeck(services, deckId);
+      expect(deck.draft).toBeNull();
+      expect(deck.published!.id).toBe(draft.id);
+      expect(deck.published!.review).toBeUndefined();
+      expect(await reportOf(draft.id)).toBeDefined();
+    });
+
+    it("krytyk wyłączony → brak raportu w DTO; nieskonfigurowany → raport unreviewed z powodem", async () => {
+      const disabled = await world({ reviewer: null });
+      const a = await generateChapter(disabled.services, TWO_OBJECTIVES);
+      expect(await reportOf(a.draft.id)).toBeDefined();
+      expect(a.draft.review).toBeUndefined();
+
+      const notConfigured = await world({ reviewer: { state: "not_configured", policy: POLICY } });
+      const b = await generateChapter(notConfigured.services, TWO_OBJECTIVES);
+      expect(b.draft.review).toMatchObject({
+        status: "unreviewed",
+        objectives: b.draft.objectiveIds.map((objectiveId) => ({ objectiveId, status: "unreviewed", reason: "not_configured" })),
+        changed: [], notes: [], dropped: [],
+      });
+      expect(b.draft.review).not.toHaveProperty("model");
+    });
+
+    it("usunięte ćwiczenia i dogenerowanie: tytuł zagadnienia zamiast identyfikatora, suma dogenerowanych", async () => {
+      const { services, reviewer } = await world();
+      reviewer.behavior = (input) => {
+        if (reviewer.inputs.length !== 1) return verdictsFor(input, {});
+        const n = nOf(input, (exercise) => exercise.exerciseType === "lesson_choice");
+        return verdictsFor(input, { [n]: { n, verdict: "drop", category: "wrong_answer", reasonPl: "Błędny klucz." } });
+      };
+      const { draft } = await generateChapter(services, TWO_OBJECTIVES);
+      const report = (await reportOf(draft.id))!;
+      expect(report.dropped).toHaveLength(1);
+      const objectiveIndex = draft.objectiveIds.indexOf(report.dropped[0]!.objectiveId);
+      expect(draft.review!.dropped).toEqual([{
+        objectiveTitle: draft.dynamicTopic!.objectives[objectiveIndex]!.titlePl,
+        category: "wrong_answer", reasonPl: "Błędny klucz.", snippet: report.dropped[0]!.snippet,
+      }]);
+      const toppedUp = report.toppedUp.reduce((sum, entry) => sum + entry.guided + entry.productive + entry.independent, 0);
+      expect(draft.review!.toppedUp).toBe(toppedUp);
+    });
+
+    it("reviewService w katalogu i w zestawie tylko, gdy usługa jest znana", async () => {
+      const SERVICE = "openrouter.ai · anthropic/claude-sonnet-5.5";
+      const { services, deckId } = await fixedDraft({ reviewService: SERVICE });
+      expect(lessonCatalog(services).reviewService).toBe(SERVICE);
+      expect((await readLessonDeck(services, deckId)).reviewService).toBe(SERVICE);
+      const plain = await world();
+      expect(lessonCatalog(plain.services)).not.toHaveProperty("reviewService");
+      const { deckId: plainDeck } = await generateChapter(plain.services, TWO_OBJECTIVES);
+      expect(await readLessonDeck(plain.services, plainDeck)).not.toHaveProperty("reviewService");
     });
   });
 });

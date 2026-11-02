@@ -2,7 +2,15 @@
 
 import { memo, useEffect, useRef, type ReactNode } from "react";
 import { ActionIcon, Alert, Button, Checkbox, Group, Menu, NativeSelect, Paper, Radio, Stack, Text, TextInput, Textarea } from "@mantine/core";
-import { MAX_LESSON_TEXT_LENGTH, messages, type CalculationSpec, type ExposureLeakDto, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
+import {
+  MAX_LESSON_TEXT_LENGTH,
+  messages,
+  type CalculationSpec,
+  type ExposureLeakDto,
+  type LessonDraftDto,
+  type LessonPromptAudioDto,
+  type LessonReviewDto,
+} from "@learning/contracts";
 import { ParentIcon } from "../ParentIcon";
 import AssignmentFields from "./AssignmentFields";
 import ClozeFields from "./ClozeFields";
@@ -63,6 +71,39 @@ export function leakNoticeFor(
   };
 }
 
+/**
+ * Wynik automatycznej kontroli jakości przy ćwiczeniu: `changed` — ćwiczenie poprawione automatycznie
+ * (plakietka w nagłówku karty); `lines` — teksty notki z katalogu komunikatów.
+ */
+export interface ExerciseReviewNotice {
+  changed: boolean;
+  lines: string[];
+}
+
+/** Notka kontroli dla wpisów raportu tego ćwiczenia (poprawka i/lub uwaga); brak obu → null. */
+export function reviewNoticeFor(
+  changed: LessonReviewDto["changed"][number] | undefined,
+  note: LessonReviewDto["notes"][number] | undefined,
+): ExerciseReviewNotice | null {
+  if (!changed && !note) return null;
+  const finding = (category: string, reason: string) => messages.lessons.reviewNote
+    .replace("{category}", () => messages.lessons.reviewCategory[category] ?? category)
+    .replace("{reason}", () => reason);
+  const lines: string[] = [];
+  if (changed) {
+    lines.push(finding(changed.category, changed.reasonPl));
+    lines.push(messages.lessons.reviewChangedBefore.replace("{before}", () => changed.beforePl));
+    if (changed.addedVariants.length > 0) {
+      lines.push(messages.lessons.reviewAddedVariants.replace("{variants}", () => changed.addedVariants.join(", ")));
+    }
+  }
+  if (note) {
+    lines.push(finding(note.category, note.reasonPl));
+    if (note.fixRejected) lines.push(messages.lessons.reviewNoteFixRejected);
+  }
+  return { changed: changed !== undefined, lines };
+}
+
 export interface CalculationControls {
   /** Tekst wpisany w pole liczby (z przecinkiem), zanim stanie się liczbą. */
   input: (field: string) => string | undefined;
@@ -91,6 +132,8 @@ interface LessonExerciseCardProps {
   changed: boolean;
   /** Ujawnione rozwiązanie tego ćwiczenia (z zapisanego szkicu); po zmianie karty zastępuje je prośba o zapis. */
   leak: LeakNotice | null;
+  /** Wynik automatycznej kontroli jakości (tylko wpisy aktualne dla zapisanej treści ćwiczenia). */
+  review: ExerciseReviewNotice | null;
   /** Klucz źródła (id ćwiczenia) do pokazania: rozwija jego zagadnienie i etap oraz przewija do niego. */
   onShowSource: (sourceKey: string) => void;
   /** Zapisana wersja ćwiczenia ma audio — zmiana oznacza nowe media po zapisie. */
@@ -132,6 +175,7 @@ function sameCardProps(prev: LessonExerciseCardProps, next: LessonExerciseCardPr
   if (prev.calculation !== null || next.calculation !== null) return false;
   if (prev.leak?.kind !== next.leak?.kind || prev.leak?.message !== next.leak?.message
     || prev.leak?.show?.label !== next.leak?.show?.label || prev.leak?.show?.sourceKey !== next.leak?.show?.sourceKey) return false;
+  if (prev.review?.changed !== next.review?.changed || prev.review?.lines.join("\n") !== next.review?.lines.join("\n")) return false;
   if (prev.audio?.state !== next.audio?.state || prev.audio?.assetId !== next.audio?.assetId) return false;
   if (prev.promptAudio?.state !== next.promptAudio?.state || prev.promptAudio?.assetId !== next.promptAudio?.assetId
     || prev.promptAudio?.previousAssetId !== next.promptAudio?.previousAssetId) return false;
@@ -140,7 +184,7 @@ function sameCardProps(prev: LessonExerciseCardProps, next: LessonExerciseCardPr
   if (prev.sentenceAudio?.state !== next.sentenceAudio?.state || prev.sentenceAudio?.assetId !== next.sentenceAudio?.assetId
     || prev.sentenceAudio?.previousAssetId !== next.sentenceAudio?.previousAssetId) return false;
   return (Object.keys(next) as (keyof LessonExerciseCardProps)[])
-    .every((key) => key === "audio" || key === "leak" || key === "promptAudio" || key === "explanationAudio" || key === "sentenceAudio" || key === "calculation" || Object.is(prev[key], next[key]));
+    .every((key) => key === "audio" || key === "leak" || key === "review" || key === "promptAudio" || key === "explanationAudio" || key === "sentenceAudio" || key === "calculation" || Object.is(prev[key], next[key]));
 }
 
 function LessonExerciseCard({
@@ -151,6 +195,7 @@ function LessonExerciseCard({
   open,
   changed,
   leak,
+  review,
   onShowSource,
   hadAudio,
   errors,
@@ -192,6 +237,9 @@ function LessonExerciseCard({
   const errId = `exercise-errors-${index}`;
   const leakId = `exercise-leak-${index}`;
   const leakTextId = `${leakId}-text`;
+  const reviewId = `exercise-review-${index}`;
+  const reviewTextId = `${reviewId}-text`;
+  const describedBy = [leak ? leakTextId : null, review ? reviewTextId : null].filter((id) => id !== null).join(" ") || undefined;
   const described = errors ? { "aria-describedby": errId } : {};
   const forcedOpen = changed || errors !== undefined;
   const preview = exercisePreview(ex);
@@ -219,13 +267,16 @@ function LessonExerciseCard({
   return (
     // tabIndex=-1: „Pokaż ćwiczenie” przenosi fokus na kartę źródła (bez miejsca w kolejności Tab).
     <Paper ref={rootRef} component="article" withBorder radius="md" p="sm" className="pp-lesson-ex" data-error={errors ? "true" : undefined}
-      tabIndex={-1} aria-describedby={leak ? leakTextId : undefined} data-testid={`exercise-${index}`}>
+      tabIndex={-1} aria-describedby={describedBy} data-testid={`exercise-${index}`}>
       <Group gap="xs" wrap="nowrap" className="pp-lesson-ex-head">
         <span className="pp-status-badge" data-tone="info" data-testid={`exercise-type-${index}`}>{messages.lessons.exerciseTypes[ex.exerciseType]}</span>
         <Text size="sm" className="pp-editor-muted pp-lesson-ex-num">
           {messages.lessons.exerciseNumber.replace("{n}", String(index + 1))}
           {open && editable ? ` · ${messages.lessons.exerciseEditing}` : ""}
         </Text>
+        {review?.changed && (
+          <span className="pp-status-badge" data-tone="warning" data-testid={`exercise-review-badge-${index}`}>{messages.lessons.reviewChangedBadge}</span>
+        )}
         {audio && (
           <span className="pp-status-badge" data-tone={audioReady ? "success" : audio.state === "failed" ? "danger" : "neutral"} data-testid={`exercise-audio-state-${index}`}>
             {audioText}
@@ -288,6 +339,15 @@ function LessonExerciseCard({
               {leak.show.label}
             </Button>
           )}
+        </Alert>
+      )}
+
+      {review && (
+        // Notka kontroli jakości: wskazówka dla rodzica (bez role="alert"), widoczna także przy zwiniętej karcie.
+        <Alert color="gray" variant="light" id={reviewId} role="note" data-testid={reviewId} mb="sm" icon={<ParentIcon name="info" />}>
+          <div id={reviewTextId}>
+            {review.lines.map((line, i) => <Text key={i} size="sm">{line}</Text>)}
+          </div>
         </Alert>
       )}
 

@@ -14,6 +14,7 @@ import {
   type LessonDeckDto,
   type LessonDraftDto,
   type LessonExerciseInput,
+  type LessonReviewDto,
   type LessonStoryDto,
   type SubjectCatalogDto,
 } from "@learning/contracts";
@@ -40,6 +41,7 @@ import { poolCoverage, validatePool, withoutRedundantAcceptedVariants } from "..
 import { solvedSentencesOf, validateLessonStory, type LessonStory } from "../../../domain/lessons/story";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
+import type { LessonReviewReport } from "../../../domain/lessons/review-report";
 import { assertAssetPublishable, mediaPendingError, reconcileBeforePublish, reconcileDraftAssetsTx, reconcileLessonStoryAssetTx } from "../media-reconciliation";
 import { copyRevisionsSkillsAssets } from "../decks";
 import { supersedeFailedLessonStoryRuns, supersedeLessonRuns } from "../generation-runs";
@@ -53,6 +55,7 @@ import {
 import { buildLessonPayload, buildObjectiveCriteria, lessonPayloadVersion, splitByPoolExtra, toExerciseDraft } from "./lesson-drafts";
 import { latestLessonRunOfPurpose, latestLessonStoryRun } from "./lesson-story-generation";
 import { readLessonAudioStates } from "./lesson-prompt-audio";
+import { exerciseFingerprint } from "./lesson-review";
 
 /**
  * API rodzica dla lekcji (zadanie 11). Cienka logika serwerowa za routerem:
@@ -82,6 +85,8 @@ interface LessonContextView {
   story?: LessonStory;
   /** Migawka tematów zdań (przedmioty z `interestsRule`); brak klucza = bez tematów. */
   interests?: string[];
+  /** Raport automatycznej kontroli jakości szkicu (PR 2 etapu przeglądu); brak = bez raportu. */
+  review?: LessonReviewReport;
 }
 
 export function readLessonContext(raw: Record<string, unknown> | null): LessonContextView {
@@ -100,6 +105,52 @@ export function readLessonContext(raw: Record<string, unknown> | null): LessonCo
     ...(ctx.dynamicTopic ? { dynamicTopic: ctx.dynamicTopic } : {}),
     ...(ctx.story ? { story: ctx.story } : {}),
     ...(ctx.interests?.length ? { interests: [...ctx.interests] } : {}),
+    ...(ctx.review ? { review: ctx.review } : {}),
+  };
+}
+
+/**
+ * Raport kontroli jakości dla rodzica: `changed`/`notes` tylko dla ćwiczeń, które są w wersji
+ * i których zapisany payload ma ten sam odcisk co przy kontroli (po edycji rodzica wpis jest
+ * nieaktualny); tytuły zagadnień zamiast identyfikatorów, suma dogenerowanych; bez odcisków.
+ * `undefined`, gdy kontrola była wyłączona dla wszystkich zagadnień (zachowanie jak bez krytyka).
+ */
+function reviewDto(
+  report: LessonReviewReport,
+  currentFingerprints: ReadonlyMap<string, string>,
+  objectiveTitle: (objectiveId: string) => string,
+): LessonReviewDto | undefined {
+  if (report.objectives.every((objective) => objective.reason === "disabled")) return undefined;
+  const current = (entry: { exerciseId: string; fingerprint: string }) => currentFingerprints.get(entry.exerciseId) === entry.fingerprint;
+  return {
+    status: report.status,
+    ...(report.model === undefined ? {} : { model: report.model }),
+    objectives: report.objectives.map((objective) => ({
+      objectiveId: objective.objectiveId,
+      title: objectiveTitle(objective.objectiveId),
+      status: objective.status,
+      ...(objective.reason === undefined ? {} : { reason: objective.reason }),
+    })),
+    changed: report.changed.filter(current).map((entry) => ({
+      exerciseId: entry.exerciseId,
+      category: entry.category,
+      reasonPl: entry.reasonPl,
+      beforePl: entry.beforePl,
+      addedVariants: [...entry.addedVariants],
+    })),
+    dropped: report.dropped.map((entry) => ({
+      objectiveTitle: objectiveTitle(entry.objectiveId),
+      category: entry.category,
+      reasonPl: entry.reasonPl,
+      snippet: entry.snippet,
+    })),
+    notes: report.notes.filter(current).map((entry) => ({
+      exerciseId: entry.exerciseId,
+      category: entry.category,
+      reasonPl: entry.reasonPl,
+      fixRejected: entry.fixRejected,
+    })),
+    toppedUp: report.toppedUp.reduce((sum, entry) => sum + entry.guided + entry.productive + entry.independent, 0),
   };
 }
 
@@ -154,6 +205,7 @@ function offersListenChoice(subject: SubjectModule): boolean {
 export function lessonCatalog(services: Services): SubjectCatalogDto {
   return {
     ...(services.generationService ? { generationService: services.generationService } : {}),
+    ...(services.reviewService ? { reviewService: services.reviewService } : {}),
     subjects: services.subjects.listSubjects().map((subject) => {
       const latestByTopic = new Map<string, LessonTopic>();
       for (const topic of subject.topics) {
@@ -324,6 +376,14 @@ async function readLessonDraftDto(
             : { kind: "exercise" as const, exerciseId: revisions[leak.source.index]!.itemId },
         }))
     : [];
+  // Raport kontroli jakości: tylko edytowalny szkic (wersja opublikowana jest niezmienna, rodzic nie ma czego poprawić).
+  const review = context.review && !published
+    ? reviewDto(
+        context.review,
+        new Map(revisions.map((r) => [r.itemId, exerciseFingerprint(r.payload)])),
+        (objectiveId) => resolveLessonTopic(services.subjects, context)?.topic.objectives.find((o) => o.id === objectiveId)?.titlePl ?? objectiveId,
+      )
+    : undefined;
 
   return {
     id: version.id,
@@ -382,6 +442,7 @@ async function readLessonDraftDto(
     ...(context.droppedObjectiveCount ? { droppedObjectiveCount: context.droppedObjectiveCount } : {}),
     coverage,
     ...(exposureLeaks.length > 0 ? { exposureLeaks } : {}),
+    ...(review ? { review } : {}),
   };
 }
 
@@ -456,6 +517,8 @@ async function readLessonDeckSnapshot(db: Executor, services: Services, id: stri
     // Wymaganie 10.1: provider oceny dowolnych odpowiedzi (nazwa modelu z
     // konfiguracji, bez sekretów). `available=false` steruje komunikatem rodzica.
     grading: services.grader ? { available: true, model: services.grader.provider.model } : { available: false },
+    // Etykieta usługi kontroli jakości lekcji (bez sekretów); brak = kontrola wyłączona.
+    ...(services.reviewService ? { reviewService: services.reviewService } : {}),
   };
 }
 

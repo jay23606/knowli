@@ -461,6 +461,7 @@ export default function NewLessonForm({
   const themesService = generationService
     ? messages.lessons.themesService.replace("{service}", () => generationService)
     : messages.lessons.themesServiceUnknown;
+  const reviewService = catalog?.reviewService;
 
   const submitError = form.errors.submit;
   const counterTemplate = fromMaterial ? messages.lessons.schoolMaterialCounter : messages.lessons.materialCounter;
@@ -666,6 +667,11 @@ export default function NewLessonForm({
             />
             {showListenChoiceNote && (
               <Text size="sm" className="pp-editor-muted" data-testid="lesson-listen-choice-note">{messages.lessons.listenChoiceCreateNote}</Text>
+            )}
+            {reviewService && (
+              <Text size="sm" className="pp-editor-muted" data-testid="lesson-review-service">
+                {messages.lessons.reviewServiceInfo.replace("{service}", () => reviewService)}
+              </Text>
             )}
 
             {submitError && (
