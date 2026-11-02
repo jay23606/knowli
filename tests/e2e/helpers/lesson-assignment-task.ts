@@ -4,8 +4,9 @@ import type { KidUiFixture } from "./kid-ui-fixture";
 
 /**
  * Zaślepiona w przeglądarce sesja treningowa lekcji z jednym zadaniem
- * przypisań („Połącz w pary”, „Pogrupuj”, „Uzupełnij tekst”) i wspólny
- * przebieg „stukaj pulę → Sprawdź” dla specyfikacji geometrii.
+ * przypisań („Połącz w pary”, „Pogrupuj”, „Uzupełnij tekst”) i wspólne
+ * przebiegi „stukaj pulę → Sprawdź” oraz „połącz pary → Sprawdź” dla
+ * specyfikacji geometrii.
  */
 
 export interface LessonSessionIds { childId: string; deckId: string; sessionId: string; versionId: string }
@@ -60,6 +61,28 @@ export async function tapPoolAndCheck(page: Page, optionTestId: string, count: n
   for (let tapped = 1; tapped <= count; tapped += 1) {
     await page.getByTestId(optionTestId).first().click();
     if (tapped < count) await expect(check).toBeDisabled();
+  }
+  await expect(check).toBeEnabled();
+  await check.click();
+  await expect.poll(() => posted.length).toBe(1);
+  const body = posted[0] as { modality: string; assignments: { itemId: string; targetId: string }[] };
+  expect(body.modality).toBe("assignment");
+  expect(new Set(body.assignments.map((entry) => entry.targetId)).size).toBe(count);
+  return body.assignments;
+}
+
+/**
+ * „Połącz w pary”: łączy i-ty lewy z i-tym prawym kafelkiem (kolejność widoku)
+ * dla `i < count`. „Sprawdź” jest nieaktywne aż do ostatniej pary, potem wysyła
+ * jedną próbę. Zwraca jej przypisania. Kafelki tylko przez test id i `nth`:
+ * kafelek z ukrytym dopowiedzeniem ma swój tekst w DOM dwa razy.
+ */
+export async function pairAndCheck(page: Page, count: number, posted: unknown[]): Promise<{ itemId: string; targetId: string }[]> {
+  const check = page.getByTestId("kid-lesson-check");
+  for (let index = 0; index < count; index += 1) {
+    await page.getByTestId("kid-lesson-match-left").nth(index).click();
+    await page.getByTestId("kid-lesson-match-right").nth(index).click();
+    if (index < count - 1) await expect(check).toBeDisabled();
   }
   await expect(check).toBeEnabled();
   await check.click();
