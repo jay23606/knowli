@@ -421,6 +421,15 @@ test("opublikowana lekcja bez szkicu: stan audio i odsłuch w menu ⋯ karty", a
   await expect(page.getByTestId("new-version")).toBeVisible();
 });
 
+test("opublikowana lekcja bez szkicu: wiersz „Tematy zdań” bez przycisku usuwania i notki", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const publishedOnly = { ...lesson, draft: null, published: { ...lesson.published, interests: ["dinozaury", "Minecraft"] } };
+  await openLesson(page, { data: publishedOnly as unknown as typeof lesson });
+  await expect(page.getByTestId("lesson-themes-line")).toHaveText(messages.lessons.themesLine.replace("{themes}", "dinozaury, Minecraft"));
+  await expect(page.getByTestId("lesson-themes-remove")).toHaveCount(0);
+  await expect(page.getByTestId("lesson-themes-remove-hint")).toHaveCount(0);
+});
+
 test.describe("telefon z klawiaturą ekranową", () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 

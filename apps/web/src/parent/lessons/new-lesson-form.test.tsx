@@ -472,7 +472,7 @@ describe("NewLessonForm", () => {
         vi.unstubAllGlobals();
       });
 
-      function renderInteractive(children: unknown[] | "error" = [ola, adam]) {
+      function renderInteractive(children: unknown[] | "error" = [ola, adam], initialSubjectId?: string) {
         const registerEditorState = vi.fn();
         const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, retryOnMount: false } } });
         queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, catalog);
@@ -489,7 +489,7 @@ describe("NewLessonForm", () => {
         render(
           <QueryClientProvider client={queryClient}>
             <MantineProvider theme={parentTheme}>
-              <NewLessonForm onCreated={vi.fn()} onCancel={vi.fn()} registerEditorState={registerEditorState} />
+              <NewLessonForm onCreated={vi.fn()} onCancel={vi.fn()} registerEditorState={registerEditorState} initialSubjectId={initialSubjectId} />
             </MantineProvider>
           </QueryClientProvider>,
         );
@@ -521,6 +521,43 @@ describe("NewLessonForm", () => {
         fireEvent.click(insertButton("c2"));
         await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3", "a4", "b1"]));
         expect(screen.getByText(messages.children.interestsLimit.replace("{max}", "5"))).toBeTruthy();
+      });
+
+      it("wklejenie listy ponad limit: pole bierze 5 tematów i pokazuje komunikat o limicie", async () => {
+        renderInteractive();
+        const limit = messages.children.interestsLimit.replace("{max}", "5");
+        const input = screen.getByTestId("lesson-themes-input");
+        fireEvent.paste(input, { clipboardData: { getData: () => "a1, a2, a3" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3"]));
+        expect(screen.queryByText(limit)).toBeNull();
+        fireEvent.paste(input, { clipboardData: { getData: () => "a4, a5, a6, a7" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3", "a4", "a5"]));
+        expect(screen.getByText(limit)).toBeTruthy();
+        // usunięcie tematu zdejmuje komunikat; wklejenie dwóch na jedno wolne miejsce pokazuje go znowu
+        const removeButtons = document.querySelectorAll("[data-testid='lesson-themes'] .mantine-Pill-remove");
+        fireEvent.click(removeButtons[removeButtons.length - 1]!);
+        await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3", "a4"]));
+        expect(screen.queryByText(limit)).toBeNull();
+        fireEvent.paste(input, { clipboardData: { getData: () => "x, z" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3", "a4", "x"]));
+        expect(screen.getByText(limit)).toBeTruthy();
+        // kolejne wklejenie przy pełnym polu nie zdejmuje komunikatu (lista bez zmian)
+        fireEvent.paste(input, { clipboardData: { getData: () => "q" } });
+        expect(pills()).toEqual(["a1", "a2", "a3", "a4", "x"]);
+        expect(screen.getByText(limit)).toBeTruthy();
+      });
+
+      it("wklejenie z wpisami różniącymi się spacjami: utracony temat daje komunikat o limicie, a samo powtórzenie — o powtórzeniu", async () => {
+        renderInteractive();
+        const limit = messages.children.interestsLimit.replace("{max}", "5");
+        const input = screen.getByTestId("lesson-themes-input");
+        fireEvent.paste(input, { clipboardData: { getData: () => "a1, A1, x y" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "x y"]));
+        expect(screen.getByText(messages.children.interestsDuplicate)).toBeTruthy();
+        // Mantine uważa „x  y” za nowy temat i ucina listę przed „z”
+        fireEvent.paste(input, { clipboardData: { getData: () => "a2, a3, x  y, z" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "x y", "a2", "a3"]));
+        expect(screen.getByText(limit)).toBeTruthy();
       });
 
       it("notka o usłudze jest powiązana z polem przez aria-describedby", () => {
@@ -574,6 +611,23 @@ describe("NewLessonForm", () => {
         await waitFor(() => expect(pills()).toHaveLength(2));
         fireEvent.change(screen.getByTestId("lesson-subject"), { target: { value: "english_chapter" } });
         await waitFor(() => expect(screen.queryByTestId("lesson-themes")).toBeNull());
+      });
+
+      it("tematy ukryte przy innym przedmiocie nie liczą się jako niezapisana zmiana, a po powrocie wracają", async () => {
+        const { registerEditorState } = renderInteractive([ola, adam], "english_chapter");
+        const chooseSubject = (id: string) => fireEvent.change(screen.getByTestId("lesson-subject"), { target: { value: id } });
+        await waitFor(() => expect(registerEditorState).toHaveBeenLastCalledWith({ dirty: false, busy: false }));
+        chooseSubject("english_grammar");
+        fireEvent.click(insertButton("c1"));
+        await waitFor(() => expect(pills()).toEqual(["dinozaury", "Minecraft"]));
+        await waitFor(() => expect(registerEditorState).toHaveBeenLastCalledWith({ dirty: true, busy: false }));
+        // powrót do rozdziału: pozostałe pola jak na starcie, a ukrytych tematów się nie wysyła
+        chooseSubject("english_chapter");
+        await waitFor(() => expect(screen.queryByTestId("lesson-themes")).toBeNull());
+        await waitFor(() => expect(registerEditorState).toHaveBeenLastCalledWith({ dirty: false, busy: false }));
+        chooseSubject("english_grammar");
+        await waitFor(() => expect(pills()).toEqual(["dinozaury", "Minecraft"]));
+        await waitFor(() => expect(registerEditorState).toHaveBeenLastCalledWith({ dirty: true, busy: false }));
       });
     });
   });
