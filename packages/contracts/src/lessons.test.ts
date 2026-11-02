@@ -714,6 +714,8 @@ describe("tematy zdań z zainteresowań dziecka (#197)", () => {
       subjects: [{ ...subject, acceptsInterests: true }], generationService: "openrouter.ai",
     }).success).toBe(true);
     expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, acceptsInterests: "yes" }] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, offersListenChoice: true }] }).success).toBe(true);
+    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, offersListenChoice: "yes" }] }).success).toBe(false);
   });
 
   it("LessonDraftDtoSchema przyjmuje tematy szkicu", () => {

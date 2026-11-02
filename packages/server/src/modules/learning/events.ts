@@ -285,9 +285,17 @@ export async function authorizeDisclosure(services: Services, input: DisclosureI
     // Wyjątek: „Posłuchaj i wybierz” (`lesson_listen_choice`) ma własną gałąź niżej —
     // odsłuch zdania jest tam bodźcem, a nie wsparciem zdradzającym odpowiedź.
     const isListenChoice = task.exerciseType === "lesson_listen_choice";
-    // Podpowiedź zadania słuchowego ujawniłaby brakujące słowo (`reveal.target` = odpowiedź).
-    if (isListenChoice && valid.kind === "hint") {
-      throw new AppError("conflict", { message: "zadanie słuchowe nie oferuje podpowiedzi" });
+    // Podpowiedź lekcji („Nie pamiętam”) ujawnia odpowiedź kanoniczną (`reveal.target`),
+    // więc wydajemy ją tylko tam, gdzie Kid UI ją oferuje: w typach z polem tekstowym.
+    // W typach zamkniętych (wybór, w tym słuchowy, kolejność, pary, grupy, luki z bankiem,
+    // pojęcia) i w „Skróć odpowiedź” zdradziłaby rozwiązanie z pominięciem oceny.
+    const LESSON_HINT_TYPES = new Set([...LESSON_AUDIO_TEXT_TYPES, "lesson_calculation"]);
+    if (
+      valid.kind === "hint" &&
+      (task.exerciseType as string).startsWith("lesson_") &&
+      (!LESSON_HINT_TYPES.has(task.exerciseType) || (task.publicPrompt as { kind?: string }).kind === "lesson_shorten")
+    ) {
+      throw new AppError("conflict", { message: "to zadanie lekcji nie oferuje podpowiedzi" });
     }
     if (
       valid.kind === "audio" &&

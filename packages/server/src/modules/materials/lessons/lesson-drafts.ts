@@ -31,6 +31,7 @@ import {
 } from "../../../domain/lessons/lesson-policy";
 import { materialCreationMode, stripListenChoiceExtras } from "../../../domain/lessons/material-creation";
 import { answersEquivalent, keywordsAnswer, MAX_TEXT_LENGTH, validatePool, withoutRedundantAcceptedVariants } from "../../../domain/lessons/pool-validation";
+import { outsideStagePath, stageOf } from "../../../domain/lessons/stages";
 import {
   lessonExerciseIdentity,
   lessonExerciseStimulus,
@@ -517,20 +518,56 @@ export function listenChoiceAllowance(
 export interface ObjectiveGenerationLimits {
   readonly count: number;
   readonly listen: number;
+  /** Zamówiony podział `count` na etapy; przy przycinaniu nadmiaru chroni etapy niedoreprezentowane. */
+  readonly stages?: LlmLessonStageCounts;
+}
+
+/**
+ * Ćwiczenia etapów celu, które mieszczą się w `count`: najpierw każdy etap do zamówionej
+ * liczby, potem wolne miejsca w kolejności wejścia (typy bez kwoty, np. karty, i braki etapów).
+ */
+function withinStageQuotas(
+  candidates: readonly LessonExerciseDraft[],
+  limit: ObjectiveGenerationLimits,
+): Set<LessonExerciseDraft> {
+  if (candidates.length <= limit.count) return new Set(candidates);
+  const quotas = limit.stages ?? { guided: 0, productive: 0, independent: 0 };
+  const used = { guided: 0, productive: 0, independent: 0 };
+  const selected = new Set<LessonExerciseDraft>();
+  for (const exercise of candidates) {
+    const stage = stageOf(exercise.exerciseType);
+    if (outsideStagePath(exercise.exerciseType) || !(stage in quotas)) continue;
+    const key = stage as keyof LlmLessonStageCounts;
+    if (used[key] < quotas[key] && selected.size < limit.count) {
+      used[key] += 1;
+      selected.add(exercise);
+    }
+  }
+  for (const exercise of candidates) {
+    if (selected.size >= limit.count) break;
+    selected.add(exercise);
+  }
+  return selected;
 }
 
 /**
  * Egzekwuje dodatek słuchowy po walidacji: na cel najwyżej `listen` nowych ćwiczeń
  * `lesson_listen_choice`, a gdy dodatek przyznano (`listen > 0`), najwyżej `count` pozostałych —
- * podniesiony w prompcie limit partii nie może dać dodatkowych ćwiczeń etapów. Zachowuje
- * pierwsze wystąpienia (kolejność wejścia); nadmiar wraca jako odrzucenia z powodem.
+ * podniesiony w prompcie limit partii nie może dać dodatkowych ćwiczeń etapów. Słuchowe zachowują
+ * pierwsze wystąpienia; z pozostałych odpadają najpierw ćwiczenia etapów ponad zamówiony podział
+ * (`stages`), dalej kolejność wejścia. Nadmiar wraca jako odrzucenia z powodem.
  */
 export function capListenChoiceOverflow(
   exercises: readonly LessonExerciseDraft[],
   limits: ReadonlyMap<string, ObjectiveGenerationLimits>,
 ): { kept: LessonExerciseDraft[]; rejected: { exercise: LessonExerciseDraft; errors: string[] }[] } {
   const listenSeen = new Map<string, number>();
-  const otherSeen = new Map<string, number>();
+  const allowedOther = new Map<string, Set<LessonExerciseDraft>>();
+  for (const [objectiveId, limit] of limits) {
+    if (limit.listen <= 0) continue;
+    const candidates = exercises.filter((exercise) => exercise.objectiveId === objectiveId && exercise.exerciseType !== "lesson_listen_choice");
+    allowedOther.set(objectiveId, withinStageQuotas(candidates, limit));
+  }
   const kept: LessonExerciseDraft[] = [];
   const rejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
   for (const exercise of exercises) {
@@ -543,13 +580,9 @@ export function capListenChoiceOverflow(
         continue;
       }
       listenSeen.set(exercise.objectiveId, seen + 1);
-    } else if (limit !== undefined && limit.listen > 0) {
-      const seen = otherSeen.get(exercise.objectiveId) ?? 0;
-      if (seen >= limit.count) {
-        rejected.push({ exercise, errors: [`exerciseType: ćwiczenie ponad zamówioną liczbę ${limit.count} dla reguły`] });
-        continue;
-      }
-      otherSeen.set(exercise.objectiveId, seen + 1);
+    } else if (limit !== undefined && !(allowedOther.get(exercise.objectiveId)?.has(exercise) ?? true)) {
+      rejected.push({ exercise, errors: [`exerciseType: ćwiczenie ponad zamówioną liczbę ${limit.count} dla reguły`] });
+      continue;
     }
     kept.push(exercise);
   }
@@ -1421,7 +1454,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
           : [],
         input.interests,
       );
-      objectiveLimits.set(batch.objectiveId, { count: batch.count, listen: poolInput.listenChoicePerObjective ?? 0 });
+      objectiveLimits.set(batch.objectiveId, { count: batch.count, listen: poolInput.listenChoicePerObjective ?? 0, stages: poolInput.stageCounts });
       const result = await control.call((signal) => deps.llm.generateLessonPool(poolInput, signal));
       await control.assertCurrent();
       console.log(`[lesson] run=${runId} partia=${batch.objectiveId} durationMs=${Date.now() - batchStartedAtMs}`);

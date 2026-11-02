@@ -137,6 +137,8 @@ export function lessonCatalog(services: Services): SubjectCatalogDto {
         subjectTitleRequired: requiresParentSubjectTitle(subject),
         // Formularz pokazuje tematy zdań tylko tam, gdzie przedmiot ma regułę w prompcie.
         acceptsInterests: subject.prompts.interestsRule !== undefined,
+        // Te same warunki co przydział dodatku słuchowego w generacji (`listenChoiceAllowance`).
+        offersListenChoice: subject.ttsForFeedbackSentence === true && subject.exerciseTypes.includes("lesson_listen_choice"),
         topics: [...latestByTopic.values()].map((topic) => ({
           id: topic.id,
           version: topic.version,

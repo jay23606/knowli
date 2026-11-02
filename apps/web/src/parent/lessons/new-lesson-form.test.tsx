@@ -30,6 +30,7 @@ const grammar = {
   creation: "catalog",
   subjectTitleRequired: false,
   acceptsInterests: true,
+  offersListenChoice: true,
   topics: [{
     id: "present_simple",
     titlePl: "Present Simple",
@@ -40,7 +41,7 @@ const grammar = {
   }],
 };
 const school = { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] };
-const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, topics: [] };
+const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, offersListenChoice: true, topics: [] };
 
 const catalog = { subjects: [grammar, school, chapter] } as unknown as SubjectCatalogDto;
 
@@ -599,5 +600,7 @@ describe("NewLessonForm", () => {
     const schoolMarkup = renderWithCatalog(school);
     expect(schoolMarkup).not.toContain('data-testid="lesson-listen-choice-note"');
     expect(schoolMarkup).not.toContain(messages.lessons.listenChoiceCreateNote);
+    // Decyduje katalog, nie ścieżka tworzenia: przedmiot katalogowy bez typu słuchowego nie dostaje dopisku.
+    expect(renderWithCatalog({ ...grammar, offersListenChoice: false })).not.toContain('data-testid="lesson-listen-choice-note"');
   });
 });

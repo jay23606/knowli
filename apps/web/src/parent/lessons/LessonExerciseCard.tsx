@@ -161,7 +161,7 @@ function LessonExerciseCard({
         {sentenceAudio && (
           <span className="pp-status-badge" data-tone={sentenceAudio.state === "ready" ? "success" : sentenceAudio.state === "failed" ? "danger" : "neutral"}
             data-testid={`exercise-sentence-audio-state-${index}`}>
-            {messages.decks.audioState[sentenceAudio.state] ?? ""}
+            {messages.lessons.sentenceAudioState[sentenceAudio.state] ?? ""}
           </span>
         )}
         {(editable || audio || sentenceAudio) && (
