@@ -119,3 +119,78 @@ export function groupAssignments(state: GroupState): Assignment[] {
     return targetId === undefined ? [] : [{ itemId: item.id, targetId }];
   });
 }
+
+/** Strona kolumny w „Połącz linią”. */
+export type PairSide = "left" | "right";
+
+/**
+ * „Połącz linią” (spec 2026-11-02 §5): dwie kolumny kafelków, pary linią i jedno
+ * zaznaczenie. Zaznaczenie samo nie zmienia par.
+ */
+export interface PairState {
+  readonly left: readonly LessonItem[];
+  readonly right: readonly LessonItem[];
+  /** Para lewego z prawym (id lewego → id prawego). */
+  readonly pairs: ReadonlyMap<string, string>;
+  readonly selected: { readonly side: PairSide; readonly id: string } | null;
+}
+
+/** Stan początkowy: bez par i bez zaznaczenia. */
+export function pairState(left: readonly LessonItem[], right: readonly LessonItem[]): PairState {
+  return { left, right, pairs: new Map(), selected: null };
+}
+
+/**
+ * Stuknięcie kafelka (tabela §5.1): bez zaznaczenia — zaznacza; ten sam kafelek —
+ * zdejmuje zaznaczenie; inny w tej samej kolumnie — przenosi zaznaczenie; w drugiej
+ * kolumnie — łączy w parę, zastępując dotychczasowe pary obu kafelków. Nieznane id
+ * (także id z drugiej kolumny) nie zmienia stanu.
+ */
+export function tapPairItem(state: PairState, side: PairSide, id: string): PairState {
+  const column = side === "left" ? state.left : state.right;
+  if (!column.some((item) => item.id === id)) return state;
+  const { selected } = state;
+  if (selected === null) return { ...state, selected: { side, id } };
+  if (selected.side === side) {
+    return { ...state, selected: selected.id === id ? null : { side, id } };
+  }
+  const leftId = side === "left" ? id : selected.id;
+  const rightId = side === "left" ? selected.id : id;
+  const pairs = new Map(state.pairs);
+  pairs.delete(leftId);
+  for (const [pairedLeft, pairedRight] of state.pairs) {
+    if (pairedRight === rightId) pairs.delete(pairedLeft);
+  }
+  pairs.set(leftId, rightId);
+  return { ...state, pairs, selected: null };
+}
+
+/** Zdejmuje samo zaznaczenie (np. po wysłaniu próby); pary zostają. */
+export function clearPairSelection(state: PairState): PairState {
+  return state.selected === null ? state : { ...state, selected: null };
+}
+
+/** Odpowiednik kafelka w parze (po drugiej stronie) albo `null`, gdy kafelek jest wolny. */
+export function pairOf(state: PairState, side: PairSide, id: string): LessonItem | null {
+  if (side === "left") {
+    const rightId = state.pairs.get(id);
+    return rightId === undefined ? null : state.right.find((item) => item.id === rightId) ?? null;
+  }
+  for (const [leftId, rightId] of state.pairs) {
+    if (rightId === id) return state.left.find((item) => item.id === leftId) ?? null;
+  }
+  return null;
+}
+
+/** Komplet: każdy lewy kafelek ma parę (wolne prawe kafelki to dystraktory). */
+export function pairComplete(state: PairState): boolean {
+  return state.left.length > 0 && state.left.every((item) => state.pairs.has(item.id));
+}
+
+/** Przypisania w kolejności lewej kolumny. */
+export function pairAssignments(state: PairState): Assignment[] {
+  return state.left.flatMap((item) => {
+    const targetId = state.pairs.get(item.id);
+    return targetId === undefined ? [] : [{ itemId: item.id, targetId }];
+  });
+}
