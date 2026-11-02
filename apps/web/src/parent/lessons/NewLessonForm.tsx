@@ -316,6 +316,9 @@ export default function NewLessonForm({
   const subjects = lessonSubjects(catalog, fromSource);
   const subject = catalog?.subjects.find((s) => s.id === values.subjectId);
   const topic = subject?.topics.find((t) => t.id === values.topicId);
+  // Katalog: dodatek słuchowy dostają tylko zaznaczone cele z tym typem; z materiału cele powstają dopiero w generacji.
+  const showListenChoiceNote = subject?.offersListenChoice === true
+    && (path !== "catalog" || (topic?.objectives ?? []).some((o) => o.offersListenChoice === true && values.objectiveIds.includes(o.id)));
   const materialMax = fromMaterial ? MAX_SCHOOL_MATERIAL_LENGTH : MATERIAL_MAX;
   const hasPending = pending.current !== null;
   const dirty = form.isDirty() || hasPending;
@@ -656,7 +659,7 @@ export default function NewLessonForm({
               value={values.poolSize}
               onChange={(value) => form.setValues({ poolSize: value, poolSizeTouched: true })}
             />
-            {subject?.offersListenChoice === true && (
+            {showListenChoiceNote && (
               <Text size="sm" className="pp-editor-muted" data-testid="lesson-listen-choice-note">{messages.lessons.listenChoiceCreateNote}</Text>
             )}
 

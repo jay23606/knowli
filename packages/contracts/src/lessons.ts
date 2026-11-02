@@ -116,6 +116,8 @@ export const SubjectCatalogDtoSchema = z.object({
         id: z.string().min(1),
         titlePl: z.string().min(1),
   cards: z.array(z.object({ title: z.string().min(1), body: z.string().min(1) }).strict()),
+        /** Czy generacja może dodać temu celowi ćwiczenia „Posłuchaj i wybierz” (przedmiot `offersListenChoice` i typ w celu). */
+        offersListenChoice: z.boolean().optional(),
       }).strict()),
     }).strict()),
   }).strict()),
