@@ -51,6 +51,10 @@ export const englishGrammarPrompts: SubjectPromptProfile = {
     "2 or 3 options that differ AUDIBLY in that element (play / plays, don't / doesn't, Do / Does, is / are, isn't / aren't) and exactly one is correct. " +
     "Never offer an equivalent option (a full form and a contraction of the same form, such as does not and doesn't, or is not and isn't) " +
     "and never start an option with an apostrophe. Do not check a difference that exists only in spelling. " +
+    "When the options differ only by an -s ending that adds no syllable (like / likes, go / goes, study / studies, he / he's), the word right after the gap " +
+    "must not begin with an s, z or sh sound (snakes, soccer, school, zoo, shoes, city): in connected speech the ending merges " +
+    "into that sound and both forms sound the same. Write He ___ dinosaurs. or She ___ football., never He ___ snakes. or She ___ soccer. " +
+    "This does not apply to Do / Does or watch / watches, which sound different anyway (___ she play tennis? is fine). " +
     "Never set instructionPl, hint or visualSubject on a lesson_listen_choice exercise: the recording is the whole stimulus and the child sees only the gap sentence and the options.",
   storyRules:
     "Write a short story in English for a Polish child, about 8 years old, at a beginner level. " +

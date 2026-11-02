@@ -404,11 +404,35 @@ function listenSentenceOf(ex: LessonExerciseDraft): string | null {
   });
 }
 
+/** Wyraz zaraz za luką `lesson_listen_choice` (także w cudzysłowie); lukę zamkniętą interpunkcją pomija. */
+const LISTEN_WORD_AFTER_GAP = /_{2,}\s+["'\u2018\u201c]?([A-Za-z]+)/u;
+
+/** Wyraz zaczynający się głoską s, z albo sz (snakes, zoo, shoes, także miękkie c: city). */
+const SIBILANT_ONSET = /^(?:s|z|c[eiy])/i;
+
+/**
+ * Opcje różnią się wyłącznie niesylabiczną końcówką -s (like / likes, go / goes,
+ * study / studies, he / he's): przed sybilantem ta końcówka zlewa się w mowie ciągłej
+ * („likes snakes” brzmi jak „like snakes”). Sylabiczne -es po sybilancie
+ * (watch / watches, dance / dances) i zmiana samogłoski (do / does, say / says)
+ * pozostają słyszalne. Apostrof pomijamy, więc skrót 's liczy się jak końcówka.
+ */
+function differsByMergingS(a: string, b: string): boolean {
+  const bare = (text: string) => text.trim().toLowerCase().replace(/['\u2019]/gu, "");
+  const [x, y] = [bare(a), bare(b)];
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  if (long === `${short}s`) return !/[cgsz]e$/.test(short) && !/(?:^|\s)say$/.test(short);
+  if (long === `${short}es`) return !/(?:[sxz]|ch|sh)$/.test(short) && !/(?:^|\s)do$/.test(short);
+  return short.endsWith("y") && long === `${short.slice(0, -1)}ies`;
+}
+
 /**
  * `lesson_listen_choice`: zdanie z jedną luką (2+ podkreśleń), 2–4 opcje, a pełne
  * zdanie z poprawną opcją istnieje i mieści się w limicie nagrania. Opcje nie mogą
  * zaczynać się od apostrofu (lektor czyta całe tokeny) i muszą dawać nierównoważne
  * zdania — „doesn't” i „does not” to ta sama odpowiedź, więc zadanie byłoby dwuznaczne.
+ * Gdy opcje różnią się końcówką -s, wyraz za luką nie może zaczynać się sybilantem
+ * (`differsByMergingS`) — różnica byłaby w nagraniu niesłyszalna.
  */
 function validateListenChoice(
   ex: LessonExerciseDraft,
@@ -436,6 +460,16 @@ function validateListenChoice(
       const b = fillGap(stem, options[j]!.text);
       if (a !== undefined && b !== undefined && answersEquivalent(a, b, normalizer)) {
         errors.push(`options: zdania z opcjami „${options[i]!.text}” i „${options[j]!.text}” są równoważne po normalizacji`);
+      }
+    }
+  }
+  const nextWord = LISTEN_WORD_AFTER_GAP.exec(stem)?.[1];
+  if (nextWord !== undefined && SIBILANT_ONSET.test(nextWord)) {
+    for (let i = 0; i < options.length; i++) {
+      for (let j = i + 1; j < options.length; j++) {
+        if (differsByMergingS(options[i]!.text, options[j]!.text)) {
+          errors.push(`stem: opcje „${options[i]!.text}” i „${options[j]!.text}” różnią się końcówką -s/-es, która w nagraniu zlewa się z początkiem wyrazu „${nextWord}” (głoska s, z albo sz) — różnica niesłyszalna, zmień wyraz za luką`);
+        }
       }
     }
   }

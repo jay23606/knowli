@@ -1004,6 +1004,68 @@ describe("lesson_listen_choice — walidacja", () => {
     expect(errors.some((e) => e.includes("zdania z opcjami"))).toBe(true);
   });
 
+  it.each([
+    ["He ___ snakes.", "play", "plays"],
+    ["She ___ soccer.", "like", "likes"],
+    ["They ___ shoes.", "wants", "want"],
+    ["He ___ zebras.", "draw", "draws"],
+    ["She ___ cereal.", "eat", "eats"],
+    ["She ___ swimming.", "go", "goes"],
+    ["He ___ science.", "study", "studies"],
+    ["She ___ songs.", "Likes", "like"],
+    ["They ___ salad.", "really like", "really likes"],
+    ["He ___ sleeping.", "He's", "He"],
+    ["She ___ “snakes”.", "like", "likes"],
+  ])("odrzuca sybilant za luką przy opcjach różnych o -s: %s (%s / %s)", (stem, first, second) => {
+    const errors = errorsOf(listen({
+      stem,
+      options: [{ id: "a", text: first }, { id: "b", text: second }],
+      correctOption: "b",
+      answer: second,
+      focus: [second],
+    }));
+    expect(errors.some((e) => e.includes("różnica niesłyszalna"))).toBe(true);
+  });
+
+  it.each([
+    ["He ___ football.", "play", "plays"],
+    ["He ___, sadly.", "play", "plays"],
+    ["___ she like snakes?", "Do", "Does"],
+    ["She ___ socks.", "watch", "watches"],
+    ["She ___ salsa.", "dance", "dances"],
+    ["They ___ snakes.", "are", "is"],
+    ["She ___ like snakes.", "don't", "doesn't"],
+    // /s/ przed /tʃ/ pozostaje słyszalne — za luką musi stać głoska s, z albo sz.
+    ["He ___ chips.", "like", "likes"],
+    ["She ___ sweets.", "change", "changes"],
+    ["He ___ soap.", "use", "uses"],
+    ["She ___ sorry.", "say", "says"],
+    ["He ___ it.", "like", "likes"],
+  ])("dopuszcza słyszalną różnicę: %s (%s / %s)", (stem, first, second) => {
+    const errors = errorsOf(listen({
+      stem,
+      options: [{ id: "a", text: first }, { id: "b", text: second }],
+      correctOption: "b",
+      answer: second,
+      focus: [second],
+    }));
+    expect(errors.filter((e) => e.includes("różnica niesłyszalna"))).toEqual([]);
+  });
+
+  it("komunikat o sybilancie wskazuje parę opcji i wyraz za luką, także przy trzech opcjach", () => {
+    const errors = errorsOf(listen({
+      stem: "He ___ snakes.",
+      options: [{ id: "a", text: "likes" }, { id: "b", text: "like" }, { id: "c", text: "is" }],
+      correctOption: "a",
+      answer: "likes",
+      focus: ["likes"],
+    }));
+    const sibilant = errors.filter((e) => e.includes("różnica niesłyszalna"));
+    expect(sibilant).toHaveLength(1);
+    expect(sibilant[0]).toContain("„likes” i „like”");
+    expect(sibilant[0]).toContain("„snakes”");
+  });
+
   it("wymaga dokładnie jednej luki", () => {
     expect(errorsOf(listen({ stem: `He ${GAP_MARKER} football ${GAP_MARKER}.` })).some((e) => e.includes("luk"))).toBe(true);
     expect(errorsOf(listen({ stem: "He plays football." })).some((e) => e.includes("luk"))).toBe(true);

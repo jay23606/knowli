@@ -242,4 +242,11 @@ describe("englishGrammarSubject — wybór ze słuchu (#198)", () => {
     expect(rules).toMatch(/apostrophe/);
     expect(rules).toMatch(/instructionPl.*hint.*visualSubject/s);
   });
+
+  it("fieldRules zabraniają sybilantu zaraz za luką przy opcjach różnych o -s (końcówka zlewa się w mowie)", () => {
+    const rules = englishGrammarPrompts.fieldRules ?? "";
+    expect(rules).toMatch(/-s ending that adds no syllable.*right after the gap.*s, z or sh sound/s);
+    expect(rules).toContain("This does not apply to Do / Does or watch / watches");
+    expect(rules).toContain("never He ___ snakes. or She ___ soccer.");
+  });
 });
