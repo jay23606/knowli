@@ -763,8 +763,10 @@ export async function editLessonDraft(
       if (errors.length > 0) {
         throw new AppError("validation", { details: { exercises: errors } });
       }
-      // Historyjka z tym samym patchem: bariera wobec puli z patcha, przed zapisem ćwiczeń.
-      if (patch.story) assertStoryValid(subject, patch.story, drafts);
+      // Bariera wobec puli z patcha, przed zapisem ćwiczeń: historyjka z tego patcha,
+      // a bez pola `story` zapisana (`null` usuwa ją, więc nie ma czego sprawdzać).
+      const story = patch.story === undefined ? context.story : patch.story;
+      if (story) assertStoryValid(subject, story, drafts);
       await applyLessonExercisesEdit(tx, { id: version.id, deckId: version.deckId }, subject, context.topicVersion, patch.exercises);
     }
 

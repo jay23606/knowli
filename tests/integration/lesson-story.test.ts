@@ -841,6 +841,31 @@ describe("run historyjki lekcji (integracja)", () => {
       expect(after.story).toBeUndefined();
     });
 
+    it("exercise edit that solves a sentence of the saved story fails validation unless the story is removed", async () => {
+      const { services, deckId, versionId } = await generatedGrammarLesson();
+      await editLessonDraft(services, versionId, { expectedEditNumber: 2, story: PARENT_STORY });
+      const draft = (await readLessonDeck(services, deckId)).draft!;
+      // Rozwiązanie „Tom has a small dog.” = zdanie 1 zapisanej historyjki.
+      const exercises = [
+        ...draft.exercises.map((ex) => stripToInput(ex)),
+        { ...SHE_PLAYS_GAP, stem: "Tom ___ a small dog.", answer: "has", focus: ["has"] },
+      ];
+
+      const error = await editLessonDraft(services, versionId, { expectedEditNumber: 3, exercises }).catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ code: "validation" });
+      expect((error as { details: { story: string[] } }).details.story).toContain("Zdanie 1 powtarza rozwiązanie ćwiczenia.");
+      const after = (await readLessonDeck(services, deckId)).draft!;
+      expect(after.editNumber).toBe(3);
+      expect(after.exercises).toHaveLength(draft.exercises.length);
+      expect(after.story).toEqual(PARENT_STORY);
+
+      // Ten sam patch z usunięciem historyjki przechodzi.
+      const saved = await editLessonDraft(services, versionId, { expectedEditNumber: 3, exercises, story: null, expectedStory: PARENT_STORY });
+      expect(saved.exercises).toHaveLength(draft.exercises.length + 1);
+      expect(saved.story).toBeUndefined();
+    });
+
     it("edit without story field keeps story and does not supersede story run", async () => {
       const { services, deckId, versionId, storyRunId } = await generatedGrammarLesson();
       await executeLessonGeneration(services, storyRunId!);
