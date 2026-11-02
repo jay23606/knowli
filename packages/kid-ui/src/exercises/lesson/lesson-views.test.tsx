@@ -185,7 +185,7 @@ describe("lesson exercise views", () => {
     expect(screen.getByTestId("kid-instruction").contains(listen)).toBe(false);
   });
 
-  it("story question keeps the empty listen column without a recording", () => {
+  it("story question leaves the listen column empty without guidance", () => {
     const { questionAudioAssetId: _omit, ...prompt } = storyQuestion() as Extract<TaskPrompt, { kind: "lesson_story_question" }>;
     renderKid(<LessonStoryQuestionView {...makeExerciseProps(task(prompt))} />);
     expect(screen.getByTestId("kid-lesson-story-listen").childElementCount).toBe(0);

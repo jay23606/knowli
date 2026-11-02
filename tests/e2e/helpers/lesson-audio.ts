@@ -80,31 +80,97 @@ export function listenChoiceTask(
 }
 
 /**
+ * Najgorszy przypadek historyjki na koniec sesji: pięć zdań, łącznie 700 znaków
+ * (każde ≤ 160), pytanie po polsku na 160 znaków i trzy opcje po 80 znaków.
+ * Treść zmyślona.
+ */
+export const STORY_WORST_CASE = {
+  sentences: [
+    "On a windy Saturday morning, Tom and his little sister Mia packed sandwiches, apples and a big blue blanket for a picnic by the old river.",
+    "They walked slowly along the narrow path past the bakery, the library and the noisy playground, and they counted every red car on the way.",
+    "At the river they found a quiet place under a tall tree, but a hungry grey goose came out of the water and looked at their lunch for a while.",
+    "Mia laughed and gave the goose a small piece of bread, and soon three more geese and a family of brown ducks were standing around the blanket.",
+    "When the sun went down, Tom and Mia folded the blanket, waved goodbye to all the birds and ran home to tell Mum about their lovely afternoon.",
+  ],
+  question: "Co zrobiła Mia, kiedy głodna szara gęś wyszła z wody i długo patrzyła na ich jedzenie leżące na dużym niebieskim kocu pod wysokim drzewem nad starą cichą rzeką?",
+  options: [
+    "Dała gęsi mały kawałek chleba, a potem przyszły trzy gęsi i cała rodzina kaczek.",
+    "Zabrała koc i szybko pobiegła z bratem do domu, żeby opowiedzieć wszystko mamie.",
+    "Policzyła czerwone auta, które mijali po drodze przez całe stare, gwarne miasto.",
+  ],
+} as const;
+
+/** Historyjka na koniec sesji (`lesson_story`, poza budżetem: `remainingAssessed: 0`). */
+export function storyTask(
+  sessionId: string,
+  taskId: string,
+  options: { audioAssetId?: string; sentences?: readonly string[] } = {},
+): TaskDto {
+  return {
+    taskId, sessionId, ordinal: 1, exerciseType: "lesson_story", direction: null, state: "issued", remainingAssessed: 0,
+    prompt: {
+      kind: "lesson_story",
+      story: { sentences: [...(options.sentences ?? STORY_WORST_CASE.sentences)] },
+      contentLocale: "en-GB",
+      ...(options.audioAssetId ? { questionAudioAssetId: options.audioAssetId } : {}),
+    },
+  };
+}
+
+/** Pytanie o treść historyjki (`lesson_story_question`): trzy opcje bez znacznika poprawności, jak Kid DTO. */
+export function storyQuestionTask(
+  sessionId: string,
+  taskId: string,
+  optionIds: readonly string[],
+  content: { question: string; options: readonly string[]; sentences: readonly string[] } = STORY_WORST_CASE,
+  audioAssetId?: string,
+): TaskDto {
+  return {
+    taskId, sessionId, ordinal: 2, exerciseType: "lesson_story_question", direction: null, state: "issued", remainingAssessed: 0,
+    prompt: {
+      kind: "lesson_story_question",
+      question: content.question,
+      options: content.options.map((text, index) => ({ id: optionIds[index]!, text })),
+      story: { sentences: [...content.sentences] },
+      contentLocale: "en-GB",
+      ...(audioAssetId ? { questionAudioAssetId: audioAssetId } : {}),
+    },
+  };
+}
+
+/**
  * Atrapa odtwarzania dla bodźca słuchowego: `HTMLMediaElement.play` jest
  * podmienione (test liczy wywołania, nie słyszy dźwięku). `hold` — odtwarzanie
  * zaczyna się (`playing`) i trwa do `endListenPlayback`; `end` — kończy się
  * (`ended`) po 50 ms; `reject` — przeglądarka blokuje autoodtwarzanie
  * (`NotAllowedError`). Tryb zmienia `setListenAudioMode` w trakcie testu.
- * `pause()` nic nie robi, ale zapamiętuje element w `paused` (`listenAudioPausedCurrent`).
+ * `pause()` nic nie robi, ale zapamiętuje element w `paused` (`listenAudioPausedWatched`)
+ * i oznacza przerwanie bieżącego odtworzenia (`listenAudioPausedCurrent`).
  */
 export type ListenAudioMode = "hold" | "end" | "reject";
 
-interface ListenAudioState { mode: ListenAudioMode; plays: number; current: HTMLMediaElement | null; watched: HTMLMediaElement | null; paused: HTMLMediaElement[] }
+interface ListenAudioState {
+  mode: ListenAudioMode; plays: number; current: HTMLMediaElement | null; watched: HTMLMediaElement | null; paused: HTMLMediaElement[];
+  /** `pause()` na `current` po jego ostatnim `play()`. */
+  currentPaused: boolean;
+}
 
 export async function stubListenAudio(page: Page, mode: ListenAudioMode): Promise<void> {
   await page.addInitScript((initial: ListenAudioMode) => {
-    const state: ListenAudioState = { mode: initial, plays: 0, current: null, watched: null, paused: [] };
+    const state: ListenAudioState = { mode: initial, plays: 0, current: null, watched: null, paused: [], currentPaused: false };
     (window as unknown as { __listenAudio: ListenAudioState }).__listenAudio = state;
     HTMLMediaElement.prototype.play = function play() {
       state.plays += 1;
       if (state.mode === "reject") return Promise.reject(new DOMException("blocked", "NotAllowedError"));
       state.current = this;
+      state.currentPaused = false;
       this.dispatchEvent(new Event("playing"));
       if (state.mode === "end") setTimeout(() => this.dispatchEvent(new Event("ended")), 50);
       return Promise.resolve();
     };
     HTMLMediaElement.prototype.pause = function pause() {
       state.paused.push(this);
+      if (this === state.current) state.currentPaused = true;
     };
   }, mode);
 }
@@ -127,6 +193,14 @@ export async function listenAudioPausedWatched(page: Page): Promise<boolean> {
   return page.evaluate(() => {
     const state = (window as unknown as { __listenAudio: ListenAudioState }).__listenAudio;
     return state.watched !== null && state.paused.includes(state.watched);
+  });
+}
+
+/** Czy element odtwarzany teraz (ostatnie udane `play()`) dostał `pause()` już po tym odtworzeniu. */
+export async function listenAudioPausedCurrent(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const state = (window as unknown as { __listenAudio: ListenAudioState }).__listenAudio;
+    return state.current !== null && state.currentPaused;
   });
 }
 

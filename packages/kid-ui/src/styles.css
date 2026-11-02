@@ -2431,7 +2431,6 @@
    żeby pierwszeństwo miały pytanie i opcje. Kolumna tekstu i stała kolumna
    odsłuchu bez zmian. */
 .kid-ui .kid-lesson-story--reread {
-  border-color: var(--md-sys-color-outline-variant);
   background: var(--md-sys-color-surface-container);
 }
 
