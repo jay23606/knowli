@@ -65,6 +65,10 @@ export function solvedSentencesOf(drafts: readonly LessonExerciseDraft[]): strin
     if (draft.exerciseType === "lesson_gap") {
       for (const accepted of draft.acceptedAnswers) add(feedbackSentenceText({ ...draft, answer: accepted }, unlimited));
     }
+    // Słuchowy wybór: zaakceptowane warianty pełnego zdania też je rozwiązują (`answer` to tylko słowo w luce).
+    if (draft.exerciseType === "lesson_listen_choice") {
+      for (const accepted of draft.acceptedAnswers) add(accepted);
+    }
     // Wybór bez luki w treści (np. „Które zdanie jest poprawne?”): poprawna opcja sama jest rozwiązaniem.
     if (draft.exerciseType === "lesson_choice" && !/_{2,}/.test(draft.stem ?? "")) {
       add(draft.options?.find((option) => option.id === draft.correctOption)?.text);

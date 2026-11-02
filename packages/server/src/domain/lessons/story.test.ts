@@ -261,6 +261,23 @@ describe("solvedSentencesOf", () => {
     expect(sentences).toEqual(["She likes milk."]);
   });
 
+  it("adds accepted full-sentence variants of a listening choice, not its gap word", () => {
+    const sentences = solvedSentencesOf([
+      draft({
+        exerciseType: "lesson_listen_choice",
+        stem: "She ___ milk.",
+        options: [
+          { id: "a", text: "like" },
+          { id: "b", text: "likes" },
+        ],
+        correctOption: "b",
+        answer: "likes",
+        acceptedAnswers: ["She really likes milk.", " "],
+      }),
+    ]);
+    expect(sentences).toEqual(["She likes milk.", "She really likes milk."]);
+  });
+
   it("adds the correct option of a choice whose stem has no gap", () => {
     const sentences = solvedSentencesOf([
       draft({
