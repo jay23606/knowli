@@ -42,6 +42,7 @@ import {
   readDraft,
   readGeneration,
   readLessonDeck,
+  readParentCosts,
   readParentWorkCard,
   regenerateLessonCardAudio,
   regenerateLessonStoryAudio,
@@ -106,6 +107,7 @@ const parentOs = implement({
   drafts: parentApiContract.drafts,
   mockTests: parentApiContract.mockTests,
   workCard: parentApiContract.workCard,
+  costs: parentApiContract.costs,
   lessonCatalog: parentApiContract.lessonCatalog,
   lessons: parentApiContract.lessons,
   lessonVerdicts: parentApiContract.lessonVerdicts,
@@ -351,6 +353,10 @@ const mockTestsGet = parentOs.mockTests.get.handler(async ({ context, input }) =
 
 const workCardGet = parentOs.workCard.get.handler(async ({ context, input }) =>
   noStore(await readParentWorkCard(context.services, input)),
+);
+
+const costsGet = parentOs.costs.get.handler(async ({ context, input }) =>
+  noStore(await readParentCosts(context.services, input)),
 );
 
 const lessonCatalogGet = parentOs.lessonCatalog.get.handler(async ({ context }) =>
@@ -601,6 +607,9 @@ export const parentORpcRouter: Router<ORpcContext> = parentRootOs.router({
   },
   workCard: {
     get: workCardGet,
+  },
+  costs: {
+    get: costsGet,
   },
   lessonCatalog: {
     get: lessonCatalogGet,

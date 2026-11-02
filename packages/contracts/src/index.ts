@@ -16,3 +16,4 @@ export * from "./mock-tests";
 export * from "./lesson-calculation";
 export * from "./source-materials";
 export * from "./usage-features";
+export * from "./parent-costs";

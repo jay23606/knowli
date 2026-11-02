@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createDrizzleUsageRecorder, createServices, deleteChild, withUsageScope, type UsageEvent, type UsagePrices } from "@learning/server";
-import { ManualClock, testDatabase } from "./helpers";
+import { ParentCostsDtoSchema, type ParentCostsDto } from "@learning/contracts";
+import { createDrizzleUsageRecorder, createServices, deleteChild, loginParent, readParentCosts, setupParent, withUsageScope, type UsageEvent, type UsagePrices } from "@learning/server";
+import { ManualClock, buildTestServices, handleParentApi, testDatabase, truncateCoreTables } from "./helpers";
 
 /**
  * Migracja 0035_provider_usage_events: tabela dziennika kosztów usług AI
@@ -405,5 +406,272 @@ describe("usage recorder", () => {
 
   it("deleteChild of a missing profile is not found", async () => {
     await expect(deleteChild(services, randomUUID())).rejects.toMatchObject({ code: "not_found" });
+  });
+});
+
+describe("cost report", () => {
+  const NOW = "2026-11-15T12:00:00.000Z";
+  const clock = new ManualClock(NOW);
+  const services = createServices({ db, clock });
+
+  beforeEach(async () => {
+    await pool.query(
+      `truncate learning_app.provider_usage_events, learning_app.generation_runs, learning_app.media_assets,
+                learning_app.learning_sessions, learning_app.assignments,
+                learning_app.deck_versions, learning_app.decks,
+                learning_app.child_profiles, learning_app.family_settings cascade`,
+    );
+  });
+
+  async function insertTitledDeck(title: string, kind: "vocabulary" | "lesson"): Promise<string> {
+    const deckId = randomUUID();
+    await pool.query("insert into learning_app.decks (id, title, kind) values ($1, $2, $3)", [deckId, title, kind]);
+    return deckId;
+  }
+
+  /** Run mediów bez `origin_deck_id`: głos interfejsu albo run zlecony przed migracją. */
+  async function insertMediaRun(): Promise<string> {
+    const assetId = randomUUID();
+    await pool.query(
+      `insert into learning_app.media_assets (id, kind, fingerprint, state, provider, model)
+       values ($1, 'tts', $2, 'pending', 'fake', 'fake')`,
+      [assetId, `fp-${assetId}`],
+    );
+    const runId = randomUUID();
+    await pool.query(
+      `insert into learning_app.generation_runs (id, asset_id, kind, dedupe_key, state, input)
+       values ($1, $2, 'tts', $3, 'queued', '{}'::jsonb)`,
+      [runId, assetId, `mk-${runId}`],
+    );
+    return runId;
+  }
+
+  async function insertChild(name: string): Promise<string> {
+    const childId = randomUUID();
+    await pool.query("insert into learning_app.child_profiles (id, display_name, avatar_key) values ($1, $2, 'fox')", [childId, name]);
+    return childId;
+  }
+
+  async function insertSessionAt(childId: string, startedAt: string): Promise<string> {
+    const deckId = randomUUID();
+    const versionId = randomUUID();
+    await pool.query("insert into learning_app.decks (id, title, kind) values ($1, 'Sesja', 'vocabulary')", [deckId]);
+    await pool.query(
+      `insert into learning_app.deck_versions (id, deck_id, version_number, edit_number, state, title)
+       values ($1, $2, 1, 1, 'draft', 'Sesja')`,
+      [versionId, deckId],
+    );
+    const assignmentId = randomUUID();
+    await pool.query("insert into learning_app.assignments (id, child_id, deck_id) values ($1, $2, $3)", [assignmentId, childId, deckId]);
+    await pool.query("insert into learning_app.learning_policies (id, config) values ('default', '{}') on conflict do nothing");
+    const sessionId = randomUUID();
+    await pool.query(
+      `insert into learning_app.learning_sessions
+         (id, child_id, assignment_id, deck_id, deck_version_id, policy_id, microphone_enabled, state, started_at, ended_at, task_budget)
+       values ($1, $2, $3, $4, $5, 'default', false, 'ended', $6, $6, 10)`,
+      [sessionId, childId, assignmentId, deckId, versionId, startedAt],
+    );
+    return sessionId;
+  }
+
+  /** Wiersz o nieznanej cenie: `unknown` wymaga kwoty NULL. */
+  function unknownRow(overrides: UsageRow): UsageRow {
+    return validRow({ cost_usd: null, cost_source: "unknown", ...overrides });
+  }
+
+  it("returns zeros and empty lists for an empty month", async () => {
+    const report = await readParentCosts(services, { month: "2026-08" });
+
+    expect(ParentCostsDtoSchema.safeParse(report).success).toBe(true);
+    expect(report).toEqual({
+      month: "2026-08",
+      timezone: "Europe/Warsaw",
+      totals: { costUsd: "0.000000", estimatedUsd: "0.000000", calls: 0, unknownCalls: 0, failedCalls: 0, unscopedCalls: 0 },
+      features: [],
+      decks: [],
+      children: [],
+    });
+  });
+
+  it("rejects a future month, a malformed one and extra keys", async () => {
+    await expect(readParentCosts(services, { month: "2026-12" })).rejects.toMatchObject({ code: "validation" });
+    await expect(readParentCosts(services, { month: "2026-13" })).rejects.toThrow();
+    await expect(readParentCosts(services, { month: "2026-11", token: "x" })).rejects.toThrow();
+    await expect(readParentCosts(services, { month: "2026-11" })).resolves.toBeDefined();
+  });
+
+  it("divides the month cost per session with half-up rounding and null at zero sessions", async () => {
+    const ola = await insertChild("Ola");
+    const zed = await insertChild("Zed");
+    const sessions = [
+      await insertSessionAt(ola, "2026-11-02T09:00:00.000Z"),
+      await insertSessionAt(ola, "2026-11-03T09:00:00.000Z"),
+      await insertSessionAt(ola, "2026-11-04T09:00:00.000Z"),
+    ];
+    await insertUsage(validRow({
+      feature: "answer_grading", scope_kind: "session", session_id: sessions[0], child_id: ola,
+      cost_usd: "0.010000", occurred_at: new Date("2026-11-02T09:05:00.000Z"),
+    }));
+
+    const report = await readParentCosts(services, { month: "2026-11" });
+
+    expect(report.children).toMatchObject([
+      { childId: ola, name: "Ola", sessions: 3, costUsd: "0.010000", perSessionUsd: "0.003333" },
+      { childId: zed, name: "Zed", sessions: 0, costUsd: "0.000000", perSessionUsd: null },
+    ]);
+  });
+
+  it("aggregates features, decks and children by month in the family timezone", async () => {
+    const deckA = await insertTitledDeck("Kolory", "lesson");
+    const deckB = await insertTitledDeck("Zwierzęta", "vocabulary");
+    const sharedRun = await insertMediaRun();
+    const x = await insertChild("Ola");
+    const y = await insertChild("Ala");
+    const z = await insertChild("Zed");
+    await insertSessionAt(x, "2026-10-20T09:00:00.000Z");
+    const xSessions = [
+      await insertSessionAt(x, "2026-11-02T09:00:00.000Z"),
+      await insertSessionAt(x, "2026-11-03T09:00:00.000Z"),
+      await insertSessionAt(x, "2026-11-04T09:00:00.000Z"),
+    ];
+    await insertSessionAt(y, "2026-11-05T09:00:00.000Z");
+    const at = (iso: string) => ({ occurred_at: new Date(iso) });
+
+    // Październik: poza wybranym miesiącem, ale w sumach talii od początku.
+    await insertUsage(validRow({ ...at("2026-10-15T10:00:00.000Z"), feature: "deck_generation", scope_kind: "run", deck_id: deckA, cost_usd: "1.000000" }));
+    await insertUsage(validRow({ ...at("2026-10-31T22:30:00.000Z"), feature: "tts", scope_kind: "run", deck_id: deckA, cost_usd: "0.500000" }));
+    // 2026-10-31T23:30Z to już 1 listopada 00:30 w Warszawie.
+    await insertUsage(validRow({
+      ...at("2026-10-31T23:30:00.000Z"), feature: "illustration", scope_kind: "run", deck_id: deckA,
+      cost_usd: "0.250000", cost_source: "price_table", price_ref: "UMIEM_PRICE_IMAGE_USD=0.25", images: 1, input_tokens: null, output_tokens: null,
+    }));
+    // Listopad: materiały.
+    await insertUsage(validRow({ ...at("2026-11-05T10:00:00.000Z"), feature: "deck_cover", scope_kind: "deck", deck_id: deckA, cost_usd: "0.100000", images: 1 }));
+    await insertUsage(validRow({
+      ...at("2026-11-06T10:00:00.000Z"), feature: "lesson_generation", scope_kind: "run", deck_id: deckB, cost_usd: "2.000000",
+      input_tokens: 1000, output_tokens: 500,
+    }));
+    await insertUsage(unknownRow({ ...at("2026-11-07T10:00:00.000Z"), feature: "deck_generation", scope_kind: "run", deck_id: deckB, outcome: "failed", http_status: 500 }));
+    await insertUsage(validRow({ ...at("2026-11-08T10:00:00.000Z"), feature: "tts", scope_kind: "run", generation_run_id: sharedRun, cost_usd: "0.300000", characters: 100 }));
+    await insertUsage(validRow({ ...at("2026-11-09T10:00:00.000Z"), feature: "deck_generation", scope_kind: "none", cost_usd: "0.050000" }));
+    // Listopad: nauka. Wiersz z deck_id nie trafia do talii (funkcje nauki nie są materiałem).
+    await insertUsage(validRow({
+      ...at("2026-11-02T09:05:00.000Z"), feature: "answer_grading", scope_kind: "session", session_id: xSessions[0], child_id: x, deck_id: deckA,
+      cost_usd: "0.010000",
+    }));
+    await insertUsage(unknownRow({ ...at("2026-11-03T09:05:00.000Z"), feature: "speech_stt", scope_kind: "session", session_id: xSessions[1], child_id: x, audio_ms: 4000 }));
+    await insertUsage(validRow({ ...at("2026-11-10T10:00:00.000Z"), feature: "answer_grading", scope_kind: "none", cost_usd: "0.002000" }));
+    // Zgrubiony wiersz usuniętego profilu: sesja bez session_id i child_id.
+    await insertUsage(validRow({
+      ...at("2026-11-01T00:00:00.000Z"), feature: "session_activity_review", scope_kind: "session", cost_usd: "0.020000",
+      input_tokens: null, output_tokens: null,
+    }));
+
+    const nov = await readParentCosts(services, { month: "2026-11" });
+
+    expect(ParentCostsDtoSchema.safeParse(nov).success).toBe(true);
+    expect(nov.totals).toEqual({
+      costUsd: "2.732000", estimatedUsd: "0.250000", calls: 10, unknownCalls: 2, failedCalls: 1, unscopedCalls: 1,
+    });
+
+    const features = new Map(nov.features.map((row) => [row.feature, row]));
+    expect(features.get("lesson_generation")).toMatchObject({
+      calls: 1, inputTokens: 1000, outputTokens: 500, costUsd: "2.000000", estimated: false, unknownCalls: 0, sharePercent: 73,
+    });
+    expect(features.get("illustration")).toMatchObject({ calls: 1, images: 1, costUsd: "0.250000", estimated: true });
+    expect(features.get("deck_generation")).toMatchObject({ calls: 2, costUsd: "0.050000", unknownCalls: 1 });
+    expect(features.get("tts")).toMatchObject({ calls: 1, characters: 100, costUsd: "0.300000" });
+    expect(features.get("speech_stt")).toMatchObject({ calls: 1, audioMs: 4000, costUsd: "0.000000", unknownCalls: 1, sharePercent: 0 });
+    expect(features.get("answer_grading")).toMatchObject({ calls: 2, costUsd: "0.012000" });
+    expect(features.has("pronunciation")).toBe(false);
+    const shareSum = nov.features.reduce((sum, row) => sum + row.sharePercent, 0);
+    expect(shareSum).toBeGreaterThanOrEqual(99);
+    expect(shareSum).toBeLessThanOrEqual(101);
+    expect(nov.features[0]!.feature).toBe("lesson_generation");
+
+    expect(nov.decks).toEqual([
+      {
+        bucket: "deck", deckId: deckB, title: "Zwierzęta", kind: "vocabulary",
+        generationUsd: "2.000000", ttsUsd: "0.000000", imagesUsd: "0.000000", totalUsd: "2.000000", monthUsd: "2.000000",
+        estimated: false, unknownCalls: 1,
+      },
+      {
+        bucket: "deck", deckId: deckA, title: "Kolory", kind: "lesson",
+        generationUsd: "1.000000", ttsUsd: "0.500000", imagesUsd: "0.350000", totalUsd: "1.850000", monthUsd: "0.350000",
+        estimated: true, unknownCalls: 0,
+      },
+      {
+        bucket: "shared_ui", deckId: null, title: null, kind: null,
+        generationUsd: "0.000000", ttsUsd: "0.300000", imagesUsd: "0.000000", totalUsd: "0.300000", monthUsd: "0.300000",
+        estimated: false, unknownCalls: 0,
+      },
+      {
+        bucket: "other", deckId: null, title: null, kind: null,
+        generationUsd: "0.050000", ttsUsd: "0.000000", imagesUsd: "0.000000", totalUsd: "0.050000", monthUsd: "0.050000",
+        estimated: false, unknownCalls: 0,
+      },
+    ]);
+
+    expect(nov.children).toEqual([
+      {
+        childId: y, name: "Ala", deleted: false, sessions: 1, costUsd: "0.000000", gradingUsd: "0.000000", speechUsd: "0.000000",
+        activityUsd: "0.000000", perSessionUsd: "0.000000", estimated: false, unknownCalls: 0,
+      },
+      {
+        childId: x, name: "Ola", deleted: false, sessions: 3, costUsd: "0.010000", gradingUsd: "0.010000", speechUsd: "0.000000",
+        activityUsd: "0.000000", perSessionUsd: "0.003333", estimated: false, unknownCalls: 1,
+      },
+      {
+        childId: z, name: "Zed", deleted: false, sessions: 0, costUsd: "0.000000", gradingUsd: "0.000000", speechUsd: "0.000000",
+        activityUsd: "0.000000", perSessionUsd: null, estimated: false, unknownCalls: 0,
+      },
+      {
+        childId: null, name: null, deleted: true, sessions: 0, costUsd: "0.020000", gradingUsd: "0.000000", speechUsd: "0.000000",
+        activityUsd: "0.020000", perSessionUsd: null, estimated: false, unknownCalls: 0,
+      },
+    ]);
+
+    const oct = await readParentCosts(services, { month: "2026-10" });
+    expect(oct.totals).toMatchObject({ costUsd: "1.500000", estimatedUsd: "0.000000", calls: 2 });
+    expect(oct.decks.map((row) => [row.deckId, row.totalUsd, row.monthUsd])).toEqual([
+      [deckB, "2.000000", "0.000000"],
+      [deckA, "1.850000", "1.500000"],
+      [null, "0.300000", "0.000000"],
+      [null, "0.050000", "0.000000"],
+    ]);
+    expect(oct.children.map((row) => [row.name, row.sessions])).toEqual([["Ala", 0], ["Ola", 1], ["Zed", 0]]);
+  });
+});
+
+describe("parent costs API", () => {
+  beforeEach(async () => {
+    await truncateCoreTables();
+  });
+
+  function costsRequest(cookie?: string, month = "2026-10"): Request {
+    return new Request(`http://localhost:3000/api/v1/parent/costs?month=${month}`, {
+      method: "GET",
+      headers: { host: "localhost:3000", ...(cookie ? { cookie: `parent_session=${cookie}` } : {}) },
+    });
+  }
+
+  it("requires a parent session", async () => {
+    const { services } = buildTestServices();
+    const response = await handleParentApi(costsRequest(), services);
+    expect(response.status).toBe(401);
+  });
+
+  it("returns the report with no-store for a parent session", async () => {
+    const { services } = buildTestServices();
+    await setupParent(services, "koszty-pin-1");
+    const { token } = await loginParent(services, "koszty-pin-1");
+
+    const response = await handleParentApi(costsRequest(token), services);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = (await response.json()) as ParentCostsDto;
+    expect(ParentCostsDtoSchema.safeParse(body).success).toBe(true);
+    expect(body.month).toBe("2026-10");
   });
 });

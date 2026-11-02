@@ -34,7 +34,7 @@ export {
   SESSION_ACTIVITY_REVIEW_DEADLINE_MS,
   type SessionActivityErrorCode,
 } from "./modules/learning";
-export { readParentWorkCard } from "./modules/reporting";
+export { readParentWorkCard, readParentCosts } from "./modules/reporting";
 export {
   isParentSetupRequired,
   setupParent,
