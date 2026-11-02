@@ -23,6 +23,14 @@
  * tokenizacji i zachować determinizm.
  */
 
+/** Rozwinięcia skrótu „'s”: „… is” albo „… has” (w tej kolejności). */
+function isOrHas(word: string): readonly (readonly string[])[] {
+  return [
+    [word, "is"],
+    [word, "has"],
+  ];
+}
+
 /** Mapa: skrót → lista rozwinięć; każde rozwinięcie to sekwencja tokenów. */
 export const CONTRACTIONS: Readonly<Record<string, readonly (readonly string[])[]>> = {
   // --- Przeczenia operatorów (jednoznaczne), z formami bez apostrofu z briefu. ---
@@ -68,22 +76,14 @@ export const CONTRACTIONS: Readonly<Record<string, readonly (readonly string[])[
   "it'll": [["it", "will"]],
 
   // --- Wieloznaczne: 's → is | has. ---
-  "he's": [
-    ["he", "is"],
-    ["he", "has"],
-  ],
-  "she's": [
-    ["she", "is"],
-    ["she", "has"],
-  ],
-  "it's": [
-    ["it", "is"],
-    ["it", "has"],
-  ],
-  "that's": [
-    ["that", "is"],
-    ["that", "has"],
-  ],
+  "he's": isOrHas("he"),
+  "she's": isOrHas("she"),
+  "it's": isOrHas("it"),
+  "that's": isOrHas("that"),
+  // Ramy pytań i „there is” z podręczników („Where's the…?”, „There's a…”, „What's…?”).
+  "what's": isOrHas("what"),
+  "where's": isOrHas("where"),
+  "there's": isOrHas("there"),
 
   // --- Wieloznaczne: 'd → would | had. ---
   "i'd": [

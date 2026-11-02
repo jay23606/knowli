@@ -77,6 +77,13 @@ describe("englishNormalizer — skróty wieloznaczne (iloczyn wariantów)", () =
     expect(variants).toContain("i had go");
   });
 
+  it("where's, there's, what's → … is | … has (ramy z podręcznika)", () => {
+    expect(shareVariant("Where's the box?", "where is the box")).toBe(true);
+    expect(shareVariant("There's a lamp in the hall.", "there is a lamp in the hall")).toBe(true);
+    expect(shareVariant("What's the weather like?", "what is the weather like")).toBe(true);
+    expect(variantStrings("there's been")).toContain("there has been");
+  });
+
   it("wont (bez apostrofu) rozwija się do will not — decyzja przedmiotu mimo kolizji z rzeczownikiem", () => {
     expect(shareVariant("he wont stop", "he will not stop")).toBe(true);
   });
