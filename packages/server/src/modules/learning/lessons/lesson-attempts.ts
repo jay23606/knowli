@@ -47,6 +47,7 @@ import {
   type ObjectiveGrade,
 } from "../../../domain/lessons/evaluate";
 import type { GraderInput } from "../../../ports/ai";
+import { withUsageScope } from "../../../ports/usage";
 import type { LearningObjective, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { BASE_ERROR_CATEGORIES } from "../../../domain/lessons/base-error-categories";
 import {
@@ -1459,7 +1460,9 @@ export async function submitLessonAttempt(services: Services, input: AttemptInpu
     grader.provider.promptVersionForInput?.(graderInput) ?? grader.provider.promptVersion;
   try {
     const signal = AbortSignal.timeout(phase1.timeoutMs);
-    const raw = await grader.provider.grade(graderInput, signal);
+    // Koszt oceny należy do sesji i dziecka (spec kosztów §4.1); zakres tylko wokół wywołania modelu.
+    const session = phase1.start.session;
+    const raw = await withUsageScope({ sessionId: session.id, childId: session.childId }, () => grader.provider.grade(graderInput, signal));
     if (graderInput.school) {
       schoolVerdict = validateSchoolVerdict(raw, {
         requiredElementIds: graderInput.school.requiredElements.map((el) => el.id),

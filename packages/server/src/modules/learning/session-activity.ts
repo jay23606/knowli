@@ -29,6 +29,7 @@ import { AppError } from "../../errors";
 import { assignmentText } from "../../domain/lessons/evaluate";
 import type { SessionActivityReviewTask } from "../../ports/ai";
 import { SessionActivityProviderError } from "../../ports/session-activity-error";
+import { withUsageScope } from "../../ports/usage";
 
 /**
  * Ocena aktywności sesji (spec client-reward-time): FE dostarcza JEDEN raport
@@ -91,7 +92,7 @@ type AcceptancePlan =
   | { kind: "stored"; review: SessionActivityReviewRecord }
   | { kind: "already_started" }
   | { kind: "expired" }
-  | { kind: "fresh"; stored: StoredReport; reviewTasks: SessionActivityReviewTask[]; facts: { durationSeconds: number } };
+  | { kind: "fresh"; childId: string; stored: StoredReport; reviewTasks: SessionActivityReviewTask[]; facts: { durationSeconds: number } };
 
 async function lockSession(tx: Tx, sessionId: string) {
   const [identity] = await tx.select({ childId: learningSessions.childId }).from(learningSessions).where(eq(learningSessions.id, sessionId));
@@ -510,6 +511,7 @@ async function acceptSessionActivityReview(
     }
     return {
       kind: "fresh",
+      childId: session.childId,
       stored,
       reviewTasks: reviewTasksOf(stored, new Map(parsed.tasks.map((task) => [task.taskId, task]))),
       facts,
@@ -554,7 +556,10 @@ async function settleAcceptedSessionActivity(
   const timer = setTimeout(() => controller.abort(), services.sessionActivity.timeoutMs);
   let raw: unknown;
   try {
-    raw = await services.sessionActivity.provider.review({ tasks: plan.reviewTasks }, controller.signal);
+    // Koszt oceny należy do sesji i dziecka (spec kosztów §4.1); dziecko z wiersza sesji
+    // zablokowanego przy przyjęciu raportu. Zakres tylko wokół wywołania modelu.
+    const reviewer = services.sessionActivity.provider;
+    raw = await withUsageScope({ sessionId, childId: plan.childId }, () => reviewer.review({ tasks: plan.reviewTasks }, controller.signal));
   } catch (error) {
     clearTimeout(timer);
     const code: SessionActivityErrorCode = (error as { name?: unknown })?.name === "AbortError" ? "model_timeout" : "model_failed";
