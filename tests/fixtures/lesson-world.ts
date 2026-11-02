@@ -18,6 +18,8 @@ export interface LessonWorld {
   richKeys?: { notice: string; choice: string; gap: string; order: string };
   /** Ćwiczenie słuchowe (tylko gdy `listenChoice`). */
   listen?: LessonWorldListen;
+  /** Nagranie lektora historyjki (tylko gdy `story.audio`). */
+  storyAudio?: { assetId: string; fingerprint: string };
 }
 
 export interface LessonWorldOptions {
@@ -78,7 +80,48 @@ export interface LessonWorldOptions {
    * zasobu). `stem` z jedną luką; opcje `plays`/`play` (poprawna `plays`).
    */
   listenChoice?: { audio: "ready" | "pending" | "failed" | "none"; stem?: string };
+  /**
+   * Historyjka na koniec sesji w `lesson_context` wersji (przed publikacją —
+   * kontekst opublikowanej wersji jest niezmienny). `audio` dosiewa nagranie
+   * lektora: wiersz `lesson_story_assets` i zasób TTS (`ready`/`pending`)
+   * o fingerprincie oczekiwanym przez wiersz, także przed publikacją (trigger
+   * `lesson_story_assets_immutable`).
+   */
+  story?: { value: LessonStoryFixture; audio?: "ready" | "pending" };
 }
+
+/** Historyjka w kształcie zapisu `lesson_context.story`. */
+export interface LessonStoryFixture {
+  sentences: string[];
+  questions: { id: string; question: string; options: { id: string; text: string }[]; correctOption: string }[];
+}
+
+/** Historyjka testowa: zdania spoza puli `richPool`, `q1` → `b`, `q2` → `a`. */
+export const STORY_FIXTURE: LessonStoryFixture = {
+  sentences: ["Sam has a red bike.", "He rides it to school.", "His sister walks.", "They meet at the park."],
+  questions: [
+    {
+      id: "q1",
+      question: "Jaki rower ma Sam?",
+      options: [
+        { id: "a", text: "niebieski" },
+        { id: "b", text: "czerwony" },
+        { id: "c", text: "zielony" },
+      ],
+      correctOption: "b",
+    },
+    {
+      id: "q2",
+      question: "Gdzie spotykają się dzieci?",
+      options: [
+        { id: "a", text: "w parku" },
+        { id: "b", text: "w szkole" },
+        { id: "c", text: "w domu" },
+      ],
+      correctOption: "a",
+    },
+  ],
+};
 
 /** Ćwiczenie słuchowe zasiane przez `listenChoice`. */
 export interface LessonWorldListen {
@@ -128,6 +171,7 @@ export async function lessonWorld(sourcePool: Pool, options: LessonWorldOptions 
       examples: { [objectiveId]: ["He plays football."] },
       material: "Present simple: trzecia osoba liczby pojedynczej dodaje -s.",
       instruction: "Ćwicz -s w 3. osobie.",
+      ...(options.story ? { story: options.story.value } : {}),
     });
 
     const title = options.title ?? "Present simple";
@@ -191,6 +235,7 @@ export async function lessonWorld(sourcePool: Pool, options: LessonWorldOptions 
       );
       if (audio) await attachLessonFeedbackAudio(pool, versionId, audio, "explanation_audio");
     }
+    const storyAudio = options.story?.audio ? await attachLessonStoryAudio(pool, versionId, options.story.audio) : undefined;
     if (options.publish !== false) {
       await pool.query(
         "update learning_app.deck_versions set state = 'published', published_at = $2 where id = $1",
@@ -285,6 +330,7 @@ export async function lessonWorld(sourcePool: Pool, options: LessonWorldOptions 
       objectiveId,
       ...(options.richPool ? { richKeys: RICH_KEYS } : {}),
       ...(listen ? { listen } : {}),
+      ...(storyAudio ? { storyAudio } : {}),
     };
     await client.query("commit");
     return lesson;
@@ -683,4 +729,37 @@ export async function attachLessonFeedbackAudio(
     byRevision.set(row.id, assetId);
   }
   return byRevision;
+}
+
+/**
+ * Nagranie lektora historyjki wersji szkicu: zasób TTS (`ready` z kompletem pól
+ * gotowego blobu albo `pending`) i wiersz `lesson_story_assets` z jego
+ * fingerprintem jako oczekiwanym.
+ */
+async function attachLessonStoryAudio(
+  pool: Pool,
+  versionId: string,
+  state: "ready" | "pending",
+): Promise<{ assetId: string; fingerprint: string }> {
+  const assetId = randomUUID();
+  const fingerprint = `fp-story-${versionId}`;
+  if (state === "ready") {
+    await pool.query(
+      `insert into learning_app.media_assets
+         (id, kind, fingerprint, generation_number, state, storage_key, content_sha256, mime_type, byte_count, provider, model, metadata)
+       values ($1, 'tts', $2, 1, 'ready', $3, $4, 'audio/mpeg', 1024, 'fake', 'fake-tts', '{}'::jsonb)`,
+      [assetId, fingerprint, `blob/${assetId}`, `sha-${assetId}`],
+    );
+  } else {
+    await pool.query(
+      `insert into learning_app.media_assets (id, kind, fingerprint, generation_number, state, provider, model, metadata)
+       values ($1, 'tts', $2, 1, 'pending', 'fake', 'fake-tts', '{}'::jsonb)`,
+      [assetId, fingerprint],
+    );
+  }
+  await pool.query(
+    "insert into learning_app.lesson_story_assets (deck_version_id, asset_id, expected_fingerprint) values ($1, $2, $3)",
+    [versionId, assetId, fingerprint],
+  );
+  return { assetId, fingerprint };
 }

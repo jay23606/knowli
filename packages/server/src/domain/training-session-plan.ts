@@ -100,17 +100,20 @@ const STORY_EXERCISE_TYPE = { story: "lesson_story", story_question: "lesson_sto
 
 /**
  * Sloty historyjki to jeden ciągły blok na końcu planu: najpierw dokładnie jeden
- * `story`, potem same `story_question`, wszystkie nieoceniane i z typem
- * ćwiczenia zgodnym z rodzajem slotu. Plan bez historyjki jest poprawny.
+ * `story`, potem same `story_question`, wszystkie nieoceniane, z typem
+ * ćwiczenia i rodzajem promptu zgodnymi z rodzajem slotu. Plan bez historyjki jest poprawny.
  */
-function hasValidStorySuffix(slots: readonly { taskKind: LessonTaskKind; assessed: boolean; exerciseType: string }[]): boolean {
+function hasValidStorySuffix(slots: readonly { taskKind: LessonTaskKind; assessed: boolean; exerciseType: string; prompt: TaskPrompt }[]): boolean {
   const isStory = (kind: LessonTaskKind): boolean => kind === "story" || kind === "story_question";
-  // Typ historyjki bez slotu historyjki (np. `exercise` z `lesson_story`) też jest błędem.
-  if (slots.some((slot) => !isStory(slot.taskKind) && isLessonStoryTaskType(slot.exerciseType))) return false;
+  // Typ albo prompt historyjki bez slotu historyjki (np. `exercise` z `lesson_story`) też jest błędem.
+  if (slots.some((slot) => !isStory(slot.taskKind) && (isLessonStoryTaskType(slot.exerciseType) || isLessonStoryTaskType(slot.prompt.kind)))) {
+    return false;
+  }
   const first = slots.findIndex((slot) => isStory(slot.taskKind));
   if (first === -1) return true;
   return slots.slice(first).every((slot, index) => {
     const expected = index === 0 ? "story" : "story_question";
-    return slot.taskKind === expected && !slot.assessed && slot.exerciseType === STORY_EXERCISE_TYPE[expected];
+    const exerciseType = STORY_EXERCISE_TYPE[expected];
+    return slot.taskKind === expected && !slot.assessed && slot.exerciseType === exerciseType && slot.prompt.kind === exerciseType;
   });
 }

@@ -337,6 +337,7 @@ describe("readStoredLessonStory", () => {
     ["7 sentences", (s) => ({ ...s, sentences: Array(7).fill("Tom has a cat.") })],
     ["0 questions", (s) => ({ ...s, questions: [] })],
     ["3 questions", (s) => ({ ...s, questions: [s.questions[0], s.questions[0], s.questions[0]] })],
+    ["duplicate question ids", (s) => ({ ...s, questions: [s.questions[0], { ...s.questions[0], question: "Kto jest mały?" }] })],
     ["question with 2 options", (s) => ({ ...s, questions: [{ ...s.questions[0], options: s.questions[0].options.slice(0, 2) }] })],
     ["duplicate option id", (s) => ({
       ...s,

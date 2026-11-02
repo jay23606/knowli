@@ -86,6 +86,15 @@ describe("prywatny plan treningu lekcji — sufiks historyjki", () => {
     ["story_question taskKind with a story exercise type", lessonPlan(["exercise", "story", "story_question"], {
       slots: [slot(0, "exercise"), slot(1, "story"), slot(2, "story_question", { exerciseType: "lesson_story" })],
     })],
+    ["a story slot with a question prompt", lessonPlan(["exercise", "story", "story_question"], {
+      slots: [slot(0, "exercise"), slot(1, "story", { prompt: slot(2, "story_question").prompt }), slot(2, "story_question")],
+    })],
+    ["a question slot with a story prompt", lessonPlan(["exercise", "story", "story_question"], {
+      slots: [slot(0, "exercise"), slot(1, "story"), slot(2, "story_question", { prompt: slot(1, "story").prompt })],
+    })],
+    ["an exercise slot with a story prompt", lessonPlan(["exercise", "exercise"], {
+      slots: [slot(0, "exercise"), slot(1, "exercise", { prompt: slot(1, "story").prompt })],
+    })],
   ])("rejects %s", (_name, value) => {
     expect(() => readLessonTrainingSessionPlan(value)).toThrow("invalid_training_session_plan");
   });

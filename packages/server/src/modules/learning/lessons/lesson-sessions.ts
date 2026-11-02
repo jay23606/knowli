@@ -35,6 +35,7 @@ import {
 } from "../../../domain/lessons/scheduler";
 import { DEFAULT_LESSON_POLICY } from "../../../domain/lessons/lesson-policy";
 import { renderCard } from "../../../domain/lessons/card";
+import { readStoredLessonStory, type LessonStory } from "../../../domain/lessons/story";
 import { computeTargetKey } from "../../../domain/target-key";
 import { isTestPreparationWindow } from "../../../domain/test-preparation";
 import type { ProgressStatus } from "../../../domain/types";
@@ -51,6 +52,7 @@ import {
   type MaterializedLessonTask,
 } from "./lesson-materialize";
 import { listenStimulusAssetId } from "./listen-stimulus";
+import { lessonStorySlots, loadLessonStoryAudio } from "./lesson-story-tasks";
 
 /**
  * Sesja lekcji po stronie serwera (zadanie 13). `sessions.ts` deleguje tu dla
@@ -91,14 +93,17 @@ export interface LessonContextShape {
   examples: Record<string, string[]>;
   dynamicTopic?: DynamicTopicData;
   subjectTitlePl?: string;
+  /** Zatwierdzona historyjka na koniec sesji (przedmioty z `lessonStory`); błędny zapis = brak. */
+  story?: LessonStory;
 }
 
 /** Odczyt `lesson_context` z wersji sesji; rzuca, gdy brak (nie powinno się zdarzyć dla lekcji). */
 export function lessonContextOf(version: Pick<typeof deckVersions.$inferSelect, "lessonContext">): LessonContextShape {
-  const raw = version.lessonContext as Partial<LessonContextShape> | null;
+  const raw = version.lessonContext as (Partial<Omit<LessonContextShape, "story">> & { story?: unknown }) | null;
   if (!raw || typeof raw.subjectId !== "string" || typeof raw.topicId !== "string") {
     throw new AppError("internal", { message: "lesson version without lesson_context" });
   }
+  const story = readStoredLessonStory(raw.story);
   return {
     subjectId: raw.subjectId,
     topicId: raw.topicId,
@@ -107,6 +112,7 @@ export function lessonContextOf(version: Pick<typeof deckVersions.$inferSelect, 
     examples: raw.examples ?? {},
     ...(raw.dynamicTopic ? { dynamicTopic: raw.dynamicTopic } : {}),
     ...(typeof raw.subjectTitlePl === "string" ? { subjectTitlePl: raw.subjectTitlePl } : {}),
+    ...(story ? { story } : {}),
   };
 }
 
@@ -628,6 +634,11 @@ async function loadLessonPlanningSnapshot(
   };
 }
 
+/** Slot planu znany selektorowi (karta albo ćwiczenie) — bez slotów historyjki. */
+function isSchedulerSlot(slot: LessonTrainingSessionSlot): slot is LessonTrainingSessionSlot & { taskKind: LessonSessionTaskKind } {
+  return slot.taskKind !== "story" && slot.taskKind !== "story_question";
+}
+
 /** Składa wejście selektora z migawki i wywołuje go bez ponownych odczytów bazy. */
 function planLessonTaskFromSnapshot(
   services: Services,
@@ -642,12 +653,12 @@ function planLessonTaskFromSnapshot(
   const exposedTargetKeys = new Set([...snapshot.exposedTargetKeys, ...plannedPrefix.flatMap((slot) => slot.revealsTargetKeys)]);
   const cardIndexByObjective = new Map(snapshot.cardIndexByObjective);
   // Sloty historyjki są doklejane po zaplanowaniu ćwiczeń i nie wchodzą do historii planisty.
-  const sessionHistory = [...snapshot.sessionHistory, ...plannedPrefix.filter((slot) => slot.taskKind !== "story" && slot.taskKind !== "story_question").map((slot) => ({
+  const sessionHistory = [...snapshot.sessionHistory, ...plannedPrefix.filter(isSchedulerSlot).map((slot) => ({
     ordinal: slot.ordinal,
     itemId: slot.taskKind === "exercise" ? slot.itemId : null,
     objectiveId: String(slot.context.objectiveId ?? ""),
     exerciseType: slot.exerciseType as LessonExerciseType,
-    kind: slot.taskKind as LessonSessionTaskKind,
+    kind: slot.taskKind,
   }))];
   for (const slot of plannedPrefix) {
     if (slot.taskKind === "card") {
@@ -777,6 +788,21 @@ export async function createLessonTrainingSessionPlan(
       reason = plan.reason;
     }
     pushSlot(taskId, materialized, taskKind, reason);
+  }
+  // Historyjka na koniec sesji (design „Historyjka lekcji” §8.2): poza budżetem,
+  // tylko przy włączonej fladze przedmiotu, zatwierdzonej historyjce i co najmniej
+  // jednym ocenianym slocie. Kotwica jak karty: pierwsze ćwiczenie pierwszego celu.
+  const story = planningSnapshot?.context.story;
+  if (planningSnapshot && planningSnapshot.subject.lessonStory === true && story && assessed > 0) {
+    const { exercises, objectiveOrder, subject } = planningSnapshot;
+    const anchor = exercises.find((e) => e.payload.objectiveId === objectiveOrder[0]) ?? exercises[0]!;
+    slots.push(...lessonStorySlots({
+      story,
+      subject,
+      anchor: { itemId: anchor.itemId, revisionId: anchor.revisionId },
+      audioAssetId: await loadLessonStoryAudio(tx, session.deckVersionId),
+      firstOrdinal: slots.length,
+    }));
   }
   const snapshot = { version: 1 as const, kind: "lesson" as const, taskBudget: Math.max(1, assessed), slots };
   const validated = readLessonTrainingSessionPlan(snapshot);

@@ -190,7 +190,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 /**
  * Strukturalny odczyt `lesson_context.story` dla sesji: zwraca historyjkę tylko
  * wtedy, gdy da się z niej bezpiecznie zbudować zadania (zdania, 1–2 pytania po
- * 3 opcje o unikalnych id, wskazana poprawna opcja). Nie ponawia walidacji
+ * 3 opcje o unikalnych id, unikalne id pytań, wskazana poprawna opcja). Nie ponawia walidacji
  * treści (długości, kolizje) — ta należy do zatwierdzania materiału. Błędny
  * zapis daje `undefined`, czyli sesję bez historyjki.
  */
@@ -207,6 +207,8 @@ export function readStoredLessonStory(value: unknown): LessonStory | undefined {
     if (!read) return undefined;
     readQuestions.push(read);
   }
+  // Id pytania trafia do klucza zadania (`storyQuestionId`), więc musi być unikalne.
+  if (new Set(readQuestions.map((question) => question.id)).size !== readQuestions.length) return undefined;
   return { sentences: sentences as string[], questions: readQuestions };
 }
 
