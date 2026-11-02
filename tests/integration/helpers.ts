@@ -1,9 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { inject } from "vitest";
+import type { TaskDto, TaskPrompt } from "@learning/contracts";
 import {
   AppError,
+  completePresentation,
   createDatabase,
   createServices,
   startSession,
+  submitAttempt,
   MAX_AUDIO_BYTES,
   MAX_DECK_COVER_BYTES,
   MULTIPART_OVERHEAD_BYTES,
@@ -256,3 +260,90 @@ export async function countRows(table: string): Promise<number> {
 }
 
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Kończy wydane zadanie sesji lekcji (wspólne dla testów historyjki): karta
+ * i historyjka — `completePresentation`; pytanie historyjki — wybór poprawnej
+ * opcji z klucza (albo innej przy `correct: false`); pozostałe typy — odpowiedź
+ * z prywatnego klucza zadania (zamknięte: poprawne opcje/kolejność/przypisania,
+ * tekstowe: odpowiedź kanoniczna; przy `correct: false` odpowiedź błędna).
+ */
+export async function finishLessonTask(services: Services, task: TaskDto, options: { correct?: boolean } = {}): Promise<void> {
+  const correct = options.correct ?? true;
+  if (task.exerciseType === "lesson_card" || task.exerciseType === "lesson_story") {
+    await completePresentation(services, { taskId: task.taskId });
+    return;
+  }
+  const { pool } = testDatabase();
+  const key = (await pool.query<{ answerKey: Record<string, unknown> }>(
+    `select answer_key as "answerKey" from learning_app.session_tasks where id = $1`, [task.taskId],
+  )).rows[0]!.answerKey;
+  const base = { taskId: task.taskId, clientAttemptId: randomUUID() };
+  const correctOptionId = key.correctOptionId as string | undefined;
+  if (correctOptionId !== undefined) {
+    const optionIds = Object.keys((key.optionValues as Record<string, string> | undefined) ?? {});
+    const optionId = correct ? correctOptionId : optionIds.find((id) => id !== correctOptionId) ?? correctOptionId;
+    await submitAttempt(services, { ...base, modality: "choice", optionId });
+    return;
+  }
+  if (Array.isArray(key.correctOptionIds)) {
+    const ids = key.correctOptionIds as string[];
+    await submitAttempt(services, { ...base, modality: "selection", itemIds: correct ? ids : ids.slice(0, 1) });
+    return;
+  }
+  if (Array.isArray(key.assignments)) {
+    const assignments = key.assignments as { itemId: string; targetId: string }[];
+    const rotated = assignments.map((entry, index) => ({ itemId: entry.itemId, targetId: assignments[(index + 1) % assignments.length]!.targetId }));
+    await submitAttempt(services, { ...base, modality: "assignment", assignments: correct ? assignments : rotated });
+    return;
+  }
+  if (Array.isArray(key.itemIds)) {
+    const itemIds = key.itemIds as string[];
+    await submitAttempt(services, { ...base, modality: "sequence", itemIds: correct ? itemIds : [...itemIds].reverse() });
+    return;
+  }
+  await submitAttempt(services, { ...base, modality: "text", text: correct ? key.answer as string : "zzz qqq" });
+}
+
+/**
+ * Tylko dla testów odpowiedzi historyjki przed jej wydawaniem przez `nextTask`:
+ * wstawia `session_tasks` ze slotu `training_plan` (`index`-ty slot danego
+ * rodzaju; te same pola co `issueNextLessonPlanTask`, kolejny `ordinal`) i zwraca
+ * DTO z promptem slotu. Nie zapisuje zdarzenia `prompt_issued` z ekspozycjami
+ * zdań — to część prawdziwego wydania. `issued_at` = najpóźniejsze wydanie
+ * w sesji albo jej start (czas zegara testu, nie bazy).
+ */
+export async function issuePlanSlotForTest(
+  pool: Pool,
+  sessionId: string,
+  taskKind: "story" | "story_question",
+  index = 0,
+): Promise<TaskDto> {
+  interface Slot {
+    taskId: string; taskKind: string; exerciseType: string; itemRevisionId: string;
+    prompt: TaskPrompt; answerKey: Record<string, unknown>; context: Record<string, unknown>;
+  }
+  const session = (await pool.query<{ childId: string; deckVersionId: string; plan: { slots: Slot[] } | null }>(
+    `select child_id as "childId", deck_version_id as "deckVersionId", training_plan as plan
+       from learning_app.learning_sessions where id = $1`, [sessionId],
+  )).rows[0]!;
+  const slot = (session.plan?.slots ?? []).filter((candidate) => candidate.taskKind === taskKind)[index];
+  if (!slot) throw new Error(`brak slotu ${taskKind}[${index}] w planie sesji ${sessionId}`);
+  const ordinal = (await pool.query<{ count: number }>(
+    "select count(*)::int as count from learning_app.session_tasks where session_id = $1", [sessionId],
+  )).rows[0]!.count;
+  await pool.query(
+    `insert into learning_app.session_tasks
+       (id, session_id, child_id, deck_version_id, item_revision_id, ordinal, exercise_type, direction, state,
+        public_prompt, answer_key, context, issued_at)
+     select $1, $2, $3, $4, $5, $6, $7, null, 'issued', $8, $9, $10,
+            greatest(s.started_at, (select max(t.issued_at) from learning_app.session_tasks t where t.session_id = s.id))
+       from learning_app.learning_sessions s where s.id = $2`,
+    [slot.taskId, sessionId, session.childId, session.deckVersionId, slot.itemRevisionId, ordinal, slot.exerciseType,
+      JSON.stringify(slot.prompt), JSON.stringify(slot.answerKey), JSON.stringify(slot.context)],
+  );
+  return {
+    taskId: slot.taskId, sessionId, ordinal, exerciseType: slot.exerciseType as TaskDto["exerciseType"],
+    direction: null, state: "issued", prompt: slot.prompt, remainingAssessed: 0,
+  };
+}

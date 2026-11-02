@@ -1249,7 +1249,7 @@ export async function completePresentation(
     if (session.mode === "daily_round") {
       throw new AppError("conflict", { message: "daily round sessions are retired" });
     }
-    if (task.exerciseType !== "exposure" && task.exerciseType !== "lesson_card") {
+    if (task.exerciseType !== "exposure" && task.exerciseType !== "lesson_card" && task.exerciseType !== "lesson_story") {
       throw new AppError("validation", { message: "task is not a presentation" });
     }
     if (task.state === "completed") {

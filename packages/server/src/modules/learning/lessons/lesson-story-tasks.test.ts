@@ -123,6 +123,7 @@ describe("lessonStorySlots", () => {
       const json = JSON.stringify(slot.prompt);
       expect(json).not.toContain("correctOption");
       expect(json).not.toContain("storyQuestionId");
+      expect(json).not.toContain("targetKey");
       for (const id of SOURCE_IDS) expect(json).not.toContain(id);
     }
   });
