@@ -541,6 +541,9 @@ odpowiednie fragmenty §4–§8 i §11.
 - **Stan krytyka** — `ReviewerState` (`disabled` | `not_configured` | `ready`); powód
   `limit` w raporcie obok `disabled`, `not_configured`, `failed`, `timeout`; z `disabled`
   env krytyka nie jest parsowane.
+- **`reasonPl`** — polski, jeden wiersz, 1–120 znaków; wymusza to parser werdyktów po stronie
+  serwera (wyrażenie regularne w `readVerdict`), nie schemat JSON; niezgodny werdykt jest
+  nieczytelny i pomijany.
 - **Poprawka odrzucona** — `fixRejected` jest flagą w `changed`/`notes` i tekstem w panelu
   z `messages.ts`, a nie doklejonym tekstem powodu.
 - **Tożsamość i odciski** — `machine` (odcisk i flaga przejrzenia) oraz `fingerprint` w
