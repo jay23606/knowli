@@ -146,6 +146,34 @@ describe("lessonCoverageGaps", () => {
   });
 });
 
+describe("lessonCoverageGaps: ignoreExposure (raport przed/po)", () => {
+  it("ignoreExposure liczy ujawnione ćwiczenia jak dawniej: brak znika i nie ma excluded", () => {
+    const input = {
+      subject: englishChapterSubject,
+      exercises: [
+        choice(), choice(), choice(),
+        gapExercise("It's under the ___.", "bed"), gapExercise("I am ___.", "happy"), gapExercise("She is ___.", "sad"),
+        translation("I'm hungry."),
+        translation("I'm thirsty."),
+      ],
+      examples: { [A]: ["I'm hungry."] },
+      objectiveIds: [A],
+    };
+    expect(lessonCoverageGaps(input)).toHaveLength(1);
+    expect(lessonCoverageGaps({ ...input, ignoreExposure: true })).toEqual([]);
+  });
+
+  it("ignoreExposure równa się legacyCoverage także przy ujawnieniach", () => {
+    const subject = schoolSubject;
+    const exercises = [
+      choice(), choice(), choice(), gapExercise("A ___.", "x"), gapExercise("B ___.", "y"), gapExercise("C ___.", "z"), gapExercise("D ___.", "w"),
+      translation("Warszawa"), translation("Kraków"),
+    ];
+    expect(lessonCoverageGaps({ subject, exercises, examples: { [A]: ["Warszawa"] }, objectiveIds: [A], ignoreExposure: true }))
+      .toEqual(legacyCoverage(subject, exercises, [A]));
+  });
+});
+
 describe("stageDeficits", () => {
   it("stageDeficits: rozdział 3/3/0 przy minimach 3/3/2 → { guided: 0, productive: 0, independent: 2 }", () => {
     const input = {

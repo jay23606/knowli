@@ -600,7 +600,7 @@ export const EDITOR_CARD_EXAMPLE = "She plays tennis.";
 async function seedEditorPool(
   pool: Pool,
   version: { deckId: string; versionId: string },
-  options: { leakCardExample?: boolean } = {},
+  options: { leakCardExample?: boolean; spareIndependent?: boolean } = {},
 ): Promise<void> {
   const objectiveId = "english_grammar.present_simple.third_person_s";
   const exercises = [
@@ -618,6 +618,9 @@ async function seedEditorPool(
       focus: "plays",
     },
     { type: "lesson_open_answer", prompt: "What does she do?", answer: "She works at home.", focus: "works" },
+    ...(options.spareIndependent === true
+      ? [{ type: "lesson_open_answer", prompt: "What does it do?", answer: "It runs fast.", focus: "runs" } as const]
+      : []),
   ] as const;
   for (const [index, exercise] of exercises.entries()) {
     const itemId = randomUUID();
@@ -664,10 +667,15 @@ async function seedEditorPool(
 /**
  * Jak pula edytora z `editorReady`, ale jedno `lesson_open_answer` ma odpowiedź równą
  * przykładowi karty swojego zagadnienia (`EDITOR_CARD_EXAMPLE`) — ujawnione rozwiązanie
- * ćwiczenia samodzielnego. Wywołaj na szkicu bez `editorReady` (pula nie może się podwoić).
+ * ćwiczenia samodzielnego. `spareIndependent` dodaje trzecie, nieujawnione ćwiczenie samodzielne
+ * (pokrycie wystarcza mimo ujawnienia). Wywołaj na szkicu bez `editorReady` (pula nie może się podwoić).
  */
-export async function seedEditorPoolWithLeak(pool: Pool, version: { deckId: string; versionId: string }): Promise<void> {
-  await seedEditorPool(pool, version, { leakCardExample: true });
+export async function seedEditorPoolWithLeak(
+  pool: Pool,
+  version: { deckId: string; versionId: string },
+  options: { spareIndependent?: boolean } = {},
+): Promise<void> {
+  await seedEditorPool(pool, version, { leakCardExample: true, ...options });
 }
 
 /**

@@ -25,6 +25,11 @@ export interface LessonCoverageInput {
   readonly examples: Readonly<Record<string, readonly string[]>>;
   /** Zagadnienia lekcji w jej kolejności. */
   readonly objectiveIds: readonly string[];
+  /**
+   * Liczy także ujawnione ćwiczenia samodzielne (pokrycie sprzed reguły ujawnień) — tylko do
+   * raportu przed/po dla istniejących szkiców; odczyt i publikacja tego nie ustawiają.
+   */
+  readonly ignoreExposure?: boolean;
 }
 
 export type LessonCoverageGap = CoverageGap & { readonly excluded?: number };
@@ -79,7 +84,9 @@ function mergeGaps(base: readonly CoverageGap[], extra: readonly CoverageGap[]):
  */
 export function lessonCoverageGaps(input: LessonCoverageInput): LessonCoverageGap[] {
   const { subject, exercises, examples, objectiveIds } = input;
-  const leaks = findExposureLeaks({ exercises, examples, objectiveOrder: objectiveIds, subject, mode: "coverage" });
+  const leaks = input.ignoreExposure === true
+    ? []
+    : findExposureLeaks({ exercises, examples, objectiveOrder: objectiveIds, subject, mode: "coverage" });
   const leakedIndexes = new Set(leaks.map((leak) => leak.index));
   const excludedByObjective = new Map<string, number>();
   for (const index of leakedIndexes) {

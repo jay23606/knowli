@@ -263,7 +263,7 @@ Po scaleniu, dla ćwiczeń nowych w tym przebiegu: ujawnienie **twarde** usuwa �
 samodzielne, chyba że źródłem jest **nowe** ćwiczenie niesamodzielne, a ofiarą ćwiczenie
 istniejące w szkicu — wtedy usuwane jest źródło (nowe ćwiczenia nie psują istniejących).
 Ujawnienia miękkie nie usuwają. Działa zawsze, także bez krytyka. Usunięcia liczą się do
-`rejectedCount` i `rejectedReasons` („ujawnione rozwiązanie”).
+`rejectedCount` i `rejectedReasons` (klucz powodu: „rozwiązanie widoczne wcześniej”; etykieta listy w edytorze: „Powody odrzuceń przy generowaniu”).
 
 ### 5.3. Dogenerowanie pod etap (bez AI krytyka — wchodzi w PR 1)
 
@@ -372,7 +372,7 @@ interface LessonReviewReport {
 
 `LessonDraftDto` (pola opcjonalne, `packages/contracts`): `review?` (raport z tytułami
 zagadnień zamiast identyfikatorów technicznych; kategorie i stany jako kody mapowane na polskie
-zdania w katalogu komunikatów), `exposureLeaks?: { exerciseId, kind, sourceLabelPl }[]`.
+zdania w katalogu komunikatów), `exposureLeaks?: { exerciseId, kind, source }[]`, gdzie `source` jest strukturalne: `{ kind: "card_example", objectiveId }` albo `{ kind: "exercise", exerciseId }` (polskie ostrzeżenia składa edytor z katalogu komunikatów; pole pomijane, gdy puste i na wersji opublikowanej). Komunikat 409 publikacji bez zmian (`lesson coverage incomplete`, lista braków z `excluded?`); „Pokaż ćwiczenie” tylko dla źródła-ćwiczenia, nie dla karty.
 `LessonDeckDto.review?` — stan przebiegu na żądanie (PR 3).
 
 Edytor (`apps/web/src/parent/lessons/`, Mantine):

@@ -84,7 +84,7 @@ interface LessonContextView {
   interests?: string[];
 }
 
-function readLessonContext(raw: Record<string, unknown> | null): LessonContextView {
+export function readLessonContext(raw: Record<string, unknown> | null): LessonContextView {
   const ctx = (raw ?? {}) as Partial<LessonContextView>;
   return {
     subjectId: ctx.subjectId ?? "",
