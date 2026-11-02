@@ -90,5 +90,6 @@ export const englishGrammarPrompts: SubjectPromptProfile = {
     "Every exercise checks the grammar rule of its objective and nothing else. Distractors of a closed exercise break that rule: " +
     "a distractor that is another correct form for the sentence is a wrong_answer or ambiguous finding. " +
     "Sentence themes are deliberate and may be about anything (there is no parent material in grammar, so do not use off_material); " +
-    "judge only whether the sentence is natural English that a child of about 8 can understand.",
+    "for sentence themes, judge only whether the sentence is natural English that a child of about 8 can understand; " +
+    "the answer, ambiguity and solution-leak checks still apply in full.",
 };

@@ -112,8 +112,9 @@ export const englishChapterPrompts: SubjectPromptProfile = {
   reviewRules:
     "Chapter exercises use ONLY English words, phrases and sentence frames of the parent's material plus basic function words " +
     "(I, you, he, she, we, they, my, a, the, is, are, do, can, and, in, on, this, what, today, very); any other English word " +
-    "is an off_material finding. A gap and the options of a choice sit on a content word of the objective, not on a function word. " +
-    "The Polish stimulus sentence in instructionPl is unambiguous: exactly one English answer fits its meaning. " +
+    "is an off_material finding. A gap or an option is never only function words: it is a content word of the objective, a frame-key word, " +
+    "or a short phrase that holds a frame-key word together with a function word (e.g. 'I'm wearing', 'are you wearing'). " +
+    "The Polish stimulus sentence in instructionPl is unambiguous: one answer fits its meaning, up to equivalent accepted variants. " +
     "In a cloze the gaps are not interchangeable: exactly one bank word fits each gap by its Polish meaning, no two gap words " +
     "could swap places, and the trap word (an extra word of the bank) fits no gap.",
 };
