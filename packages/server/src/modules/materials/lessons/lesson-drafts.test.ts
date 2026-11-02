@@ -511,6 +511,25 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
   });
 });
 
+describe("buildPoolInput — opcje zdań do unikania i celu rundy", () => {
+  const resolved = englishGrammarSubject.topics[0]!;
+  const build = (options?: Parameters<typeof buildPoolInput>[10]) =>
+    buildPoolInput(englishGrammarSubject, resolved, resolved.objectives[0]!.id, 4, "material", undefined, true, [], [], undefined, options);
+
+  it("niepusta lista i cel trafiają do wejścia", () => {
+    const input = build({ avoidSentences: ["He plays football."], purpose: "stage_top_up" });
+    expect(input.avoidSentences).toEqual(["He plays football."]);
+    expect(input.purpose).toBe("stage_top_up");
+  });
+
+  it("brak opcji albo pusta lista: bez pól", () => {
+    for (const input of [build(), build({}), build({ avoidSentences: [] })]) {
+      expect(input).not.toHaveProperty("avoidSentences");
+      expect(input).not.toHaveProperty("purpose");
+    }
+  });
+});
+
 describe("buildDynamicTopicData (wadliwe zagadnienie nie przerywa generacji)", () => {
   const card = (n: number) => ({ title: `Karta ${n}`, body: `Treść karty ${n}.` });
   const raw = (slug: string, cards = [card(1), card(2)], titlePl = `Zagadnienie ${slug}`) =>

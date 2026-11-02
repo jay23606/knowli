@@ -23,6 +23,7 @@ import {
   skillVersions,
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
+import { avoidSentencesFor } from "../../../domain/lessons/avoid-sentences";
 import { explanationTextErrors } from "../../../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
 import { resolveGenerationLeaks } from "../../../domain/lessons/exposure-leaks";
@@ -601,6 +602,18 @@ export function capListenChoiceOverflow(
   return { kept, rejected };
 }
 
+/** Przykłady kart ze szkicu i z bieżącego przebiegu, razem (per zagadnienie: najpierw szkic). */
+function mergeExamples(
+  draft: Readonly<Record<string, readonly string[]>>,
+  fresh: Readonly<Record<string, readonly string[]>>,
+): Record<string, string[]> {
+  const merged: Record<string, string[]> = {};
+  for (const source of [draft, fresh]) {
+    for (const [objectiveId, list] of Object.entries(source)) merged[objectiveId] = [...(merged[objectiveId] ?? []), ...list];
+  }
+  return merged;
+}
+
 /** Składa `LessonPoolInput` dla jednego celu z danych rejestru (port nie zna przedmiotu). */
 export function buildPoolInput(
   subject: SubjectModule,
@@ -613,6 +626,7 @@ export function buildPoolInput(
   existingAnswers: readonly string[],
   existingExercises: readonly LessonExerciseStimulus[] = [],
   interests?: readonly string[],
+  options: { readonly avoidSentences?: readonly string[]; readonly purpose?: LessonPoolInput["purpose"] } = {},
 ): LessonPoolInput {
   // Tematy i reguła ich użycia idą do modelu razem albo wcale (reguła należy do przedmiotu).
   const interestsRule = subject.prompts.interestsRule;
@@ -658,6 +672,8 @@ export function buildPoolInput(
     exerciseExplanations: subject.exerciseExplanations,
     ...(existingAnswers.length > 0 ? { existingAnswers: [...existingAnswers] } : {}),
     ...(existingExercises.length > 0 ? { existingExercises: [...existingExercises] } : {}),
+    ...(options.avoidSentences !== undefined && options.avoidSentences.length > 0 ? { avoidSentences: [...options.avoidSentences] } : {}),
+    ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
   };
 }
 
@@ -1425,6 +1441,8 @@ export async function executeLessonGeneration(services: Services, runId: string,
   // pozostaje egzekwatorem (advisory list z surowych odpowiedzi, deduplikowana).
   const earlierAnswers: string[] = [];
   const earlierExercises: LessonExerciseStimulus[] = [];
+  // Ćwiczenia wcześniejszych partii jako szkice (rozwiązania do listy zdań do unikania).
+  const earlierDrafts: LessonExerciseDraft[] = [];
   // Limity celów runu (zamówiona liczba i przyznany dodatek słuchowy) — egzekwowane po walidacji.
   const objectiveLimits = new Map<string, ObjectiveGenerationLimits>();
   const examples: Record<string, string[]> = {};
@@ -1506,6 +1524,15 @@ export async function executeLessonGeneration(services: Services, runId: string,
           ? [...batch.existingExercises, ...earlierExercises]
           : [],
         input.interests,
+        {
+          // Rozwiązania widziane wcześniej (przykłady kart, szkic i wcześniejsze partie): generator ich nie
+          // powtarza w ćwiczeniach samodzielnych — podpowiedź, egzekwuje ją reguła twarda po generacji.
+          avoidSentences: avoidSentencesFor({
+            examples: mergeExamples(draftExamples, examples),
+            exercises: [...existingDrafts, ...earlierDrafts],
+            subject,
+          }),
+        },
       );
       // Kwoty etapów tylko przy pełnej generacji: przy dogenerowaniu `stageCounts` dzieli same nowe
       // ćwiczenia i nie zna braków szkicu, więc mogłyby odrzucić akurat brakujący etap — tam decyduje kolejność.
@@ -1524,6 +1551,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
       const metadata = collectBatchExerciseMetadata(scoped.exercises, subject.poolDeduplication === "exercise", lessonIdentityOptionsOf(subject));
       earlierAnswers.push(...metadata.answers);
       earlierExercises.push(...metadata.exerciseRecords);
+      earlierDrafts.push(...scoped.exercises.filter(isWellShapedRawExercise).map(toExerciseDraft));
       const rawExamples = result.examples;
       for (const objectiveId of [batch.objectiveId]) {
         const list = rawExamples && typeof rawExamples === "object" ? rawExamples[objectiveId] : undefined;

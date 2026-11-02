@@ -426,6 +426,36 @@ describe("lekcja Angielski — rozdział (integracja)", () => {
       expect(logs).toContain(`[lesson] run=${regen.runId} ujawnienia: usunięte=0 przykłady=1`);
     });
 
+    it("generator dostaje zdania do unikania: druga partia widzi przykłady i rozwiązania pierwszej, dogenerowanie — cały szkic", async () => {
+      const { fakes, services } = await chapterWorld();
+      const { deckId, draft } = await generateChapter(services, CHAPTER_MATERIAL.split("Zagadnienie 3")[0]!);
+      const [first, second] = draft.objectiveIds;
+      const requests = fakes.llm.lessonRequests;
+      expect(requests).toHaveLength(2);
+      expect(requests[0]).not.toHaveProperty("avoidSentences");
+
+      const solutionsOf = (objectiveId: string) => draft.exercises
+        .filter((exercise) => exercise.objectiveId === objectiveId && (exercise.exerciseType === "lesson_gap" || exercise.exerciseType === "lesson_open_answer"))
+        .map((exercise) => (exercise.exerciseType === "lesson_gap" ? exercise.stem!.replace(/_{2,}/u, exercise.answer) : exercise.answer));
+      // Rozwiązania idą w postaci ekspozycji przedmiotu: bez końcowej interpunkcji.
+      const bare = (text: string) => text.replace(/[.!?…\s]+$/u, "");
+      // Rozwiązanie pokrywające się z przykładem karty (ta sama ekspozycja) jest w liście raz — jako przykład.
+      const avoidInSecond = requests[1]!.avoidSentences!;
+      const avoidBare = (list: readonly string[]) => list.map(bare);
+      expect(draft.examples[first!]!.length).toBeGreaterThan(0);
+      for (const example of draft.examples[first!]!) expect(avoidInSecond).toContain(example);
+      for (const solution of solutionsOf(first!)) expect(avoidBare(avoidInSecond)).toContain(bare(solution));
+      expect(requests[1]!.objectives[0]!.id).toBe(second);
+
+      const regen = await regenerateObjective(services, {
+        deckId, objectiveId: first!, count: 2, expectedEditNumber: draft.editNumber, clientRequestId: randomUUID(),
+      });
+      await executeLessonGeneration(services, regen.runId);
+      const regenRequest = requests[2]!;
+      expect(regenRequest.avoidSentences).toEqual(expect.arrayContaining([...draft.examples[first!]!, ...draft.examples[second!]!]));
+      for (const solution of [...solutionsOf(first!), ...solutionsOf(second!)]) expect(avoidBare(regenRequest.avoidSentences!)).toContain(bare(solution));
+    });
+
     it("domyślna pula fake'a rozdziału nie ma ujawnionych rozwiązań", async () => {
       const { services } = await chapterWorld();
       const { draft } = await generateChapter(services);
