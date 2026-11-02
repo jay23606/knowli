@@ -5,7 +5,7 @@ import { ActionIcon, Alert, Group, Loader, Paper, Stack, Table, Tabs, Text, Titl
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { messages, type ParentCostsDto } from "@learning/contracts";
 import { errorMessage } from "./api";
-import { currentMonth, formatUnits, formatUsd, isPositive, monthLabel, shiftMonth } from "./cost-format";
+import { compareMoney, currentMonth, fill, formatUnits, formatUsd, isPositive, monthLabel, pluralForm, shiftMonth } from "./cost-format";
 import { ParentIcon } from "./ParentIcon";
 import { plainClick } from "./plain-click";
 import { routePath, type ParentRoute } from "./parent-routes";
@@ -19,14 +19,11 @@ type CostChildRow = ParentCostsDto["children"][number];
 /** Stała funkcja `select` — TanStack nie przelicza jej przy każdym renderze. */
 const selectBody = (response: { body: ParentCostsDto }): ParentCostsDto => response.body;
 
-const fill = (template: string, values: Record<string, string | number>): string =>
-  Object.entries(values).reduce((result, [key, value]) => result.replace(`{${key}}`, String(value)), template);
-
 /** Kwota z „≈” przy szacunku i dopiskiem „+N bez ceny” przy wywołaniach bez ceny. */
 function Amount({ value, estimated = false, unknownCalls = 0 }: { value: string; estimated?: boolean; unknownCalls?: number }) {
   return (
     <>
-      <span>{estimated ? `≈ ${formatUsd(value)}` : formatUsd(value)}</span>
+      <span>{estimated ? fill(messages.costs.approx, { amount: formatUsd(value) }) : formatUsd(value)}</span>
       {unknownCalls > 0 && (
         <Text component="span" size="xs" className="pp-costs-muted pp-costs-unknown" data-testid="costs-unknown">
           {fill(messages.costs.withoutPrice, { n: unknownCalls })}
@@ -76,17 +73,10 @@ function FeaturesTab({ features }: { features: CostFeatureRow[] }) {
   );
 }
 
-/** Porównanie kwot z ciągów dziesiętnych o stałej liczbie miejsc, bez `Number`. */
-function compareAmounts(a: string, b: string): number {
-  const left = BigInt(a.replace(".", ""));
-  const right = BigInt(b.replace(".", ""));
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
 /** Talie malejąco po kwocie „razem”, a na końcu „Wspólne (interfejs)” i „Inne”, jeśli niezerowe. */
 function deckRows(decks: CostDeckRow[]): CostDeckRow[] {
   const nonZero = (row: CostDeckRow) => isPositive(row.totalUsd) || isPositive(row.monthUsd) || row.unknownCalls > 0;
-  const named = decks.filter((row) => row.bucket === "deck").sort((a, b) => compareAmounts(b.totalUsd, a.totalUsd));
+  const named = decks.filter((row) => row.bucket === "deck").sort((a, b) => compareMoney(b.totalUsd, a.totalUsd));
   const tail = (["shared_ui", "other"] as const).flatMap((bucket) => decks.filter((row) => row.bucket === bucket && nonZero(row)));
   return [...named, ...tail];
 }
@@ -157,7 +147,7 @@ function ChildrenTab({ rows: all }: { rows: CostChildRow[] }) {
             <Table.Td className="pp-costs-name">{row.deleted ? messages.costs.deletedProfiles : row.name ?? ""}</Table.Td>
             <Num>{row.sessions}</Num>
             <Num><Amount value={row.costUsd} estimated={row.estimated} unknownCalls={row.unknownCalls} /></Num>
-            <Num>{row.perSessionUsd === null ? "—" : formatUsd(row.perSessionUsd)}</Num>
+            <Num>{row.perSessionUsd === null ? messages.costs.noValue : formatUsd(row.perSessionUsd)}</Num>
             <Num>{formatUsd(row.gradingUsd)}</Num>
             <Num>{formatUsd(row.speechUsd)}</Num>
             <Num>{formatUsd(row.activityUsd)}</Num>
@@ -171,11 +161,12 @@ function ChildrenTab({ rows: all }: { rows: CostChildRow[] }) {
 
 function Header({ report, month }: { report: ParentCostsDto; month: string }) {
   const { totals } = report;
+  const costs = messages.costs;
   const notes: Array<[string, string]> = [];
   if (isPositive(totals.estimatedUsd)) notes.push(["estimated", fill(messages.costs.estimated, { amount: formatUsd(totals.estimatedUsd) })]);
-  if (totals.unknownCalls > 0) notes.push(["unknown", fill(messages.costs.unknownCalls, { n: totals.unknownCalls })]);
-  if (totals.failedCalls > 0) notes.push(["failed", fill(messages.costs.failedCalls, { n: totals.failedCalls })]);
-  if (totals.unscopedCalls > 0) notes.push(["unscoped", fill(messages.costs.unscopedCalls, { n: totals.unscopedCalls })]);
+  if (totals.unknownCalls > 0) notes.push(["unknown", fill(pluralForm(totals.unknownCalls, [costs.unknownCallsOne, costs.unknownCallsFew, costs.unknownCallsMany]), { n: totals.unknownCalls })]);
+  if (totals.failedCalls > 0) notes.push(["failed", fill(pluralForm(totals.failedCalls, [costs.failedCallsOne, costs.failedCallsFew, costs.failedCallsMany]), { n: totals.failedCalls })]);
+  if (totals.unscopedCalls > 0) notes.push(["unscoped", fill(pluralForm(totals.unscopedCalls, [costs.unscopedCallsOne, costs.unscopedCallsFew, costs.unscopedCallsMany]), { n: totals.unscopedCalls })]);
   return (
     <Paper withBorder radius="lg" p="md" data-testid="costs-header">
       <Text fz="xl" fw={700} data-testid="costs-total">

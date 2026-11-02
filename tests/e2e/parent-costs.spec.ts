@@ -69,9 +69,9 @@ test("nagłówek z sumą, szacunkiem i ostrzeżeniami oraz zakładka Funkcje", a
   await expect(page.getByRole("heading", { level: 1, name: messages.costs.title })).toBeVisible();
   await expect(page.getByTestId("costs-total")).toHaveText("Listopad 2026: 4,12 USD");
   await expect(page.getByTestId("costs-note-estimated")).toHaveText("w tym ≈ 0,85 USD szacunkowo");
-  await expect(page.getByTestId("costs-note-unknown")).toHaveText("2 wywołań bez znanej ceny");
-  await expect(page.getByTestId("costs-note-failed")).toHaveText("3 nieudanych wywołań");
-  await expect(page.getByTestId("costs-note-unscoped")).toHaveText("1 wywołań bez przypisania");
+  await expect(page.getByTestId("costs-note-unknown")).toHaveText("2 wywołania bez znanej ceny");
+  await expect(page.getByTestId("costs-note-failed")).toHaveText("3 nieudane wywołania");
+  await expect(page.getByTestId("costs-note-unscoped")).toHaveText("1 wywołanie bez przypisania");
   await expect(page.getByTestId("costs-net-note")).toHaveText(messages.costs.netNote);
   // żadna zakładka paska nie jest aktywna
   for (const id of ["tab-decks", "tab-sources", "tab-children", "tab-progress", "tab-work-card"]) {
@@ -151,7 +151,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 375, height: 812 
     await page.setViewportSize(viewport);
     await openCosts(page, FIXTURE, "/parent/decks");
     await expect(page.getByTestId("tab-decks")).toBeVisible();
-    await page.getByTestId("parent-menu").click();
+    // telefon: pozycja menu ⋯; od 600 px: akcja w nagłówku obok „Do nauki”
+    if (viewport.width < 600) await page.getByTestId("parent-menu").click();
     const item = page.getByTestId("to-costs");
     await expect(item).toHaveText(messages.costs.menuItem);
     expect((await item.boundingBox())!.height).toBeGreaterThanOrEqual(44);

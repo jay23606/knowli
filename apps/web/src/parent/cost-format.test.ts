@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentMonth, formatUnits, formatUsd, monthLabel, shiftMonth } from "./cost-format";
+import { compareMoney, currentMonth, formatUnits, formatUsd, monthLabel, pluralForm, shiftMonth } from "./cost-format";
 
 const NBSP = " ";
 const EMPTY = { inputTokens: 0, outputTokens: 0, characters: 0, audioMs: 0, images: 0 };
@@ -70,5 +70,19 @@ describe("months", () => {
   it("reads the current month from the local date", () => {
     expect(currentMonth(new Date(2026, 10, 15, 12))).toBe("2026-11");
     expect(currentMonth(new Date(2026, 0, 1, 0, 5))).toBe("2026-01");
+  });
+});
+
+describe("pluralForm and compareMoney", () => {
+  it("picks Polish plural forms", () => {
+    const forms = ["wywołanie", "wywołania", "wywołań"] as const;
+    expect([1, 2, 4, 5, 12, 22, 0].map((n) => pluralForm(n, forms)))
+      .toEqual(["wywołanie", "wywołania", "wywołania", "wywołań", "wywołań", "wywołania", "wywołań"]);
+  });
+
+  it("compares amounts without floats", () => {
+    expect(compareMoney("0.000001", "0.000000")).toBe(1);
+    expect(compareMoney("2.500000", "10.000000")).toBe(-1);
+    expect(compareMoney("1.000000", "1.000000")).toBe(0);
   });
 });

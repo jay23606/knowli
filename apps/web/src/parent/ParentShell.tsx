@@ -118,14 +118,14 @@ export function ParentShell({ section, onNavigate, onToLearning, onLogout, child
     onNavigate("costs");
   };
 
-  /** „Koszty” to pozycja menu (nie szósta zakładka): wspólna dla obu klas szerokości. */
+  /** „Koszty” to nie szósta zakładka: pozycja menu na telefonie, akcja nagłówka od 600 px. */
   const costsItem = (
     <Menu.Item
       component="a"
       href={sectionPath("costs")}
       leftSection={<ParentIcon name="wallet" />}
       data-testid="to-costs"
-      aria-current={section === "costs" ? "page" : undefined}
+      aria-current={section === "costs" ? "true" : "false"}
       onClick={toCosts}
       mih={48}
     >
@@ -173,6 +173,19 @@ export function ParentShell({ section, onNavigate, onToLearning, onLogout, child
               </Menu>
             ) : (
               <Group gap={4} wrap="nowrap">
+                <Button
+                  component="a"
+                  href={sectionPath("costs")}
+                  variant="subtle"
+                  color="gray"
+                  size="md"
+                  leftSection={<ParentIcon name="wallet" />}
+                  data-testid="to-costs"
+                  aria-current={section === "costs" ? "true" : "false"}
+                  onClick={toCosts}
+                >
+                  {messages.costs.menuItem}
+                </Button>
                 <Button component="a" href="/" variant="subtle" color="gray" size="md" leftSection={<ParentIcon name="play" />} data-testid="to-learning" onClick={toLearning}>
                   {messages.auth.toLearning}
                 </Button>
@@ -190,14 +203,6 @@ export function ParentShell({ section, onNavigate, onToLearning, onLogout, child
                 <Button variant="subtle" color="gray" size="md" leftSection={<ParentIcon name="log-out" />} data-testid="parent-logout" onClick={onLogout}>
                   {messages.auth.logoutButton}
                 </Button>
-                <Menu position="bottom-end" width={220} shadow="lg" radius="lg">
-                  <Menu.Target>
-                    <ActionIcon variant="subtle" color="gray" size={44} radius="md" aria-label={messages.parentShell.more} data-testid="parent-menu">
-                      <ParentIcon name="more-vertical" className="pp-shell-more" />
-                    </ActionIcon>
-                  </Menu.Target>
-                  <Menu.Dropdown>{costsItem}</Menu.Dropdown>
-                </Menu>
               </Group>
             )}
           </Group>
