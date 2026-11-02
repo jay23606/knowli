@@ -13,7 +13,9 @@ const MICRO = 1_000_000n;
 /** Liczba całkowita z separatorem tysięcy (U+00A0); `Intl` pl-PL nie grupuje liczb czterocyfrowych. */
 function groupInt(value: bigint | number): string {
   const digits = String(value);
-  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP);
+  const groups: string[] = [];
+  for (let end = digits.length; end > 0; end -= 3) groups.unshift(digits.slice(Math.max(0, end - 3), end));
+  return groups.join(NBSP);
 }
 
 /** Mikrodolary (`bigint`) z ciągu `"4.123456"` (kontrakt `MoneySchema`: sześć miejsc po kropce). */

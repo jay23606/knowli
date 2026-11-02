@@ -111,6 +111,8 @@ describe("provider_usage_events schema", () => {
       "pronunciation",
     ];
     for (const feature of features) await insertUsage(validRow({ feature }));
+    const rows = await query<{ feature: string }>("select feature from learning_app.provider_usage_events");
+    expect(rows.map((row) => row.feature).sort()).toEqual([...features].sort());
   });
 
   it("rejects an unknown cost with an amount", async () => {
