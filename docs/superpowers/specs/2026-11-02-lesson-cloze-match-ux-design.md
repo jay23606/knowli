@@ -1,6 +1,6 @@
 # „Uzupełnij tekst” i „Połącz w pary” — naturalne stukanie w Kid UI — design
 
-Data: 2026-11-02. Status: projekt zaakceptowany (wersja 3 — po recenzji trzech krytyków specu: mechanizm,
+Data: 2026-11-02. Status: zaimplementowany (projekt zaakceptowany, wersja 3 — po recenzji trzech krytyków specu: mechanizm,
 UX dziecka na urządzeniach, testy i regresje; poprawki z recenzji planu: zarezerwowany wiersz podpowiedzi luk,
 przyklejony bank w niskim landscape, klasa pustej luki, podłoga lewej kolumny `min-content`).
 Powiązane: `docs/architecture.md` §19 (punkty „Pary i grupy (Etap 7)” i „Uzupełnij tekst (Etap 10)”),
@@ -320,3 +320,22 @@ Brak odbioru na fizycznym urządzeniu raportujemy jawnie.
 - **Interlinia tekstu z lukami** wydłuża tekst; dok sprawdzają istniejące przypadki docku.
 - **Opcje banku luk** zachowują polski `aria-label` („Wstaw {word} do luki {n}”) na przyciskach
   z `lang={contentLocale}` — ten sam problem głosu co w §4.3, poza zakresem tej zmiany.
+
+## 11. Ustalenia z implementacji
+
+- **Interlinia tekstu z lukami** zostaje `line-height: 2` (ok. 41,6 px przy rozmiarze tytułu). Wrapper luki
+  dostał `position: relative`, żeby ukryty przedrostek „Luka n:” (`.kid-visually-hidden`, `position: absolute`)
+  przewijał się razem z materiałem; bez tego wystawał spod docka przy 360×800.
+- **Dłuższe fixture'y**: `longClozeTask` (`kid-fixtures.ts`) służy tylko do przypadku 1536×730 „materiał
+  przewija się przed werdyktem”; `overflowingClozeTask` tylko do `TABLET_SCENARIOS` w
+  `lesson-sentence-audio.spec.ts`. Tablet 1024×1366 (`fits: "space"`), dok 812×375 i miara czytania zostają
+  na oryginalnych danych.
+- **Nazwy dostępne**: `.kid-visually-hidden` jest `position: absolute`, więc ukryty sufiks obok widocznego tekstu
+  dawał w Chromium spację przed przecinkiem („dog , połączone z: pies”). Kafelki par z sufiksem renderują widoczny
+  tekst z `aria-hidden`, a całą nazwę w jednym ukrytym `span`; dokładne nazwy są asertowane w E2E
+  (`exact: true`). Nazwy luk cloze były dokładne bez zmian.
+- **`PairLines`**: jeden `ResizeObserver` obserwuje kontener i każdy zarejestrowany kafelek (`WeakSet`,
+  rejestracja w efekcie układu po każdym renderze), nigdy samego SVG; współrzędne linii i kropek są zapisywane
+  przez `setAttribute`.
+- **E2E**: tolerancja końców linii oraz kontrole skali 1,6, zmiany rozmiaru i zmiany stylu mieszkają w
+  `lesson-assignment-layout.spec.ts`.
