@@ -3,7 +3,15 @@ import { messages, type AttemptDto, type FeedbackDto, type TaskDto } from "@lear
 import { expectFrameFillsViewport } from "./helpers/kid-frame";
 import { installKidUiFixture } from "./helpers/kid-ui-fixture";
 import { recordAttemptPosts, tapPoolAndCheck } from "./helpers/lesson-assignment-task";
-import { lessonAudioFixture, listenChoiceTask, openLessonTask, setListenAudioMode, stubListenAudio } from "./helpers/lesson-audio";
+import {
+  lessonAudioFixture,
+  listenAudioPausedWatched,
+  listenChoiceTask,
+  openLessonTask,
+  setListenAudioMode,
+  stubListenAudio,
+  watchListenPlayback,
+} from "./helpers/lesson-audio";
 
 /**
  * Odczyt pełnego zdania po odpowiedzi w lekcji (design odczytu zdania §7, API
@@ -476,34 +484,6 @@ test("the explanation row fits the feedback dock on every form factor", async ({
 });
 
 /**
- * Śledzenie `pause()` na wskazanym elemencie (atrapa odtwarzania pauz nie liczy, a odtwarzacz
- * gra z adresów `blob:`, więc element rozpoznajemy po referencji, nie po źródle).
- */
-interface PauseWatch { watched: HTMLMediaElement | null; paused: boolean }
-
-async function recordPauses(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const watch: PauseWatch = { watched: null, paused: false };
-    (window as unknown as { __pauseWatch: PauseWatch }).__pauseWatch = watch;
-    const pause = HTMLMediaElement.prototype.pause;
-    HTMLMediaElement.prototype.pause = function recordedPause(this: HTMLMediaElement) {
-      if (this === watch.watched) watch.paused = true;
-      pause.call(this);
-    };
-  });
-}
-
-/** Obserwuje element, który atrapa odtwarza teraz (`stubListenAudio`: ostatnie `play()`). */
-const watchCurrentPlayback = (page: Page) => page.evaluate(() => {
-  const win = window as unknown as { __pauseWatch: PauseWatch; __listenAudio: { current: HTMLMediaElement | null } };
-  win.__pauseWatch.watched = win.__listenAudio.current;
-  win.__pauseWatch.paused = false;
-  return win.__pauseWatch.watched !== null;
-});
-
-const watchedPaused = (page: Page) => page.evaluate(() => (window as unknown as { __pauseWatch: PauseWatch }).__pauseWatch.paused);
-
-/**
  * Dok „Posłuchaj i wybierz” (`lesson_listen_choice`) z wyjaśnieniem: dok nie ma przycisków
  * zdania (odczyt gra przycisk polecenia `kid-play`), wiersz wyjaśnienia mieści się w doku na
  * każdym formacie i nie zasłania przycisku polecenia, „Posłuchaj wyjaśnienia” odtwarza
@@ -521,7 +501,6 @@ const wrongListen: AttemptDto = {
 
 test("„Posłuchaj i wybierz”: the explanation row fits the dock, keeps the instruction play button clear and plays only on demand", async ({ page }) => {
   await stubListenAudio(page, "end");
-  await recordPauses(page);
   const media = trackMedia(page);
   await installKidUiFixture(page, {
     ...lessonAudioFixture(ids, [listenTask, second]), attempts: [wrongListen],
@@ -555,13 +534,12 @@ test("„Posłuchaj i wybierz”: the explanation row fits the dock, keeps the i
   await explanationButton.click();
   await expect.poll(() => media.at(-1)).toBe(explanationPath);
   await expect(explanationButton).toHaveAttribute("data-sound-active", "true");
-  expect(await watchCurrentPlayback(page), "the explanation is playing").toBe(true);
-  expect(await watchedPaused(page)).toBe(false);
+  expect(await watchListenPlayback(page), "the explanation is playing").toBe(true);
   // Odsłuch zdania z polecenia przerywa wyjaśnienie: pauza elementu wyjaśnienia, jego
   // wskaźnik gaśnie, a nagranie zdania gra bez nowej autoryzacji bodźca.
   await page.getByTestId("kid-play").click();
   await expect.poll(() => media.at(-1)).toBe(sentencePath);
-  await expect.poll(() => watchedPaused(page), "explanation element paused").toBe(true);
+  await expect.poll(() => listenAudioPausedWatched(page), "explanation element paused").toBe(true);
   await expect(explanationButton).not.toHaveAttribute("data-sound-active", "true");
   await expect(page.getByTestId("kid-play")).toHaveAttribute("data-sound-active", "true");
   expect(media.filter((path) => path === `/api/v1/media/${listenStimulusId}`)).toHaveLength(1);
