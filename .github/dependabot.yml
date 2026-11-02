@@ -1,8 +1,11 @@
 # Aktualizacje wersji raz w miesiącu, zgrupowane, żeby nie mnożyć PR-ów:
 # każdy z nich odpala pełne CI (integracja w koszach, e2e real + mocked, CodeQL).
-# Majory podnosimy świadomie, ręcznie i z planem (Next, Mantine, Drizzle,
-# Node, Postgres) — ignorowane tu dotyczą tylko aktualizacji wersji;
-# poprawki bezpieczeństwa (Dependabot security updates) przychodzą dalej.
+# Majory npm i Postgresa podnosimy świadomie, ręcznie i z planem (Next,
+# Mantine, Drizzle, Postgres) — ignorowane tu dotyczą tylko aktualizacji
+# wersji; poprawki bezpieczeństwa (Dependabot security updates) przychodzą
+# dalej. GitHub Actions celowo dostają też majory: nowe majory akcji zwykle
+# wynikają z wycofywania runtime'u Node na runnerach, a zmianę i tak
+# sprawdza pełne CI tego PR-a.
 # cooldown: nie bierzemy wydań młodszych niż tydzień (ochrona łańcucha dostaw).
 # Obraz Node w deploy/Dockerfile jest w ARG (FROM ${NODE_IMAGE}), którego
 # Dependabot nie aktualizuje — podnoś go ręcznie razem z node-version w CI.
