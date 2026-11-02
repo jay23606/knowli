@@ -1016,41 +1016,8 @@ describe("lesson_listen_choice — walidacja", () => {
     return errors.filter((e) => e.includes("różnica niesłyszalna"));
   }
 
-  it.each([
-    ["He ___ snakes.", "play", "plays"],
-    ["She ___ soccer.", "like", "likes"],
-    ["They ___ shoes.", "wants", "want"],
-    ["He ___ zebras.", "draw", "draws"],
-    ["She ___ cereal.", "eat", "eats"],
-    ["She ___ swimming.", "go", "goes"],
-    ["He ___ science.", "study", "studies"],
-    ["She ___ songs.", "Likes", "like"],
-    ["They ___ salad.", "really like", "really likes"],
-    ["He ___ sleeping.", "He's", "He"],
-    ["She ___ “snakes”.", "like", "likes"],
-  ])("odrzuca sybilant za luką przy opcjach różnych o -s: %s (%s / %s)", (stem, first, second) => {
-    expect(sibilantErrorsOf(stem, [first, second])).not.toEqual([]);
-  });
-
-  it.each([
-    ["He ___ football.", "play", "plays"],
-    ["He ___, sadly.", "play", "plays"],
-    ["___ she like snakes?", "Do", "Does"],
-    ["She ___ socks.", "watch", "watches"],
-    ["She ___ salsa.", "dance", "dances"],
-    ["They ___ snakes.", "are", "is"],
-    ["She ___ like snakes.", "don't", "doesn't"],
-    // /s/ przed /tʃ/ pozostaje słyszalne — za luką musi stać głoska s, z albo sz.
-    ["He ___ chips.", "like", "likes"],
-    ["She ___ sweets.", "change", "changes"],
-    ["He ___ soap.", "use", "uses"],
-    ["She ___ sorry.", "say", "says"],
-    ["He ___ it.", "like", "likes"],
-  ])("dopuszcza słyszalną różnicę: %s (%s / %s)", (stem, first, second) => {
-    expect(sibilantErrorsOf(stem, [first, second])).toEqual([]);
-  });
-
-  it("komunikat o sybilancie wskazuje parę opcji i wyraz za luką, także przy trzech opcjach", () => {
+  // Reguła wymowy angielskiej (`subjects/english/listen-audibility.ts`); tu — że gramatyka ją deleguje.
+  it("gramatyka odrzuca sybilant za luką; komunikat wskazuje parę opcji i wyraz, także przy trzech opcjach", () => {
     const sibilant = sibilantErrorsOf("He ___ snakes.", ["likes", "like", "is"]);
     expect(sibilant).toHaveLength(1);
     expect(sibilant[0]).toContain("„likes” i „like”");
