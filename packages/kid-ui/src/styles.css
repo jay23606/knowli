@@ -2360,6 +2360,88 @@
   font-weight: var(--kid-type-answer-weight);
 }
 
+/* Historyjka na koniec sesji: ten sam kontener co karta, ale ramka dekoracyjna
+   (`--kid-line`, outline-variant) — historyjka nie jest kontrolką. */
+.kid-ui .kid-lesson-story {
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid var(--kid-line);
+  border-radius: var(--kid-shape-l);
+  background: var(--md-sys-color-surface-container-high);
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: start;
+}
+
+/* Nagłówek jak na karcie, ale kolumna odsłuchu stoi zawsze (także pusta, bez
+   nagrania): tytuł zostaje na środku, a ani brak nagrania, ani wynik pytania
+   nie przesuwają tekstu. */
+.kid-ui .kid-lesson-story__header {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 8px;
+}
+
+.kid-ui .kid-lesson-story__title {
+  grid-column: 2;
+  margin: 0;
+  font-family: var(--kid-font-display);
+  font-size: var(--kid-type-title-size);
+  font-weight: var(--kid-type-title-weight);
+  color: var(--md-sys-color-on-surface);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.kid-ui .kid-lesson-story__listen {
+  grid-column: 3;
+  min-block-size: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Tekst historyjki: wiersz ok. 60 znaków jak treść karty (`--kid-reading-measure`);
+   selektor z `.kid-ui` przebija zerowanie marginesów `.kid-theme p`. */
+.kid-ui .kid-lesson-story__text {
+  margin-block: 0;
+  margin-inline: auto;
+  inline-size: 100%;
+  max-inline-size: var(--kid-reading-measure);
+  font-size: var(--kid-type-title-md-size);
+  line-height: 1.5;
+}
+
+/* Zapowiedź pytań po polsku: tekst pomocniczy (waga podpisu i wyciszony kolor). */
+.kid-ui .kid-lesson-story__lead {
+  margin-block: 0;
+  margin-inline: auto;
+  inline-size: 100%;
+  max-inline-size: var(--kid-reading-measure);
+  font-size: var(--kid-type-body-size);
+  font-weight: var(--kid-type-caption-weight);
+  color: var(--kid-muted);
+}
+
+/* Historyjka pod pytaniem o treść: do ponownego przeczytania, z mniejszym
+   naciskiem niż ekran historyjki (niższa powierzchnia i tytuł jak etykieta),
+   żeby pierwszeństwo miały pytanie i opcje. Kolumna tekstu i stała kolumna
+   odsłuchu bez zmian. */
+.kid-ui .kid-lesson-story--reread {
+  background: var(--md-sys-color-surface-container);
+}
+
+.kid-ui .kid-lesson-story--reread .kid-lesson-story__title {
+  font-family: inherit;
+  font-size: var(--kid-type-label-size);
+  font-weight: var(--kid-type-label-weight);
+  line-height: var(--kid-type-label-line-height);
+  color: var(--kid-muted);
+}
+
 /* Wskazanie: zdania ze słowami jako dużymi, dotykowymi przyciskami. */
 .kid-lesson-notice {
   width: 100%;

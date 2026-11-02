@@ -1,9 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { inject } from "vitest";
+import type { TaskDto } from "@learning/contracts";
 import {
   AppError,
+  completePresentation,
   createDatabase,
   createServices,
   startSession,
+  submitAttempt,
   MAX_AUDIO_BYTES,
   MAX_DECK_COVER_BYTES,
   MULTIPART_OVERHEAD_BYTES,
@@ -256,3 +260,55 @@ export async function countRows(table: string): Promise<number> {
 }
 
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Kończy wydane zadanie sesji lekcji (wspólne dla testów historyjki): karta
+ * i historyjka — `completePresentation`; pytanie historyjki — wybór poprawnej
+ * opcji z klucza (albo innej przy `correct: false`); pozostałe typy — odpowiedź
+ * z prywatnego klucza zadania (zamknięte: poprawne opcje/kolejność/przypisania,
+ * tekstowe: odpowiedź kanoniczna; przy `correct: false` odpowiedź błędna —
+ * prawdziwa błędna opcja albo dystraktor; gdy jej brak, helper rzuca zamiast
+ * po cichu odpowiedzieć poprawnie).
+ */
+export async function finishLessonTask(services: Services, task: TaskDto, options: { correct?: boolean } = {}): Promise<void> {
+  const correct = options.correct ?? true;
+  if (task.exerciseType === "lesson_card" || task.exerciseType === "lesson_story") {
+    await completePresentation(services, { taskId: task.taskId });
+    return;
+  }
+  const { pool } = testDatabase();
+  const key = (await pool.query<{ answerKey: Record<string, unknown> }>(
+    `select answer_key as "answerKey" from learning_app.session_tasks where id = $1`, [task.taskId],
+  )).rows[0]!.answerKey;
+  const base = { taskId: task.taskId, clientAttemptId: randomUUID() };
+  const correctOptionId = key.correctOptionId as string | undefined;
+  if (correctOptionId !== undefined) {
+    // Wybór i pytanie historyjki mają `optionValues`, „Zauważ” — `segmentValues`.
+    const values = (key.optionValues ?? key.segmentValues) as Record<string, string> | undefined;
+    const wrong = Object.keys(values ?? {}).find((id) => id !== correctOptionId);
+    if (!correct && wrong === undefined) throw new Error(`finishLessonTask: brak błędnej opcji w zadaniu ${task.exerciseType}`);
+    await submitAttempt(services, { ...base, modality: "choice", optionId: correct ? correctOptionId : wrong! });
+    return;
+  }
+  if (Array.isArray(key.correctOptionIds)) {
+    // Wybór wielokrotny: przy błędnej odpowiedzi ta sama liczba zaznaczeń, ale jedno
+    // zaznaczenie to dystraktor (za mało zaznaczeń odrzuciłaby walidacja, nie ocena).
+    const ids = key.correctOptionIds as string[];
+    const distractor = Object.keys((key.optionValues as Record<string, string> | undefined) ?? {}).find((id) => !ids.includes(id));
+    if (!correct && distractor === undefined) throw new Error(`finishLessonTask: brak dystraktora w zadaniu ${task.exerciseType}`);
+    await submitAttempt(services, { ...base, modality: "selection", itemIds: correct ? ids : [...ids.slice(0, -1), distractor!] });
+    return;
+  }
+  if (Array.isArray(key.assignments)) {
+    const assignments = key.assignments as { itemId: string; targetId: string }[];
+    const rotated = assignments.map((entry, index) => ({ itemId: entry.itemId, targetId: assignments[(index + 1) % assignments.length]!.targetId }));
+    await submitAttempt(services, { ...base, modality: "assignment", assignments: correct ? assignments : rotated });
+    return;
+  }
+  if (Array.isArray(key.itemIds)) {
+    const itemIds = key.itemIds as string[];
+    await submitAttempt(services, { ...base, modality: "sequence", itemIds: correct ? itemIds : [...itemIds].reverse() });
+    return;
+  }
+  await submitAttempt(services, { ...base, modality: "text", text: correct ? key.answer as string : "zzz qqq" });
+}

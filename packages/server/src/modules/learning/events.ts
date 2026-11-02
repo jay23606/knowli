@@ -28,6 +28,7 @@ import {
 } from "../../db/schema";
 import { AppError } from "../../errors";
 import { computeTargetKey } from "../../domain/target-key";
+import { isNonAssessedLessonTaskType } from "../../domain/lessons/session-task-types";
 
 export interface SessionContextShape {
   canRead: boolean;
@@ -272,6 +273,11 @@ export async function authorizeDisclosure(services: Services, input: DisclosureI
     }
     if (task.state !== "issued") {
       throw new AppError("conflict", { message: "task is no longer issued" });
+    }
+    // Karta i zadania historyjki są kotwiczone w rewizji ćwiczenia: podpowiedź
+    // albo odsłuch zwróciłyby rozwiązanie kotwicy (design „Historyjka” §8.4).
+    if (isNonAssessedLessonTaskType(task.exerciseType)) {
+      throw new AppError("conflict", { message: "to zadanie lekcji nie oferuje odsłuchu ani podpowiedzi" });
     }
     if (session.mode === "mock_test" && (valid.kind === "hint" || task.exerciseType !== "listening")) {
       throw new AppError("conflict", { message: "Odpowiedzi omówimy po zakończeniu kartkówki." });

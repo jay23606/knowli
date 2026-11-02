@@ -1,3 +1,5 @@
+import { isLessonStoryTaskType, type TaskDto } from "@learning/contracts";
+
 /** Client-side view of session progress: the bar and the correct-answer
  * streak are decoration only; nothing here is sent to the server or
  * affects grading. Total = the largest remaining count seen in a session
@@ -56,6 +58,14 @@ export function progressAttempt(screen: {
     return { attemptId: `reveal:${screen.taskId}`, outcome: "wrong" };
   }
   return null;
+}
+
+/** Whether a task's results may move the streak and its milestone star.
+ * Story tasks (the closing story and its questions) are answered outside the
+ * session budget and progress, so they never change the streak (stage 3,
+ * ruling 12). Without a task there is no attempt to filter. */
+export function countsTowardStreak(task: Pick<TaskDto, "exerciseType"> | null): boolean {
+  return task === null || !isLessonStoryTaskType(task.exerciseType);
 }
 
 export function advanceSessionProgress(

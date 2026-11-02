@@ -124,3 +124,33 @@ it("describes a calculation in an activity report without exposing its private p
   expect(describeTaskPrompt(prompt)).toEqual({ instruction: "Oblicz.", stimulus: "Przelicz 2 km na m.", options: [] });
   expect(lessonAnswerValues({ answer: "2000 m", acceptedAnswers: [] }, prompt).acceptedAnswers).toEqual(["2000 m"]);
 });
+
+describe("zadania historyjki w migawce aktywności", () => {
+  const sentences = ["Sam has a red bike.", "He rides it to school."];
+  const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"];
+  const options = ids.map((id, index) => ({ id, text: `opcja ${index}` }));
+
+  it("describes the story as its sentences, without options", () => {
+    expect(describeTaskPrompt({ kind: "lesson_story", story: { sentences } })).toEqual({
+      instruction: "Historyjka (przeczytanie i odsłuch)", stimulus: "Sam has a red bike. He rides it to school.", options: [],
+    });
+  });
+
+  it("describes the question as question | sentences with three options", () => {
+    expect(describeTaskPrompt({ kind: "lesson_story_question", question: "Kto ma rower?", options, story: { sentences } })).toEqual({
+      instruction: "Pytanie do historyjki",
+      stimulus: "Kto ma rower? | Sam has a red bike. He rides it to school.",
+      options: ["opcja 0", "opcja 1", "opcja 2"],
+    });
+  });
+
+  it("returns the correct option text for a story question", () => {
+    const prompt = { kind: "lesson_story_question" as const, question: "Kto ma rower?", options, story: { sentences } };
+    const { acceptedAnswers } = lessonAnswerValues(
+      LessonAnswerSnapshotSchema.parse({ correctOptionId: ids[1], optionValues: { [ids[1] as string]: "opcja 1" } }),
+      prompt,
+    );
+    expect(acceptedAnswers).toEqual(["opcja 1"]);
+    expect(lessonAnswerValues(LessonAnswerSnapshotSchema.parse({ correctOptionId: ids[2] }), prompt).acceptedAnswers).toEqual(["opcja 2"]);
+  });
+});

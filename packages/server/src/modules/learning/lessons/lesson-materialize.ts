@@ -128,7 +128,7 @@ export function shuffleUnsolved<T>(items: readonly T[], seed: string, isSolved: 
 }
 
 /** Kid DTO zna tylko języki materiału (`pl-PL`, `en-GB`); inny język przedmiotu = brak atrybutu. */
-function lessonLocale(value: string): LessonContentLocale | undefined {
+export function lessonLocale(value: string): LessonContentLocale | undefined {
   const parsed = LessonContentLocaleSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }

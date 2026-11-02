@@ -396,7 +396,7 @@ export const messages = {
     steps: "Kroki",
     remaining: "Niewydane kroki",
     stepState: { issued: "Wydano", answered: "Odpowiedziano", completed: "Zakończono", skipped: "Pominięto" },
-    stepType: { exposure: "Prezentacja", listening: "Słuchanie", recall: "Przypominanie", spelling: "Pisownia", pronunciation: "Wymowa", picture_listening: "Wybór obrazka", picture_recognition: "Słowo do obrazka", lesson_card: "Karta lekcji", lesson_gap: "Uzupełnianie luki", lesson_order: "Układanie", lesson_open_answer: "Odpowiedź otwarta", lesson_calculation: "Zadanie rachunkowe", lesson_choice: "Wybór odpowiedzi", lesson_short_answer: "Krótka odpowiedź", lesson_transform: "Przekształcanie zdania", lesson_notice: "Zauważ różnicę", lesson_keywords: "Słowa kluczowe", lesson_match: "Połącz w pary", lesson_group: "Pogrupuj", lesson_cloze: "Uzupełnij tekst", lesson_listen_choice: "Posłuchaj i wybierz" },
+    stepType: { exposure: "Prezentacja", listening: "Słuchanie", recall: "Przypominanie", spelling: "Pisownia", pronunciation: "Wymowa", picture_listening: "Wybór obrazka", picture_recognition: "Słowo do obrazka", lesson_card: "Karta lekcji", lesson_gap: "Uzupełnianie luki", lesson_order: "Układanie", lesson_open_answer: "Odpowiedź otwarta", lesson_calculation: "Zadanie rachunkowe", lesson_choice: "Wybór odpowiedzi", lesson_short_answer: "Krótka odpowiedź", lesson_transform: "Przekształcanie zdania", lesson_notice: "Zauważ różnicę", lesson_keywords: "Słowa kluczowe", lesson_match: "Połącz w pary", lesson_group: "Pogrupuj", lesson_cloze: "Uzupełnij tekst", lesson_listen_choice: "Posłuchaj i wybierz", lesson_story: "Historyjka", lesson_story_question: "Pytanie do historyjki" },
     response: "Odpowiedź",
     feedback: "Zapisany komunikat",
     feedbackKind: { great: "Świetnie", capitalization_hint: "Wielka litera", almost: "Prawie", incorrect: "Spróbuj ponownie", content_matched: "Treść rozpoznana", not_assessed: "Nie udało się ocenić", spelling_hint: "Popraw zapis", lesson_hint: "Wskazówka", lesson_almost: "Prawie" } as Record<string, string>,
@@ -521,6 +521,12 @@ export const messages = {
     listenExplanation: "Posłuchaj wyjaśnienia",
     // „Posłuchaj i wybierz” (#198): polecenie, status blokady i błąd ręcznego odsłuchu.
     lessonListenChoiceInstruction: "Posłuchaj i wybierz, czego brakuje.",
+    // Historyjka na koniec sesji: polecenie zależy od tego, czy jest nagranie lektora.
+    lessonStoryInstructionListen: "Przeczytaj i posłuchaj historyjki.",
+    lessonStoryInstruction: "Przeczytaj historyjkę.",
+    lessonStoryTitle: "Historyjka",
+    lessonStoryRereadTitle: "Historyjka — przeczytaj jeszcze raz",
+    lessonStoryQuestionsNext: "Potem odpowiesz na pytania.",
     lessonListenGap: "luka",
     listenStimulusBlocked: "Dotknij głośnika, aby posłuchać.",
     listenStimulusFailed: "Nie udało się odtworzyć nagrania.",
@@ -533,6 +539,9 @@ export const messages = {
     questionAudioRetry: "Odtwórz pytanie",
     cardAudioUnavailable: "Nie udało się odtworzyć karty. Przeczytaj ją albo spróbuj jeszcze raz.",
     cardAudioRetry: "Odtwórz kartę",
+    listenLessonStory: "Posłuchaj historyjki",
+    storyAudioUnavailable: "Nie udało się odtworzyć historyjki. Przeczytaj ją albo spróbuj jeszcze raz.",
+    storyAudioRetry: "Odtwórz historyjkę",
     understand: "Rozumiem",
     instructionExposure: "Poznaj nowe słowo",
     instructionListening: "Posłuchaj i wybierz",
@@ -570,6 +579,8 @@ export const messages = {
     // picture_recognition: aria głośniczka odsłuchu poprawnego słowa w feedbackzie.
     listenCorrectWord: "Posłuchaj poprawnego słowa",
     remaining: "Jeszcze {n} i koniec!",
+    // Sesja z historyjką na końcu: baner zapowiada historyjkę zamiast końca.
+    remainingStory: "Jeszcze {n} i historyjka!",
     end: "Koniec",
     // Potwierdzenie ✕ „Koniec” w nagłówku sesji.
     endConfirmTitle: "Kończymy na dziś?",
@@ -1100,8 +1111,7 @@ export const messages = {
     // Historyjka na koniec sesji (edytor lekcji rodzica).
     story: {
       title: "Historyjka na koniec sesji",
-      // Etap 1 (#195): sesja dziecka jeszcze nie pokazuje historyjki — etap 3 przywróci opis zachowania dziecka.
-      info: "Dziecko zobaczy historyjkę na koniec sesji w kolejnej wersji aplikacji. Na razie możesz ją przygotować, sprawdzić i odsłuchać tutaj. Pytania nie będą liczyć się do postępu.",
+      info: "Dziecko przeczyta i posłucha historyjki na koniec każdej sesji nauki (nie w kartkówce), a potem odpowie na pytania. Pytania nie liczą się do postępu.",
       sentenceLabel: "Zdanie {n}",
       addSentence: "Dodaj zdanie",
       removeSentence: "Usuń zdanie",

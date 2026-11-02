@@ -45,6 +45,7 @@ import { loadPolicy } from "../../policies/registry";
 import { lockTaskWithSession, writeSealedEvent, contextOf, sealPostAnswerAudio } from "./events";
 import { requestHashOf, discloseFeedbackEvent } from "./attempt-shared";
 import { submitLessonAttempt, readLessonAttempt } from "./lessons/lesson-attempts";
+import { answerStoryQuestion, readStoryQuestionAttempt } from "./lessons/lesson-story-attempts";
 import { readSkillHistories, skillHistoryKey } from "./skill-history";
 import { persistSkillProjections } from "./skill-projections";
 import { resolveTaskAssistance } from "../../domain/task-assistance";
@@ -670,6 +671,13 @@ export async function submitAttempt(services: Services, input: AttemptInput): Pr
     throw new AppError("not_found");
   }
   if (routed) {
+    // Pytanie historyjki ma własną odpowiedź poza oceną celu; karta i historyjka
+    // to prezentacje — próba „Pomiń”/„Nie pamiętam” zapisałaby ocenę celu kotwicy.
+    const type = routedTask!.exerciseType as string;
+    if (type === "lesson_story_question") return answerStoryQuestion(services, valid);
+    if (type === "lesson_card" || type === "lesson_story") {
+      throw new AppError("validation", { message: "presentation tasks take no attempts" });
+    }
     return submitLessonAttempt(services, valid);
   }
   return services.db.transaction(async (tx) => {
@@ -735,6 +743,9 @@ export async function readAttempt(services: Services, attemptId: string): Promis
       .innerJoin(sessionTasks, eq(sessionTasks.id, attempts.taskId))
       .where(eq(attempts.id, id))
   )[0] ?? null;
+  if (routed && (routed.exerciseType as string) === "lesson_story_question") {
+    return readStoryQuestionAttempt(services, routed.attempt as unknown as typeof attempts.$inferSelect);
+  }
   if (routed && (routed.exerciseType as string).startsWith("lesson_")) {
     return readLessonAttempt(services, routed.attempt as unknown as typeof attempts.$inferSelect);
   }

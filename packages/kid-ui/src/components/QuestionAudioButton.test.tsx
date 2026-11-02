@@ -30,6 +30,32 @@ describe("QuestionAudioButton (design szkoły §11.4)", () => {
     expect(button.getAttribute("data-sound-active")).toBeNull();
   });
 
+  it("controlled playing prop shows the ring", () => {
+    const onPlay = vi.fn(async () => {});
+    const { rerender } = renderKid(<QuestionAudioButton onPlay={onPlay} disabled={false} playing />);
+    const button = screen.getByTestId("kid-question-audio");
+    // Odtwarzanie rozpoczęte przez kontroler (autoodtwarzanie historyjki) — bez kliknięcia.
+    expect(onPlay).not.toHaveBeenCalled();
+    expect(button.getAttribute("data-sound-active")).toBe("true");
+    expect(button.querySelector("[data-testid='kid-sound-ring']")).not.toBeNull();
+    rerender(<QuestionAudioButton onPlay={onPlay} disabled={false} playing={false} />);
+    expect(button.getAttribute("data-sound-active")).toBeNull();
+    expect(button.querySelector("[data-testid='kid-sound-ring']")).toBeNull();
+  });
+
+  it("without the prop the button behaves as before", async () => {
+    let release!: () => void;
+    const onPlay = vi.fn(() => new Promise<void>((resolve) => { release = resolve; }));
+    renderKid(<QuestionAudioButton onPlay={onPlay} disabled={false} />);
+    const button = screen.getByTestId("kid-question-audio");
+    expect(button.getAttribute("data-sound-active")).toBeNull();
+    await act(async () => { fireEvent.click(button); });
+    expect(button.getAttribute("data-sound-active")).toBe("true");
+    expect(button.querySelector("[data-testid='kid-sound-ring']")).not.toBeNull();
+    await act(async () => { release(); });
+    expect(button.getAttribute("data-sound-active")).toBeNull();
+  });
+
   it("ponowne dotknięcie: koniec poprzedniego odtwarzania nie gasi wskaźnika nowego", async () => {
     const pending: { resolve: () => void; reject: (error: Error) => void }[] = [];
     const onPlay = vi.fn(() => new Promise<void>((resolve, reject) => { pending.push({ resolve, reject }); }));

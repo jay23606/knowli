@@ -3,6 +3,7 @@ import { ParentWorkCardDtoSchema, ParentWorkCardQuerySchema, SessionActivityRevi
 import type { Services } from "../../config";
 import { localDateAt, validRewardTimezone } from "../../domain/reward-activity";
 import { assignmentText } from "../../domain/lessons/evaluate";
+import { isNonAssessedLessonTaskType } from "../../domain/lessons/session-task-types";
 import { AppError } from "../../errors";
 import { attempts, assessments, childProfiles, deckVersions, familySettings, learningSessions, sessionTasks } from "../../db/schema";
 import { activityDetailsAvailable, resolveInterruptedSessionActivity, SESSION_ACTIVITY_REVIEW_DEADLINE_MS, type StoredReport } from "../learning";
@@ -237,10 +238,10 @@ export async function readParentWorkCard(services: Services, input: unknown): Pr
       sessionId, mode: session.mode as "training" | "mock_test" | "daily_round", state: session.state as "active" | "completed" | "ended",
       startedAt: session.startedAt.toISOString(), endedAt: session.endedAt?.toISOString() ?? null,
       deckTitle: session.deckTitle, deckVersionNumber: session.deckVersionNumber,
-      // Zadania następcze lekcji („Skróć odpowiedź”) są poza budżetem sesji.
+      // Zadania następcze lekcji („Skróć odpowiedź”), karty i zadania historyjki są poza budżetem sesji.
       remainingSteps: Math.max(0, session.taskBudget - tasks.filter(task => task.sessionId === sessionId &&
         (task.context as { followUpOf?: unknown } | null)?.followUpOf === undefined &&
-        (session.mode === "daily_round" || (task.exerciseType !== "exposure" && task.exerciseType !== "lesson_card"))).length),
+        (session.mode === "daily_round" || (task.exerciseType !== "exposure" && !isNonAssessedLessonTaskType(task.exerciseType)))).length),
       activity: reviewOf(session),
       steps,
     };
