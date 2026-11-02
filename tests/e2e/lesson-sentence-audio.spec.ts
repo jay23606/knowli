@@ -873,10 +873,10 @@ const CLOZE_FEEDBACKS: { kind: string; feedback: FeedbackDto }[] = [
 
 /**
  * Najmniejsza widoczna wysokość materiału obok doku: dwa cele dotykowe 48 px
- * (wiersz tekstu z luką i miejsce luki). Pomiar 2026-10-31: z nakładką
- * najciaśniej jest na 360×800 po błędzie (dok z całym tekstem zakrywa dół
- * materiału, nad nim zostaje ok. 167 px); przy wysokości <480 (812×375,
- * 740×420) materiał ma naturalną wysokość ok. 407 px i przewija strona.
+ * (dwa wiersze tekstu z luką w zdaniu). Pomiar 2026-11-02 (luki w zdaniu): z
+ * nakładką najciaśniej jest na 360×800 po błędzie (dok z całym tekstem zakrywa
+ * dół materiału, nad nim zostaje ok. 167 px); przy wysokości <480 (812×375,
+ * 740×420) materiał ma naturalną wysokość ok. 318 px i przewija strona.
  */
 const MIN_VISIBLE_MATERIAL = 96;
 
@@ -950,8 +950,7 @@ test.describe("cloze with a word bank: sentence readback dock geometry", () => {
           return [rect("kid-material"), rect("kid-feedback-dock")] as const;
         });
         const materialBottom = materialBox.y + materialBox.height;
-        const geometry = `material ${JSON.stringify(materialBox)}, dock ${JSON.stringify(dockWithMaterial)} at ${label}`;
-        if (pageScrolls) {
+        const geometry = `material ${JSON.stringify(materialBox)}, dock ${JSON.stringify(dockWithMaterial)} at ${label}`;        if (pageScrolls) {
           expect(materialBottom, `material bottom above the dock: ${geometry}`).toBeLessThanOrEqual(dockWithMaterial.y + 1);
           // Materiał ma naturalną wysokość (nie jest ściśnięty przez dok) — przewija strona.
           expect(materialBox.height, `material height: ${geometry}`).toBeGreaterThanOrEqual(MIN_VISIBLE_MATERIAL);
@@ -1084,10 +1083,34 @@ const longChoiceAttempt: AttemptDto = {
   taskId: longChoiceTask.taskId, modality: "choice",
 };
 
+/**
+ * Tekst z lukami, który wypełnia tablet 1280×800 do dolnej krawędzi ramy: luki
+ * w zdaniu zajmują mniej miejsca niż dawna lista miejsc pod tekstem, więc
+ * `clozeTask` zostawia tam wolne miejsce pod stopką. Te same luki, bank
+ * i `clozeSolution` — tekst dopisany wyłącznie po ostatniej luce (spec
+ * 2026-11-02-lesson-cloze-match-ux §8).
+ */
+const overflowingClozeTask: TaskDto = (() => {
+  if (clozeTask.prompt.kind !== "lesson_cloze") throw new Error("cloze fixture expected");
+  const { segments } = clozeTask.prompt;
+  const last = segments.at(-1)!;
+  if ("gapId" in last) throw new Error("cloze fixture ends with text");
+  const more = " In the afternoon we swim in the sea and look for shells and crabs in the rock pools."
+    + " When the sun goes down, Dad makes a small fire and we eat sandwiches and watch the boats come home."
+    + " At night we are tired and happy, and we fall asleep to the sound of the waves.";
+  return { ...clozeTask, prompt: { ...clozeTask.prompt, segments: [...segments.slice(0, -1), { text: last.text + more }] } };
+})();
+/** Pełny wypełniony tekst `overflowingClozeTask` (poprawne słowa jak w `clozeTask`). */
+const overflowingClozeFilledText = (() => {
+  if (overflowingClozeTask.prompt.kind !== "lesson_cloze") throw new Error("cloze fixture expected");
+  let gap = 0;
+  return overflowingClozeTask.prompt.segments.map((segment) => ("gapId" in segment ? clozeSolution[gap++] : segment.text)).join("");
+})();
+
 const TABLET_SCENARIOS: { name: string; task: TaskDto; attempt: AttemptDto; ready: string; answer: (page: Page, posted: unknown[]) => Promise<void> }[] = [
   {
-    name: "overflowing cloze (overlay dock)", task: clozeTask, ready: "kid-lesson-cloze",
-    attempt: clozeAttempt({ kind: "incorrect", correctText: clozeFilledText, correctAudioAssetId: sentenceAssetId }),
+    name: "overflowing cloze (overlay dock)", task: overflowingClozeTask, ready: "kid-lesson-cloze",
+    attempt: clozeAttempt({ kind: "incorrect", correctText: overflowingClozeFilledText, correctAudioAssetId: sentenceAssetId }),
     answer: async (page, posted) => { await tapPoolAndCheck(page, "kid-lesson-cloze-option", 3, posted); },
   },
   {

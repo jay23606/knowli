@@ -2835,8 +2835,12 @@
 
 /* Reguły luki po `.kid-ui .kid-lesson-block` (jego `overflow-wrap: anywhere`
    ustępuje `break-word`) i na równej specyficzności z `…:active`, który ustępuje
-   miejscem, bo stany luk są później w pliku. */
+   miejscem, bo stany luk są później w pliku. Luka jest blokiem zawierającym swój
+   ukryty przedrostek (`.kid-visually-hidden`, `position: absolute`): bez tego
+   jego blok zawierający leży poza przewijanym materiałem, więc przedrostek nie
+   przewija się z tekstem i wystaje poza koniec treści. */
 .kid-ui .kid-lesson-block.kid-lesson-cloze__gap {
+  position: relative;
   display: inline-flex;
   vertical-align: middle;
   align-items: center;

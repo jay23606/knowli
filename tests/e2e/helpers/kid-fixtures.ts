@@ -187,6 +187,22 @@ export const clozeTask: TaskDto = {
   },
 };
 
+/**
+ * `clozeTask` with a longer text for the cases that need a material scrolling before the verdict: the same gaps, bank
+ * and answers, the text added only after the last gap. With the gaps in the sentence (no slot list under the text) the
+ * four-gap text no longer scrolls the material at 1536x730 (spec 2026-11-02-lesson-cloze-match-ux §8).
+ */
+export const longClozeTask: TaskDto = (() => {
+  const { prompt } = clozeTask;
+  if (prompt.kind !== "lesson_cloze") throw new Error("cloze fixture expected");
+  const last = prompt.segments.at(-1)!;
+  if ("gapId" in last) throw new Error("cloze fixture ends with text");
+  const more = " Tlen powstaje w liściach i przez aparaty szparkowe trafia do powietrza. Część cukrów roślina zużywa od razu"
+    + " na oddychanie i wzrost, a resztę magazynuje jako skrobię w korzeniach, bulwach, nasionach i owocach. Dlatego"
+    + " rośliny są pierwszym ogniwem prawie każdego łańcucha pokarmowego na Ziemi.";
+  return { ...clozeTask, prompt: { ...prompt, segments: [...prompt.segments.slice(0, -1), { text: last.text + more }] } };
+})();
+
 /** The text of a lesson card, read-only: the shared cards are frozen, so one test cannot change them for another. */
 export interface LessonCardText { readonly title: string; readonly body: string; readonly examples: readonly string[] }
 
