@@ -161,6 +161,44 @@ function chapterContentWords(material: string): string[] {
   return words;
 }
 
+/** Zdanie do porównania z `avoidSentences`: małe litery, bez spacji na brzegach i bez końcowej kropki. */
+function avoidKey(sentence: string): string {
+  return sentence.toLowerCase().trim().replace(/\.$/u, "");
+}
+
+/**
+ * Tłumaczenie rozdziału ze słów materiału, zależne od numeru: para różnych słów
+ * (`We have the A and the B`), więc kolejne ćwiczenia samodzielne mają różne
+ * odpowiedzi także w długiej puli i nie powtarzają przykładów kart ani zdań luk.
+ * Zdanie z `avoid` (albo już użyte w tym przebiegu) zastępuje kolejny kandydat.
+ */
+function chapterTranslation(
+  words: readonly string[],
+  index: number,
+  avoid: ReadonlySet<string>,
+  used: Set<string>,
+): { sentence: string; focus: string } {
+  const n = words.length;
+  const candidate = (i: number): { sentence: string; focus: string } => {
+    const first = words[i % n]!;
+    if (n < 2) return { sentence: `We have the ${first}`, focus: first };
+    // Przesunięcie drugiego słowa rośnie co n numerów: pary nie powtarzają się do n·(n−1) numerów.
+    const second = words[(i + 1 + Math.floor(i / n)) % n]!;
+    return { sentence: `We have the ${first} and the ${second}`, focus: first };
+  };
+  let i = index;
+  let result = candidate(i);
+  // Pętla kończy się, bo kandydatów jest skończenie wiele, a lista i zbiór użytych są skończone.
+  for (let guard = 0; guard < n * n + avoid.size + used.size + 1; guard++) {
+    const key = avoidKey(result.sentence);
+    if (!avoid.has(key) && !used.has(key)) break;
+    i += 1;
+    result = candidate(i);
+  }
+  used.add(avoidKey(result.sentence));
+  return result;
+}
+
 /**
  * Jedno ćwiczenie rozdziału zbudowane wyłącznie ze słów materiału: bez
  * `sourceRefs` i `hint`, z unikalnym polskim zdaniem-bodźcem (numer ćwiczenia)
@@ -172,6 +210,8 @@ function fakeChapterExercise(
   words: readonly string[],
   index: number,
   sequence: number,
+  avoid: ReadonlySet<string>,
+  used: Set<string>,
 ): Record<string, unknown> {
   const answer = words[index % words.length]!;
   const number = sequence + 1;
@@ -199,15 +239,17 @@ function fakeChapterExercise(
         answer,
         focus: [answer],
       };
-    default:
+    default: {
+      const translation = chapterTranslation(words, index, avoid, used);
       return {
         ...base,
         exerciseType: "lesson_open_answer",
         instructionPl: "Przetłumacz na angielski.",
         prompt: `Przetłumacz zdanie numer ${number}.`,
-        answer: `We have the ${answer}`,
-        focus: [answer],
+        answer: translation.sentence,
+        focus: [translation.focus],
       };
+    }
   }
 }
 
@@ -225,6 +267,8 @@ function fakeChapterPool(input: LessonPoolInput): {
   // Numeracja i dobór słów kontynuują partie wcześniejsze (dogenerowanie).
   const offset = input.existingExercises?.length ?? 0;
   let index = offset;
+  const avoid = new Set((input.avoidSentences ?? []).map(avoidKey));
+  const usedTranslations = new Set<string>();
   for (const objective of input.objectives) {
     examples[objective.id] = words.slice(0, 3).map((word) => `I have the ${word}.`);
     const allowed = new Set(objective.exerciseTypes);
@@ -232,7 +276,7 @@ function fakeChapterPool(input: LessonPoolInput): {
       const type = FAKE_STAGE_TYPES[stage].find((candidate) => allowed.has(candidate));
       if (type === undefined || words.length === 0) continue;
       for (let i = 0; i < input.stageCounts[stage]; i++) {
-        exercises.push(fakeChapterExercise(type, objective.id, words, index, offset + exercises.length));
+        exercises.push(fakeChapterExercise(type, objective.id, words, index, offset + exercises.length, avoid, usedTranslations));
         index += 1;
       }
     }
@@ -521,6 +565,7 @@ export class FakeLlmProvider implements LlmProvider {
   readonly storyRequests: LessonStoryInput[] = [];
   #behaviors: LlmBehavior[] = [];
   #lessonBehaviors: LlmLessonBehavior[] = [];
+  #lessonTopUpBehaviors: LlmLessonBehavior[] = [];
   readonly #delayMs: number;
   readonly #lessonDelayMs: number;
 
@@ -534,9 +579,14 @@ export class FakeLlmProvider implements LlmProvider {
     this.#behaviors = behaviors;
   }
 
-  /** Plan zachowań generacji puli lekcji (jedna partia per cel = jedno wywołanie). */
+  /** Plan zachowań generacji puli lekcji (jedna partia per cel = jedno wywołanie); nie dotyczy rundy `stage_top_up`. */
   queueLesson(...behaviors: LlmLessonBehavior[]): void {
     this.#lessonBehaviors = behaviors;
+  }
+
+  /** Plan zachowań rundy dogenerowania etapu przeglądu (`purpose: "stage_top_up"`); bez niego runda dostaje domyślną deterministyczną pulę. */
+  queueLessonTopUp(...behaviors: LlmLessonBehavior[]): void {
+    this.#lessonTopUpBehaviors = behaviors;
   }
 
   async generateDeck(input: LlmGenerateDeckInput): Promise<{ items: LlmGeneratedItem[] }> {
@@ -589,10 +639,8 @@ export class FakeLlmProvider implements LlmProvider {
     if (this.#lessonDelayMs > 0) {
       await sleep(this.#lessonDelayMs);
     }
-    const behavior =
-      this.#lessonBehaviors.length > 1
-        ? this.#lessonBehaviors.shift()!
-        : this.#lessonBehaviors[0] ?? null;
+    const queue = input.purpose === "stage_top_up" ? this.#lessonTopUpBehaviors : this.#lessonBehaviors;
+    const behavior = queue.length > 1 ? queue.shift()! : queue[0] ?? null;
     if (!behavior) {
       const result = fakeLessonExercises(input);
       return { ...result, exercises: materializeGeneratedCalculations(result.exercises) };

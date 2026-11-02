@@ -105,6 +105,17 @@ export interface LessonPoolInput {
   readonly voiceTones?: boolean;
   /** Czy generator ma zwracać `explanationPl` ćwiczenia (przedmiot z `exerciseExplanations`); bez flagi schemat i prompt nie mają pola. */
   readonly exerciseExplanations?: boolean;
+  /**
+   * Zdania, których rozwiązania dziecko już widziało (przykłady kart, ćwiczenia niesamodzielne):
+   * generator nie powinien używać ich jako odpowiedzi ćwiczeń samodzielnych. Porównanie fake'a
+   * po `toLowerCase().trim()` bez końcowej kropki; brak pola = bez ograniczeń.
+   */
+  readonly avoidSentences?: readonly string[];
+  /**
+   * Po co wołamy generator: `pool` (domyślnie) — pełna generacja lub dogenerowanie puli;
+   * `stage_top_up` — runda dogenerowania w etapie przeglądu lekcji. Fake rozdziela po tym kolejki zachowań.
+   */
+  readonly purpose?: "pool" | "stage_top_up";
 }
 
 /**
