@@ -56,8 +56,9 @@ export const englishGrammarPrompts: SubjectPromptProfile = {
   interestsRule:
     "Sentence themes: the parent listed a few topics the child enjoys (they may be in Polish — " +
     "use simple English nouns for them). Set about one in three of all exercises in these topics — never more than half — " +
-    "and rotate through all the listed topics, but only in lesson_choice, lesson_gap, lesson_order, " +
-    "lesson_error_fix and in the examples. Never use a theme in lesson_open_answer or in any " +
+    "and rotate through all the listed topics, but only in lesson_choice, lesson_gap, lesson_listen_choice, lesson_order, " +
+    "lesson_error_fix and in the examples. A lesson_listen_choice sentence is only heard, so use a theme there " +
+    "only as a word an English narrator reads naturally. Never use a theme in lesson_open_answer or in any " +
     "exercise with visualSubject. A theme word is never the checked element, never the subject of a sentence " +
     "and never any word that decides the checked form (keep subjects from the material or pronouns): " +
     "write He likes dinosaurs. or It is a big dinosaur., never The dinosaur eats apples., The dinosaur is big. or Minecraft is fun.; " +
