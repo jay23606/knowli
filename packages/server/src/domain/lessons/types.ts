@@ -215,6 +215,8 @@ export interface LessonExerciseDraft {
   readonly extraWords?: readonly string[];
   /** Ton lektora nagrania pytania; brak = styl domyślny roli (spec TTS §4.1). */
   readonly voiceTone?: LessonVoiceTone;
+  /** Wyjaśnienie błędu dla dziecka (jedno polskie zdanie, po przycięciu; spec 2026-11-01); tylko przy `exerciseExplanations`. */
+  readonly explanationPl?: string;
 }
 
 /**
@@ -309,6 +311,12 @@ export interface SubjectModule {
    * od `ttsForAnswers` (audio odpowiedzi przed odpowiedzią).
    */
   readonly ttsForFeedbackSentence: boolean;
+  /**
+   * Wyjaśnienie błędu dla dziecka (`explanationPl` ćwiczenia): jedno polskie zdanie
+   * pokazywane po błędnej odpowiedzi w treningu, z nagraniem `explanation_audio`.
+   * Przedmiot bez flagi nie przyjmuje pola.
+   */
+  readonly exerciseExplanations: boolean;
   /**
    * Odpowiedź mówiona (dyktowanie do pola, design szkoły §5): język nagrania
    * i typy ćwiczeń, które ją przyjmują. Brak = przedmiot bez mikrofonu.

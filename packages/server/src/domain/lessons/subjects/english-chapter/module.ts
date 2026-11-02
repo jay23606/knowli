@@ -92,6 +92,8 @@ export const englishChapterSubject: SubjectModule = {
   // Po ocenionej odpowiedzi lektor czyta pełne poprawne zdanie po angielsku (en-GB, bez stylu pl-PL):
   // wybór z luką, luka, luki z bankiem, układanka, tłumaczenie (spec 2026-10-30-lesson-sentence-readback).
   ttsForFeedbackSentence: true,
+  // Wyjaśnienie błędu po polsku po błędnej odpowiedzi w treningu (spec 2026-11-01-lesson-error-explanation).
+  exerciseExplanations: true,
   buildDynamicTopic(data: DynamicTopicData): LessonTopic {
     return {
       id: "dynamic",

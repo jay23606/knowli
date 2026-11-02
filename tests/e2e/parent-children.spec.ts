@@ -215,6 +215,37 @@ test("zainteresowania: dodanie tematów Enterem trafia do PATCH, notki są widoc
   expect(patches[0]!.postDataJSON()).toEqual({ interests: ["piłka nożna", "Minecraft"] });
 });
 
+test("zainteresowania: wklejenie listy ponad limit i przecinek przy pełnym polu pokazują komunikat o limicie", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const api = await openChildren(page);
+  const row = page.getByTestId("child-row-0");
+  await row.getByTestId("child-edit").click();
+  const field = row.getByTestId("child-edit-interests");
+  // zdarzenie wklejenia z danymi schowka, bez uprawnień do prawdziwego schowka
+  await field.evaluate((element, text) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData("text/plain", text);
+    element.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+  }, "lego, dinozaury, koty, Minecraft, rowery, szósty, siódmy");
+  const limit = messages.children.interestsLimit.replace("{max}", "5");
+  await expect(row.locator(".mantine-Pill-root")).toHaveCount(5);
+  await expect(row.getByText(limit)).toBeVisible();
+  await expect(row.getByText("szósty", { exact: true })).toHaveCount(0);
+
+  // przecinek przy pełnym polu też ucina wpis — z tym samym komunikatem
+  await field.fill("ósmy");
+  await expect(row.getByText(limit)).toHaveCount(0);
+  await field.press(",");
+  await expect(row.getByText(limit)).toBeVisible();
+  await expect(row.locator(".mantine-Pill-root")).toHaveCount(5);
+
+  await row.getByTestId("child-edit-save").click();
+  await expect(page.getByText(messages.children.saved)).toBeVisible();
+  const patches = mutations(api, "PATCH");
+  expect(patches).toHaveLength(1);
+  expect(patches[0]!.postDataJSON()).toEqual({ interests: ["lego", "dinozaury", "koty", "Minecraft", "rowery"] });
+});
+
 test("zainteresowania: niepoprawny temat daje błąd pola i blokuje zapis", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const api = await openChildren(page);

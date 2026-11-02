@@ -449,6 +449,31 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
   });
 });
 
+describe("createOpenAiLlmProvider — wyjaśnienie błędu (explanationPl)", () => {
+  type Body = { response_format: { json_schema: { schema: any } }; messages: Array<{ role: string; content: string }> };
+  const bodyAt = (fetchMock: { mock: { calls: unknown[][] } }, index: number) =>
+    JSON.parse((fetchMock.mock.calls[index]![1] as RequestInit).body as string) as Body;
+  const systemOf = (body: Body) => body.messages.find((m) => m.role === "system")!.content;
+
+  it("prompt i schemat puli niosą regułę i pole tylko przy exerciseExplanations", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = createOpenAiLlmProvider({ apiKey: "k" });
+    await provider.generateLessonPool({ ...INPUT, exerciseExplanations: true });
+    await provider.generateLessonPool(INPUT);
+    const on = bodyAt(fetchMock, 0);
+    const off = bodyAt(fetchMock, 1);
+    const prompt = systemOf(on);
+    expect(prompt).toContain("explanationPl");
+    expect(prompt).toContain("one Polish sentence");
+    expect(prompt).toContain("why the correct answer is correct");
+    expect(prompt).toContain("120");
+    expect(on.response_format.json_schema.schema.properties.exercises.items.required).toContain("explanationPl");
+    expect(systemOf(off)).not.toContain("explanationPl");
+    expect(JSON.stringify(off.response_format.json_schema.schema)).not.toContain("explanationPl");
+  });
+});
+
 describe("createOpenAiLlmProvider.generateLessonPool — wybór ze słuchu (lesson_listen_choice)", () => {
   const LISTEN_INPUT: LessonPoolInput = {
     ...INPUT,

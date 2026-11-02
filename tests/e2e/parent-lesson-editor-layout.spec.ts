@@ -352,8 +352,8 @@ test("Posłuchaj i wybierz: odznaka, informacja, tekst naprawy i licznik bez prz
       await expect(page.getByTestId(`exercise-sentence-audio-state-${index}`)).toBeVisible();
       await expect(page.getByTestId(`exercise-audio-state-${index}`)).toHaveCount(0);
     }
-    await expect(page.getByTestId("exercise-sentence-audio-state-0")).toHaveText(messages.decks.audioState.ready!);
-    await expect(page.getByTestId("exercise-sentence-audio-state-2")).toHaveText(messages.decks.audioState.pending!);
+    await expect(page.getByTestId("exercise-sentence-audio-state-0")).toHaveText(messages.lessons.sentenceAudioState.ready!);
+    await expect(page.getByTestId("exercise-sentence-audio-state-2")).toHaveText(messages.lessons.sentenceAudioState.pending!);
     // tekst naprawy tylko przy błędzie
     await expect(page.getByTestId("exercise-sentence-audio-failed-1")).toHaveText(messages.lessons.listenChoiceAudioFailed);
     await expect(page.getByTestId("exercise-sentence-audio-failed-0")).toHaveCount(0);
@@ -421,6 +421,15 @@ test("opublikowana lekcja bez szkicu: stan audio i odsłuch w menu ⋯ karty", a
   await expect(page.getByTestId("new-version")).toBeVisible();
 });
 
+test("opublikowana lekcja bez szkicu: wiersz „Tematy zdań” bez przycisku usuwania i notki", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const publishedOnly = { ...lesson, draft: null, published: { ...lesson.published, interests: ["dinozaury", "Minecraft"] } };
+  await openLesson(page, { data: publishedOnly as unknown as typeof lesson });
+  await expect(page.getByTestId("lesson-themes-line")).toHaveText(messages.lessons.themesLine.replace("{themes}", "dinozaury, Minecraft"));
+  await expect(page.getByTestId("lesson-themes-remove")).toHaveCount(0);
+  await expect(page.getByTestId("lesson-themes-remove-hint")).toHaveCount(0);
+});
+
 test.describe("telefon z klawiaturą ekranową", () => {
   test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
@@ -483,3 +492,104 @@ test.describe("telefon z klawiaturą ekranową", () => {
     await expect(page.getByTestId("tab-decks")).not.toBeInViewport();
   });
 });
+
+const EXPLANATION = "Po „he” czasownik dostaje końcówkę -s.";
+
+/** Szkic gramatyki z wyjaśnieniem pierwszego ćwiczenia i jego gotowym nagraniem; opublikowana wersja ma to samo. */
+function withExplanations(): typeof lesson {
+  const explained = (v: ReturnType<typeof version>) => ({
+    ...v,
+    exerciseExplanations: true,
+    exercises: v.exercises.map((exercise, index) => (index === 0
+      ? { ...exercise, explanationPl: EXPLANATION, explanationAudio: { state: "ready", assetId: uuid(91) } }
+      : exercise)),
+  });
+  return { ...lesson, draft: explained(lesson.draft), published: explained(lesson.published) } as unknown as typeof lesson;
+}
+
+test("szkic gramatyki: pole wyjaśnienia z licznikiem, kontrolki nagrania i patch bez nagrania", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const calls = await openLesson(page, { data: withExplanations() });
+  const card = page.getByTestId("exercise-0");
+  // nagranie wyjaśnienia jest w karcie także zwiniętej, z nazwą odrębną od nagrania pytania,
+  // z widoczną etykietą i pod podglądem wyjaśnienia (nie na górze karty)
+  await expect(card.getByTestId("lesson-explanation-audio")).toHaveAttribute("data-audio-state", "ready");
+  await expect(card.getByTestId("lesson-explanation-audio-listen")).toHaveAccessibleName("Posłuchaj: wyjaśnienie — Ćwiczenie 1");
+  await expect(card.getByTestId("lesson-explanation-audio-regenerate")).toHaveAccessibleName("Nagraj ponownie: wyjaśnienie — Ćwiczenie 1");
+  const collapsedBlock = card.getByTestId("exercise-explanation-audio-0");
+  await expect(collapsedBlock).toContainText(messages.lessons.explanationAudioLabel);
+  await expect(card.getByRole("group", { name: messages.lessons.explanationAudioLabel })).toBeVisible();
+  const previewBox = (await page.getByTestId("exercise-explanation-preview-0").boundingBox())!;
+  const collapsedBox = (await collapsedBlock.boundingBox())!;
+  expect(collapsedBox.y, `controls under the explanation preview: ${JSON.stringify({ previewBox, collapsedBox })}`).toBeGreaterThanOrEqual(previewBox.y + previewBox.height - 1);
+
+  await page.getByTestId("exercise-edit-0").click();
+  const field = page.getByTestId("exercise-explanation-0");
+  // rozwinięta karta: etykieta i kontrolki pod polem wyjaśnienia
+  const expandedBlock = card.getByTestId("exercise-explanation-audio-0");
+  await expect(expandedBlock).toContainText(messages.lessons.explanationAudioLabel);
+  const fieldBox = (await field.boundingBox())!;
+  const expandedBox = (await expandedBlock.boundingBox())!;
+  expect(expandedBox.y, `controls under the explanation field: ${JSON.stringify({ fieldBox, expandedBox })}`).toBeGreaterThanOrEqual(fieldBox.y + fieldBox.height - 1);
+  await expect(card.getByTestId("lesson-explanation-audio")).toHaveCount(1);
+  await expect(card.getByText(messages.lessons.explanationLabel)).toBeVisible();
+  await expect(field).toHaveValue(EXPLANATION);
+  await expect(field).toHaveAttribute("maxlength", "120");
+  await expect(card).toContainText(messages.lessons.explanationHint);
+  await expect(page.getByTestId("exercise-explanation-count-0")).toHaveText(`${EXPLANATION.length}/120`);
+  // pole jest też w ćwiczeniu bez wyjaśnienia
+  await page.getByTestId("exercise-edit-1").click();
+  await expect(page.getByTestId("exercise-explanation-1")).toHaveValue("");
+  await expect(page.getByTestId("exercise-explanation-count-1")).toHaveText("0/120");
+
+  await field.fill("  Dodaj -s do czasownika.  ");
+  await expect(page.getByTestId("exercise-explanation-count-0")).toHaveText("27/120");
+  // zmiana tekstu unieważnia nagranie wyjaśnienia do zapisu
+  await expect(card.getByTestId("lesson-explanation-audio")).toHaveCount(0);
+  await page.getByTestId("save-lesson").click();
+  await expect.poll(() => calls.requests.filter((request) => request.method === "PATCH").length).toBe(1);
+  const patch = calls.requests.find((request) => request.method === "PATCH")!.body as { exercises: Array<{ explanationPl?: string }> };
+  expect(patch.exercises[0]!.explanationPl).toBe("Dodaj -s do czasownika.");
+  expect(patch.exercises[1]).not.toHaveProperty("explanationPl");
+  expect(JSON.stringify(patch)).not.toContain("explanationAudio");
+});
+
+test("szkic szkoły (bez flagi wyjaśnień): brak pola wyjaśnienia", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openLesson(page);
+  await page.getByTestId("exercise-edit-0").click();
+  await expect(page.getByTestId("exercise-instruction-0")).toBeVisible();
+  await expect(page.getByTestId("exercise-explanation-0")).toHaveCount(0);
+  await expect(page.getByText(messages.lessons.explanationLabel)).toHaveCount(0);
+  await expect(page.getByTestId("lesson-explanation-audio")).toHaveCount(0);
+});
+
+test("opublikowana lekcja: zwinięty podgląd pokazuje wyjaśnienie i odsłuch", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const data = withExplanations();
+  await openLesson(page, { data: { ...data, draft: null } as unknown as typeof lesson });
+  const card = page.getByTestId("exercise-0");
+  await expect(page.getByTestId("exercise-explanation-preview-0")).toHaveText(messages.lessons.explanationPreview.replace("{text}", EXPLANATION));
+  await expect(card.getByTestId("lesson-explanation-audio-listen")).toBeVisible();
+  await expect(card.getByTestId("exercise-explanation-audio-0")).toContainText(messages.lessons.explanationAudioLabel);
+  // wersja tylko do odczytu: bez „Nagraj ponownie”
+  await expect(card.getByTestId("lesson-explanation-audio-regenerate")).toHaveCount(0);
+  await expect(page.getByTestId("exercise-explanation-preview-1")).toHaveCount(0);
+});
+
+for (const viewport of [{ width: 375, height: 812 }, { width: 1280, height: 800 }]) {
+  test(`geometria pola wyjaśnienia i nagrania w ${viewport.width}×${viewport.height}: bez przepełnienia poziomego`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await openLesson(page, { data: withExplanations() });
+    if (viewport.width < 600) await page.getByTestId(`stage-${OBJ_A}-guided`).getByRole("button").first().click();
+    await page.getByTestId("exercise-edit-0").click();
+    await expect(page.getByTestId("exercise-explanation-0")).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    for (const id of ["exercise-explanation-0", "lesson-explanation-audio-listen", "lesson-explanation-audio-regenerate"]) {
+      const box = (await page.getByTestId("exercise-0").getByTestId(id).boundingBox())!;
+      expect(box.x, id).toBeGreaterThanOrEqual(-0.5);
+      expect(box.x + box.width, id).toBeLessThanOrEqual(viewport.width + 0.5);
+      if (id !== "exercise-explanation-0") expect(box.height, id).toBeGreaterThanOrEqual(44);
+    }
+  });
+}

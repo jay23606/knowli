@@ -53,11 +53,12 @@ describe("ttsRequestInstructions", () => {
 
   it("składa tekst dla każdego stylu roli", () => {
     const roles: TtsRoleStyle[] = [
-      "ui_praise", "ui_gentle", "ui_guidance", "ui_closing", "lesson_question", "lesson_card",
+      "ui_praise", "ui_gentle", "ui_guidance", "ui_closing", "lesson_question", "lesson_card", "lesson_explanation",
     ];
     expect(Object.fromEntries(roles.map((role) => [role, ttsRequestInstructions(styled, "pl-PL", role)]))).toMatchInlineSnapshot(`
       {
         "lesson_card": "Mów po polsku, z polską wymową. Przeczytaj jak ciepły nauczyciel, który opowiada, spokojnym tempem.",
+        "lesson_explanation": "Mów po polsku, z polską wymową. Wyjaśnij spokojnie i życzliwie jak cierpliwy nauczyciel; angielskie słowa wymów po angielsku.",
         "lesson_question": "Mów po polsku, z polską wymową. Przeczytaj przyjaźnie, spokojnym tempem i wyraźnie.",
         "ui_closing": "Mów po polsku, z polską wymową. Powiedz ciepło i z zadowoleniem.",
         "ui_gentle": "Mów po polsku, z polską wymową. Powiedz ciepło i spokojnie, bez rozczarowania w głosie.",
@@ -98,5 +99,9 @@ describe("ttsRequestInstructions", () => {
       expect(sentence.length).toBeGreaterThan(0);
       expect(sentence.length).toBeLessThanOrEqual(120);
     }
+  });
+
+  it("zdanie stylu wyjaśnienia błędu jest takie jak w specyfikacji", () => {
+    expect(STYLE_SENTENCES_PL.lesson_explanation).toBe("Wyjaśnij spokojnie i życzliwie jak cierpliwy nauczyciel; angielskie słowa wymów po angielsku.");
   });
 });

@@ -518,6 +518,7 @@ export const messages = {
     microphoneSettingsOff: "Odpowiedzi głosowe wyłączone",
     listen: "Posłuchaj",
     listenExample: "Posłuchaj zdania",
+    listenExplanation: "Posłuchaj wyjaśnienia",
     // „Posłuchaj i wybierz” (#198): polecenie, status blokady i błąd ręcznego odsłuchu.
     lessonListenChoiceInstruction: "Posłuchaj i wybierz, czego brakuje.",
     lessonListenGap: "luka",
@@ -943,6 +944,12 @@ export const messages = {
     // „Posłuchaj i wybierz” (#198): informacja w karcie ćwiczenia, błąd nagrania i adnotacja w tworzeniu lekcji.
     listenChoiceNote: "Lektor przeczyta zdanie. Dziecko dostanie to zadanie, gdy nagranie będzie gotowe.",
     listenChoiceAudioFailed: "Nagranie się nie udało. Utwórz nową wersję lekcji, aby spróbować ponownie.",
+    /** Odznaka nagrania zdania w ćwiczeniu „Posłuchaj i wybierz” (odróżnia je od audio odpowiedzi). */
+    sentenceAudioState: {
+      ready: "Nagranie: gotowe",
+      pending: "Nagranie: w przygotowaniu…",
+      failed: "Nagranie: nie udało się",
+    } as Record<string, string>,
     listenChoiceCreateNote: "Do puli dodamy najwyżej 2 ćwiczenia „Posłuchaj i wybierz” na regułę.",
     listenChoiceMissingAudioCount: "Ćwiczenia słuchowe bez nagrania: {n}",
     promptAudioListen: "Posłuchaj",
@@ -959,6 +966,12 @@ export const messages = {
     removeRequiredElement: "Usuń element",
     supplementaryLabel: "Elementy uzupełniające (każdy w osobnym wierszu)",
     commonErrorsLabel: "Typowe błędy (każdy w osobnym wierszu)",
+    explanationLabel: "Wyjaśnienie dla dziecka (po błędzie)",
+    explanationHint: "Jedno krótkie zdanie po polsku. Dziecko zobaczy je po błędnej odpowiedzi albo po „Nie pamiętam”.",
+    explanationCounter: "{n}/120",
+    explanationAudioTarget: "wyjaśnienie — {exercise}",
+    explanationAudioLabel: "Nagranie wyjaśnienia",
+    explanationPreview: "Wyjaśnienie: {text}",
     familyLabel: "Rodzina pytań: {family}",
     keywordsLegend: "Pojęcia do wyboru (zaznacz 2–3 kluczowe dla odpowiedzi tej rodziny)",
     pairsLegend: "Pary (3–5): lewa strona → pasująca prawa",

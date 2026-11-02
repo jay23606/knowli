@@ -681,7 +681,12 @@ export const FeedbackDtoSchema = z.object({
    * i `lesson_hint`.
    */
   answerSegments: z.array(SpellingDiffSegmentSchema).min(1).max(32).optional(),
-  /** Szablon podpowiedzi kategorii celu (po polsku) — wymagany dla `lesson_hint`. */
+  /**
+   * Tekst podpowiedzi po polsku: szablon kategorii celu albo zatwierdzone przez
+   * rodzica wyjaśnienie ćwiczenia (spec 2026-11-01). Wymagany dla `lesson_hint`
+   * i `lesson_precision_hint`; przy `incorrect` opcjonalny (wyjaśnienie ćwiczenia
+   * lekcji; słówka go nie ustawiają); przy pozostałych rodzajach zabroniony.
+   */
   hintPl: z.string().min(1).optional(),
   /** Wskazówka prezentacji; endpoint odsłuchu zawsze ponownie sprawdza uprawnienie. */
   referenceAudioAvailable: z.boolean().optional(),
@@ -693,6 +698,13 @@ export const FeedbackDtoSchema = z.object({
    * (SPEC A07).
    */
   correctAudioAssetId: UuidSchema.optional(),
+  /**
+   * Nagranie wyjaśnienia ćwiczenia (pl-PL, rola `explanation_audio`) — tylko
+   * razem z `hintPl` pochodzącym z wyjaśnienia, przy `incorrect` albo
+   * `lesson_hint`. Jak `correctAudioAssetId`: serwer zamyka `audio_issued`
+   * przed odpowiedzią HTTP; odsłuch wyłącznie na żądanie dziecka.
+   */
+  explanationAudioAssetId: UuidSchema.optional(),
 }).strict().superRefine((feedback, ctx) => {
   if (feedback.kind === "spelling_hint" && feedback.spellingDiff === undefined) {
     ctx.addIssue({ code: "custom", path: ["spellingDiff"], message: "spelling_hint requires spellingDiff" });
@@ -718,8 +730,17 @@ export const FeedbackDtoSchema = z.object({
   if (HINT_KINDS.includes(feedback.kind) && feedback.hintPl === undefined) {
     ctx.addIssue({ code: "custom", path: ["hintPl"], message: `${feedback.kind} requires hintPl` });
   }
-  if (feedback.hintPl !== undefined && !HINT_KINDS.includes(feedback.kind)) {
-    ctx.addIssue({ code: "custom", path: ["hintPl"], message: "hintPl is only allowed with lesson_hint or lesson_precision_hint" });
+  // `incorrect` może nieść wyjaśnienie ćwiczenia lekcji (spec 2026-11-01 §4.5).
+  if (feedback.hintPl !== undefined && !HINT_KINDS.includes(feedback.kind) && feedback.kind !== "incorrect") {
+    ctx.addIssue({ code: "custom", path: ["hintPl"], message: "hintPl is only allowed with lesson_hint, lesson_precision_hint or incorrect" });
+  }
+  if (feedback.explanationAudioAssetId !== undefined) {
+    if (feedback.hintPl === undefined) {
+      ctx.addIssue({ code: "custom", path: ["explanationAudioAssetId"], message: "explanationAudioAssetId requires hintPl" });
+    }
+    if (feedback.kind !== "incorrect" && feedback.kind !== "lesson_hint") {
+      ctx.addIssue({ code: "custom", path: ["explanationAudioAssetId"], message: "explanationAudioAssetId is only allowed with incorrect or lesson_hint" });
+    }
   }
   if (feedback.speech && ["uncertain", "no_speech", "unavailable"].includes(feedback.speech.recognition)) {
     for (const field of ["heardText", "correctText", "fragments"] as const) {
@@ -732,6 +753,9 @@ export const FeedbackDtoSchema = z.object({
   // który niczego nie ujawnia (próba nieoceniona, „Pomiń”, awaria techniczna).
   if (feedback.kind === "not_assessed" && feedback.correctAudioAssetId !== undefined) {
     ctx.addIssue({ code: "custom", path: ["correctAudioAssetId"], message: "not_assessed cannot disclose the correct word audio" });
+  }
+  if (feedback.kind === "not_assessed" && feedback.explanationAudioAssetId !== undefined) {
+    ctx.addIssue({ code: "custom", path: ["explanationAudioAssetId"], message: "not_assessed cannot disclose the explanation audio" });
   }
 });
 export type FeedbackDto = z.infer<typeof FeedbackDtoSchema>;

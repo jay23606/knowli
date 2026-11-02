@@ -356,7 +356,7 @@ chronić.
   wersję lekcji, aby nagrać ponownie.”;
 - ścieżka procedury: `POST /lesson-drafts/{lessonDraftId}/story-audio/regenerate`,
   wejście `{ lessonDraftId }`, wynik `{ assetId }`, status 202; tabela ma
-  numer migracji `0033`.
+  numer migracji `0034` (po `0033_explanation_audio_role` z #196).
 
 ### 6.3. Edycja
 

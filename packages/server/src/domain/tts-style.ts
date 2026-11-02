@@ -3,7 +3,7 @@ import type { LessonVoiceTone } from "@learning/contracts";
 /** Rola komunikatu lub nagrania lekcji, od której zależy styl wypowiedzi TTS (spec tonu TTS §2.1). */
 export type TtsRoleStyle =
   | "ui_praise" | "ui_gentle" | "ui_guidance" | "ui_closing"
-  | "lesson_question" | "lesson_card";
+  | "lesson_question" | "lesson_card" | "lesson_explanation";
 
 /** Semantyczny styl wypowiedzi: rola albo ton lekcji; zdanie dla modelu dobiera profil przy adapterze. */
 export type TtsStyle = TtsRoleStyle | LessonVoiceTone;

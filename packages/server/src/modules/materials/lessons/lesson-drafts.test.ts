@@ -6,7 +6,7 @@ import { validatePool } from "../../../domain/lessons/pool-validation";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
 import { validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
-import { buildDynamicTopicData, buildPoolInput, capListenChoiceOverflow, buildLessonPayload, createLessonFromMaterial, createMaterialLesson, buildObjectiveCriteria, collectBatchExerciseMetadata, filterExercisesToRequestedObjective, minimumCountPerObjective, objectiveBatchCounts, isWellShapedRawExercise, lessonPayloadVersion, poolStageCounts, refineGeneratedDrafts, scopeFamiliesToRun, splitStages, stripParentAddedFlags, sumRejectedReasons, summarizeLessonPoolValidation, toExerciseDraft, withoutEmptyOptionalArrays, withoutVoiceToneUnlessAllowed, withSubjectObjectiveKinds } from "./lesson-drafts";
+import { buildDynamicTopicData, buildPoolInput, capListenChoiceOverflow, buildLessonPayload, createLessonFromMaterial, createMaterialLesson, buildObjectiveCriteria, collectBatchExerciseMetadata, filterExercisesToRequestedObjective, minimumCountPerObjective, objectiveBatchCounts, isWellShapedRawExercise, lessonPayloadVersion, poolStageCounts, refineGeneratedDrafts, scopeFamiliesToRun, splitStages, stripParentAddedFlags, sumRejectedReasons, summarizeLessonPoolValidation, toExerciseDraft, withoutEmptyOptionalArrays, withoutInvalidExplanation, withoutVoiceToneUnlessAllowed, withSubjectObjectiveKinds } from "./lesson-drafts";
 
 describe("calculation persistence and grading criteria", () => {
   const calculation = { kind: "scale_distance" as const, params: { scaleDenominator: 25000, mapDistanceCm: 3 }, unit: "m" as const, templateFamilyId: "scale" };
@@ -269,6 +269,53 @@ describe("ton lektora (voiceTone) z wyjścia modelu", () => {
   });
 });
 
+describe("wyjaśnienie błędu (explanationPl) z wyjścia modelu", () => {
+  const rawExercise = {
+    exerciseType: "lesson_gap",
+    objectiveId: "english_grammar.present_simple.third_person_s",
+    stem: "She ___ football.",
+    answer: "plays",
+    acceptedAnswers: [],
+    focus: ["plays"],
+  };
+
+  it("toExerciseDraft: null i pusty tekst oznaczają brak pola, tekst jest przycinany", () => {
+    expect("explanationPl" in toExerciseDraft({ ...rawExercise, explanationPl: null })).toBe(false);
+    expect("explanationPl" in toExerciseDraft({ ...rawExercise, explanationPl: "   " })).toBe(false);
+    expect("explanationPl" in toExerciseDraft({ ...rawExercise, explanationPl: 3 })).toBe(false);
+    expect("explanationPl" in toExerciseDraft(rawExercise)).toBe(false);
+    expect(toExerciseDraft({ ...rawExercise, explanationPl: "  Tekst.  " }).explanationPl).toBe("Tekst.");
+  });
+
+  it("wyjaśnienie złego typu nie odrzuca ćwiczenia — ćwiczenie zostaje bez pola", () => {
+    const raw = { ...rawExercise, explanationPl: 5 };
+    expect(isWellShapedRawExercise(raw)).toBe(true);
+    const draft = toExerciseDraft(raw);
+    expect("explanationPl" in draft).toBe(false);
+    expect(draft.answer).toBe("plays");
+  });
+
+  it("buildLessonPayload przenosi pole, a toExerciseDraft odczytuje je z payloadu", () => {
+    const payload = buildLessonPayload(toExerciseDraft({ ...rawExercise, explanationPl: "Po she dodajemy s." }), englishGrammarSubject);
+    expect(payload.explanationPl).toBe("Po she dodajemy s.");
+    expect(toExerciseDraft(payload).explanationPl).toBe("Po she dodajemy s.");
+    expect("explanationPl" in buildLessonPayload(toExerciseDraft(rawExercise), englishGrammarSubject)).toBe(false);
+  });
+
+  it("withoutInvalidExplanation: poprawne zostaje, dwa zdania i przedmiot bez flagi usuwają pole", () => {
+    const good = toExerciseDraft({ ...rawExercise, explanationPl: "Po she dodajemy s." });
+    expect(withoutInvalidExplanation(good, englishGrammarSubject)).toBe(good);
+    const two = toExerciseDraft({ ...rawExercise, explanationPl: "Po she dodajemy s. To ważne." });
+    const stripped = withoutInvalidExplanation(two, englishGrammarSubject);
+    expect("explanationPl" in stripped).toBe(false);
+    const { explanationPl: _dropped, ...withoutField } = two;
+    expect(stripped).toEqual(withoutField);
+    expect("explanationPl" in withoutInvalidExplanation(good, schoolSubject)).toBe(false);
+    const plain = toExerciseDraft(rawExercise);
+    expect(withoutInvalidExplanation(plain, schoolSubject)).toBe(plain);
+  });
+});
+
 describe("stripParentAddedFlags (generacja nie jest źródłem rodzica)", () => {
   it("usuwa flagę parentAdded z cytatów ćwiczeń generowanych", () => {
     const draft = toExerciseDraft({
@@ -405,6 +452,26 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
       expect(errors).toHaveLength(1);
       expect(errors[0]).toMatch(/^exerciseType: /);
     }
+  });
+
+  it("capListenChoiceOverflow: nadmiar ćwiczeń etapów przycina najpierw z etapów ponad zamówiony podział", () => {
+    const ex = (exerciseType: LessonExerciseDraft["exerciseType"], answer: string): LessonExerciseDraft =>
+      ({ objectiveId: "o1", exerciseType, answer, acceptedAnswers: [], focus: [] });
+    // Model oddał nadmiar etapu prowadzonego na początku; zamówione: 2 guided, 2 productive, 1 independent.
+    const exercises = [
+      ex("lesson_choice", "c1"), ex("lesson_choice", "c2"), ex("lesson_order", "c3"), ex("lesson_listen_choice", "l1"),
+      ex("lesson_gap", "g1"), ex("lesson_transform", "g2"), ex("lesson_open_answer", "o1"),
+    ];
+    const limits = new Map([["o1", { count: 5, listen: 2, stages: { guided: 2, productive: 2, independent: 1 } }]]);
+    const result = capListenChoiceOverflow(exercises, limits);
+    expect(result.kept.map((e) => e.answer)).toEqual(["c1", "c2", "l1", "g1", "g2", "o1"]);
+    expect(result.rejected.map((r) => r.exercise.answer)).toEqual(["c3"]);
+
+    // Gdy etapom brakuje ćwiczeń, wolne miejsca dobiera kolejność wejścia (bez zmiany limitu `count`).
+    const short = [ex("lesson_choice", "c1"), ex("lesson_choice", "c2"), ex("lesson_choice", "c3"), ex("lesson_choice", "c4"), ex("lesson_gap", "g1")];
+    const shortResult = capListenChoiceOverflow(short, limits);
+    expect(shortResult.kept.map((e) => e.answer)).toEqual(["c1", "c2", "c3", "c4", "g1"]);
+    expect(capListenChoiceOverflow([...short, ex("lesson_choice", "c5")], limits).rejected.map((r) => r.exercise.answer)).toEqual(["c5"]);
   });
 
   it("przenosi reguły typów z profilu przedmiotu do profilu promptu, a brak reguł pomija pola", () => {

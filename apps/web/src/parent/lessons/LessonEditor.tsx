@@ -84,13 +84,14 @@ export function lessonPollInterval(deck: LessonDeckDto | undefined): number | fa
   const storyGenerating = deck.storyGeneration?.state === "queued" || deck.storyGeneration?.state === "running";
   const visible = deck.draft ?? deck.published;
   const assetsPending = visible?.assets.some((asset) => asset.state === "pending") ?? false;
-  // nagrania pytań i kart nie są w `assets` (serwer je pomija) — ich stan niosą ćwiczenia i `cardAudio`
+  // nagrania pytań, wyjaśnień i kart nie są w `assets` (serwer je pomija) — ich stan niosą ćwiczenia i `cardAudio`
   // (zdanie „Posłuchaj i wybierz” — `sentenceAudio` — jest tak samo poza `assets`)
   const promptAudioPending = visible?.exercises.some((exercise) => exercise.promptAudio?.state === "pending" || exercise.sentenceAudio?.state === "pending") ?? false;
   const cardAudioPending = visible?.cardAudio?.some((card) => card.audio.state === "pending") ?? false;
+  const explanationAudioPending = visible?.exercises.some((exercise) => exercise.explanationAudio?.state === "pending") ?? false;
   const storyAudioPending = visible?.storyAudio?.state === "pending";
   if (generating || storyGenerating || assetsPending) return 1000;
-  return promptAudioPending || cardAudioPending || storyAudioPending ? 3000 : false;
+  return promptAudioPending || cardAudioPending || explanationAudioPending || storyAudioPending ? 3000 : false;
 }
 
 /**
@@ -827,6 +828,7 @@ export default function LessonEditor({
     const asset = unchanged ? savedAudio : null;
     // nagranie pytania: tak samo tylko dla ćwiczenia bez zmian od zapisu (zmiana tekstu lub tonu unieważnia nagranie)
     const promptAudio = unchanged ? active?.exercises.find((e) => e.id === ex.id)?.promptAudio ?? null : null;
+    const explanationAudio = unchanged ? active?.exercises.find((e) => e.id === ex.id)?.explanationAudio ?? null : null;
     // nagranie zdania „Posłuchaj i wybierz”: tak samo tylko dla ćwiczenia bez zmian; bez „Nagraj ponownie” (nowa wersja lekcji ponawia)
     const sentenceAudio = unchanged ? active?.exercises.find((e) => e.id === ex.id)?.sentenceAudio ?? null : null;
     return (
@@ -847,7 +849,9 @@ export default function LessonEditor({
         lessonDraftId={active?.id ?? ""}
         deckId={deckId}
         itemRevisionId={baseRevisionId}
-        audioLocked={promptAudio !== null && isDirty}
+        explanations={active?.exerciseExplanations === true}
+        explanationAudio={explanationAudio}
+        audioLocked={(promptAudio !== null || explanationAudio !== null) && isDirty}
         calculation={calculationControls(ex)}
         {...cardActions}
       />

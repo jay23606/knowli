@@ -11,18 +11,21 @@ function lesson(overrides: {
   publishedAssets?: string[];
   draftPromptAudio?: string[];
   draftCardAudio?: string[];
+  draftExplanationAudio?: string[];
   draftStoryAudio?: string;
 }): LessonDeckDto {
-  const version = (states: string[], promptAudio: string[] = [], cardAudio: string[] = [], storyAudio?: string) => ({
+  const version = (states: string[], promptAudio: string[] = [], cardAudio: string[] = [], explanationAudio: string[] = [], storyAudio?: string) => ({
     assets: states.map((state) => ({ state })),
-    exercises: [{}, ...promptAudio.map((state) => ({ promptAudio: { state } }))],
+    exercises: [{}, ...promptAudio.map((state) => ({ promptAudio: { state } })), ...explanationAudio.map((state) => ({ explanationAudio: { state } }))],
     cardAudio: cardAudio.map((state) => ({ audio: { state } })),
     ...(storyAudio ? { storyAudio: { state: storyAudio } } : {}),
   }) as unknown as Version;
   return {
     generation: overrides.generation ?? null,
     storyGeneration: overrides.storyGeneration ?? null,
-    draft: overrides.draftAssets ? version(overrides.draftAssets, overrides.draftPromptAudio, overrides.draftCardAudio, overrides.draftStoryAudio) : null,
+    draft: overrides.draftAssets
+      ? version(overrides.draftAssets, overrides.draftPromptAudio, overrides.draftCardAudio, overrides.draftExplanationAudio, overrides.draftStoryAudio)
+      : null,
     published: overrides.publishedAssets ? version(overrides.publishedAssets) : null,
   } as unknown as LessonDeckDto;
 }
@@ -51,6 +54,11 @@ describe("lessonPollInterval", () => {
     expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftCardAudio: ["pending"] }))).toBe(3000);
     expect(lessonPollInterval(lesson({ draftAssets: ["pending"], draftCardAudio: ["pending"] }))).toBe(1000);
     expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftPromptAudio: ["ready", "failed"], draftCardAudio: ["ready"] }))).toBe(false);
+  });
+
+  it("odpytuje, gdy nagranie wyjaśnienia czeka", () => {
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftExplanationAudio: ["pending"] }))).toBe(3000);
+    expect(lessonPollInterval(lesson({ draftAssets: ["approved"], draftExplanationAudio: ["ready", "failed"] }))).toBe(false);
   });
 
   it("odpytuje co sekundę, gdy run historyjki czeka albo trwa (osobno od generowania puli)", () => {

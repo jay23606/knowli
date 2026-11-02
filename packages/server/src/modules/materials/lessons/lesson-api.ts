@@ -145,6 +145,10 @@ function requireTopic(services: Services, context: LessonContextView): LessonTop
  * identyfikatory, polskie tytuły i karty wyjaśnienia (bez pól modelowych). Źródło: wstrzyknięty
  * rejestr przedmiotów (`services.subjects`).
  */
+function offersListenChoice(subject: SubjectModule): boolean {
+  return subject.ttsForFeedbackSentence === true && subject.exerciseTypes.includes("lesson_listen_choice");
+}
+
 export function lessonCatalog(services: Services): SubjectCatalogDto {
   return {
     ...(services.generationService ? { generationService: services.generationService } : {}),
@@ -165,6 +169,8 @@ export function lessonCatalog(services: Services): SubjectCatalogDto {
         subjectTitleRequired: requiresParentSubjectTitle(subject),
         // Formularz pokazuje tematy zdań tylko tam, gdzie przedmiot ma regułę w prompcie.
         acceptsInterests: subject.prompts.interestsRule !== undefined,
+        // Te same warunki co przydział dodatku słuchowego w generacji (`listenChoiceAllowance`).
+        offersListenChoice: offersListenChoice(subject),
         topics: [...latestByTopic.values()].map((topic) => ({
           id: topic.id,
           version: topic.version,
@@ -173,6 +179,7 @@ export function lessonCatalog(services: Services): SubjectCatalogDto {
             id: objective.id,
             titlePl: objective.titlePl,
             cards: objective.cards.map((card) => ({ title: card.title, body: card.body })),
+            offersListenChoice: offersListenChoice(subject) && objective.exerciseTypes.includes("lesson_listen_choice"),
           })),
         })),
       };
@@ -197,6 +204,7 @@ function exerciseDtoFromPayload(
     ...(draft.statement === undefined ? {} : { statement: draft.statement }),
     ...(draft.prompt === undefined ? {} : { prompt: draft.prompt }),
     ...(draft.hint === undefined ? {} : { hint: draft.hint }),
+    ...(draft.explanationPl === undefined ? {} : { explanationPl: draft.explanationPl }),
     ...(draft.transformId === undefined ? {} : { transformId: draft.transformId }),
     ...(draft.noticeSegments === undefined
       ? {}
@@ -299,10 +307,15 @@ async function readLessonDraftDto(
   const exercises = revisions.map((r) => {
     const dto = exerciseDtoFromPayload(r.itemId, r.id, r.payload);
     const promptAudio = audio.prompts.get(r.id);
-    const withPrompt = promptAudio ? { ...dto, promptAudio } : dto;
+    const explanationAudio = audio.explanations.get(r.id);
     // Zdanie ćwiczenia słuchowego: stan nagrania tylko dla `lesson_listen_choice`.
     const sentenceAudio = dto.exerciseType === "lesson_listen_choice" ? audio.sentences.get(r.id) : undefined;
-    return sentenceAudio ? { ...withPrompt, sentenceAudio } : withPrompt;
+    return {
+      ...dto,
+      ...(promptAudio ? { promptAudio } : {}),
+      ...(explanationAudio ? { explanationAudio } : {}),
+      ...(sentenceAudio ? { sentenceAudio } : {}),
+    };
   });
   const drafts: LessonExerciseDraft[] = revisions.map((r) => toExerciseDraft(r.payload));
   const draftSubject = services.subjects.getSubject(context.subjectId);
@@ -322,6 +335,7 @@ async function readLessonDraftDto(
     topicVersion: context.topicVersion,
     objectiveIds: [...context.objectiveIds],
     ...(draftSubject?.ttsForPrompts === true ? { voiceTones: { styleEnabled: services.media?.tts.style === "instructions" } } : {}),
+    ...(draftSubject?.exerciseExplanations === true ? { exerciseExplanations: true as const } : {}),
     ...(context.subjectTitlePl === undefined ? {} : { subjectTitlePl: context.subjectTitlePl }),
     ...(context.interests?.length ? { interests: [...context.interests] } : {}),
     ...(context.dynamicTopic === undefined
@@ -345,8 +359,8 @@ async function readLessonDraftDto(
     exercises,
     ...(context.story ? { story: storyDto(context.story) } : {}),
     storyEnabled: draftSubject?.lessonStory === true,
-    // Nagranie pytania i zdania feedbacku nie jest zasobem do decyzji rodzica (design szkoły §11.2).
-    assets: assetRows.flatMap((a) => a.role === "prompt_audio" || a.role === "feedback_audio" ? [] : [{
+    // Nagranie pytania, zdania feedbacku i wyjaśnienia błędu nie jest zasobem do decyzji rodzica (design szkoły §11.2).
+    assets: assetRows.flatMap((a) => a.role === "prompt_audio" || a.role === "feedback_audio" || a.role === "explanation_audio" ? [] : [{
       itemRevisionId: a.itemRevisionId,
       role: a.role,
       state:

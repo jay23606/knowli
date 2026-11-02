@@ -317,6 +317,25 @@ export function ExerciseFrame({
 }
 
 const CARD_MAX_PROPERTY = "--kid-feedback-card-max";
+const PINNED_HEIGHT_PROPERTY = "--kid-feedback-pinned-height";
+
+/**
+ * Wysokość przypiętego wiersza panelu (wyjaśnienie ćwiczenia, `.kid-feedback-pinned`) z odstępem
+ * nad nim jako `--kid-feedback-pinned-height` na nakładce — o tyle maleje dotychczasowy limit
+ * karty wyniku, więc panel z wyjaśnieniem nie rośnie ponad panel bez niego i nie zasłania więcej
+ * materiału. Tylko w panelu-nakładce; w trybie przewijanej strony przewija strona. Wysokość wiersza
+ * zależy od szerokości, nie od karty, więc zapis nie wywołuje pętli pomiarów. Px wewnętrzne.
+ */
+function syncPinnedHeight(overlay: HTMLElement, pageScroll: boolean): void {
+  const pinned = pageScroll ? null : overlay.querySelector<HTMLElement>(".kid-feedback-pinned");
+  if (!pinned || !pinned.parentElement) {
+    overlay.style.removeProperty(PINNED_HEIGHT_PROPERTY);
+    return;
+  }
+  const gap = Number.parseFloat(getComputedStyle(pinned.parentElement).rowGap) || 0;
+  const value = `${Math.ceil(pinned.offsetHeight + gap)}px`;
+  if (overlay.style.getPropertyValue(PINNED_HEIGHT_PROPERTY) !== value) overlay.style.setProperty(PINNED_HEIGHT_PROPERTY, value);
+}
 
 /** Panel i klucz, dla którego policzono limit jego karty. */
 type CardSpaceLatch = { overlay: HTMLElement; key: string };
@@ -334,12 +353,15 @@ type CardSpaceLatch = { overlay: HTMLElement; key: string };
 function syncCardSpace(latch: CardSpaceLatch | null, overlay: HTMLElement, material: HTMLElement): CardSpaceLatch | null {
   const frame = overlay.closest<HTMLElement>(".kid-exercise-frame");
   const card = overlay.querySelector<HTMLElement>(".kid-answer-feedback, .kid-speech-feedback");
+  const page = overlay.closest<HTMLElement>(".kid-page");
+  const pageScroll = page?.dataset.zoomed === "true" || page?.dataset.viewportVeryShort === "true";
+  // Przypięty wiersz wyjaśnienia jest częścią „reszty panelu” (`overlayHeight − cardHeight`
+  // w `feedbackCardMax` i w kluczu niżej); tu dodatkowo zmniejsza dotychczasowy limit karty.
+  syncPinnedHeight(overlay, pageScroll || !frame || !card);
   if (!frame || !card) {
     overlay.style.removeProperty(CARD_MAX_PROPERTY);
     return null;
   }
-  const page = overlay.closest<HTMLElement>(".kid-page");
-  const pageScroll = page?.dataset.zoomed === "true" || page?.dataset.viewportVeryShort === "true";
   const geometry = pageScroll ? null : cardGeometry(frame, card, overlay, material);
   const key = geometry === null
     ? `none:${pageScroll}`

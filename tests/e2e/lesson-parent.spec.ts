@@ -149,6 +149,15 @@ test("generates a multi-objective Present Simple pool with Polish prompts and no
   expect(deck.draft?.exercises.some((exercise) => exercise.exerciseType === "lesson_open_answer" && exercise.prompt?.startsWith("Przetłumacz"))).toBe(true);
 });
 
+// Klik „Zapisz" + oczekiwanie na odpowiedź PATCH szkicu i na koniec zapisu
+// (przycisk wraca ze stanu busy), bo kolejne kroki zależą od odblokowanych kart.
+async function saveLessonAndWait(page: Page) {
+  const patched = page.waitForResponse((r) => r.request().method() === "PATCH" && r.url().includes("/lesson-drafts/"));
+  await page.getByTestId("save-lesson").click();
+  await patched;
+  await expect(page.getByTestId("save-lesson")).toBeEnabled();
+}
+
 test("creates a lesson, reviews it grouped by objective and stage, fixes a validation error, saves, closes coverage and publishes", async ({ page, request }) => {
   const suffix = randomUUID().slice(0, 8);
   const childName = `Lekcyjne dziecko ${suffix}`;
@@ -184,11 +193,11 @@ test("creates a lesson, reviews it grouped by objective and stage, fixes a valid
   await page.getByTestId(`exercise-edit-${idx}`).click();
   const originalFocus = await page.getByTestId(`exercise-focus-${idx}`).inputValue();
   await page.getByTestId(`exercise-focus-${idx}`).fill("");
-  await page.getByTestId("save-lesson").click();
+  await saveLessonAndWait(page);
   await expect(page.getByTestId(`exercise-errors-${idx}`)).toBeVisible();
   // Poprawka: przywróć element sprawdzany.
   await page.getByTestId(`exercise-focus-${idx}`).fill(originalFocus);
-  await page.getByTestId("save-lesson").click();
+  await saveLessonAndWait(page);
   await expect(page.getByTestId(`exercise-errors-${idx}`)).toHaveCount(0);
 
   // Doprowadź do braku pokrycia: usuń wszystkie ćwiczenia etapu samodzielnego.
@@ -197,11 +206,24 @@ test("creates a lesson, reviews it grouped by objective and stage, fixes a valid
   const independentStage = page.getByTestId(`stage-${objectiveId}-independent`);
   // „Usuń ćwiczenie” jest w menu ⋯ karty
   const menus = independentStage.locator('[data-testid^="exercise-menu-"]');
-  while (await menus.count()) {
-    await menus.first().click();
-    await page.locator('[data-testid^="exercise-remove-"]').click();
+  for (let remaining = await menus.count(); remaining > 0; remaining = await menus.count()) {
+    // Menu bywa zamykane przez przewijanie/odświeżenie karty albo zasłaniane przez
+    // dolny pasek akcji — ponawiamy wyłącznie otwarcie menu (z próbnym kliknięciem
+    // pozycji), a „Usuń” klikamy raz: ponowienie kliknięcia mogłoby usunąć kolejną kartę.
+    const remove = page.locator('[data-testid^="exercise-remove-"]');
+    await expect(async () => {
+      if (!(await remove.isVisible())) {
+        await menus.first().scrollIntoViewIfNeeded();
+        await menus.first().click();
+      }
+      await expect(remove).toBeVisible({ timeout: 2_000 });
+      await expect(remove).toBeEnabled({ timeout: 2_000 });
+      await remove.click({ trial: true, timeout: 2_000 });
+    }).toPass({ timeout: 30_000 });
+    await remove.click();
+    await expect(menus).toHaveCount(remaining - 1);
   }
-  await page.getByTestId("save-lesson").click();
+  await saveLessonAndWait(page);
   // Pokrycie pokazuje brak etapu samodzielnego; publikacja zablokowana.
   await expect(page.getByTestId("coverage-gaps")).toBeVisible();
   await expect(page.getByTestId("publish-lesson")).toBeDisabled();

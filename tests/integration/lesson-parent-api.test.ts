@@ -830,8 +830,8 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
 // --- helpery testowe (SQL i mapowanie DTO→Input) ---
 
 function stripToInput(ex: Record<string, unknown>): LessonExerciseInput {
-  // Nagrania pytania i zdania (`promptAudio`, `sentenceAudio`) są tylko do odczytu i nie wracają w patchu.
-  const { revisionId: _r, promptAudio: _a, sentenceAudio: _s, ...rest } = ex as { revisionId?: string; promptAudio?: unknown; sentenceAudio?: unknown } & Record<string, unknown>;
+  // Nagrania pytania, wyjaśnienia i zdania (`promptAudio`, `explanationAudio`, `sentenceAudio`) są tylko do odczytu i nie wracają w patchu.
+  const { revisionId: _r, promptAudio: _a, explanationAudio: _e, sentenceAudio: _s, ...rest } = ex as { revisionId?: string; promptAudio?: unknown; explanationAudio?: unknown; sentenceAudio?: unknown } & Record<string, unknown>;
   return rest as LessonExerciseInput;
 }
 

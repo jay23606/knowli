@@ -655,6 +655,33 @@ describe("withoutRedundantAcceptedVariants", () => {
   });
 });
 
+describe("validateLessonExercise — explanationPl", () => {
+  const explanationErrors = (errors: string[]) => errors.filter((error) => error.startsWith("explanationPl:"));
+
+  it("odrzuca wyjaśnienie w przedmiotach bez flagi (szkoła, przedmiot testowy)", () => {
+    const schoolDraft: LessonExerciseDraft = {
+      exerciseType: "lesson_open_answer", objectiveId: "x", prompt: "Co to?", answer: "Cukry.", acceptedAnswers: [], focus: [],
+      explanationPl: "Cukry to paliwo.",
+    };
+    expect(explanationErrors(validateLessonExercise(schoolDraft, schoolSubject, historyTopic))).not.toEqual([]);
+    expect(explanationErrors(validateLessonExercise(
+      { ...draft({}), explanationPl: "Cukry to paliwo." }, historyLikeSubject, historyTopic,
+    ))).not.toEqual([]);
+  });
+
+  it("przyjmuje poprawne wyjaśnienie w gramatyce i szkic bez niego", () => {
+    expect(explanationErrors(validateLessonExercise(draft({ explanationPl: "Przy he, she, it dodajemy -s." }), englishGrammarSubject, englishTopic))).toEqual([]);
+    expect(explanationErrors(validateLessonExercise(draft({}), englishGrammarSubject, englishTopic))).toEqual([]);
+  });
+
+  it("zgłasza błędy treści z explanationTextErrors", () => {
+    const errors = explanationErrors(validateLessonExercise(draft({ explanationPl: "Dodajemy -s. Tak mówimy." }), englishGrammarSubject, englishTopic));
+    expect(errors).toHaveLength(1);
+    expect(explanationErrors(validateLessonExercise(draft({ explanationPl: "*he* plays" }), englishGrammarSubject, englishTopic))).toHaveLength(1);
+    expect(explanationErrors(validateLessonExercise(draft({ explanationPl: "   " }), englishGrammarSubject, englishTopic))).toHaveLength(1);
+  });
+});
+
 describe("validateLessonExercise — voiceTone", () => {
   it("odrzuca ton lektora w przedmiocie bez nagrań pytań (gramatyka)", () => {
     const errors = validateLessonExercise(draft({ voiceTone: "gentle" }), englishGrammarSubject, englishTopic);

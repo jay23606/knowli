@@ -30,17 +30,18 @@ const grammar = {
   creation: "catalog",
   subjectTitleRequired: false,
   acceptsInterests: true,
+  offersListenChoice: true,
   topics: [{
     id: "present_simple",
     titlePl: "Present Simple",
     objectives: [
-      { id: "third_person_s", titlePl: "-s w 3. osobie" },
+      { id: "third_person_s", titlePl: "-s w 3. osobie", offersListenChoice: true },
       { id: "negation", titlePl: "Przeczenia" },
     ],
   }],
 };
 const school = { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] };
-const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, topics: [] };
+const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, offersListenChoice: true, topics: [] };
 
 const catalog = { subjects: [grammar, school, chapter] } as unknown as SubjectCatalogDto;
 
@@ -472,7 +473,7 @@ describe("NewLessonForm", () => {
         vi.unstubAllGlobals();
       });
 
-      function renderInteractive(children: unknown[] | "error" = [ola, adam]) {
+      function renderInteractive(children: unknown[] | "error" = [ola, adam], initialSubjectId?: string) {
         const registerEditorState = vi.fn();
         const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, retryOnMount: false } } });
         queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, catalog);
@@ -489,7 +490,7 @@ describe("NewLessonForm", () => {
         render(
           <QueryClientProvider client={queryClient}>
             <MantineProvider theme={parentTheme}>
-              <NewLessonForm onCreated={vi.fn()} onCancel={vi.fn()} registerEditorState={registerEditorState} />
+              <NewLessonForm onCreated={vi.fn()} onCancel={vi.fn()} registerEditorState={registerEditorState} initialSubjectId={initialSubjectId} />
             </MantineProvider>
           </QueryClientProvider>,
         );
@@ -497,6 +498,15 @@ describe("NewLessonForm", () => {
       }
       const pills = () => Array.from(document.querySelectorAll("[data-testid='lesson-themes'] .mantine-Pill-root")).map((el) => el.textContent?.trim());
       const insertButton = (id: string) => screen.getByTestId(`lesson-themes-insert-${id}`) as HTMLButtonElement;
+
+      it("dopisek o „Posłuchaj i wybierz” znika po odznaczeniu jedynego celu z ćwiczeniami słuchowymi i wraca po zaznaczeniu", async () => {
+        renderInteractive();
+        expect(screen.queryByTestId("lesson-listen-choice-note")).not.toBeNull();
+        fireEvent.click(screen.getByTestId("lesson-objective-third_person_s"));
+        await waitFor(() => expect(screen.queryByTestId("lesson-listen-choice-note")).toBeNull());
+        fireEvent.click(screen.getByTestId("lesson-objective-third_person_s"));
+        await waitFor(() => expect(screen.queryByTestId("lesson-listen-choice-note")).not.toBeNull());
+      });
 
       it("wstawienie dołącza tematy dziecka bez duplikatów, a przycisk gaśnie, gdy wszystkie już są", async () => {
         const { registerEditorState } = renderInteractive();
@@ -521,6 +531,43 @@ describe("NewLessonForm", () => {
         fireEvent.click(insertButton("c2"));
         await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3", "a4", "b1"]));
         expect(screen.getByText(messages.children.interestsLimit.replace("{max}", "5"))).toBeTruthy();
+      });
+
+      it("wklejenie listy ponad limit: pole bierze 5 tematów i pokazuje komunikat o limicie", async () => {
+        renderInteractive();
+        const limit = messages.children.interestsLimit.replace("{max}", "5");
+        const input = screen.getByTestId("lesson-themes-input");
+        fireEvent.paste(input, { clipboardData: { getData: () => "a1, a2, a3" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3"]));
+        expect(screen.queryByText(limit)).toBeNull();
+        fireEvent.paste(input, { clipboardData: { getData: () => "a4, a5, a6, a7" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3", "a4", "a5"]));
+        expect(screen.getByText(limit)).toBeTruthy();
+        // usunięcie tematu zdejmuje komunikat; wklejenie dwóch na jedno wolne miejsce pokazuje go znowu
+        const removeButtons = document.querySelectorAll("[data-testid='lesson-themes'] .mantine-Pill-remove");
+        fireEvent.click(removeButtons[removeButtons.length - 1]!);
+        await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3", "a4"]));
+        expect(screen.queryByText(limit)).toBeNull();
+        fireEvent.paste(input, { clipboardData: { getData: () => "x, z" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "a2", "a3", "a4", "x"]));
+        expect(screen.getByText(limit)).toBeTruthy();
+        // kolejne wklejenie przy pełnym polu nie zdejmuje komunikatu (lista bez zmian)
+        fireEvent.paste(input, { clipboardData: { getData: () => "q" } });
+        expect(pills()).toEqual(["a1", "a2", "a3", "a4", "x"]);
+        expect(screen.getByText(limit)).toBeTruthy();
+      });
+
+      it("wklejenie z wpisami różniącymi się spacjami: utracony temat daje komunikat o limicie, a samo powtórzenie — o powtórzeniu", async () => {
+        renderInteractive();
+        const limit = messages.children.interestsLimit.replace("{max}", "5");
+        const input = screen.getByTestId("lesson-themes-input");
+        fireEvent.paste(input, { clipboardData: { getData: () => "a1, A1, x y" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "x y"]));
+        expect(screen.getByText(messages.children.interestsDuplicate)).toBeTruthy();
+        // Mantine uważa „x  y” za nowy temat i ucina listę przed „z”
+        fireEvent.paste(input, { clipboardData: { getData: () => "a2, a3, x  y, z" } });
+        await waitFor(() => expect(pills()).toEqual(["a1", "x y", "a2", "a3"]));
+        expect(screen.getByText(limit)).toBeTruthy();
       });
 
       it("notka o usłudze jest powiązana z polem przez aria-describedby", () => {
@@ -575,6 +622,23 @@ describe("NewLessonForm", () => {
         fireEvent.change(screen.getByTestId("lesson-subject"), { target: { value: "english_chapter" } });
         await waitFor(() => expect(screen.queryByTestId("lesson-themes")).toBeNull());
       });
+
+      it("tematy ukryte przy innym przedmiocie nie liczą się jako niezapisana zmiana, a po powrocie wracają", async () => {
+        const { registerEditorState } = renderInteractive([ola, adam], "english_chapter");
+        const chooseSubject = (id: string) => fireEvent.change(screen.getByTestId("lesson-subject"), { target: { value: id } });
+        await waitFor(() => expect(registerEditorState).toHaveBeenLastCalledWith({ dirty: false, busy: false }));
+        chooseSubject("english_grammar");
+        fireEvent.click(insertButton("c1"));
+        await waitFor(() => expect(pills()).toEqual(["dinozaury", "Minecraft"]));
+        await waitFor(() => expect(registerEditorState).toHaveBeenLastCalledWith({ dirty: true, busy: false }));
+        // powrót do rozdziału: pozostałe pola jak na starcie, a ukrytych tematów się nie wysyła
+        chooseSubject("english_chapter");
+        await waitFor(() => expect(screen.queryByTestId("lesson-themes")).toBeNull());
+        await waitFor(() => expect(registerEditorState).toHaveBeenLastCalledWith({ dirty: false, busy: false }));
+        chooseSubject("english_grammar");
+        await waitFor(() => expect(pills()).toEqual(["dinozaury", "Minecraft"]));
+        await waitFor(() => expect(registerEditorState).toHaveBeenLastCalledWith({ dirty: true, busy: false }));
+      });
     });
   });
 
@@ -599,5 +663,10 @@ describe("NewLessonForm", () => {
     const schoolMarkup = renderWithCatalog(school);
     expect(schoolMarkup).not.toContain('data-testid="lesson-listen-choice-note"');
     expect(schoolMarkup).not.toContain(messages.lessons.listenChoiceCreateNote);
+    // Decyduje katalog, nie ścieżka tworzenia: przedmiot katalogowy bez typu słuchowego nie dostaje dopisku.
+    expect(renderWithCatalog({ ...grammar, offersListenChoice: false })).not.toContain('data-testid="lesson-listen-choice-note"');
+    // Temat bez celu z ćwiczeniami słuchowymi (np. sama pisownia -es/-ies): bez dopisku.
+    const noListenObjectives = { ...grammar, topics: grammar.topics.map((t) => ({ ...t, objectives: t.objectives.map(({ id, titlePl }) => ({ id, titlePl })) })) };
+    expect(renderWithCatalog(noListenObjectives)).not.toContain('data-testid="lesson-listen-choice-note"');
   });
 });

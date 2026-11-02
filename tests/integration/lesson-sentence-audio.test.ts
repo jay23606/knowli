@@ -33,7 +33,7 @@ async function generatedGrammarLesson(feedbackSentence = true) {
   const fakes = await fakeGeneration();
   cleanup.push(fakes.dispose);
   const services = createServices({ db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps,
-    ...(feedbackSentence ? {} : { subjects: createSubjectRegistry([grammarWithoutSentenceAudio]) }),
+    ...(feedbackSentence ? {} : { subjects: createSubjectRegistry([{ ...grammarWithoutSentenceAudio, exerciseExplanations: false }]) }),
   });
   const run = await createLesson(services, {
     subjectId: "english_grammar", topicId: "present_simple", objectiveIds: [OBJECTIVE],

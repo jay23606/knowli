@@ -25,6 +25,15 @@ describe("lessonCatalog (sposób tworzenia zestawu per przedmiot)", () => {
     expect(byId("english_chapter")!.acceptsInterests).toBe(false);
   });
 
+  it("offersListenChoice dla przedmiotów z nagraniem zdania i typem „Posłuchaj i wybierz”", () => {
+    expect(byId("english_grammar")!.offersListenChoice).toBe(true);
+    expect(byId("english_chapter")!.offersListenChoice).toBe(true);
+    expect(byId("school")!.offersListenChoice).toBe(false);
+    const objectives = byId("english_grammar")!.topics.flatMap((topic) => topic.objectives);
+    expect(objectives.find((o) => o.id.endsWith(".third_person_s"))!.offersListenChoice).toBe(true);
+    expect(objectives.find((o) => o.id.endsWith(".spelling_es_ies"))!.offersListenChoice).toBe(false);
+  });
+
   it("generationService tylko gdy jest skonfigurowane w usługach", () => {
     expect(catalog).not.toHaveProperty("generationService");
     const configured = lessonCatalog(createServices({ db: {} as never, generationService: "openrouter.ai · google/gemini-3.8-flash" }));

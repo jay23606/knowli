@@ -23,6 +23,7 @@ import {
   skillVersions,
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
+import { explanationTextErrors } from "../../../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
 import {
   DEFAULT_LESSON_POLICY,
@@ -31,6 +32,7 @@ import {
 } from "../../../domain/lessons/lesson-policy";
 import { materialCreationMode, stripListenChoiceExtras } from "../../../domain/lessons/material-creation";
 import { answersEquivalent, keywordsAnswer, MAX_TEXT_LENGTH, validatePool, withoutRedundantAcceptedVariants } from "../../../domain/lessons/pool-validation";
+import { outsideStagePath, stageOf } from "../../../domain/lessons/stages";
 import {
   lessonExerciseIdentity,
   lessonExerciseStimulus,
@@ -526,20 +528,56 @@ export function listenChoiceAllowance(
 export interface ObjectiveGenerationLimits {
   readonly count: number;
   readonly listen: number;
+  /** Zamówiony podział `count` na etapy; przy przycinaniu nadmiaru chroni etapy niedoreprezentowane. */
+  readonly stages?: LlmLessonStageCounts;
+}
+
+/**
+ * Ćwiczenia etapów celu, które mieszczą się w `count`: najpierw każdy etap do zamówionej
+ * liczby, potem wolne miejsca w kolejności wejścia (typy bez kwoty, np. karty, i braki etapów).
+ */
+function withinStageQuotas(
+  candidates: readonly LessonExerciseDraft[],
+  limit: ObjectiveGenerationLimits,
+): Set<LessonExerciseDraft> {
+  if (candidates.length <= limit.count) return new Set(candidates);
+  const quotas = limit.stages ?? { guided: 0, productive: 0, independent: 0 };
+  const used = { guided: 0, productive: 0, independent: 0 };
+  const selected = new Set<LessonExerciseDraft>();
+  for (const exercise of candidates) {
+    const stage = stageOf(exercise.exerciseType);
+    if (outsideStagePath(exercise.exerciseType) || !(stage in quotas)) continue;
+    const key = stage as keyof LlmLessonStageCounts;
+    if (used[key] < quotas[key] && selected.size < limit.count) {
+      used[key] += 1;
+      selected.add(exercise);
+    }
+  }
+  for (const exercise of candidates) {
+    if (selected.size >= limit.count) break;
+    selected.add(exercise);
+  }
+  return selected;
 }
 
 /**
  * Egzekwuje dodatek słuchowy po walidacji: na cel najwyżej `listen` nowych ćwiczeń
  * `lesson_listen_choice`, a gdy dodatek przyznano (`listen > 0`), najwyżej `count` pozostałych —
- * podniesiony w prompcie limit partii nie może dać dodatkowych ćwiczeń etapów. Zachowuje
- * pierwsze wystąpienia (kolejność wejścia); nadmiar wraca jako odrzucenia z powodem.
+ * podniesiony w prompcie limit partii nie może dać dodatkowych ćwiczeń etapów. Słuchowe zachowują
+ * pierwsze wystąpienia; z pozostałych odpadają najpierw ćwiczenia etapów ponad zamówiony podział
+ * (`stages`), dalej kolejność wejścia. Nadmiar wraca jako odrzucenia z powodem.
  */
 export function capListenChoiceOverflow(
   exercises: readonly LessonExerciseDraft[],
   limits: ReadonlyMap<string, ObjectiveGenerationLimits>,
 ): { kept: LessonExerciseDraft[]; rejected: { exercise: LessonExerciseDraft; errors: string[] }[] } {
   const listenSeen = new Map<string, number>();
-  const otherSeen = new Map<string, number>();
+  const allowedOther = new Map<string, Set<LessonExerciseDraft>>();
+  for (const [objectiveId, limit] of limits) {
+    if (limit.listen <= 0) continue;
+    const candidates = exercises.filter((exercise) => exercise.objectiveId === objectiveId && exercise.exerciseType !== "lesson_listen_choice");
+    allowedOther.set(objectiveId, withinStageQuotas(candidates, limit));
+  }
   const kept: LessonExerciseDraft[] = [];
   const rejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
   for (const exercise of exercises) {
@@ -552,13 +590,9 @@ export function capListenChoiceOverflow(
         continue;
       }
       listenSeen.set(exercise.objectiveId, seen + 1);
-    } else if (limit !== undefined && limit.listen > 0) {
-      const seen = otherSeen.get(exercise.objectiveId) ?? 0;
-      if (seen >= limit.count) {
-        rejected.push({ exercise, errors: [`exerciseType: ćwiczenie ponad zamówioną liczbę ${limit.count} dla reguły`] });
-        continue;
-      }
-      otherSeen.set(exercise.objectiveId, seen + 1);
+    } else if (limit !== undefined && !(allowedOther.get(exercise.objectiveId)?.has(exercise) ?? true)) {
+      rejected.push({ exercise, errors: [`exerciseType: ćwiczenie ponad zamówioną liczbę ${limit.count} dla reguły`] });
+      continue;
     }
     kept.push(exercise);
   }
@@ -619,6 +653,7 @@ export function buildPoolInput(
     groundingRequired: subject.sourceQuotes === true,
     deduplication: subject.poolDeduplication ?? "answer",
     voiceTones: subject.ttsForPrompts === true,
+    exerciseExplanations: subject.exerciseExplanations,
     ...(existingAnswers.length > 0 ? { existingAnswers: [...existingAnswers] } : {}),
     ...(existingExercises.length > 0 ? { existingExercises: [...existingExercises] } : {}),
   };
@@ -645,6 +680,31 @@ export function withoutVoiceToneUnlessAllowed(draft: LessonExerciseDraft, subjec
   // spec tonu TTS §4.3) — edytor nie pokaże „Tajemniczo” przy nagraniu brzmiącym „z ciekawością”.
   if (subject.ttsForPrompts === true) return draft.voiceTone === "mysterious" ? { ...draft, voiceTone: "curious" } : draft;
   const { voiceTone: _dropped, ...rest } = draft;
+  return rest;
+}
+
+/**
+ * Wyjaśnienie błędu z niezaufanego wyjścia modelu: wyłącznie niepusty tekst (przycięty);
+ * `null`, pusty tekst i inne typy znaczą „brak wyjaśnienia”, nigdy błąd ćwiczenia.
+ */
+function sanitizedExplanation(raw: unknown): { explanationPl?: string } {
+  if (typeof raw !== "string") return {};
+  const trimmed = raw.trim();
+  return trimmed === "" ? {} : { explanationPl: trimmed };
+}
+
+/**
+ * Wyjaśnienie z generatora łamiące reguły treści albo wyłączone flagą przedmiotu jest po cichu
+ * usuwane — ćwiczenie zostaje (walidacja puli odrzuciłaby je w całości). Tylko wyjście modelu:
+ * zapis rodzica z niepoprawnym wyjaśnieniem kończy się błędem walidacji.
+ */
+export function withoutInvalidExplanation(
+  draft: LessonExerciseDraft,
+  subject: Pick<SubjectModule, "exerciseExplanations">,
+): LessonExerciseDraft {
+  if (draft.explanationPl === undefined) return draft;
+  if (subject.exerciseExplanations && explanationTextErrors(draft.explanationPl).length === 0) return draft;
+  const { explanationPl: _dropped, ...rest } = draft;
   return rest;
 }
 
@@ -893,6 +953,8 @@ const rawExerciseShapeSchema = z
     statement: z.string().nullish(),
     prompt: z.string().nullish(),
     hint: z.string().nullish(),
+    // `explanationPl` celowo poza strażnikiem: zły typ znaczy „brak wyjaśnienia”
+    // (`sanitizedExplanation`), nie odrzucenie całego ćwiczenia.
     transformId: z.string().nullish(),
     correctOption: z.string().nullish(),
     options: z.array(optionShapeSchema).nullish(),
@@ -1053,6 +1115,7 @@ export function toExerciseDraft(raw: unknown): LessonExerciseDraft {
     ...(typeof r.statement === "string" ? { statement: r.statement } : {}),
     ...(typeof r.prompt === "string" ? { prompt: r.prompt } : {}),
     ...(typeof r.hint === "string" ? { hint: r.hint } : {}),
+    ...sanitizedExplanation(r.explanationPl),
     ...(typeof r.transformId === "string" ? { transformId: r.transformId } : {}),
     ...(Array.isArray(r.noticeSegments)
       ? { noticeSegments: r.noticeSegments as readonly (readonly string[])[] }
@@ -1085,6 +1148,7 @@ export function buildLessonPayload(
     ...(ex.statement === undefined ? {} : { statement: ex.statement }),
     ...(ex.prompt === undefined ? {} : { prompt: ex.prompt }),
     ...(ex.hint === undefined ? {} : { hint: ex.hint }),
+    ...(ex.explanationPl === undefined ? {} : { explanationPl: ex.explanationPl }),
     ...(ex.transformId === undefined ? {} : { transformId: ex.transformId }),
     ...(ex.noticeSegments === undefined ? {} : { noticeSegments: ex.noticeSegments }),
     ...(ex.visualSubject === undefined ? {} : { visualSubject: ex.visualSubject }),
@@ -1433,7 +1497,13 @@ export async function executeLessonGeneration(services: Services, runId: string,
           : [],
         input.interests,
       );
-      objectiveLimits.set(batch.objectiveId, { count: batch.count, listen: poolInput.listenChoicePerObjective ?? 0 });
+      // Kwoty etapów tylko przy pełnej generacji: przy dogenerowaniu `stageCounts` dzieli same nowe
+      // ćwiczenia i nie zna braków szkicu, więc mogłyby odrzucić akurat brakujący etap — tam decyduje kolejność.
+      objectiveLimits.set(batch.objectiveId, {
+        count: batch.count,
+        listen: poolInput.listenChoicePerObjective ?? 0,
+        ...(input.regenerate ? {} : { stages: poolInput.stageCounts }),
+      });
       const result = await control.call((signal) => deps.llm.generateLessonPool(poolInput, signal));
       await control.assertCurrent();
       console.log(`[lesson] run=${runId} partia=${batch.objectiveId} durationMs=${Date.now() - batchStartedAtMs}`);
@@ -1489,9 +1559,15 @@ export async function executeLessonGeneration(services: Services, runId: string,
     // puli — bez tego walidacja fazy 1 odrzucałaby całe ćwiczenie za wpis
     // nieznoszący informacji (odpowiedź kanoniczna jest akceptowana automatycznie).
     let droppedAcceptedVariants = 0;
+    let droppedExplanations = 0;
     const drafts = wellShaped
       .map(toExerciseDraft)
       .map((draft) => withoutVoiceToneUnlessAllowed(draft, subject))
+      .map((draft) => {
+        const sanitized = withoutInvalidExplanation(draft, subject);
+        if (sanitized !== draft) droppedExplanations += 1;
+        return sanitized;
+      })
       .map(withoutEmptyOptionalArrays)
       // Ćwiczenie słuchowe nie ma polecenia, podpowiedzi ani piktogramu: dodatek modelu usuwamy, nie odrzucamy ćwiczenia.
       .map(stripListenChoiceExtras)
@@ -1560,6 +1636,9 @@ export async function executeLessonGeneration(services: Services, runId: string,
     // wariantów, żeby incydenty tej klasy były widoczne w logach workera.
     if (droppedAcceptedVariants > 0) {
       console.log(`[lesson] run=${runId} sanityzacja wariantów: porzucone=${droppedAcceptedVariants}`);
+    }
+    if (droppedExplanations > 0) {
+      console.log(`[lesson] run=${runId} porzucone wyjaśnienia=${droppedExplanations}`);
     }
 
     if (uniqueValid.length === 0) {

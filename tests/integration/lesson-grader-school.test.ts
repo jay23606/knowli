@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  authorizeDisclosure,
   completePresentation,
   computeTargetKey,
   createChild,
@@ -510,6 +511,8 @@ describe("trener precyzji: „Skróć odpowiedź” (integracja)", () => {
     const prompt = followUp!.prompt as { answerSegments: { text: string; state: string }[] };
     expect(prompt.answerSegments.some((segment) => segment.state === "pill")).toBe(true);
     expect(JSON.stringify(followUp!.prompt)).not.toContain("przy udziale");
+    // „Skróć odpowiedź” nie oferuje „Nie pamiętam”: podpowiedź ujawniłaby wzorcową odpowiedź.
+    await expect(authorizeDisclosure(services, { taskId: followUp!.taskId, kind: "hint" })).rejects.toMatchObject({ code: "conflict" });
 
     const revision = await submitAttempt(services, { taskId: followUp!.taskId, clientAttemptId: randomUUID(), modality: "text", text: shortened });
     expect(revision.feedback!.kind).toBe("great");

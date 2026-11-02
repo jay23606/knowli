@@ -103,6 +103,8 @@ export interface LessonPoolInput {
   readonly existingExercises?: readonly { objectiveId: string; exerciseType: string; stimulus: string }[];
   /** Czy generator ma zwracać `voiceTone` ćwiczenia (przedmiot z `ttsForPrompts`); bez flagi schemat i prompt nie mają pola. */
   readonly voiceTones?: boolean;
+  /** Czy generator ma zwracać `explanationPl` ćwiczenia (przedmiot z `exerciseExplanations`); bez flagi schemat i prompt nie mają pola. */
+  readonly exerciseExplanations?: boolean;
 }
 
 /**

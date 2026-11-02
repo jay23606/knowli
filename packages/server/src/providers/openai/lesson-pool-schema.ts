@@ -21,6 +21,15 @@ function withVoiceTone(branch: Record<string, unknown>): Record<string, unknown>
   };
 }
 
+/** Dokłada wymagane pole `explanationPl` (strict mode: także w `required`; `null` = brak wyjaśnienia). */
+function withExplanation(branch: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...branch,
+    required: [...(branch.required as string[]), "explanationPl"],
+    properties: { ...(branch.properties as Record<string, unknown>), explanationPl: { type: ["string", "null"] } },
+  };
+}
+
 export const poolExerciseTypes = (types: readonly string[]): string[] =>
   types.filter((type) => !NON_POOL_EXERCISE_TYPES.has(type));
 
@@ -204,7 +213,11 @@ export function lessonPoolJsonSchema(input: LessonPoolInput): Record<string, unk
     if (types.length === 0) throw new Error(`objective ${objective.id} has no supported pool exercise types`);
     const regularTypes = types.filter((type) => !DEDICATED_BRANCH_TYPES.has(type));
     // Ton lektora dotyczy każdej gałęzi poza kalkulacją (jej treść składa kod z szablonu).
-    const toned = (branch: Record<string, unknown>) => (input.voiceTones === true ? withVoiceTone(branch) : branch);
+    // Wyjaśnienie błędu dotyczy tych samych gałęzi co ton: kalkulacja składa treść z szablonu.
+    const toned = (branch: Record<string, unknown>) => {
+      const withTone = input.voiceTones === true ? withVoiceTone(branch) : branch;
+      return input.exerciseExplanations === true ? withExplanation(withTone) : withTone;
+    };
     return [
       ...(regularTypes.length > 0 ? [toned(lessonExerciseSchema(input, objective, regularTypes))] : []),
       ...(types.includes("lesson_calculation") ? [calculationExerciseSchema(objective.id)] : []),

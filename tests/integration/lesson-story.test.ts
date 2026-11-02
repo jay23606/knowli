@@ -107,8 +107,8 @@ const PARENT_STORY = {
 
 /** DTO ćwiczenia → wejście patcha (schemat wejścia jest `strict`). */
 function stripToInput(ex: Record<string, unknown>): LessonExerciseInput {
-  // Nagrania pytania i zdania (`promptAudio`, `sentenceAudio`) są tylko do odczytu i nie wracają w patchu.
-  const { revisionId: _r, promptAudio: _a, sentenceAudio: _s, ...rest } = ex as { revisionId?: string; promptAudio?: unknown; sentenceAudio?: unknown } & Record<string, unknown>;
+  // Nagrania pytania, zdania i wyjaśnienia (`promptAudio`, `sentenceAudio`, `explanationAudio`) są tylko do odczytu i nie wracają w patchu.
+  const { revisionId: _r, promptAudio: _a, sentenceAudio: _s, explanationAudio: _e, ...rest } = ex as { revisionId?: string; promptAudio?: unknown; sentenceAudio?: unknown; explanationAudio?: unknown } & Record<string, unknown>;
   return rest as LessonExerciseInput;
 }
 

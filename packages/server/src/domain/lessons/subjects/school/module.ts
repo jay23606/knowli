@@ -74,6 +74,7 @@ export const schoolSubject: SubjectModule = {
   ttsForAnswers: false,
   ttsForPrompts: true,
   ttsForFeedbackSentence: false,
+  exerciseExplanations: false,
   // Dyktowanie odpowiedzi otwartej po polsku (Etap 3); bez oceny wymowy.
   spokenAnswers: { locale: "pl-PL", exerciseTypes: ["lesson_open_answer"] },
   buildDynamicTopic(data: DynamicTopicData): LessonTopic {

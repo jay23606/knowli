@@ -92,6 +92,7 @@ Słowniczek:
 6. WHEN dziecko wybierze „Nie pamiętam”, THE system SHALL pokazać poprawną odpowiedź i uruchomić ten sam cykl wsparcia, zapisując trudność bez kategorii błędu.
 7. THE system SHALL wybierać ćwiczenia niewidziane przez dziecko albo widziane najdawniej.
 8. WHILE trwa okno przygotowania do sprawdzianu (48 h przed terminem), THE system SHALL preferować etap samodzielny dla nieopanowanych reguł.
+9. WHEN odpowiedź w treningu jest błędna albo dziecko wybierze „Nie pamiętam”, a ćwiczenie ma zatwierdzone przez rodzica `explanationPl` (jedno polskie zdanie, ≤ 120 znaków), THE system SHALL pokazać je w feedbacku obok poprawnej odpowiedzi (przy błędzie z kategorią pierwszeństwo ma szablon kategorii) i udostępnić jego nagranie pl-PL (`explanation_audio`) przyciskiem „Posłuchaj wyjaśnienia” bez autoodtwarzania. THE nagranie SHALL NOT blokować publikacji, a wyjaśnienie SHALL NOT pojawiać się przy poprawnej odpowiedzi, „prawie”, „Pomiń”, odpowiedzi nieocenionej (`not_assessed`), w kartkówce ani w przedmiotach z wyłączoną flagą `exerciseExplanations`. WHEN wyjaśnienie cytuje odpowiedź innego ćwiczenia, THE system SHALL zapisać jej ekspozycję razem z feedbackiem.
 
 ### Wymaganie 6 — Ocena odpowiedzi tekstowych
 

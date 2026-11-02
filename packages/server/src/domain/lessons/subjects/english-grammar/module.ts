@@ -43,6 +43,7 @@ export const englishGrammarSubject: SubjectModule = {
   ttsForAnswers: false,
   ttsForPrompts: false,
   ttsForFeedbackSentence: true,
+  exerciseExplanations: true,
   // Sesja kończy się krótką historyjką z pytaniami o treść (reguły w `prompts.storyRules`).
   lessonStory: true,
 };

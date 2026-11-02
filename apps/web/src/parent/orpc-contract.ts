@@ -168,6 +168,8 @@ export type LessonRegenerateCommand = z.infer<typeof LessonRegenerateCommandSche
 const LessonPromptAudioRegenerateInputSchema = z.object({
   lessonDraftId: UuidSchema,
   itemRevisionId: UuidSchema,
+  /** Które nagranie ćwiczenia: pytanie (brak pola) albo wyjaśnienie błędu. Bez `.default()` — brak roli to wywołanie jak dotąd. */
+  role: z.enum(["prompt_audio", "explanation_audio"]).optional(),
 }).strict();
 
 /** Wejście POST /lesson-drafts/{lessonDraftId}/card-audio/regenerate: ścieżka + miejsce karty w temacie. */

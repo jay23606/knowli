@@ -133,8 +133,8 @@ z providerem i modelem `fakes.settings`).
 ### Task 1: Tabela `lesson_story_assets`, uzgadnianie i kopia wersji
 
 **Files:**
-- Create: `packages/server/drizzle/0033_lesson_story_assets.sql`
-- Modify: `packages/server/drizzle/meta/_journal.json` (wpis `idx: 33`, `tag: "0033_lesson_story_assets"`, `when` większe od wpisu 32, `breakpoints: true`)
+- Create: `packages/server/drizzle/0034_lesson_story_assets.sql`
+- Modify: `packages/server/drizzle/meta/_journal.json` (wpis `idx: 34`, `tag: "0034_lesson_story_assets"`, `when` większe od wpisu 33, `breakpoints: true`)
 - Modify: `packages/server/src/db/schema.ts` (obok `lessonCardAssets`)
 - Modify: `packages/server/src/modules/materials/media-reconciliation.ts`
 - Modify: `packages/server/src/modules/materials/lessons/lesson-story-generation.ts` (finalizacja)
@@ -176,7 +176,7 @@ z providerem i modelem `fakes.settings`).
     - historyjka z innymi pytaniami daje ten sam;
     - historyjka z innym zdaniem daje inny.
 - [ ] **Step 2:** `pnpm vitest run packages/server/src/modules/materials/media-reconciliation.test.ts`. Oczekiwane: FAIL (brak eksportu).
-- [ ] **Step 3: Migracja i schemat.** `0033_lesson_story_assets.sql` jest
+- [ ] **Step 3: Migracja i schemat.** `0034_lesson_story_assets.sql` jest
   kopią `0028_lesson_card_assets.sql`, z separatorami `--> statement-breakpoint`
   i tymi elementami:
   - PK `lesson_story_assets_pk` na `deck_version_id`;
@@ -480,7 +480,7 @@ z providerem i modelem `fakes.settings`).
 - Modify: `docs/superpowers/specs/2026-10-30-tts-voice-style-design.md` (nota: nagranie historyjki bez stylu, w en-GB)
 
 - [ ] **Step 1: Dokumentacja.** Akapit w §19.13 obejmuje:
-  - tabelę (migracja `0033`);
+  - tabelę (migracja `0034`);
   - tekst `storyReadText` w `answerLocale` bez stylu;
   - uzgadnianie w edycji, publikacji, finalizacji runu i kopii wersji;
   - ponowne zlecenie nieudanego nagrania;
