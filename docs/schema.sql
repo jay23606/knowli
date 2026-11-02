@@ -224,6 +224,10 @@ CREATE TABLE generation_runs (
   -- NULL — run bez takiej walidacji (zestaw z opisu, lekcja, media), niezakończony
   -- albo ponowiony ręcznie
   rejected_count integer CHECK (rejected_count IS NULL OR rejected_count >= 0),
+  -- talia szkicu, którego uzgodnienie albo ręczna regeneracja zleciły zasób runu mediów
+  -- (spec 2026-11-02-llm-cost-tracking §3.2, migracja 0035); tylko informacyjne, NULL
+  -- dla runów deck/lesson, głosu UI i runów sprzed migracji
+  origin_deck_id uuid REFERENCES decks(id) ON DELETE SET NULL,
   CHECK ((lease_token IS NULL) = (lease_until IS NULL)),
   CHECK ((kind = 'deck' AND deck_version_id IS NOT NULL AND expected_edit_number IS NOT NULL AND asset_id IS NULL)
     OR (kind IN ('tts','illustration') AND asset_id IS NOT NULL AND deck_version_id IS NULL AND expected_edit_number IS NULL)),
@@ -258,6 +262,43 @@ CREATE TABLE learning_sessions (
 CREATE UNIQUE INDEX one_active_session_per_child
   ON learning_sessions(child_id) WHERE state = 'active';
 CREATE INDEX learning_sessions_child_time_idx ON learning_sessions(child_id, started_at DESC);
+
+-- Dziennik płatnych wywołań usług AI (spec 2026-11-02-llm-cost-tracking §3.1, migracja 0035):
+-- jeden wiersz to jedno wywołanie HTTP łącznie z ponowieniami. Bez treści, imion i wieku.
+-- Klucze obce zerują się przy usunięciu celu, więc historia kosztów przeżywa profil, sesję,
+-- run i talię.
+CREATE TABLE provider_usage_events (
+  id uuid PRIMARY KEY,
+  occurred_at timestamptz NOT NULL,
+  feature text NOT NULL CHECK (feature IN ('deck_generation','lesson_generation','tts','illustration',
+    'deck_cover','answer_grading','session_activity_review','lesson_stt','speech_stt','pronunciation')),
+  operation text,
+  provider text NOT NULL,
+  model text,
+  outcome text NOT NULL CHECK (outcome IN ('ok','failed')),
+  http_status smallint,
+  input_tokens integer CHECK (input_tokens IS NULL OR input_tokens >= 0),
+  output_tokens integer CHECK (output_tokens IS NULL OR output_tokens >= 0),
+  characters integer CHECK (characters IS NULL OR characters >= 0),
+  audio_ms integer CHECK (audio_ms IS NULL OR audio_ms >= 0),
+  images integer CHECK (images IS NULL OR images >= 0),
+  cost_usd numeric(12, 6) CHECK (cost_usd IS NULL OR cost_usd >= 0),
+  cost_source text NOT NULL CHECK (cost_source IN ('provider','price_table','not_billed','unknown')),
+  price_ref text,
+  scope_kind text NOT NULL CHECK (scope_kind IN ('run','session','deck','none')),
+  generation_run_id uuid REFERENCES generation_runs(id) ON DELETE SET NULL,
+  deck_id uuid REFERENCES decks(id) ON DELETE SET NULL,
+  session_id uuid REFERENCES learning_sessions(id) ON DELETE SET NULL,
+  child_id uuid REFERENCES child_profiles(id) ON DELETE SET NULL,
+  CHECK ((cost_source = 'unknown') = (cost_usd IS NULL)),
+  CHECK (cost_source <> 'not_billed' OR cost_usd = 0),
+  CHECK ((price_ref IS NOT NULL) = (cost_source = 'price_table'))
+);
+CREATE INDEX provider_usage_events_occurred_at_idx ON provider_usage_events(occurred_at);
+CREATE INDEX provider_usage_events_deck_idx ON provider_usage_events(deck_id);
+CREATE INDEX provider_usage_events_run_idx ON provider_usage_events(generation_run_id);
+CREATE INDEX provider_usage_events_session_idx ON provider_usage_events(session_id);
+CREATE INDEX provider_usage_events_child_time_idx ON provider_usage_events(child_id, occurred_at);
 
 CREATE TABLE session_tasks (
   id uuid PRIMARY KEY,
