@@ -350,6 +350,15 @@ function lessonSystemPrompt(input: LessonPoolInput): string {
   if (input.voiceTones === true) {
     parts.push(`${VOICE_TONE_BASE_RULE} Return voiceTone for every exercise except lesson_calculation (null when no tone fits).`);
   }
+  if (input.exerciseExplanations === true) {
+    parts.push(
+      "explanationPl: for every exercise except lesson_calculation, return exactly one Polish sentence for a child of about 8 that explains " +
+        "why the correct answer is correct (the rule behind it), at most 120 characters. " +
+        "Do not assume which mistake the child made — the sentence must also fit after »Nie pamiętam«. " +
+        "No praise or judging of the child, no names, no markup (no *, _ or line breaks). " +
+        "English examples only from this exercise (its answer, sentence or options). Use null when no short, accurate rule applies.",
+    );
+  }
   parts.push(
     'Return strict JSON of the shape {"exercises": [ ... ], "examples": [{"objectiveId": "<id>", "examples": ["<short example sentence>"]}]}. ' +
       "Each non-calculation exercise object has fields: exerciseType, objectiveId, instructionPl (child-facing instruction in the prompt language), " +

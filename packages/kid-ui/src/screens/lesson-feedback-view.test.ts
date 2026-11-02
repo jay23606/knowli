@@ -55,6 +55,24 @@ describe("lessonFeedbackView — mapowanie feedbacku lekcji na model widoku", ()
     expect(view!.tone).toBe("neutral");
   });
 
+  it("lesson_hint z nagraniem wyjaśnienia: hintPl pokazuje dok, nie treść karty", () => {
+    const dto: FeedbackDto = {
+      kind: "lesson_hint",
+      answerSegments: segments,
+      hintPl: "Po she dodajemy -s.",
+      correctText: "she plays football",
+      explanationAudioAssetId: "abababab-abab-4bab-8bab-abababababab",
+    };
+    const view = lessonFeedbackView(dto);
+    expect(view!.hint).toBeNull();
+    expect(view!.answerSegments).toEqual(segments);
+    expect(view!.correctText).toBe("she plays football");
+  });
+
+  it("incorrect bez hintPl (słówka) zostaje w istniejącym widoku", () => {
+    expect(lessonFeedbackView({ kind: "incorrect", correctText: "cat" })).toBeNull();
+  });
+
   it("zwraca null dla rodzajów nie-lekcyjnych (obsługiwanych przez istniejący widok)", () => {
     expect(lessonFeedbackView({ kind: "great" })).toBeNull();
     expect(lessonFeedbackView({ kind: "incorrect", correctText: "cat" })).toBeNull();

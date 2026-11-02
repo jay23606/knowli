@@ -18,7 +18,9 @@ import {
   sessionTasks,
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
-import type { DynamicTopicData, LearningObjective, LessonExerciseType, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
+import type { DynamicTopicData, LearningObjective, LessonExerciseDraft, LessonExerciseType, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
+import { explanationExposureKeyFinder } from "../../../domain/lessons/exercise-explanation";
+import { exerciseExposureText } from "../../../domain/lessons/exposure-key";
 import { resolveLessonTopic } from "../../../domain/lessons/topic-resolution";
 import {
   selectLessonTask,
@@ -260,7 +262,16 @@ export function lessonSessionContextOf(session: { context: Record<string, unknow
 export async function loadExercises(
   tx: Executor,
   deckVersionId: string,
-  options: { questionAudio?: boolean; feedbackAudio?: boolean } = {},
+  options: {
+    questionAudio?: boolean;
+    feedbackAudio?: boolean;
+    explanationAudio?: boolean;
+    /**
+     * Przedmiot lekcji: gdy podany i ma `exerciseExplanations`, ćwiczenia z wyjaśnieniem
+     * dostają `explanationExposureKeys` (cytaty innych ćwiczeń tej wersji, spec §4.4).
+     */
+    subject?: Pick<SubjectModule, "exerciseExplanations" | "exposureText" | "normalizeExposureText">;
+  } = {},
 ): Promise<LoadedExercise[]> {
   const revisions = await tx
     .select({ id: itemRevisions.id, itemId: itemRevisions.itemId, position: itemRevisions.position, payload: itemRevisions.payload, targetKey: itemRevisions.targetKey })
@@ -334,7 +345,28 @@ export async function loadExercises(
     if (!feedbackAudioByRevision.has(row.itemRevisionId)) feedbackAudioByRevision.set(row.itemRevisionId, row.assetId);
   }
 
-  return revisions.map((r) => ({
+  // Nagranie wyjaśnienia ćwiczenia (spec 2026-11-01 §5.2): rozwiązywane jak `feedback_audio`.
+  const explanationAudioRows = revisionIds.length && options.explanationAudio !== false
+    ? await tx
+        .select({ itemRevisionId: revisionAssets.itemRevisionId, assetId: mediaAssets.id })
+        .from(revisionAssets)
+        .innerJoin(mediaAssets, eq(mediaAssets.fingerprint, revisionAssets.expectedFingerprint))
+        .where(
+          and(
+            inArray(revisionAssets.itemRevisionId, revisionIds),
+            eq(revisionAssets.role, "explanation_audio"),
+            eq(mediaAssets.kind, "tts"),
+            eq(mediaAssets.state, "ready"),
+          ),
+        )
+        .orderBy(desc(mediaAssets.generationNumber))
+    : [];
+  const explanationAudioByRevision = new Map<string, string>();
+  for (const row of explanationAudioRows) {
+    if (!explanationAudioByRevision.has(row.itemRevisionId)) explanationAudioByRevision.set(row.itemRevisionId, row.assetId);
+  }
+
+  const loaded: LoadedExercise[] = revisions.map((r) => ({
     revisionId: r.id,
     itemId: r.itemId,
     position: r.position,
@@ -343,7 +375,22 @@ export async function loadExercises(
     audioAssetId: audioByRevision.get(r.id) ?? null,
     questionAudioAssetId: promptAudioByRevision.get(r.id) ?? null,
     feedbackAudioAssetId: feedbackAudioByRevision.get(r.id) ?? null,
+    explanationAudioAssetId: explanationAudioByRevision.get(r.id) ?? null,
   }));
+  const subject = options.subject;
+  if (!subject?.exerciseExplanations || !loaded.some((exercise) => exercise.payload.explanationPl)) return loaded;
+  // Ekspozycje cytatów (spec §4.4): tekst ekspozycji każdego ćwiczenia tej wersji.
+  const targets = loaded.map((exercise) => ({
+    exposureText: exerciseExposureText(subject, exercise.payload as unknown as LessonExerciseDraft),
+    targetKey: exercise.targetKey,
+  }));
+  // Wyrażenie każdego celu budowane raz na wywołanie (blokada sesji, spec §4.4).
+  const keysFor = explanationExposureKeyFinder(targets, subject);
+  return loaded.map((exercise, index) => {
+    const explanation = exercise.payload.explanationPl;
+    if (!explanation) return exercise;
+    return { ...exercise, explanationExposureKeys: keysFor(explanation, index) };
+  });
 }
 
 /** Klucz nagrania karty w mapie `loadLessonCardAudio`. */
@@ -494,7 +541,7 @@ async function loadLessonPlanningSnapshot(
   const version = (await tx.select().from(deckVersions).where(eq(deckVersions.id, session.deckVersionId)))[0]!;
   const context = lessonContextOf(version);
   const { subject, topic } = requireTopic(services, context);
-  const allExercises = await loadExercises(tx, session.deckVersionId);
+  const allExercises = await loadExercises(tx, session.deckVersionId, { subject });
   const exercises = allExercises;
   if (exercises.length === 0) {
     return null;
@@ -857,7 +904,7 @@ export async function lessonDeckListValues(
   const context = lessonContextOf(version);
   const { topic } = requireTopic(services, context);
   // Lista zestawów liczy tylko postęp — nagrania pytań są zbędne.
-  const exercises = await loadExercises(exec, args.deckVersionId, { questionAudio: false, feedbackAudio: false });
+  const exercises = await loadExercises(exec, args.deckVersionId, { questionAudio: false, feedbackAudio: false, explanationAudio: false });
   const objectiveOrder = topic.objectives.map((o) => o.id).filter((id) => context.objectiveIds.includes(id));
 
   // Postęp celów: tylko cele z ćwiczeniami w puli liczą się do rekomendacji

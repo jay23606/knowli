@@ -57,10 +57,17 @@ interface Calls {
   markCardPending: () => void;
 }
 
-async function openLesson(page: Page, options: { cardRegenerateFails?: boolean; subjectId?: string; styleEnabled?: boolean } = {}): Promise<Calls> {
+async function openLesson(page: Page, options: { cardRegenerateFails?: boolean; subjectId?: string; styleEnabled?: boolean; explanations?: boolean } = {}): Promise<Calls> {
   // Przedmiot bez nagrań pytań i kart nie dostaje `voiceTones` (jak z serwera).
   let current: typeof draft = options.subjectId ? { ...draft, subjectId: options.subjectId, voiceTones: undefined }
-    : options.styleEnabled === false ? { ...draft, voiceTones: { styleEnabled: false } } : draft;
+    : options.styleEnabled === false ? { ...draft, voiceTones: { styleEnabled: false } }
+      : options.explanations ? {
+        ...draft,
+        exerciseExplanations: true,
+        exercises: draft.exercises.map((exercise, index) => (index === 0
+          ? { ...exercise, explanationPl: "Skala pokazuje, ile razy zmniejszono teren.", explanationAudio: { state: "ready", assetId: uuid(94) } }
+          : exercise)),
+      } as unknown as typeof draft : draft;
   const calls: Calls = {
     requests: [],
     markCardPending: () => {
@@ -140,6 +147,20 @@ test("ton lektora trafia do patcha bez stanu nagrań, a „Nagraj ponownie” wo
   const call = calls.requests.find((request) => request.path.endsWith("/prompt-audio/regenerate"))!;
   expect(call.path).toBe(`/api/v1/parent/lesson-drafts/${draftId}/prompt-audio/regenerate`);
   expect(call.body).toMatchObject({ itemRevisionId: uuid(60) });
+  // nagranie pytania wysyła to samo wejście co dotąd: bez roli
+  expect(call.body).not.toHaveProperty("role");
+});
+
+test("„Nagraj ponownie” wyjaśnienia wysyła rolę explanation_audio dla rewizji ćwiczenia", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const calls = await openLesson(page, { explanations: true });
+  const controls = page.getByTestId("exercise-0").getByTestId("lesson-explanation-audio");
+  await expect(controls).toHaveAttribute("data-audio-state", "ready");
+  await controls.getByTestId("lesson-explanation-audio-regenerate").click();
+  await expect.poll(() => calls.requests.filter((request) => request.method === "POST" && request.path.endsWith("/prompt-audio/regenerate")).length).toBe(1);
+  const call = calls.requests.find((request) => request.path.endsWith("/prompt-audio/regenerate"))!;
+  expect(call.path).toBe(`/api/v1/parent/lesson-drafts/${draftId}/prompt-audio/regenerate`);
+  expect(call.body).toEqual({ itemRevisionId: uuid(60), role: "explanation_audio" });
 });
 
 test("sterowanie nagraniami zależy od stanu: gotowe, trwające i nieudane, także dla kart", async ({ page }) => {

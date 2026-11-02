@@ -193,7 +193,7 @@ CREATE TABLE media_assets (
 );
 CREATE TABLE revision_assets (
   item_revision_id uuid NOT NULL REFERENCES item_revisions(id),
-  role text NOT NULL CHECK (role IN ('target_audio','example_audio','illustration')),
+  role text NOT NULL CHECK (role IN ('target_audio','example_audio','illustration','prompt_audio','feedback_audio','explanation_audio')),
   asset_id uuid REFERENCES media_assets(id),
   expected_fingerprint text NOT NULL,
   state text NOT NULL CHECK (state IN ('pending','approved','omitted')),

@@ -402,6 +402,8 @@ export const LessonExerciseInputSchema = z.object({
   extraWords: z.array(z.string().min(1).max(MAX_CLOZE_WORD_LENGTH)).min(MIN_CLOZE_EXTRA).max(MAX_CLOZE_EXTRA).optional(),
   /** Ton lektora nagrania pytania; brak = styl domyślny roli (spec TTS §4.1). */
   voiceTone: LessonVoiceToneSchema.optional(),
+  /** Jedno zdanie po polsku pokazywane po błędzie w treningu (przedmioty z flagą `exerciseExplanations`). */
+  explanationPl: text.optional(),
 }).strict();
 export type LessonExerciseInput = z.infer<typeof LessonExerciseInputSchema>;
 
@@ -423,6 +425,8 @@ const LessonExerciseDraftDtoSchema = LessonExerciseInputSchema.extend({
   revisionId: UuidSchema,
   /** Nagranie pytania; brak = ćwiczenie nie ma nagrania dla tego tekstu. Tylko do odczytu. */
   promptAudio: LessonPromptAudioDtoSchema.optional(),
+  /** Nagranie wyjaśnienia błędu (`explanationPl`); brak = ćwiczenie nie ma wyjaśnienia z nagraniem. Tylko do odczytu. */
+  explanationAudio: LessonPromptAudioDtoSchema.optional(),
   /**
    * Nagranie zdania „Posłuchaj i wybierz” (`lesson_listen_choice`, rola `feedback_audio`
    * dla `feedbackSentenceText`); brak = to ćwiczenie nie ma bodźca słuchowego. Tylko do odczytu.
@@ -501,6 +505,8 @@ export const LessonDraftDtoSchema = z.object({
    * ton się zapisuje, ale nagrania brzmią domyślnie.
    */
   voiceTones: z.object({ styleEnabled: z.boolean() }).strict().optional(),
+  /** Przedmiot ma wyjaśnienie błędu dla dziecka: panel pokazuje pole `explanationPl`. Brak pola = przedmiot go nie ma. */
+  exerciseExplanations: z.literal(true).optional(),
   rejectedCount: z.number().int().nonnegative(),
   /**
    * Powody odrzuceń przy czyszczeniu świeżo wygenerowanej puli (przedmiot z

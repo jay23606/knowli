@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computeTargetKey } from "../target-key";
-import { lessonExerciseTargetKey, lessonTextTargetKey } from "./exposure-key";
+import { exerciseExposureText, lessonExerciseTargetKey, lessonTextTargetKey } from "./exposure-key";
 import { englishGrammarSubject } from "./subjects/english-grammar/module";
 import { historyLikeSubject } from "./testing/history-like-subject";
 import type { LessonExerciseDraft } from "./types";
@@ -56,5 +56,21 @@ describe("lessonTextTargetKey (tekst ujawniany wprost, np. przykład karty)", ()
     expect(lessonExerciseTargetKey(trimmingSubject, draft({ answer: "snowing." }))).toBe(computeTargetKey("snowing", "en-GB"));
     const withText = { ...trimmingSubject, exposureText: (d: LessonExerciseDraft) => `It's ${d.answer} today.` };
     expect(lessonExerciseTargetKey(withText, draft())).toBe(lessonTextTargetKey(withText, "It's snowing today."));
+  });
+});
+
+describe("exerciseExposureText", () => {
+  it("bez exposureText to odpowiedź kanoniczna", () => {
+    expect(exerciseExposureText(englishGrammarSubject, draft())).toBe("snowing");
+  });
+
+  it("z exposureText to jego wynik dla całego szkicu", () => {
+    const subject = { exposureText: (d: LessonExerciseDraft) => `It's ${d.answer} today.` };
+    expect(exerciseExposureText(subject, draft())).toBe("It's snowing today.");
+  });
+
+  it("klucz celu ćwiczenia liczy się z tego samego tekstu", () => {
+    const subject = { ...englishGrammarSubject, exposureText: (d: LessonExerciseDraft) => `It's ${d.answer} today.` };
+    expect(lessonExerciseTargetKey(subject, draft())).toBe(computeTargetKey(exerciseExposureText(subject, draft()), "en-GB"));
   });
 });

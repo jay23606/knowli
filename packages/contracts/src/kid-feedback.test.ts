@@ -64,3 +64,33 @@ describe("segmenty odpowiedzi lekcji — kategoria „nie na temat” (Etap 6 sz
     expect(FeedbackDtoSchema.safeParse({ kind: "spelling_hint", correctText: "Wednesday", spellingDiff }).success).toBe(false);
   });
 });
+
+describe("wyjaśnienie ćwiczenia lekcji w feedbacku (spec 2026-11-01 §4.5)", () => {
+  const AUDIO = "33333333-3333-4333-8333-333333333333";
+  const hintPl = "Po he, she, it dodajemy -s.";
+
+  it("incorrect przyjmuje hintPl z nagraniem wyjaśnienia i bez niego", () => {
+    expect(FeedbackDtoSchema.safeParse({ kind: "incorrect", correctText: "plays", hintPl }).success).toBe(true);
+    expect(FeedbackDtoSchema.safeParse({ kind: "incorrect", correctText: "plays", hintPl, explanationAudioAssetId: AUDIO }).success).toBe(true);
+    expect(FeedbackDtoSchema.safeParse({ kind: "lesson_hint", correctText: "plays", hintPl, explanationAudioAssetId: AUDIO }).success).toBe(true);
+  });
+
+  it("incorrect bez hintPl renderuje się jak dotąd (słówka)", () => {
+    expect(FeedbackDtoSchema.safeParse({ kind: "incorrect", correctText: "plays" }).success).toBe(true);
+  });
+
+  it("odrzuca nagranie wyjaśnienia bez hintPl, przy innych rodzajach i przy not_assessed", () => {
+    expect(FeedbackDtoSchema.safeParse({ kind: "incorrect", correctText: "plays", explanationAudioAssetId: AUDIO }).success).toBe(false);
+    expect(FeedbackDtoSchema.safeParse({ kind: "great", explanationAudioAssetId: AUDIO }).success).toBe(false);
+    expect(FeedbackDtoSchema.safeParse({ kind: "lesson_precision_hint", hintPl, explanationAudioAssetId: AUDIO }).success).toBe(false);
+    expect(FeedbackDtoSchema.safeParse({ kind: "not_assessed", explanationAudioAssetId: AUDIO }).success).toBe(false);
+    expect(FeedbackDtoSchema.safeParse({ kind: "incorrect", correctText: "plays", hintPl, explanationAudioAssetId: "nie-uuid" }).success).toBe(false);
+  });
+
+  it("hintPl nadal zabronione przy great i not_assessed; lesson_hint bez hintPl nadal błąd", () => {
+    expect(FeedbackDtoSchema.safeParse({ kind: "great", hintPl }).success).toBe(false);
+    expect(FeedbackDtoSchema.safeParse({ kind: "not_assessed", hintPl }).success).toBe(false);
+    expect(FeedbackDtoSchema.safeParse({ kind: "lesson_almost", correctText: "plays", hintPl }).success).toBe(false);
+    expect(FeedbackDtoSchema.safeParse({ kind: "lesson_hint", correctText: "plays" }).success).toBe(false);
+  });
+});

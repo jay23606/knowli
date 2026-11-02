@@ -21,6 +21,7 @@ describe("englishGrammarSubject — spójność katalogu", () => {
     expect(englishGrammarSubject.promptLocale).toBe("pl-PL");
     expect(englishGrammarSubject.ttsForAnswers).toBe(false);
     expect(englishGrammarSubject.ttsForFeedbackSentence).toBe(true);
+    expect(englishGrammarSubject.exerciseExplanations).toBe(true);
   });
 
   it("english grammar enables end-of-session story with rules", () => {

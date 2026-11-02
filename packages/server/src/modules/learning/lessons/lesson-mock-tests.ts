@@ -58,7 +58,7 @@ export async function createLessonMockTestPlan(
   const version = (await tx.select().from(deckVersions).where(eq(deckVersions.id, input.deckVersionId)))[0]!;
   const context = lessonContextOf(version);
   const { subject, topic } = requireTopic(services, context);
-  const exercises = await loadExercises(tx, input.deckVersionId, { feedbackAudio: false });
+  const exercises = await loadExercises(tx, input.deckVersionId, { feedbackAudio: false, explanationAudio: false });
 
   const objectiveOrder = topic.objectives.map((o) => o.id).filter((id) => context.objectiveIds.includes(id));
   const pool: LessonMockPoolEntry[] = exercises.map((e) => toLessonMockPoolEntry({

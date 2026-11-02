@@ -90,9 +90,11 @@ async function supersedeDisabledLessonTts(services: Services, asset: typeof medi
       const subject = typeof subjectId === "string" ? services.subjects.getSubject(subjectId) : undefined;
       if (reference.kind !== "lesson" || !subject) return false;
       // Nagranie pytania zależy od `ttsForPrompts`, zdania feedbacku od
-      // `ttsForFeedbackSentence`, nagranie odpowiedzi od `ttsForAnswers`.
+      // `ttsForFeedbackSentence`, wyjaśnienie błędu od `exerciseExplanations`,
+      // nagranie odpowiedzi od `ttsForAnswers`.
       if (reference.role === "prompt_audio") return !subject.ttsForPrompts;
       if (reference.role === "feedback_audio") return !subject.ttsForFeedbackSentence;
+      if (reference.role === "explanation_audio") return !subject.exerciseExplanations;
       return !subject.ttsForAnswers;
     })) return false;
     await tx.update(mediaAssets).set({ state: "failed", leaseToken: null, leaseUntil: null })

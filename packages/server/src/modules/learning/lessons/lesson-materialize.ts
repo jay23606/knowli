@@ -57,6 +57,8 @@ export interface LessonExercisePayload {
   clozeText?: string;
   gapAnswers?: string[];
   extraWords?: string[];
+  /** Wyjaśnienie błędu dla dziecka (jedno polskie zdanie; spec 2026-11-01); tylko przy `exerciseExplanations`. */
+  explanationPl?: string;
   answerLocale: string;
   promptLocale: string;
 }
@@ -72,6 +74,10 @@ export interface LoadedExercise {
   questionAudioAssetId?: string | null;
   /** Gotowe nagranie pełnego zdania feedbacku (rola `feedback_audio`); brak = bez odczytu po odpowiedzi. */
   feedbackAudioAssetId?: string | null;
+  /** Gotowe nagranie wyjaśnienia ćwiczenia (rola `explanation_audio`); brak = wyjaśnienie bez odsłuchu. */
+  explanationAudioAssetId?: string | null;
+  /** Klucze `target_key` innych ćwiczeń cytowanych w wyjaśnieniu (spec §4.4); bez własnego. */
+  explanationExposureKeys?: string[];
 }
 
 export interface MaterializedLessonTask {
@@ -221,6 +227,15 @@ export function materializeExercise(
     // z `listenStimulusAssetId` (jedna reguła gotowości bodźca) w swojej gałęzi.
     ...(payload.exerciseType !== "lesson_listen_choice" && subject.ttsForFeedbackSentence && !mockTest && exercise.feedbackAudioAssetId
       ? { feedbackAudioAssetId: exercise.feedbackAudioAssetId }
+      : {}),
+    // Wyjaśnienie ćwiczenia (spec 2026-11-01 §4.1): zamrożone w prywatnym kluczu przy wydaniu,
+    // ujawniane dopiero w feedbacku po błędzie; kartkówka go nie dostaje.
+    ...(subject.exerciseExplanations && !mockTest && payload.explanationPl
+      ? {
+          explanationPl: payload.explanationPl,
+          explanationExposureKeys: [...(exercise.explanationExposureKeys ?? [])],
+          ...(exercise.explanationAudioAssetId ? { explanationAudioAssetId: exercise.explanationAudioAssetId } : {}),
+        }
       : {}),
     // Migawka celu: ścieżka oceny nie musi szukać celu w katalogu (tematy dynamiczne).
     ...(objective ? { objectiveSnapshot: { objectiveTitlePl: objective.titlePl, topicId: topic.id, topicVersion: topic.version, descriptionEn: objective.descriptionEn, errorCategories: [...objective.errorCategories], hints: { ...objective.hints }, topicTitlePl: topic.titlePl, extraErrorCategories: topic.extraErrorCategories.map((c) => ({ ...c })) } } : {}),

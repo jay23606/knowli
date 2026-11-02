@@ -31,7 +31,7 @@ function render(sentenceAudio: LessonPromptAudioDto | null, { open = false, edit
   const ex = createLessonSnapshot(draft, () => "k").form.exercises[0]!;
   return renderParentMarkup(
     <LessonExerciseCard ex={ex} index={0} editable={editable} busy={false} open={open} changed={false} hadAudio={false} errors={undefined}
-      audio={null} voiceTones={{ styleEnabled: true }} promptAudio={null} sentenceAudio={sentenceAudio} lessonDraftId={draft.id} deckId={draft.deckId}
+      audio={null} voiceTones={{ styleEnabled: true }} promptAudio={null} explanations={false} explanationAudio={null} sentenceAudio={sentenceAudio} lessonDraftId={draft.id} deckId={draft.deckId}
       itemRevisionId="rev" audioLocked={false} calculation={null} onToggle={vi.fn()} onMutate={vi.fn()} onRemove={vi.fn()} onPlay={vi.fn()} />,
   );
 }

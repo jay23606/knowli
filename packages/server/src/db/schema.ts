@@ -404,13 +404,13 @@ export const revisionAssets = app.table(
     itemRevisionId: uuid("item_revision_id")
       .notNull()
       .references((): AnyPgColumn => itemRevisions.id),
-    role: text("role").$type<"target_audio" | "example_audio" | "illustration" | "prompt_audio" | "feedback_audio">().notNull(),
+    role: text("role").$type<"target_audio" | "example_audio" | "illustration" | "prompt_audio" | "feedback_audio" | "explanation_audio">().notNull(),
     assetId: uuid("asset_id").references((): AnyPgColumn => mediaAssets.id),
     expectedFingerprint: text("expected_fingerprint").notNull(),
     state: text("state").$type<"pending" | "approved" | "omitted">().notNull(),
   },
   (t) => [
-    check("revision_assets_role_allowed", sql`${t.role} in ('target_audio', 'example_audio', 'illustration', 'prompt_audio', 'feedback_audio')`),
+    check("revision_assets_role_allowed", sql`${t.role} in ('target_audio', 'example_audio', 'illustration', 'prompt_audio', 'feedback_audio', 'explanation_audio')`),
     check("revision_assets_state_allowed", sql`${t.state} in ('pending', 'approved', 'omitted')`),
     check("revision_assets_approved_has_asset", sql`${t.state} <> 'approved' or ${t.assetId} is not null`),
     check("revision_assets_only_illustration_omitted", sql`${t.state} <> 'omitted' or ${t.role} = 'illustration'`),

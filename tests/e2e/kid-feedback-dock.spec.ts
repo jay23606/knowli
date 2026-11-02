@@ -1,10 +1,12 @@
 import { expect, test } from "@playwright/test";
+import type { AttemptDto, FeedbackDto, TaskDto } from "@learning/contracts";
 import { installKidUiFixture } from "./helpers/kid-ui-fixture";
 import { kidTokenColor } from "./helpers/contrast";
 import { measure, resizeAndSettle } from "./helpers/kid-layout";
 import { pictureVocabularyFixture } from "./helpers/picture-fixtures";
 import { attemptId, baseFixture, completedRecallFixture, sessionId, taskId } from "./helpers/kid-fixtures";
 import { dockRevealCalls, installDockRevealSpy, waitForKidScale } from "./helpers/kid-frame";
+import { lessonAudioFixture, openLessonTask } from "./helpers/lesson-audio";
 
 const optionIds = ["10000000-0000-4000-8000-000000000007", "10000000-0000-4000-8000-000000000008", "10000000-0000-4000-8000-000000000009"];
 
@@ -402,4 +404,62 @@ test("spelling comparison uses the display font and underlines the wrong places"
     await page.waitForTimeout(800);
     await page.screenshot({ path: `${process.env.UMIEM_FEEDBACK_SHOTS}/dock-spelling-360x800.png` });
   }
+});
+
+/** Lekcja z jednym zadaniem luki i drugim po nim — wyjaśnienie ćwiczenia po błędzie (spec 2026-11-01 §6). */
+const lessonIds = {
+  childId: "10000000-0000-4000-8000-000000000a01",
+  deckId: "10000000-0000-4000-8000-000000000a02",
+  sessionId: "10000000-0000-4000-8000-000000000a03",
+  deckVersionId: "10000000-0000-4000-8000-000000000a04",
+};
+const lessonGap = (n: number, stem: string): TaskDto => ({
+  taskId: `10000000-0000-4000-8000-000000000a1${n}`, sessionId: lessonIds.sessionId, ordinal: n, exerciseType: "lesson_gap",
+  direction: null, state: "issued", remainingAssessed: 2,
+  prompt: { kind: "lesson_gap", instructionPl: "Uzupełnij lukę", stemWithGap: stem, hint: "(go)" },
+});
+const lessonTasks = [lessonGap(1, "He ___ to school."), lessonGap(2, "She ___ to work.")];
+const lessonAttempt = (feedback: FeedbackDto, modality: AttemptDto["modality"] = "text"): AttemptDto => ({
+  attemptId: "10000000-0000-4000-8000-000000000a31", taskId: lessonTasks[0]!.taskId, state: "completed", modality,
+  taskState: "answered", stepId: "s1", receivedAt: "2026-10-31T10:00:01.000Z", completedAt: "2026-10-31T10:00:01.000Z",
+  feedback,
+});
+
+for (const colorScheme of ["light", "dark"] as const) {
+  test(`the explanation text keeps the dock contrast on an incorrect result (${colorScheme} system theme)`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme });
+    await installKidUiFixture(page, {
+      ...lessonAudioFixture(lessonIds, lessonTasks),
+      attempts: [lessonAttempt({ kind: "incorrect", correctText: "He goes to school.", hintPl: "Po he dodajemy do czasownika końcówkę -s." })],
+    });
+    await openLessonTask(page, "kid-lesson-gap");
+    await page.getByTestId("kid-lesson-gap-input").fill("go");
+    await page.getByTestId("kid-lesson-check").click();
+    const dock = page.getByTestId("kid-feedback-dock");
+    await expect(dock).toHaveAttribute("data-tone", "incorrect");
+    const text = dock.getByTestId("kid-explanation-text");
+    await expect(text).toBeVisible();
+    await expect.poll(() => dock.evaluate((node) => getComputedStyle(node).opacity), { message: "dock finishes its fade-in" }).toBe("1");
+    const contrast = await titleContrastOnDock(text, dock);
+    expect(contrast.ratio, `explanation (${colorScheme}): ${JSON.stringify(contrast)}`).toBeGreaterThanOrEqual(4.5);
+    expect(contrast.color).toBe(await kidTokenColor(page, "--md-sys-color-on-error-container"));
+    expect(contrast.background).toBe(await kidTokenColor(page, "--md-sys-color-error-container"));
+    expect(await text.evaluate((node) => getComputedStyle(node).textAlign)).toBe("start");
+    expect(await text.evaluate((node) => getComputedStyle(node).fontStyle)).toBe("normal");
+  });
+}
+
+test("„Nie pamiętam” in a lesson without an explanation moves on as before", async ({ page }) => {
+  await installKidUiFixture(page, {
+    ...lessonAudioFixture(lessonIds, lessonTasks),
+    attempts: [lessonAttempt({ kind: "incorrect", correctText: "He goes to school." }, "dont_remember")],
+    disclosure: { taskId: lessonTasks[0]!.taskId, stepId: "d1", kind: "hint", reveal: { target: "goes" } },
+  });
+  await openLessonTask(page, "kid-lesson-gap");
+  await page.getByTestId("kid-not-remember").click();
+  await expect(page.getByTestId("kid-reveal")).toContainText("goes");
+  await page.getByTestId("kid-next").click();
+  await expect(page.getByTestId("kid-lesson-gap")).toContainText("She");
+  await expect(page.getByTestId("kid-feedback-dock")).toHaveCount(0);
+  await expect(page.getByTestId("kid-explanation-text")).toHaveCount(0);
 });

@@ -278,6 +278,33 @@ it("zachowuje pola v3 ćwiczeń szkolnych w obie strony", () => {
     const typing = { ...base, commonErrors: ["myli skalę", ""] };
     expect(lessonExerciseChanged(typing, base)).toBe(false);
   });
+  it("wyjaśnienie ćwiczenia: przycięte w patchu, zmiana oznacza ćwiczenie jako zmienione", () => {
+    const withText = draft();
+    withText.exercises[0] = { ...withText.exercises[0]!, explanationPl: "Czas teraźniejszy łączy się z „he works”." };
+    const snapshot = createLessonSnapshot(withText, () => "unused");
+    expect(snapshot.form.exercises[0]!.explanationPl).toBe("Czas teraźniejszy łączy się z „he works”.");
+    snapshot.form.exercises[0]!.explanationPl = "  Dodaj -s do czasownika.  ";
+    expect(toLessonDraftPatch(snapshot).exercises![0]!.explanationPl).toBe("Dodaj -s do czasownika.");
+    const base = createLessonSnapshot(withText, () => "unused").form.exercises[0]!;
+    expect(lessonExerciseChanged(snapshot.form.exercises[0]!, base)).toBe(true);
+  });
+
+  it("wyjaśnienie z samych spacji albo puste nie trafia do patcha i nie jest zmianą", () => {
+    const snapshot = createLessonSnapshot(draft(), () => "unused");
+    const base = createLessonSnapshot(draft(), () => "unused").form.exercises[0]!;
+    snapshot.form.exercises[0]!.explanationPl = "   ";
+    expect(toLessonDraftPatch(snapshot).exercises![0]!).not.toHaveProperty("explanationPl");
+    expect(lessonExerciseChanged(snapshot.form.exercises[0]!, base)).toBe(false);
+  });
+
+  it("nagranie wyjaśnienia (`explanationAudio`) nigdy nie wraca w patchu", () => {
+    const withAudio = draft();
+    withAudio.exercises[0] = { ...withAudio.exercises[0]!, explanationPl: "Zdanie.", explanationAudio: { state: "ready", assetId: "00000000-0000-4000-8000-0000000000aa" } };
+    const patch = toLessonDraftPatch(createLessonSnapshot(withAudio, () => "unused"));
+    expect(patch.exercises![0]).not.toHaveProperty("explanationAudio");
+    expect(patch.exercises![0]!.explanationPl).toBe("Zdanie.");
+  });
+
   it("emits visualSubject only for lesson_choice exercises", () => {
     const snapshot = createLessonSnapshot(draft(), () => "unused");
     snapshot.form.exercises[0]!.visualSubject = "girl";

@@ -173,6 +173,15 @@
   min-width: 0;
 }
 
+/* Nagranie wyjaśnienia: etykieta i kontrolki przy podglądzie wyjaśnienia albo pod jego polem. */
+.pp-lesson-explanation-audio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 6px;
+}
+
 .pp-lesson-ex-answer {
   color: var(--pp-status-success-fg);
 }

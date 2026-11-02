@@ -109,6 +109,20 @@ describe("SubjectCatalogDtoSchema", () => {
   });
 });
 
+describe("wyjaśnienie błędu (explanationPl)", () => {
+  const exercise = {
+    exerciseType: "lesson_gap", objectiveId: "o1", stem: "He ___ football.",
+    answer: "plays", acceptedAnswers: [], focus: ["plays"],
+  };
+  it("accepts a sentence up to 120 characters and its absence, rejects 121 characters and an empty text", () => {
+    expect(LessonExerciseInputSchema.safeParse({ ...exercise, explanationPl: "Przy he dodajemy -s." }).success).toBe(true);
+    expect(LessonExerciseInputSchema.safeParse({ ...exercise, explanationPl: "a".repeat(120) }).success).toBe(true);
+    expect(LessonExerciseInputSchema.safeParse(exercise).success).toBe(true);
+    expect(LessonExerciseInputSchema.safeParse({ ...exercise, explanationPl: "a".repeat(121) }).success).toBe(false);
+    expect(LessonExerciseInputSchema.safeParse({ ...exercise, explanationPl: "" }).success).toBe(false);
+  });
+});
+
 describe("ton lektora (voiceTone)", () => {
   const exercise = {
     exerciseType: "lesson_gap", objectiveId: "o1", stem: "He ___ football.",

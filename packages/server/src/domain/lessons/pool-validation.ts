@@ -40,6 +40,7 @@ import type {
   LessonTopic,
   SubjectModule,
 } from "./types";
+import { explanationTextErrors } from "./exercise-explanation";
 import { lessonExerciseIdentity, lessonIdentityOptionsOf } from "./exercise-identity";
 import type { PoolMinimums } from "./lesson-policy";
 
@@ -261,6 +262,13 @@ export function validateLessonExercise(
   // Rachunek nie ma nagrania pytania z tonem (edytor go nie pokazuje, generator nie zwraca).
   if (ex.voiceTone !== undefined && ex.exerciseType === "lesson_calculation") {
     errors.push("voiceTone: ton lektora niedozwolony dla lesson_calculation");
+  }
+  if (ex.explanationPl !== undefined) {
+    if (subject.exerciseExplanations !== true) {
+      errors.push(`explanationPl: wyjaśnienie błędu niedozwolone dla przedmiotu „${subject.id}”`);
+    } else {
+      errors.push(...explanationTextErrors(ex.explanationPl));
+    }
   }
   validateVisualSubject(ex, errors);
   if (ex.calculation !== undefined && ex.exerciseType !== "lesson_calculation") {

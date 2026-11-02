@@ -1288,6 +1288,21 @@ describe("parent oRPC router — lesson-drafts", () => {
     expect(regenerateLessonPromptAudio).toHaveBeenCalledWith(services, { lessonDraftId, itemRevisionId: draftId });
   });
 
+  it("regeneratePromptAudio z rolą explanation_audio przekazuje ją do usługi; bez roli wywołanie jak dotąd", async () => {
+    vi.mocked(regenerateLessonPromptAudio).mockResolvedValueOnce({ assetId });
+
+    const response = await call(`/lesson-drafts/${lessonDraftId}/prompt-audio/regenerate`, jsonInit({ itemRevisionId: draftId, role: "explanation_audio" }));
+
+    expect(response.status).toBe(202);
+    expect(regenerateLessonPromptAudio).toHaveBeenLastCalledWith(services, { lessonDraftId, itemRevisionId: draftId, role: "explanation_audio" });
+  });
+
+  it("regeneratePromptAudio odrzuca nieznaną rolę", async () => {
+    const response = await call(`/lesson-drafts/${lessonDraftId}/prompt-audio/regenerate`, jsonInit({ itemRevisionId: draftId, role: "tts" }));
+
+    expect(response.status).toBe(400);
+  });
+
   it("regenerateCardAudio zleca ponowne nagranie karty i zwraca 202 {assetId}", async () => {
     vi.mocked(regenerateLessonCardAudio).mockResolvedValueOnce({ assetId });
 

@@ -147,6 +147,35 @@
   gap: 10px;
 }
 
+/* Wiersz wyjaśnienia: „Posłuchaj wyjaśnienia” na początku, tekst w kolorze
+   panelu (ten sam kontrast co tytuł wyniku), wyrównany do początku. Stoi poza
+   przewijaną kartą wyniku, między górnym wierszem a akcjami, więc jest zawsze
+   widoczny; w panelu-nakładce karta wyniku traci jego wysokość z limitu
+   (`--kid-feedback-pinned-height`), więc panel nie rośnie ponad dotychczasowy. */
+.explanation {
+  flex: none;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.explanation > :global(.kid-listen) {
+  flex: none;
+}
+
+.explanationText {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  color: inherit;
+  text-align: start;
+  font-size: var(--kid-type-body-size);
+  font-weight: var(--kid-type-body-weight);
+  line-height: var(--kid-type-body-line-height);
+  overflow-wrap: anywhere;
+}
+
 /* Odznaka: koło w kolorze tekstu panelu z ikoną w kolorze tła. */
 .badge {
   flex: none;
@@ -237,9 +266,12 @@
 
 /* Limit karty: 36vh, najwyżej 300 px — chyba że pod odpowiedzią jest więcej
    wolnego miejsca. `--kid-feedback-card-max` ustawia na nakładce ExerciseFrame
-   (spec 2026-10-31-kid-ui-dock-followups §3.1); bez niej zostaje dotychczasowy limit. */
+   (spec 2026-10-31-kid-ui-dock-followups §3.1); bez niej zostaje dotychczasowy limit.
+   Przypięty wiersz wyjaśnienia (`--kid-feedback-pinned-height`, też z ExerciseFrame,
+   tylko w panelu-nakładce) zmniejsza dotychczasowy limit o swoją wysokość, a limit
+   z wolnego miejsca liczy go już jako resztę panelu. */
 .content :global(.kid-answer-feedback) {
-  max-height: max(min(calc(36 * var(--kid-vh)), 300px), var(--kid-feedback-card-max, 0px));
+  max-height: max(calc(min(calc(36 * var(--kid-vh)), 300px) - var(--kid-feedback-pinned-height, 0px)), var(--kid-feedback-card-max, 0px));
 }
 
 .content :global(.kid-feedback-content) {
