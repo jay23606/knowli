@@ -6,8 +6,9 @@ import { describe, expect, it } from "vitest";
 /**
  * Strażnik inwentarza płatnych adapterów (spec `2026-11-02-llm-cost-tracking-design.md`
  * §4.2 i §8.1): każdy plik w `providers/` z wywołaniem HTTP (`fetch(` / `doFetch(`)
- * to jeden z ośmiu adapterów z §2 i musi wołać helpery zapisu kosztów co najmniej
- * tyle razy, ile ma miejsc wywołania. Test pilnuje inwentarza — nowy adapter
+ * to jeden z adapterów z §2 (albo wspólna koperta żądań lekcji
+ * `openai/lesson-json-request.ts`, z której korzysta generator i krytyk lekcji)
+ * i musi wołać helpery zapisu kosztów co najmniej tyle razy, ile ma miejsc wywołania. Test pilnuje inwentarza — nowy adapter
  * z `fetch` albo adapter bez zapisu wyjdzie tu na jaw. Kompletność ścieżek
  * (sukces, błąd HTTP, nieczytelne ciało, abort) pilnują testy behawioralne
  * przy każdym adapterze, a wzorzec helperów to regex, nie podciąg `record`
@@ -23,6 +24,7 @@ const PAID_ADAPTERS = [
   "openai-compatible/grader.ts",
   "openai-compatible/session-activity.ts",
   "openai-compatible/stt.ts",
+  "openai/lesson-json-request.ts",
   "openai/llm.ts",
   "openai/tts.ts",
 ];

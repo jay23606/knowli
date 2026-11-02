@@ -1171,3 +1171,28 @@ describe("createOpenAiLlmProvider — zapis kosztów (usage)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("createOpenAiLlmProvider — kształt żądań lekcji po wydzieleniu wspólnej koperty", () => {
+  const OBJECTIVES = { subjectTitle: "Przyroda", topicTitle: "Las", material: "Las to ekosystem.", generationRole: "You write cards." };
+  const STORY = {
+    subjectTitle: "Angielski — rozdział", topicTitle: "Unit 1", answerLocale: "en-GB", promptLocale: "pl-PL",
+    objectives: [], material: "coat — płaszcz", generationRole: "You are an author of short stories.", storyRules: "", avoidSentences: [],
+  } as LessonStoryInput;
+
+  it.each([
+    ["lesson_objectives", { objectives: [] }, (llm: ReturnType<typeof createOpenAiLlmProvider>) => llm.generateLessonObjectives(OBJECTIVES)],
+    ["lesson_story", { sentences: ["a"], questions: [] }, (llm: ReturnType<typeof createOpenAiLlmProvider>) => llm.generateLessonStory(STORY)],
+    ["lesson_pool", { exercises: [], examples: [] }, (llm: ReturnType<typeof createOpenAiLlmProvider>) => llm.generateLessonPool(INPUT)],
+  ] as const)("%s wysyła tylko model, response_format i wiadomości tekstowe (bez max_tokens i cache_control)", async (name, result, call) => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse(result));
+    vi.stubGlobal("fetch", fetchMock);
+    await call(createOpenAiLlmProvider({ apiKey: "k", model: "m" }));
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body)) as Record<string, unknown>;
+    expect(Object.keys(body)).toEqual(["model", "response_format", "messages"]);
+    expect(body.model).toBe("m");
+    expect(body.response_format).toMatchObject({ type: "json_schema", json_schema: { name, strict: true } });
+    const messages = body.messages as { role: string; content: unknown }[];
+    expect(messages.map((message) => message.role)).toEqual(["system", "user"]);
+    for (const message of messages) expect(typeof message.content).toBe("string");
+  });
+});
