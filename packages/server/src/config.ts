@@ -445,7 +445,7 @@ interface ReviewerConnection {
 }
 
 /** Włączony tylko przez jawne `true`; domyślnie (też pusta wartość) wyłączony. */
-function reviewerEnabled(env: Record<string, string | undefined>): boolean {
+export function reviewerEnabled(env: Record<string, string | undefined>): boolean {
   return env.UMIEM_REVIEWER_ENABLED?.trim().toLowerCase() === "true";
 }
 
@@ -455,7 +455,18 @@ type ReviewerLimitName =
   | "UMIEM_REVIEWER_MAX_CALLS_PER_RUN"
   | "UMIEM_REVIEWER_PHASE_BUDGET_MS";
 
-function reviewerPolicyFromEnv(env: Record<string, string | undefined>): ReviewerPolicy {
+/** Domyślne limity krytyka z {@link CONFIG_DEFAULTS} — bez czytania env (krytyk wyłączony). */
+export function defaultReviewerPolicy(): ReviewerPolicy {
+  return {
+    timeoutMs: Number(CONFIG_DEFAULTS.UMIEM_REVIEWER_TIMEOUT_MS),
+    concurrency: Number(CONFIG_DEFAULTS.UMIEM_REVIEWER_CONCURRENCY),
+    maxCallsPerRun: Number(CONFIG_DEFAULTS.UMIEM_REVIEWER_MAX_CALLS_PER_RUN),
+    phaseBudgetMs: Number(CONFIG_DEFAULTS.UMIEM_REVIEWER_PHASE_BUDGET_MS),
+  };
+}
+
+/** Limity z env; błędna liczba to błąd startu. Wołać tylko przy włączonym krytyku. */
+export function reviewerPolicyFromEnv(env: Record<string, string | undefined>): ReviewerPolicy {
   const get = (name: ReviewerLimitName) => positiveIntEnv(name, env[name], Number(CONFIG_DEFAULTS[name]));
   return {
     timeoutMs: get("UMIEM_REVIEWER_TIMEOUT_MS"),
@@ -496,8 +507,9 @@ function reviewerConnectionFromEnv(env: Record<string, string | undefined>): Rev
  * pośrednika i http poza test/development zatrzymują start jak przy graderze.
  */
 export function reviewerFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): ReviewerDeps {
+  // wyłączony krytyk nie czyta limitów: zbłąkana wartość UMIEM_REVIEWER_* nie przerywa startu
+  if (!reviewerEnabled(env)) return { state: "disabled", policy: defaultReviewerPolicy() };
   const policy = reviewerPolicyFromEnv(env);
-  if (!reviewerEnabled(env)) return { state: "disabled", policy };
   const connection = reviewerConnectionFromEnv(env);
   if (connection === undefined) {
     console.warn(

@@ -449,6 +449,15 @@ describe("createGenerationDepsFromEnv — krytyk lekcji (reviewer)", () => {
     expect(off!.reviewer!.provider).toBeUndefined();
   });
 
+  it("tryb fake: wyłączony krytyk nie czyta limitów (błędna liczba nie rzuca), włączony ją waliduje", () => {
+    const off = createGenerationDepsFromEnv(withConfigDefaults({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_CONCURRENCY: "abc" }));
+    expect(off!.reviewer!.state).toBe("disabled");
+    expect(off!.reviewer!.policy.concurrency).toBe(3);
+    expect(() => createGenerationDepsFromEnv(withConfigDefaults({
+      UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_ENABLED: "true", UMIEM_REVIEWER_CONCURRENCY: "abc",
+    }))).toThrow(/UMIEM_REVIEWER_CONCURRENCY/);
+  });
+
   it("realna ścieżka: domyślnie disabled; ENABLED=true + OPENROUTER_API_KEY → ready", () => {
     const base = { OPENROUTER_API_KEY: "sk-or-v1-shared", OPENAI_API_KEY: "sk-main" };
     expect(createGenerationDepsFromEnv(withConfigDefaults(base))!.reviewer!.state).toBe("disabled");

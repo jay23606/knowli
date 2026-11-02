@@ -6,7 +6,7 @@ import { createOpenAiLlmProvider, DEFAULT_BASE_URL as LLM_DEFAULT_BASE_URL, DEFA
 import { chatRequestExtrasFromEnv } from "./chat-request-options";
 import { createOpenAiTtsProvider } from "./openai/tts";
 import { endpointKeyFromEnv, isOpenRouterKey, isSecureOpenRouterEndpoint } from "./openrouter-key";
-import { graderConfigured, reviewerFromEnv, type ReviewerDeps } from "../config";
+import { defaultReviewerPolicy, graderConfigured, reviewerEnabled, reviewerFromEnv, reviewerPolicyFromEnv, type ReviewerDeps } from "../config";
 import type { UsageRecorder } from "../ports/usage";
 import { lessonGenerationPolicyFromEnv } from "../modules/materials/lessons/lesson-generation-policy";
 
@@ -124,10 +124,9 @@ export function imageProviderFromEnv(
 
 /** Tryb fake: krytyk `ready` z fake'iem tylko przy jawnym `UMIEM_REVIEWER_ENABLED=true`. */
 function fakeReviewerFromEnv(env: Record<string, string | undefined>): ReviewerDeps {
-  const { policy } = reviewerFromEnv({ ...env, UMIEM_REVIEWER_ENABLED: "false" });
-  return env.UMIEM_REVIEWER_ENABLED?.trim().toLowerCase() === "true"
-    ? { state: "ready", provider: new FakeLessonReviewer(), policy }
-    : { state: "disabled", policy };
+  return reviewerEnabled(env)
+    ? { state: "ready", provider: new FakeLessonReviewer(), policy: reviewerPolicyFromEnv(env) }
+    : { state: "disabled", policy: defaultReviewerPolicy() };
 }
 
 /**

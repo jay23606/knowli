@@ -302,13 +302,31 @@ describe("reviewerFromEnv — krytyk lekcji", () => {
     expect(result.provider!.model).toBe("anthropic/claude-sonnet-5.5");
   });
 
-  it("ENABLED=true bez klucza → not_configured i ostrzeżenie bez wartości klucza", () => {
+  it("ENABLED=true bez klucza → not_configured i ostrzeżenie", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const result = reviewerFromEnv(withConfigDefaults({ UMIEM_REVIEWER_ENABLED: "true" }));
     expect(result.state).toBe("not_configured");
     expect(result.provider).toBeUndefined();
     expect(warn).toHaveBeenCalledOnce();
     expect(String(warn.mock.calls[0]![0])).toContain("UMIEM_REVIEWER");
+  });
+
+  it("ostrzeżenie not_configured nie zawiera żadnego klucza obecnego w env", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // wspólny klucz jest, ale adres obcy → klucz nie jest używany i nie może wyciec do logu
+    const result = reviewerFromEnv(withConfigDefaults({
+      ...withKey, UMIEM_REVIEWER_BASE_URL: "https://reviewer.example/v1",
+    }));
+    expect(result.state).toBe("not_configured");
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls.flat().map(String).join(" ")).not.toContain("sk-or-v1-shared");
+  });
+
+  it("wyłączony krytyk nie czyta limitów: zbłąkana błędna liczba nie przerywa startu", () => {
+    const result = reviewerFromEnv(withConfigDefaults({ UMIEM_REVIEWER_CONCURRENCY: "abc", UMIEM_REVIEWER_TIMEOUT_MS: "-1" }));
+    expect(result.state).toBe("disabled");
+    expect(result.policy).toEqual({ timeoutMs: 120_000, concurrency: 3, maxCallsPerRun: 12, phaseBudgetMs: 240_000 });
+    expect(reviewerFromEnv({ UMIEM_REVIEWER_CONCURRENCY: "abc" }).state).toBe("disabled");
   });
 
   it("adres nie-OpenRouter bez własnego klucza → not_configured (wspólny klucz tam nie trafia)", () => {
