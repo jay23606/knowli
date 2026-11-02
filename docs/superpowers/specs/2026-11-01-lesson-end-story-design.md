@@ -799,11 +799,11 @@ liczą się do postępu.”
 
 **Wymaganie 2.13 — dopisane zdanie:**
 
-> THE flow MAY prepare one end-of-session story recording in the answer locale.
-> Story sentences SHALL NOT equal (after the subject normalizer) the solved
-> sentence or accepted answer of any exercise of the lesson version. The story is
-> presented only after the graded tasks of a training session and never blocks
-> publication.
+> THE flow MAY przygotować jedno nagranie historyjki na koniec sesji w języku
+> odpowiedzi. Zdania historyjki SHALL NOT być równe (po zastosowaniu normalizatora
+> przedmiotu) rozwiązanemu zdaniu ani zaakceptowanej odpowiedzi żadnego ćwiczenia
+> w wersji lekcji. Historyjka jest prezentowana wyłącznie po ocenianych zadaniach
+> sesji treningowej i nigdy nie blokuje publikacji.
 
 **Nowe wymaganie 12 — Historyjka na koniec sesji.** Kryteria z §1, §4, §6
 i §8:
