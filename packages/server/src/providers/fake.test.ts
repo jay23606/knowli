@@ -8,13 +8,13 @@ import { refineChapterPool } from "../domain/lessons/subjects/english-chapter/va
 import { englishGrammarSubject } from "../domain/lessons/subjects/english-grammar/module";
 import { presentSimpleV1 } from "../domain/lessons/subjects/english-grammar/topics/present-simple";
 import { toBeV1 } from "../domain/lessons/subjects/english-grammar/topics/to-be";
-import type { LessonPoolInput } from "../ports/ai";
+import type { LessonPoolInput, LessonReviewInput } from "../ports/ai";
 import { findExposureLeaks } from "../domain/lessons/exposure-leaks";
 import { schoolSubject } from "../domain/lessons/subjects/school/module";
 import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../domain/lessons/types";
 import { objectiveBatchCounts, poolStageCounts, toExerciseDraft } from "../modules/materials/lessons/lesson-drafts";
 import { isMaterialVocabularyTarget, materialPhraseIndex } from "../domain/lessons/subjects/english/material-phrase";
-import { DEFAULT_FAKE_DECK_ITEMS, FakeLlmProvider, FakeTtsProvider } from "./fake";
+import { DEFAULT_FAKE_DECK_ITEMS, FakeLessonReviewer, FakeLlmProvider, FakeTtsProvider } from "./fake";
 
 describe("FakeLlmProvider lesson pool", () => {
   it("produces a publishable 3/4/2 grammar pool after functional-stimulus deduplication", async () => {
@@ -570,5 +570,83 @@ describe("FakeLlmProvider — domyślna pula bez ujawnionych rozwiązań", () =>
     onlyPool.queueLesson({ error: "pool boom", retryable: false });
     const topUp = await onlyPool.generateLessonPool(poolInputFor(englishChapterSubject, chapterTopic, 0, 14, { purpose: "stage_top_up" }));
     expect(topUp.exercises.length).toBeGreaterThan(0);
+  });
+});
+
+describe("FakeLessonReviewer", () => {
+  const reviewInput = (objectiveId: string, ns: readonly number[]): LessonReviewInput => ({
+    subjectTitle: "English",
+    answerLocale: "en-GB",
+    promptLocale: "pl-PL",
+    reviewRole: "role",
+    material: "material",
+    cardExamples: {},
+    objective: { id: objectiveId, title: objectiveId, card: "card" },
+    existingExercises: [],
+    exercises: ns.map((n) => ({ n, exercise: { exerciseType: "fill_gap" } })),
+    findings: [],
+  });
+
+  it("domyślnie zwraca ok dla każdego ćwiczenia", async () => {
+    const reviewer = new FakeLessonReviewer();
+    const result = await reviewer.reviewLessonObjective(reviewInput("o1", [1, 2, 3]), new AbortController().signal);
+    expect(result.verdicts).toEqual([
+      { n: 1, verdict: "ok" },
+      { n: 2, verdict: "ok" },
+      { n: 3, verdict: "ok" },
+    ]);
+  });
+
+  it("behavior może zwracać werdykty zależne od zagadnienia", async () => {
+    const reviewer = new FakeLessonReviewer();
+    reviewer.behavior = (input) =>
+      input.objective.id === "bad" ? [{ n: 1, verdict: "drop", reasonPl: "powód" }] : [{ n: 1, verdict: "ok" }];
+    const signal = new AbortController().signal;
+    expect((await reviewer.reviewLessonObjective(reviewInput("bad", [1]), signal)).verdicts).toEqual([
+      { n: 1, verdict: "drop", reasonPl: "powód" },
+    ]);
+    expect((await reviewer.reviewLessonObjective(reviewInput("good", [1]), signal)).verdicts).toEqual([
+      { n: 1, verdict: "ok" },
+    ]);
+  });
+
+  it("delayMs i abort odrzucają AbortError bez czekania do końca", async () => {
+    const reviewer = new FakeLessonReviewer();
+    reviewer.delayMs = 10_000;
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = reviewer.reviewLessonObjective(reviewInput("o1", [1]), controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("już przerwany sygnał odrzuca od razu", async () => {
+    const reviewer = new FakeLessonReviewer();
+    reviewer.delayMs = 10_000;
+    const controller = new AbortController();
+    controller.abort();
+    await expect(reviewer.reviewLessonObjective(reviewInput("o1", [1]), controller.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    // po odrzuceniu licznik równoległych wywołań wraca do zera
+    reviewer.delayMs = 0;
+    await reviewer.reviewLessonObjective(reviewInput("o1", [1]), new AbortController().signal);
+    expect(reviewer.maxInFlight).toBe(1);
+  });
+
+  it("rejestruje wejścia i najwyższą liczbę równoległych wywołań", async () => {
+    const reviewer = new FakeLessonReviewer();
+    reviewer.delayMs = 20;
+    const signal = new AbortController().signal;
+    await Promise.all([
+      reviewer.reviewLessonObjective(reviewInput("a", [1]), signal),
+      reviewer.reviewLessonObjective(reviewInput("b", [1]), signal),
+      reviewer.reviewLessonObjective(reviewInput("c", [1]), signal),
+    ]);
+    expect(reviewer.inputs.map((input) => input.objective.id)).toEqual(["a", "b", "c"]);
+    expect(reviewer.maxInFlight).toBe(3);
+    await reviewer.reviewLessonObjective(reviewInput("d", [1]), signal);
+    expect(reviewer.maxInFlight).toBe(3);
   });
 });

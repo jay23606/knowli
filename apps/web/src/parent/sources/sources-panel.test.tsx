@@ -103,6 +103,15 @@ describe("SourcePage", () => {
     expect(markup).not.toContain('data-testid="source-body"');
   });
 
+  it("informacja o automatycznej kontroli jakości przy przyciskach lekcji, gdy katalog podaje jej usługę", () => {
+    const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
+    const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, { ...fullCatalog, reviewService: REVIEW }));
+    expect(markup).toContain('data-testid="source-review-service"');
+    expect(markup).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
+    const without = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source));
+    expect(without).not.toContain('data-testid="source-review-service"');
+  });
+
   it("zestawy z tego źródła: tytuł, stan i notka o zmianie źródła", () => {
     const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source));
     expect(markup).toContain(messages.sources.decksHeading);

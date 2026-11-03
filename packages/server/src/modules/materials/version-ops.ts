@@ -61,6 +61,13 @@ export interface SourceVersion {
   lessonContext: Record<string, unknown> | null;
 }
 
+/** Kopia `lesson_context` bez raportu kontroli jakości (pozostałe pola bez zmian). */
+function withoutReviewReport(context: Record<string, unknown> | null | undefined): Record<string, unknown> | null | undefined {
+  if (!context || !("review" in context)) return context;
+  const { review: _review, ...rest } = context;
+  return rest;
+}
+
 /**
  * Szkielet „nowy edytowalny szkic z bieżącej opublikowanej wersji”
  * (architecture.md §12: `POST /…/:id/draft`): blokada wiersza zestawu (serializuje
@@ -106,6 +113,8 @@ export async function createVersionFromPublished(
       .where(eq(deckVersions.deckId, deckId))
   )[0]!;
 
+  // Raport kontroli jakości (`review`) dotyczy przebiegów generowania tamtej wersji — nowa wersja go nie dziedziczy.
+  const lessonContext = withoutReviewReport(source.lessonContext);
   const newVersionId = randomUUID();
   await tx.insert(deckVersions).values({
     id: newVersionId,
@@ -117,7 +126,7 @@ export async function createVersionFromPublished(
     sourceLocale: source.sourceLocale,
     targetLocale: source.targetLocale,
     vocabularyFormat: source.vocabularyFormat,
-    ...(source.lessonContext ? { lessonContext: source.lessonContext } : {}),
+    ...(lessonContext ? { lessonContext } : {}),
   });
 
   await copyContent(tx, {
@@ -128,7 +137,7 @@ export async function createVersionFromPublished(
       sourceLocale: source.sourceLocale,
       targetLocale: source.targetLocale,
       vocabularyFormat: source.vocabularyFormat,
-      lessonContext: source.lessonContext ?? null,
+      lessonContext: lessonContext ?? null,
     },
     newVersionId,
   });

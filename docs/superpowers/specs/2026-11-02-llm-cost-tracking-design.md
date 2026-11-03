@@ -47,6 +47,7 @@ dostawcy.
 | --- | --- | --- | --- | --- |
 | `deck_generation` | worker | `providers/openai/llm.ts` `generateDeck` | OpenRouter, Gemini 3.8 Flash | `usage.cost` |
 | `lesson_generation` | worker | `providers/openai/llm.ts` `generateLessonPool` / `generateLessonObjectives` / `generateLessonStory` | OpenRouter, Gemini 3.8 Flash | `usage.cost` |
+| `lesson_generation` (operacja `lesson_review`) | worker | `providers/openai/lesson-reviewer.ts` `reviewLessonObjective` (przez `lesson-json-request.ts`) | OpenRouter, `anthropic/claude-sonnet-5.5` | `usage.cost` |
 | `tts` | worker | `providers/openai/tts.ts` | OpenRouter, Gemini 3.8 Flash TTS | zadanie 0 (§8.1): odpowiedź nie niesie kosztu; szacunek z długości audio (przybliżenie, rozliczenie prawdopodobnie tokenowe) |
 | `illustration` | worker | `providers/images/openai.ts` (media run) | OpenAI | szacunek: obrazy × stawka |
 | `deck_cover` | web | `providers/images/openai.ts` przez `materials/deck-cover.ts` `generateDeckCover` (bez runu) | OpenAI | szacunek: obrazy × stawka |

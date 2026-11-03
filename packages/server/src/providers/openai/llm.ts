@@ -13,6 +13,7 @@ import { materializeGeneratedCalculations } from "../lesson-calculations";
 import { materializeGeneratedKeywords } from "../lesson-keywords";
 import { materializeGeneratedAssignments } from "../lesson-assignments";
 import { withChatRequestExtras, type ChatRequestExtras } from "../chat-request-options";
+import { asLessonTransportError, lessonHttpError, postLessonJson, type LessonJsonRequestConfig } from "./lesson-json-request";
 import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
 import {
   recordHttpError,
@@ -36,48 +37,6 @@ export interface OpenAiLlmOptions {
 /** Domyślny model i adres adaptera (puste `UMIEM_LLM_*`); nazwę usługi dla rodzica liczy `generationPublicServiceFromEnv`. */
 export const DEFAULT_MODEL = "gpt-4o-mini";
 export const DEFAULT_BASE_URL = "https://api.openai.com/v1";
-
-function retryAfterMs(response: Response): number | undefined {
-  const raw = response.headers.get("retry-after");
-  if (raw === null) return undefined;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
-  const at = Date.parse(raw);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
-}
-
-async function lessonHttpError(response: Response): Promise<GenerationProviderError> {
-  let kind: "configuration" | "rate_limit" | "transient" =
-    response.status === 429 ? "rate_limit" : response.status === 408 || response.status >= 500 ? "transient" : "configuration";
-  if (response.status === 429) {
-    try {
-      const body: unknown = await response.clone().json();
-      const error = body && typeof body === "object" ? (body as { error?: unknown }).error : undefined;
-      const fields = error && typeof error === "object" ? error as { code?: unknown; type?: unknown } : {};
-      const signals = [fields.code, fields.type].filter((value): value is string => typeof value === "string").map((value) => value.toLowerCase());
-      const rateLimitCodes = new Set(["rate_limit_exceeded", "requests_rate_limit_exceeded", "tokens_rate_limit_exceeded"]);
-      const quotaCodes = new Set(["insufficient_quota", "billing_hard_limit_reached", "billing_not_active", "spend_limit_reached", "quota_exceeded"]);
-      if (signals.some((signal) => rateLimitCodes.has(signal))) {
-        kind = "rate_limit";
-      } else if (signals.some((signal) => quotaCodes.has(signal))) {
-        kind = "configuration";
-      }
-    } catch {
-      // A provider's diagnostic body is untrusted and never enters logs or errors.
-    }
-  }
-  return new GenerationProviderError(kind, {
-    status: response.status,
-    ...(kind === "rate_limit" ? { retryAfterMs: retryAfterMs(response) } : {}),
-  });
-}
-
-function asLessonTransportError(error: unknown): GenerationProviderError {
-  if (error instanceof GenerationProviderError) return error;
-  return new GenerationProviderError(
-    error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError") ? "timeout" : "transient",
-  );
-}
 
 /**
  * Prompt systemowy zestawu słówek. Tryb „z opisu” — bez zmian od wprowadzenia
@@ -651,86 +610,17 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
   const lessonRequestTimeoutMs = options.lessonRequestTimeoutMs ?? 90_000;
   const provider = providerFromBaseUrl(baseUrl);
   const usageBase = (feature: UsageEventBase["feature"], operation: string): UsageEventBase => ({ feature, operation, provider, model });
-  /**
-   * Wspólna koperta żądania lekcyjnego (strict json_schema): timeout, fetch,
-   * mapowanie błędów HTTP/odmowy/długości, parsowanie treści. Zwraca sparsowany
-   * JSON; `accept` sprawdza kształt (niezgodny = błąd `output`).
-   */
-  async function postLessonJson(args: {
-    operation: string;
-    schemaName: string;
-    schema: Record<string, unknown>;
-    system: string;
-    user: string;
-    signal?: AbortSignal;
-    accept: (parsed: unknown) => boolean;
-  }): Promise<unknown> {
-    const base = usageBase("lesson_generation", args.operation);
-    // ciało przed `try`: błąd jego budowy to błąd programu, nie wywołanie dostawcy (bez zapisu `failed`)
-    const body = JSON.stringify(withChatRequestExtras(options.requestExtras, {
-      model,
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: args.schemaName, strict: true, schema: args.schema },
-      },
-      messages: [
-        { role: "system", content: args.system },
-        { role: "user", content: args.user },
-      ],
-    }));
-    // jedno żądanie HTTP = jeden zapis; catch transportu zapisuje tylko, gdy odpowiedzi nie było
-    let recorded = false;
-    try {
-      const timeoutSignal = AbortSignal.timeout(lessonRequestTimeoutMs);
-      const requestSignal = args.signal ? AbortSignal.any([args.signal, timeoutSignal]) : timeoutSignal;
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${options.apiKey}`,
-          "content-type": "application/json",
-        },
-        body,
-        signal: requestSignal,
-      });
-      if (!response.ok) {
-        recorded = true;
-        recordHttpError(options.usage, base, response.status);
-        throw await lessonHttpError(response);
-      }
-      let payload: unknown;
-      try {
-        payload = await response.json();
-      } catch {
-        recorded = true;
-        recordUnreadable(options.usage, base, response.status);
-        throw new GenerationProviderError("output", { status: response.status });
-      }
-      // płatna odpowiedź jest zapisana zanim treść zostanie zwalidowana
-      recorded = true;
-      recordResponse(options.usage, base, response.status, payload);
-      const choices = (payload as { choices?: unknown } | null)?.choices;
-      if (!Array.isArray(choices) || choices.length === 0 || choices[0] === null || typeof choices[0] !== "object") {
-        throw new GenerationProviderError("output", { status: response.status });
-      }
-      const choice = choices[0] as { finish_reason?: string | null; message?: { content?: string | null; refusal?: string | null } };
-      if (choice?.message?.refusal) throw new GenerationProviderError("refusal", { status: response.status });
-      if (choice?.finish_reason === "content_filter") throw new GenerationProviderError("refusal", { status: response.status });
-      if (choice?.finish_reason === "length") throw new GenerationProviderError("incomplete", { status: response.status });
-      const content = choice?.message?.content;
-      if (typeof content !== "string" || content.trim() === "") throw new GenerationProviderError("output", { status: response.status });
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(content);
-      } catch {
-        throw new GenerationProviderError("output", { status: response.status });
-      }
-      if (!args.accept(parsed)) throw new GenerationProviderError("output", { status: response.status });
-      return parsed;
-    } catch (error) {
-      if (!recorded) recordTransportFailure(options.usage, base);
-      throw asLessonTransportError(error);
-    }
-  }
+  /** Wspólna koperta żądania lekcyjnego (`lesson-json-request.ts`) — etapy zagadnień i historyjki. */
+  const lessonJson: LessonJsonRequestConfig = {
+    baseUrl,
+    apiKey: options.apiKey,
+    model,
+    provider,
+    timeoutMs: lessonRequestTimeoutMs,
+    ...(options.requestExtras === undefined ? {} : { requestExtras: options.requestExtras }),
+    ...(options.usage === undefined ? {} : { usage: options.usage }),
+    usageFeature: "lesson_generation",
+  };
   return {
     name: "openai",
     model,
@@ -789,7 +679,7 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
         material: input.material,
         ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
       });
-      const parsed = await postLessonJson({
+      const parsed = await postLessonJson(lessonJson, {
         operation: "lesson_objectives",
         schemaName: "lesson_objectives",
         schema,
@@ -807,7 +697,7 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
         material: input.material,
         ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
       }, "the story");
-      const story = await postLessonJson({
+      const story = await postLessonJson(lessonJson, {
         operation: "lesson_story",
         schemaName: "lesson_story",
         schema,

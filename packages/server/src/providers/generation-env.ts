@@ -1,12 +1,12 @@
 import type { GenerationDeps } from "../config";
-import { fakeGenerationDeps } from "./fake";
+import { FakeLessonReviewer, fakeGenerationDeps } from "./fake";
 import { createLocalMediaStore } from "./media/local";
 import { createOpenAiImageProvider } from "./images/openai";
 import { createOpenAiLlmProvider, DEFAULT_BASE_URL as LLM_DEFAULT_BASE_URL, DEFAULT_MODEL as LLM_DEFAULT_MODEL } from "./openai/llm";
 import { chatRequestExtrasFromEnv } from "./chat-request-options";
 import { createOpenAiTtsProvider } from "./openai/tts";
 import { endpointKeyFromEnv, isOpenRouterKey, isSecureOpenRouterEndpoint } from "./openrouter-key";
-import { graderConfigured } from "../config";
+import { defaultReviewerPolicy, graderConfigured, reviewerEnabled, reviewerFromEnv, reviewerPolicyFromEnv, type ReviewerDeps } from "../config";
 import type { UsageRecorder } from "../ports/usage";
 import { lessonGenerationPolicyFromEnv } from "../modules/materials/lessons/lesson-generation-policy";
 
@@ -122,6 +122,13 @@ export function imageProviderFromEnv(
     : undefined;
 }
 
+/** Tryb fake: krytyk `ready` z fake'iem tylko przy jawnym `UMIEM_REVIEWER_ENABLED=true`. */
+function fakeReviewerFromEnv(env: Record<string, string | undefined>): ReviewerDeps {
+  return reviewerEnabled(env)
+    ? { state: "ready", provider: new FakeLessonReviewer(), policy: reviewerPolicyFromEnv(env) }
+    : { state: "disabled", policy: defaultReviewerPolicy() };
+}
+
 /**
  * Składanie zależności generacji ze zmiennych środowiskowych (worker, E2E):
  * UMIEM_FAKE_PROVIDERS=1 wyłącza sieciowe adaptery; bez klucza API wynik jest
@@ -158,6 +165,7 @@ export function createGenerationDepsFromEnv(
       lessonExecution,
       // tryb fake nie wymaga konfiguracji gradera (web bierze wtedy fake gradera)
       graderAvailable: false,
+      reviewer: fakeReviewerFromEnv(env),
     };
   }
   const apiKey = openAiKeyFromEnv(env);
@@ -179,5 +187,6 @@ export function createGenerationDepsFromEnv(
     mediaStore,
     lessonExecution,
     graderAvailable: graderConfigured(env),
+    reviewer: reviewerFromEnv(env, usage),
   };
 }

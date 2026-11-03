@@ -334,6 +334,11 @@ export default function SourcePage({
       {lessonButtons.length === 0 && (
         <Text size="sm" className="pp-editor-muted" data-testid="source-no-lesson-subjects">{messages.sources.noLessonSubjects}</Text>
       )}
+      {lessonButtons.length > 0 && catalogQuery.data?.reviewService && (
+        <Text size="sm" className="pp-editor-muted" data-testid="source-review-service">
+          {messages.lessons.reviewServiceInfo.replace("{service}", () => catalogQuery.data!.reviewService!)}
+        </Text>
+      )}
 
       {error && (
         <Alert ref={errorAlert} tabIndex={-1} color="red" variant="light" role="alert" data-testid="source-error" icon={<ParentIcon name="alert-triangle" />}>

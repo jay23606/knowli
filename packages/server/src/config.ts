@@ -2,6 +2,7 @@ import type { Database } from "./db/client";
 import type {
   AnswerGraderProvider,
   ImageProvider,
+  LessonReviewerProvider,
   LlmProvider,
   PronunciationProvider,
   SessionActivityReviewer,
@@ -13,6 +14,8 @@ import type { MediaStore } from "./ports/media";
 import type { UsageRecorder } from "./ports/usage";
 import { createAzurePronunciationProvider } from "./providers/azure/pronunciation";
 import { createAzureSttProvider } from "./providers/azure/stt";
+import { createOpenAiLessonReviewer } from "./providers/openai/lesson-reviewer";
+import { CONFIG_DEFAULTS } from "./config-defaults";
 import { createOpenAiCompatibleGrader } from "./providers/openai-compatible/grader";
 import { createOpenAiCompatibleSttProvider } from "./providers/openai-compatible/stt";
 import { createOpenAiCompatibleSessionActivityReviewer } from "./providers/openai-compatible/session-activity";
@@ -145,6 +148,32 @@ export interface GenerationDeps {
    * samym env). Steruje tylko preferencją typów ćwiczeń przy generacji puli.
    */
   graderAvailable?: boolean;
+  /**
+   * Krytyk świeżych ćwiczeń lekcji (faza po walidacji, worker). Nieobecny =
+   * jak `state: "disabled"`; brak lub awaria krytyka nigdy nie kończy przebiegu porażką.
+   */
+  reviewer?: ReviewerDeps;
+}
+
+/** Limity krytyka lekcji (`UMIEM_REVIEWER_*`). */
+export interface ReviewerPolicy {
+  /** Termin jednego wywołania modelu. */
+  readonly timeoutMs: number;
+  /** Ile zagadnień krytyk sprawdza równolegle. */
+  readonly concurrency: number;
+  /** Maksymalna liczba wywołań modelu na przebieg. */
+  readonly maxCallsPerRun: number;
+  /** Łączny budżet fazy krytyka w przebiegu. */
+  readonly phaseBudgetMs: number;
+}
+
+/** `not_configured` = włączony, ale bez klucza dla swojego adresu. */
+export type ReviewerState = "disabled" | "not_configured" | "ready";
+
+export interface ReviewerDeps {
+  state: ReviewerState;
+  provider?: LessonReviewerProvider;
+  policy: ReviewerPolicy;
 }
 
 /**
@@ -229,6 +258,8 @@ export interface Services {
    * Web nie ma instancji LLM (generuje worker), więc opisuje wspólną konfigurację.
    */
   generationService?: string;
+  /** Nazwa usługi krytyka lekcji (`host · model`), gdy jest gotowy; nieobecna = krytyk wyłączony. */
+  reviewService?: string;
   /**
    * Recorder kosztów usług AI (spec llm-cost-tracking §4). Nieobecny = brak
    * zapisu kosztów; `flush()` przy zamykaniu procesu i w testach.
@@ -257,6 +288,7 @@ export function createServices(
     grader?: GraderDeps;
     sessionActivity?: SessionActivityDeps;
     generationService?: string;
+    reviewService?: string;
     usage?: UsageRecorder;
     subjects?: SubjectRegistry;
   },
@@ -274,6 +306,7 @@ export function createServices(
     ...(input.grader ? { grader: input.grader } : {}),
     ...(input.sessionActivity ? { sessionActivity: input.sessionActivity } : {}),
     ...(input.generationService ? { generationService: input.generationService } : {}),
+    ...(input.reviewService ? { reviewService: input.reviewService } : {}),
     ...(input.usage ? { usage: input.usage } : {}),
   };
 }
@@ -402,6 +435,138 @@ export function graderFromEnv(env: Record<string, string | undefined>, usage?: U
     maxCallsPerSession,
     timeoutMs,
   };
+}
+
+interface ReviewerConnection {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  maxOutputTokens: number;
+}
+
+/** Włączony tylko przez jawne `true`; domyślnie (też pusta wartość) wyłączony. */
+export function reviewerEnabled(env: Record<string, string | undefined>): boolean {
+  return env.UMIEM_REVIEWER_ENABLED?.trim().toLowerCase() === "true";
+}
+
+type ReviewerLimitName =
+  | "UMIEM_REVIEWER_TIMEOUT_MS"
+  | "UMIEM_REVIEWER_CONCURRENCY"
+  | "UMIEM_REVIEWER_MAX_CALLS_PER_RUN"
+  | "UMIEM_REVIEWER_PHASE_BUDGET_MS";
+
+/** Domyślne limity krytyka z {@link CONFIG_DEFAULTS} — bez czytania env (krytyk wyłączony). */
+export function defaultReviewerPolicy(): ReviewerPolicy {
+  return {
+    timeoutMs: Number(CONFIG_DEFAULTS.UMIEM_REVIEWER_TIMEOUT_MS),
+    concurrency: Number(CONFIG_DEFAULTS.UMIEM_REVIEWER_CONCURRENCY),
+    maxCallsPerRun: Number(CONFIG_DEFAULTS.UMIEM_REVIEWER_MAX_CALLS_PER_RUN),
+    phaseBudgetMs: Number(CONFIG_DEFAULTS.UMIEM_REVIEWER_PHASE_BUDGET_MS),
+  };
+}
+
+/** Limity z env; błędna liczba to błąd startu. Wołać tylko przy włączonym krytyku. */
+export function reviewerPolicyFromEnv(env: Record<string, string | undefined>): ReviewerPolicy {
+  const get = (name: ReviewerLimitName) => positiveIntEnv(name, env[name], Number(CONFIG_DEFAULTS[name]));
+  return {
+    timeoutMs: get("UMIEM_REVIEWER_TIMEOUT_MS"),
+    concurrency: get("UMIEM_REVIEWER_CONCURRENCY"),
+    maxCallsPerRun: get("UMIEM_REVIEWER_MAX_CALLS_PER_RUN"),
+    phaseBudgetMs: get("UMIEM_REVIEWER_PHASE_BUDGET_MS"),
+  };
+}
+
+/**
+ * Połączenie krytyka lekcji: własny `UMIEM_REVIEWER_API_KEY` albo wspólny
+ * `OPENROUTER_API_KEY` (tylko https OpenRouter). Brak klucza dla adresu →
+ * undefined. `https://` wymagane poza `NODE_ENV` test/development. Brakujące
+ * adres i model biorą wartości z {@link CONFIG_DEFAULTS}.
+ */
+function reviewerConnectionFromEnv(env: Record<string, string | undefined>): ReviewerConnection | undefined {
+  const baseUrl = env.UMIEM_REVIEWER_BASE_URL || CONFIG_DEFAULTS.UMIEM_REVIEWER_BASE_URL;
+  const model = env.UMIEM_REVIEWER_MODEL || CONFIG_DEFAULTS.UMIEM_REVIEWER_MODEL;
+  const apiKey = endpointKeyFromEnv(env, "UMIEM_REVIEWER", baseUrl);
+  if (apiKey === undefined) return undefined;
+  const nodeEnv = env.NODE_ENV ?? "production";
+  const insecureAllowed = nodeEnv === "test" || nodeEnv === "development";
+  if (!baseUrl.startsWith("https://") && !(insecureAllowed && baseUrl.startsWith("http://"))) {
+    throw new Error("UMIEM_REVIEWER_BASE_URL must use https:// outside test/development");
+  }
+  const maxOutputTokens = positiveIntEnv(
+    "UMIEM_REVIEWER_MAX_OUTPUT_TOKENS",
+    env.UMIEM_REVIEWER_MAX_OUTPUT_TOKENS,
+    Number(CONFIG_DEFAULTS.UMIEM_REVIEWER_MAX_OUTPUT_TOKENS),
+  );
+  return { baseUrl, apiKey, model, maxOutputTokens };
+}
+
+/**
+ * Krytyk lekcji ze zmiennych środowiskowych (worker). Wyłączony (domyślnie) →
+ * `disabled`; włączony bez klucza → `not_configured` z ostrzeżeniem w logu
+ * (bez wartości klucza); inaczej `ready` z providerem. Błędne liczby, opcje
+ * pośrednika i http poza test/development zatrzymują start jak przy graderze.
+ */
+/**
+ * Wspólna walidacja włączonego krytyka dla workera i etykiety w panelu: limity,
+ * połączenie i opcje pośrednika. Rzuca przy błędnej konfiguracji; `connection`
+ * undefined, gdy brak klucza.
+ */
+function validatedReviewerConfig(env: Record<string, string | undefined>): {
+  readonly policy: ReviewerPolicy;
+  readonly connection: ReviewerConnection | undefined;
+  readonly requestExtras: ReturnType<typeof chatRequestExtrasFromEnv> | undefined;
+} {
+  const policy = reviewerPolicyFromEnv(env);
+  const connection = reviewerConnectionFromEnv(env);
+  // Rozstrzygnięty adres (z domyślnym), żeby opcje OpenRouter działały także bez withConfigDefaults.
+  const requestExtras = connection === undefined
+    ? undefined
+    : chatRequestExtrasFromEnv({ ...env, UMIEM_REVIEWER_BASE_URL: connection.baseUrl }, "UMIEM_REVIEWER");
+  return { policy, connection, requestExtras };
+}
+
+export function reviewerFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): ReviewerDeps {
+  // wyłączony krytyk nie czyta limitów: zbłąkana wartość UMIEM_REVIEWER_* nie przerywa startu
+  if (!reviewerEnabled(env)) return { state: "disabled", policy: defaultReviewerPolicy() };
+  const { policy, connection, requestExtras } = validatedReviewerConfig(env);
+  if (connection === undefined) {
+    console.warn(
+      "[reviewer] UMIEM_REVIEWER_ENABLED=true, ale brak klucza (UMIEM_REVIEWER_API_KEY albo OPENROUTER_API_KEY dla https OpenRouter) — krytyk lekcji pominięty",
+    );
+    return { state: "not_configured", policy };
+  }
+  const { baseUrl, apiKey, model, maxOutputTokens } = connection;
+  return {
+    state: "ready",
+    policy,
+    provider: createOpenAiLessonReviewer({
+      baseUrl,
+      apiKey,
+      model,
+      maxOutputTokens,
+      timeoutMs: policy.timeoutMs,
+      ...(requestExtras ? { requestExtras } : {}),
+      ...(usage ? { usage } : {}),
+    }),
+  };
+}
+
+/**
+ * Nazwa usługi krytyka (`host · model`) dla panelu rodzica; tylko gdy krytyk
+ * jest gotowy w tym env (jak `generationPublicServiceFromEnv` — web opisuje
+ * konfigurację wspólną z workerem). Ta sama walidacja co w workerze
+ * (`validatedReviewerConfig`): konfiguracja, której worker nie utworzy, nie dostaje
+ * etykiety. Tylko opis: błąd daje `undefined`. Bez ścieżki adresu, kluczy i parametrów.
+ */
+export function reviewerPublicServiceFromEnv(env: Record<string, string | undefined>): string | undefined {
+  if (!reviewerEnabled(env)) return undefined;
+  if (env.UMIEM_FAKE_PROVIDERS === "1") return "fake-reviewer-1";
+  try {
+    const { connection } = validatedReviewerConfig(env);
+    return connection === undefined ? undefined : `${new URL(connection.baseUrl).host} · ${connection.model}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

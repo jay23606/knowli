@@ -8,7 +8,9 @@ import { defineConfig } from "vitest/config";
 // też kontenera. Pliki `*.probe.test.ts` nie wchodzą do konfiguracji unit
 // ani integration.
 //
-// Uruchomienie: `UMIEM_PROBE_MATERIAL=<plik> pnpm probe:chapter`.
+// Uruchomienie: `UMIEM_PROBE_MATERIAL=<plik> pnpm probe:chapter`. Próba przeglądu
+// krytyka (`UMIEM_PROBE_REVIEW_DUMP=<plik> pnpm probe:review`) nie używa bazy,
+// więc jej zmienna nie startuje kontenera.
 const enabled = Boolean(process.env.UMIEM_PROBE_MATERIAL);
 
 export default defineConfig({

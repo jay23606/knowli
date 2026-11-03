@@ -127,6 +127,11 @@ export const SubjectCatalogDtoSchema = z.object({
    * generowanie jest dostępne; brak = etykiety nie da się ustalić.
    */
   generationService: z.string().min(1).optional(),
+  /**
+   * Etykieta usługi automatycznej kontroli jakości lekcji (host · model), gdy krytyk jest włączony
+   * i skonfigurowany; brak = kontrola wyłączona albo nieskonfigurowana.
+   */
+  reviewService: z.string().min(1).optional(),
 }).strict();
 export type SubjectCatalogDto = z.infer<typeof SubjectCatalogDtoSchema>;
 
@@ -497,6 +502,65 @@ export const LessonStorySchema = z.object({
 }).strict();
 export type LessonStoryDto = z.infer<typeof LessonStorySchema>;
 
+/** Kategorie ustaleń automatycznej kontroli jakości (lustro `REVIEW_CATEGORIES` z domeny serwera). */
+export const REVIEW_CATEGORY_VALUES = [
+  "ambiguous",
+  "wrong_answer",
+  "leaked_solution",
+  "unsuitable_content",
+  "missing_variant",
+  "unnatural_language",
+  "unclear_instruction",
+  "wrong_explanation",
+  "off_material",
+  "too_hard",
+  "other",
+] as const;
+export const ReviewCategorySchema = z.enum(REVIEW_CATEGORY_VALUES);
+export type ReviewCategoryDto = z.infer<typeof ReviewCategorySchema>;
+
+/** Powód, dla którego kontrola nie sprawdziła zagadnienia. */
+export const ReviewReasonSchema = z.enum(["disabled", "not_configured", "failed", "timeout", "limit"]);
+export type ReviewReasonDto = z.infer<typeof ReviewReasonSchema>;
+
+/**
+ * Raport automatycznej kontroli jakości szkicu lekcji (spec etapu przeglądu, PR 2) dla rodzica.
+ * `changed`/`notes` tylko dla istniejących ćwiczeń, których zapisana treść nie zmieniła się od
+ * kontroli; `toppedUp` to łączna liczba ćwiczeń dogenerowanych pod brakujące etapy. Bez odcisków
+ * i danych dziecka.
+ */
+export const LessonReviewDtoSchema = z.object({
+  status: z.enum(["reviewed", "partial", "unreviewed"]),
+  model: z.string().optional(),
+  objectives: z.array(z.object({
+    objectiveId: z.string(),
+    title: z.string(),
+    status: z.enum(["reviewed", "unreviewed", "suspicious"]),
+    reason: ReviewReasonSchema.optional(),
+  }).strict()),
+  changed: z.array(z.object({
+    exerciseId: UuidSchema,
+    category: ReviewCategorySchema,
+    reasonPl: z.string(),
+    beforePl: z.string(),
+    addedVariants: z.array(z.string()),
+  }).strict()),
+  dropped: z.array(z.object({
+    objectiveTitle: z.string(),
+    category: ReviewCategorySchema,
+    reasonPl: z.string(),
+    snippet: z.string(),
+  }).strict()),
+  notes: z.array(z.object({
+    exerciseId: UuidSchema,
+    category: ReviewCategorySchema,
+    reasonPl: z.string(),
+    fixRejected: z.boolean(),
+  }).strict()),
+  toppedUp: z.number().int().nonnegative(),
+}).strict();
+export type LessonReviewDto = z.infer<typeof LessonReviewDtoSchema>;
+
 /**
  * Widok szkicu lekcji dla panelu rodzica (design „Data Models → Kontrakty”).
  * `examples` to przykłady z lekcji per cel; `exercises` to zedytowane payloady
@@ -548,6 +612,11 @@ export const LessonDraftDtoSchema = z.object({
   storyEnabled: z.boolean().optional(),
   /** Nagranie lektora historyjki (odsłuch i „Nagraj ponownie”); brak pola = brak nagrania. Tylko do odczytu. */
   storyAudio: LessonPromptAudioDtoSchema.optional(),
+  /**
+   * Raport automatycznej kontroli jakości; brak pola = brak raportu, wersja opublikowana
+   * albo kontrola wyłączona dla wszystkich zagadnień.
+   */
+  review: LessonReviewDtoSchema.optional(),
 });
 export type LessonDraftDto = z.infer<typeof LessonDraftDtoSchema>;
 
@@ -588,6 +657,8 @@ export const LessonDeckDtoSchema = z.object({
     available: z.boolean(),
     model: z.string().min(1).optional(),
   }),
+  /** Etykieta usługi automatycznej kontroli jakości (jak w katalogu); brak = kontrola wyłączona. */
+  reviewService: z.string().min(1).optional(),
 });
 export type LessonDeckDto = z.infer<typeof LessonDeckDtoSchema>;
 

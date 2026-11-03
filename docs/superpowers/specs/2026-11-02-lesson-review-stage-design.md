@@ -525,3 +525,41 @@ Każdy etap to osobny PR do scalenia przez właściciela; dokumentacja (`archite
   przejrzenia.
 - **Odrzucone/odłożone**: przycisk „Zastosuj” dla propozycji (rodzic poprawia ręcznie);
   ujawnienia ćwiczeń produktywnych; koszt przebiegu w banerze (jest w sekcji „Koszty”).
+
+### PR 2 — krytyk lekcji: odstępstwa od projektu (2026-11-03)
+
+Zaimplementowane w PR 2 (gałąź `feat/lesson-review-critic`); poniższe punkty zastępują
+odpowiednie fragmenty §4–§8 i §11.
+
+- **Schemat wyjścia** — stały schemat z `exerciseJson` (tekst JSON poprawionego ćwiczenia)
+  zamiast osadzania gałęzi schematu puli per typ i `n`; kształt poprawki sprawdza serwer.
+- **Wejście bez tematów i polecenia** — krytyk nie dostaje listy tematów zdań (#197; widzi
+  same zdania) ani polecenia rodzica; blok `EXISTING EXERCISES` daje ćwiczenia szkicu jako
+  kontekst (bez werdyktów); ustalenia deterministyczne po angielsku z szablonu; identyfikatory
+  zagadnień zastąpione aliasami (slug), mapowanymi z powrotem po stronie serwera; w
+  `DETERMINISTIC FINDINGS` tylko twarde ujawnienia świeżych ćwiczeń.
+- **Stan krytyka** — `ReviewerState` (`disabled` | `not_configured` | `ready`); powód
+  `limit` w raporcie obok `disabled`, `not_configured`, `failed`, `timeout`; z `disabled`
+  env krytyka nie jest parsowane.
+- **`reasonPl`** — polski, jeden wiersz, 1–120 znaków; wymusza to parser werdyktów po stronie
+  serwera (wyrażenie regularne w `readVerdict`), nie schemat JSON; niezgodny werdykt jest
+  nieczytelny i pomijany.
+- **Poprawka odrzucona** — `fixRejected` jest flagą w `changed`/`notes` i tekstem w panelu
+  z `messages.ts`, a nie doklejonym tekstem powodu.
+- **Tożsamość i odciski** — `machine` (odcisk i flaga przejrzenia) oraz `fingerprint` w
+  `changed` i `notes` liczone z kanonicznego payloadu; mapowanie po tożsamości obiektu, nie
+  indeksie; DTO pomija wpisy nieaktualne (ćwiczenie usunięte lub zmienione po przebiegu) i
+  nie niesie odcisków ani `machine`.
+- **DTO** — `dropped.objectiveTitle` (tytuł zagadnienia zamiast identyfikatora); `toppedUp` w
+  raporcie (ile ćwiczeń dogenerowano w rundzie pod etap).
+- **Klucz powodu odrzucenia** — usunięcia krytyka liczą się w `rejectedReasons` pod kluczem
+  `odrzucone przez kontrolę jakości`.
+- **Baner** — niepokazywany przy `disabled`; liczy tylko zmiany krytyka (nie reguły twardej);
+  zagadnienie `suspicious` zawsze zmienia ton na żółty.
+- **Bezpiecznik** — liczy zamiany i usunięcia poza ćwiczeniami z twardym ujawnieniem
+  (naprawa ujawnienia jest oczekiwana), względem wszystkich ćwiczeń zagadnienia.
+- **Przeniesione do PR 3** — zestaw oznaczony (Unit 3) i płatna próba z potwierdzeniem
+  progów, `parentAuthored` i propozycje dla ćwiczeń rodzica, przycisk „Sprawdź ponownie”
+  (przegląd na żądanie), włączenie krytyka domyślnie.
+- **Próba** — `pnpm probe:review` bez bazy (zrzut ćwiczeń + opcjonalne etykiety); format
+  plików: `docs/architecture.md` §19.16.

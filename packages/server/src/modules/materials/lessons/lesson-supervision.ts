@@ -29,7 +29,8 @@ import type { LearningObjective, LessonTopic, SubjectModule } from "../../../dom
 import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { bumpEditNumber, lockVersion } from "../version-ops";
 import { createLessonDraftFromPublished } from "./lesson-api";
-import { buildLessonPayload, buildObjectiveCriteria, toExerciseDraft } from "./lesson-drafts";
+import { buildObjectiveCriteria, toExerciseDraft } from "./lesson-drafts";
+import { buildLessonPayload } from "./lesson-payload";
 
 /**
  * Nadzór rodzica nad lekcją (zadanie 16): odczyt postępu celów z przykładami

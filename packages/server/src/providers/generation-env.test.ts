@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withConfigDefaults } from "../config-defaults";
 import { createGenerationDepsFromEnv, generationPublicServiceFromEnv, imageProviderFromEnv } from "./generation-env";
+import { FakeLessonReviewer } from "./fake";
 import { createTestRecorder } from "./usage/test-recorder";
 
 /**
@@ -434,5 +435,34 @@ describe("createGenerationDepsFromEnv — zapis kosztów mediów (usage)", () =>
   it("bez usage fabryka nic nie zapisuje i działa jak dotąd", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: "aW1n" }] }), { status: 200 })));
     await expect(imageProviderFromEnv({ OPENAI_API_KEY: "sk-main" })!.generate(IMAGE_INPUT)).resolves.toMatchObject({ mimeType: "image/webp" });
+  });
+});
+
+describe("createGenerationDepsFromEnv — krytyk lekcji (reviewer)", () => {
+  it("tryb fake: ENABLED=true → FakeLessonReviewer i ready; bez ENABLED → disabled", () => {
+    const on = createGenerationDepsFromEnv(withConfigDefaults({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_ENABLED: "true" }));
+    expect(on!.reviewer!.state).toBe("ready");
+    expect(on!.reviewer!.provider).toBeInstanceOf(FakeLessonReviewer);
+    expect(on!.reviewer!.policy.concurrency).toBe(3);
+    const off = createGenerationDepsFromEnv(withConfigDefaults({ UMIEM_FAKE_PROVIDERS: "1" }));
+    expect(off!.reviewer!.state).toBe("disabled");
+    expect(off!.reviewer!.provider).toBeUndefined();
+  });
+
+  it("tryb fake: wyłączony krytyk nie czyta limitów (błędna liczba nie rzuca), włączony ją waliduje", () => {
+    const off = createGenerationDepsFromEnv(withConfigDefaults({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_CONCURRENCY: "abc" }));
+    expect(off!.reviewer!.state).toBe("disabled");
+    expect(off!.reviewer!.policy.concurrency).toBe(3);
+    expect(() => createGenerationDepsFromEnv(withConfigDefaults({
+      UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_ENABLED: "true", UMIEM_REVIEWER_CONCURRENCY: "abc",
+    }))).toThrow(/UMIEM_REVIEWER_CONCURRENCY/);
+  });
+
+  it("realna ścieżka: domyślnie disabled; ENABLED=true + OPENROUTER_API_KEY → ready", () => {
+    const base = { OPENROUTER_API_KEY: "sk-or-v1-shared", OPENAI_API_KEY: "sk-main" };
+    expect(createGenerationDepsFromEnv(withConfigDefaults(base))!.reviewer!.state).toBe("disabled");
+    const ready = createGenerationDepsFromEnv(withConfigDefaults({ ...base, UMIEM_REVIEWER_ENABLED: "true" }));
+    expect(ready!.reviewer!.state).toBe("ready");
+    expect(ready!.reviewer!.provider!.model).toBe("anthropic/claude-sonnet-5.5");
   });
 });
