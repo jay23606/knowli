@@ -392,6 +392,12 @@ describe("reviewerPublicServiceFromEnv", () => {
     expect(reviewerPublicServiceFromEnv(env)).toBeUndefined();
   });
 
+  it("błędny limit krytyka → undefined, jak odrzucenie w reviewerFromEnv", () => {
+    const env = withConfigDefaults({ UMIEM_REVIEWER_ENABLED: "true", OPENROUTER_API_KEY: "sk-or-v1-shared", UMIEM_REVIEWER_CONCURRENCY: "abc" });
+    expect(() => reviewerFromEnv(env)).toThrow(/UMIEM_REVIEWER_CONCURRENCY/);
+    expect(reviewerPublicServiceFromEnv(env)).toBeUndefined();
+  });
+
   it("tryb fake z ENABLED=true pokazuje fake, bez ENABLED nic", () => {
     expect(reviewerPublicServiceFromEnv({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_ENABLED: "true" })).toBe("fake-reviewer-1");
     expect(reviewerPublicServiceFromEnv({ UMIEM_FAKE_PROVIDERS: "1" })).toBeUndefined();

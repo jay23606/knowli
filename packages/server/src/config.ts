@@ -506,11 +506,29 @@ function reviewerConnectionFromEnv(env: Record<string, string | undefined>): Rev
  * (bez wartości klucza); inaczej `ready` z providerem. Błędne liczby, opcje
  * pośrednika i http poza test/development zatrzymują start jak przy graderze.
  */
+/**
+ * Wspólna walidacja włączonego krytyka dla workera i etykiety w panelu: limity,
+ * połączenie i opcje pośrednika. Rzuca przy błędnej konfiguracji; `connection`
+ * undefined, gdy brak klucza.
+ */
+function validatedReviewerConfig(env: Record<string, string | undefined>): {
+  readonly policy: ReviewerPolicy;
+  readonly connection: ReviewerConnection | undefined;
+  readonly requestExtras: ReturnType<typeof chatRequestExtrasFromEnv> | undefined;
+} {
+  const policy = reviewerPolicyFromEnv(env);
+  const connection = reviewerConnectionFromEnv(env);
+  // Rozstrzygnięty adres (z domyślnym), żeby opcje OpenRouter działały także bez withConfigDefaults.
+  const requestExtras = connection === undefined
+    ? undefined
+    : chatRequestExtrasFromEnv({ ...env, UMIEM_REVIEWER_BASE_URL: connection.baseUrl }, "UMIEM_REVIEWER");
+  return { policy, connection, requestExtras };
+}
+
 export function reviewerFromEnv(env: Record<string, string | undefined>, usage?: UsageRecorder): ReviewerDeps {
   // wyłączony krytyk nie czyta limitów: zbłąkana wartość UMIEM_REVIEWER_* nie przerywa startu
   if (!reviewerEnabled(env)) return { state: "disabled", policy: defaultReviewerPolicy() };
-  const policy = reviewerPolicyFromEnv(env);
-  const connection = reviewerConnectionFromEnv(env);
+  const { policy, connection, requestExtras } = validatedReviewerConfig(env);
   if (connection === undefined) {
     console.warn(
       "[reviewer] UMIEM_REVIEWER_ENABLED=true, ale brak klucza (UMIEM_REVIEWER_API_KEY albo OPENROUTER_API_KEY dla https OpenRouter) — krytyk lekcji pominięty",
@@ -527,8 +545,7 @@ export function reviewerFromEnv(env: Record<string, string | undefined>, usage?:
       model,
       maxOutputTokens,
       timeoutMs: policy.timeoutMs,
-      // Rozstrzygnięty adres (z domyślnym), żeby opcje OpenRouter działały także bez withConfigDefaults.
-      requestExtras: chatRequestExtrasFromEnv({ ...env, UMIEM_REVIEWER_BASE_URL: baseUrl }, "UMIEM_REVIEWER"),
+      ...(requestExtras ? { requestExtras } : {}),
       ...(usage ? { usage } : {}),
     }),
   };
@@ -537,18 +554,16 @@ export function reviewerFromEnv(env: Record<string, string | undefined>, usage?:
 /**
  * Nazwa usługi krytyka (`host · model`) dla panelu rodzica; tylko gdy krytyk
  * jest gotowy w tym env (jak `generationPublicServiceFromEnv` — web opisuje
- * konfigurację wspólną z workerem). Tylko opis: zły adres lub opcje nie rzucają,
- * dają `undefined`. Bez ścieżki adresu, kluczy i parametrów.
+ * konfigurację wspólną z workerem). Ta sama walidacja co w workerze
+ * (`validatedReviewerConfig`): konfiguracja, której worker nie utworzy, nie dostaje
+ * etykiety. Tylko opis: błąd daje `undefined`. Bez ścieżki adresu, kluczy i parametrów.
  */
 export function reviewerPublicServiceFromEnv(env: Record<string, string | undefined>): string | undefined {
   if (!reviewerEnabled(env)) return undefined;
   if (env.UMIEM_FAKE_PROVIDERS === "1") return "fake-reviewer-1";
   try {
-    const connection = reviewerConnectionFromEnv(env);
-    if (connection === undefined) return undefined;
-    // Te same opcje pośrednika co w reviewerFromEnv: konfiguracja, której worker nie utworzy, nie dostaje etykiety.
-    chatRequestExtrasFromEnv({ ...env, UMIEM_REVIEWER_BASE_URL: connection.baseUrl }, "UMIEM_REVIEWER");
-    return `${new URL(connection.baseUrl).host} · ${connection.model}`;
+    const { connection } = validatedReviewerConfig(env);
+    return connection === undefined ? undefined : `${new URL(connection.baseUrl).host} · ${connection.model}`;
   } catch {
     return undefined;
   }
