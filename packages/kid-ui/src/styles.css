@@ -3114,6 +3114,91 @@
   color: var(--kid-text);
 }
 
+/* Odpowiedź dziecka i poprawna odpowiedź (makieta 2026-11-02). Tekst łamie się
+   tylko między słowami (`break-word` nie zmniejsza szerokości min-content, jak
+   `anywhere` karty wyniku). Krótkie odpowiedzi: dwa wiersze z etykietą z boku;
+   dłuższe: etykieta nad tekstem na całą szerokość. */
+.kid-lesson-compare {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  width: 100%;
+  overflow-wrap: break-word;
+  text-align: start;
+}
+
+/* `max-content`: kolumna odpowiedzi nie jest węższa od najdłuższej z nich
+   (z paddingiem tła poprawnej), więc pojedyncze słowo nie łamie się między
+   częściami; `max-width` ramki ogranicza ją do szerokości karty. */
+.kid-lesson-compare[data-layout="inline"] {
+  grid-template-columns: auto max-content;
+  align-items: center;
+  gap: 6px 12px;
+  width: auto;
+  max-width: 100%;
+}
+
+.kid-lesson-compare__label {
+  width: auto;
+  text-align: start;
+}
+
+.kid-lesson-compare[data-layout="inline"] .kid-lesson-compare__label {
+  text-align: end;
+}
+
+.kid-lesson-compare[data-layout="stacked"] .kid-lesson-compare__answer + .kid-lesson-compare__label {
+  margin-top: 6px;
+}
+
+.kid-lesson-compare__answer {
+  min-width: 0;
+  font-family: var(--kid-font-display);
+  font-size: var(--kid-type-title-md-size);
+  font-weight: var(--kid-type-display-sm-weight);
+  line-height: 1.4;
+  letter-spacing: 0.03em;
+}
+
+.kid-lesson-compare[data-layout="inline"] .kid-lesson-compare__answer {
+  font-size: var(--kid-type-title-lg-size);
+}
+
+/* Poprawna odpowiedź na zielonym tle; zaznaczona litera w odwróconych kolorach. */
+.kid-lesson-compare__answer--expected {
+  justify-self: start;
+  padding: 0 8px;
+  border-radius: var(--kid-shape-m);
+  color: var(--kid-color-on-success-container);
+  background: var(--kid-color-success-container);
+}
+
+.kid-lesson-compare__answer--expected .kid-spelling-pill--expected {
+  color: var(--md-sys-color-on-tertiary);
+  background: var(--md-sys-color-tertiary);
+}
+
+/* Słowo z zaznaczoną literą to kilka elementów: łamie się między nimi dopiero,
+   gdy samo nie mieści się w wierszu. */
+.kid-lesson-word {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  max-width: 100%;
+}
+
+/* Słowo szersze od całej karty (np. wpisany ciąg liter) łamie się w ostateczności
+   w środku zamiast wychodzić poza kartę; kolumna `stacked` ma stałą szerokość. */
+.kid-lesson-compare[data-layout="stacked"] .kid-lesson-word > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.kid-lesson-compare .kid-spelling-pill {
+  padding: 0 0.08em;
+  border-radius: var(--kid-shape-s);
+}
+
 .kid-feedback-actions {
   flex-shrink: 0;
   width: 100%;

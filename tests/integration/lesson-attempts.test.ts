@@ -248,6 +248,9 @@ describe("ocena odpowiedzi w lekcji — typy tekstowe (luka)", () => {
     expect(attempt.feedback?.kind).toBe("lesson_almost");
     expect(attempt.feedback?.answerSegments?.length).toBeGreaterThan(0);
     expect(attempt.feedback?.correctText).toBeTruthy();
+    // Zaznaczona tylko zbędna litera; w poprawnej odpowiedzi nie ma czego zaznaczyć.
+    expect(attempt.feedback?.answerSegments).toContainEqual({ text: "e", state: "pill" });
+    expect(attempt.feedback?.correctSegments).toBeUndefined();
     expect(attempt.taskState).toBe("answered");
   });
 

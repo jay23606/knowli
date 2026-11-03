@@ -28,6 +28,8 @@ export interface LessonFeedbackView {
   answerSegments: SpellingDiffSegmentDto[] | null;
   /** Poprawna odpowiedź (najbliższy zatwierdzony wariant); null, gdy nieujawniona. */
   correctText: string | null;
+  /** Poprawna odpowiedź z zaznaczonymi literami (`correctSegments` serwera); null = bez zaznaczeń. */
+  correctSegments: SpellingDiffSegmentDto[] | null;
   /** Podpowiedź po polsku (`lesson_hint`: kategoria celu, `lesson_precision_hint`: zachęta do skrócenia); null w innych. */
   hint: string | null;
   /** Komunikat techniczny bez winy dziecka (`not_assessed`). */
@@ -44,6 +46,7 @@ export function lessonFeedbackView(dto: FeedbackDto | null): LessonFeedbackView 
       tone: "neutral",
       answerSegments: null,
       correctText: null,
+      correctSegments: null,
       hint: null,
       technical: true,
     };
@@ -54,6 +57,7 @@ export function lessonFeedbackView(dto: FeedbackDto | null): LessonFeedbackView 
       tone: "correct",
       answerSegments: null,
       correctText: null,
+      correctSegments: null,
       hint: dto.hintPl ?? messages.kid.lessonPrecisionHint,
       technical: false,
     };
@@ -63,6 +67,7 @@ export function lessonFeedbackView(dto: FeedbackDto | null): LessonFeedbackView 
     tone: "retry",
     answerSegments: dto.answerSegments ?? null,
     correctText: dto.correctText ?? null,
+    correctSegments: dto.correctText !== undefined ? dto.correctSegments ?? null : null,
     hint: dto.kind === "lesson_hint" && dto.explanationAudioAssetId === undefined ? dto.hintPl ?? null : null,
     technical: false,
   };

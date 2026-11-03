@@ -849,7 +849,11 @@ function clozeFixture(): KidUiFixture {
 }
 
 /** "Uzupełnij tekst" answered with the first bank word in every gap: a lesson hint with the child's text, the hint, the solution and its recording. */
-function clozeHintFixture(task: TaskDto = clozeTask): KidUiFixture {
+/** Podpowiedź na tyle długa, że karta wyniku przekracza wolne miejsce tabletu (przypadek „space”). */
+const LONG_CLOZE_HINT = Array.from({ length: 6 }, () =>
+  "Pomyśl, co roślina pobiera z powietrza, a co do niego oddaje, i w której części dnia potrzebuje światła słonecznego.").join(" ");
+
+function clozeHintFixture(task: TaskDto = clozeTask, hintPl = "Pomyśl, co roślina pobiera z powietrza, a co do niego oddaje."): KidUiFixture {
   const { prompt } = task;
   if (prompt.kind !== "lesson_cloze") throw new Error("cloze fixture expected");
   // Tapping the first bank word four times fills the gaps in this order.
@@ -862,7 +866,7 @@ function clozeHintFixture(task: TaskDto = clozeTask): KidUiFixture {
   const feedback: FeedbackDto = {
     kind: "lesson_hint",
     answerSegments: filled(given).map(({ text, gap }) => ({ text, state: gap ? "pill" as const : "plain" as const })),
-    hintPl: "Pomyśl, co roślina pobiera z powietrza, a co do niego oddaje.",
+    hintPl,
     correctText: filled(solution).map(({ text }) => text).join(""),
     correctAudioAssetId: clozeUid(60),
   };
@@ -870,8 +874,8 @@ function clozeHintFixture(task: TaskDto = clozeTask): KidUiFixture {
 }
 
 /** Opens "Uzupełnij tekst" (`clozeHintFixture`) and fills the four gaps, ready for "Sprawdź" (`kid-lesson-check`). */
-async function openAnsweredCloze(page: Page, viewport: Viewport, task: TaskDto = clozeTask) {
-  await installKidUiFixture(page, clozeHintFixture(task));
+async function openAnsweredCloze(page: Page, viewport: Viewport, task: TaskDto = clozeTask, hintPl?: string) {
+  await installKidUiFixture(page, clozeHintFixture(task, hintPl));
   await openLessonTask(page, viewport, "kid-lesson-cloze");
   for (let gap = 0; gap < 4; gap += 1) await page.getByTestId("kid-lesson-cloze-option").first().click();
 }
@@ -1317,13 +1321,14 @@ test.describe("touch tablet in portrait", () => {
   const tablet = { width: 1024, height: 1366 };
   const TOUCH_CARD_SPACE_CASES: CardSpaceCase[] = [
     { name: "long hint", viewport: tablet, scale: 1, frame: "compact", fits: "whole", open: shortPromptHint(longSpellingHintFeedback) },
-    // The lesson card (the child's text, the hint, the solution and its recording) is about 1140 px (measured
-    // 2026-11-02, gaps in the sentence): the free space under the text (about 690 px) limits it, with another overhead
-    // than the spelling card. The panel does not depend on the cloze view, so the short `clozeTask` is enough here.
+    // The lesson card (the hint, the child's text and the solution, stacked under their labels) with the six-sentence
+    // `LONG_CLOZE_HINT` is taller than the free space under the text (about 690 px), which limits it, with another
+    // overhead than the spelling card; with the short hint the compact answers (2026-11-02) fit whole (about 536 px).
+    // The panel does not depend on the cloze view, so the short `clozeTask` is enough here.
     {
       name: "cloze with a lesson hint", viewport: tablet, scale: 1, frame: "compact", fits: "space", submit: "kid-lesson-check",
       open: async (page, viewport) => {
-        await openAnsweredCloze(page, viewport);
+        await openAnsweredCloze(page, viewport, clozeTask, LONG_CLOZE_HINT);
         await page.evaluate(async () => { await document.fonts.ready; });
         await nextFrames(page);
       },

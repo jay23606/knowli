@@ -11,7 +11,7 @@ import {
   submitAttempt,
   type AppError,
 } from "@learning/server";
-import type { AttemptInput, TaskDto } from "@learning/contracts";
+import { FeedbackDtoSchema, type AttemptInput, type TaskDto } from "@learning/contracts";
 import { lessonWorld } from "../fixtures/lesson-world";
 import { buildTestServices, testDatabase, truncateCoreTables } from "./helpers";
 
@@ -167,6 +167,10 @@ describe("model oceniający — mapowanie werdyktów", () => {
     expect(attempt.feedback?.hintPl).toBeTruthy();
     expect(attempt.feedback?.answerSegments?.length).toBeGreaterThan(0);
     expect(attempt.feedback?.correctText).toBeTruthy();
+    // „play” → „plays”: słowo dziecka zaznaczone w całości, w poprawnej odpowiedzi brakujące „s”.
+    expect(attempt.feedback?.answerSegments).toContainEqual({ text: "play", state: "pill" });
+    expect(attempt.feedback?.correctSegments).toContainEqual({ text: "s", state: "pill" });
+    expect(FeedbackDtoSchema.safeParse(attempt.feedback).success).toBe(true);
     expect(attempt.taskState).toBe("answered");
     const rows = await pool.query<{ outcome: string }>(
       "select outcome from learning_app.assessments where child_id = $1 and skill='objective'",

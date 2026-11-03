@@ -41,6 +41,7 @@ import {
   matchLessonAnswer,
   validateSchoolVerdict,
   validateVerdict,
+  type AnswerSegment,
   type GraderVerdict,
   type SchoolVerdict,
   type LessonAnswerKey,
@@ -50,6 +51,7 @@ import type { GraderInput } from "../../../ports/ai";
 import { withUsageScope } from "../../../ports/usage";
 import type { LearningObjective, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { BASE_ERROR_CATEGORIES } from "../../../domain/lessons/base-error-categories";
+import { letterSegments } from "../../../domain/lessons/letter-segments";
 import {
   projectObjectiveProgress,
   lastIndependentObjectiveAt,
@@ -396,7 +398,7 @@ function gradeLessonAnswer(
     const feedback: FeedbackDto = {
       kind: "lesson_almost",
       correctText: variant,
-      ...(segments ? { answerSegments: segments } : {}),
+      ...lessonFeedbackSegments(segments, variant),
     };
     return {
       grade, feedback, exposures: [key.targetKey],
@@ -543,6 +545,19 @@ function hintTemplateFor(services: Services, key: LessonTaskAnswerKey, errorCate
 }
 
 /**
+ * Segmenty feedbacku lekcji: odpowiedź dziecka i poprawna odpowiedź z zaznaczonymi
+ * literami, którymi różnią się słowa zaznaczone w odpowiedzi (`letterSegments`).
+ */
+function lessonFeedbackSegments(
+  segments: AnswerSegment[] | null,
+  correctText: string,
+): Pick<FeedbackDto, "answerSegments" | "correctSegments"> {
+  if (segments === null) return {};
+  const letters = letterSegments(segments, correctText);
+  return { answerSegments: letters.answer, ...(letters.correct ? { correctSegments: letters.correct } : {}) };
+}
+
+/**
  * Buduje `LessonGradeResult` z werdyktu (lub jego braku) wg tabeli mapowania
  * (design „Ocena”). `model_correct` → great; `model_almost` → lesson_almost z
  * fragmentami; `model_incorrect` → lesson_hint z fragmentami + hintPl kategorii;
@@ -584,7 +599,7 @@ function resultFromVerdict(
     case "model_almost":
       return {
         grade,
-        feedback: { kind: "lesson_almost", correctText, ...(segments ? { answerSegments: segments } : {}) },
+        feedback: { kind: "lesson_almost", correctText, ...lessonFeedbackSegments(segments, correctText) },
         exposures: [key.targetKey],
         details: detailsBase,
       };
@@ -596,7 +611,7 @@ function resultFromVerdict(
           kind: "lesson_hint",
           correctText,
           ...(hintPl ? { hintPl } : {}),
-          ...(segments ? { answerSegments: segments } : {}),
+          ...lessonFeedbackSegments(segments, correctText),
         },
         exposures: [key.targetKey],
         details: { ...detailsBase, ...(grade.errorCategory ? { errorCategory: grade.errorCategory } : {}) },

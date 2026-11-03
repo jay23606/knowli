@@ -716,6 +716,13 @@ export const FeedbackDtoSchema = z.object({
    */
   answerSegments: z.array(SpellingDiffSegmentSchema).min(1).max(32).optional(),
   /**
+   * Poprawna odpowiedź lekcji z zaznaczonymi literami, którymi różni się od
+   * słów zaznaczonych w `answerSegments` (pisownia). Tylko `plain`/`pill`,
+   * składa się dokładnie na `correctText`; tylko dla `lesson_almost`
+   * i `lesson_hint`. Brak = poprawna odpowiedź bez zaznaczeń.
+   */
+  correctSegments: z.array(SpellingSegmentSchema).min(1).max(32).optional(),
+  /**
    * Tekst podpowiedzi po polsku: szablon kategorii celu albo zatwierdzone przez
    * rodzica wyjaśnienie ćwiczenia (spec 2026-11-01). Wymagany dla `lesson_hint`
    * i `lesson_precision_hint`; przy `incorrect` opcjonalny (wyjaśnienie ćwiczenia
@@ -757,6 +764,14 @@ export const FeedbackDtoSchema = z.object({
   const LESSON_SEGMENT_KINDS = ["lesson_almost", "lesson_hint"];
   if (feedback.answerSegments !== undefined && !LESSON_SEGMENT_KINDS.includes(feedback.kind)) {
     ctx.addIssue({ code: "custom", path: ["answerSegments"], message: "answerSegments is only allowed with lesson_almost or lesson_hint" });
+  }
+  if (feedback.correctSegments !== undefined) {
+    if (!LESSON_SEGMENT_KINDS.includes(feedback.kind)) {
+      ctx.addIssue({ code: "custom", path: ["correctSegments"], message: "correctSegments is only allowed with lesson_almost or lesson_hint" });
+    }
+    if (feedback.correctSegments.map((segment) => segment.text).join("") !== feedback.correctText) {
+      ctx.addIssue({ code: "custom", path: ["correctSegments"], message: "correctSegments must compose into correctText" });
+    }
   }
   // `lesson_precision_hint` = poprawna wiedza, ale odpowiedź do skrócenia
   // (trener precyzji); niesie szablon zachęty jak lesson_hint.
