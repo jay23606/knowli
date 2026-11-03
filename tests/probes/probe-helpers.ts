@@ -29,9 +29,9 @@ function repositoryRoots(): string[] {
   try {
     const dotGit = join(here, ".git");
     if (statSync(dotGit).isFile()) {
-      const gitdirLine = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"));
-      if (gitdirLine) {
-        const gitdir = resolve(here, gitdirLine[1]!.trim());
+      const firstLine = readFileSync(dotGit, "utf8").split("\n")[0]!.trim();
+      if (firstLine.startsWith("gitdir:")) {
+        const gitdir = resolve(here, firstLine.slice("gitdir:".length).trim());
         const common = resolve(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim());
         roots.push(resolve(common, ".."));
       }
