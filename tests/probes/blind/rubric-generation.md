@@ -3,8 +3,8 @@
 Każdy wiersz `sheet.csv` to jedno ćwiczenie wygenerowane dla lekcji (bez informacji, który model je napisał).
 Kolumna `objective` to kontekst zagadnienia (tytuł, rodzaj, karta, przykłady kart), `exercise` to ćwiczenie (JSON w kształcie generatora).
 
-Kryteria: dokładnie te z `..\pr3\rubric.md`, sekcja „Kryteria” (K1–K8 i reguły przedmiotu R-chapter, R-grammar, R-school).
-Materiał lekcji: plik `material.txt` w katalogu lekcji (dla gramatyki materiałem jest opis tematu w `objective`).
+Kryteria: dokładnie te z `rubric-criteria.md` (ten katalog), sekcja „Kryteria” (K1–K8 i reguły przedmiotu R-chapter, R-grammar, R-school).
+Materiał lekcji: plik `material.txt` w katalogu oceny poza repozytorium (dla gramatyki materiałem jest tekst rodzica, a temat i karty są w kolumnie `objective`).
 
 Wypełnij dla każdego wiersza:
 
