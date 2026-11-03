@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,11 +24,20 @@ export function loadDotEnv(): void {
 function repositoryRoots(): string[] {
   const here = resolve(fileURLToPath(new URL("../../", import.meta.url)));
   const roots = [here];
+  // Bez uruchamiania `git` (PATH): w worktree `.git` jest plikiem „gitdir: …”, a katalog gitdir
+  // ma plik `commondir` ze ścieżką wspólnego katalogu `.git` głównego checkoutu.
   try {
-    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: here, encoding: "utf8" }).trim();
-    if (common.length > 0) roots.push(resolve(common, ".."));
+    const dotGit = join(here, ".git");
+    if (statSync(dotGit).isFile()) {
+      const gitdirLine = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"));
+      if (gitdirLine) {
+        const gitdir = resolve(here, gitdirLine[1]!.trim());
+        const common = resolve(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim());
+        roots.push(resolve(common, ".."));
+      }
+    }
   } catch {
-    // brak gita: wystarcza katalog tego checkoutu
+    // brak gita albo nietypowy układ: wystarcza katalog tego checkoutu
   }
   return [...new Set(roots)];
 }

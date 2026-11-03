@@ -8,7 +8,8 @@ function canonical(value: unknown): unknown {
     return Object.fromEntries(
       Object.keys(record)
         .filter((key) => record[key] !== undefined)
-        .sort()
+        // Kolejność jednostek kodu UTF-16 (jak domyślne `sort`), niezależna od ustawień regionalnych.
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
         .map((key) => [key, canonical(record[key])]),
     );
   }
