@@ -15,9 +15,9 @@ import { schoolSubject } from "./subjects/school/module";
 
 describe("kategorie przeglądu", () => {
   it("twarde, tylko-uwaga i lista pełna", () => {
-    expect([...HARD_REVIEW_CATEGORIES].sort()).toEqual(["ambiguous", "leaked_solution", "wrong_answer"]);
+    expect([...HARD_REVIEW_CATEGORIES].sort()).toEqual(["ambiguous", "leaked_solution", "unsuitable_content", "wrong_answer"]);
     expect([...NOTE_ONLY_REVIEW_CATEGORIES]).toEqual(["too_hard"]);
-    expect(REVIEW_CATEGORIES).toHaveLength(10);
+    expect(REVIEW_CATEGORIES).toHaveLength(11);
     for (const category of [...HARD_REVIEW_CATEGORIES, ...NOTE_ONLY_REVIEW_CATEGORIES]) {
       expect(REVIEW_CATEGORIES).toContain(category);
     }
@@ -37,7 +37,7 @@ describe("reviewRoleFor", () => {
         "5. Every item of DETERMINISTIC FINDINGS",
         "6. The language is natural",
         "7. The exercise fits the stage",
-        "8. Content is suitable for a child of about 8: no violence, scary content or real people; otherwise drop (category other).",
+        "8. Content is suitable for a child of about 8: no violence, scary content or real people; otherwise drop with category unsuitable_content.",
       ];
       for (const phrase of phrases) {
         expect(role).toContain(phrase);

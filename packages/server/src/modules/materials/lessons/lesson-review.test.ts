@@ -146,6 +146,23 @@ describe("reviewFreshExercises", () => {
     expect(line).toMatch(/^\[lesson-review\] run=run-1 zagadnienie=affirmative_base ok=\d+ note=0 fix=0 drop=0 invalid=6 leaks=0 status=reviewed durationMs=\d+$/u);
   });
 
+  it("unsuitable_content: drop i nieczytelna poprawka usuwają ćwiczenie", async () => {
+    const fresh = await freshPool();
+    const reviewer = new FakeLessonReviewer();
+    reviewer.behavior = () => [
+      { n: 1, verdict: "drop", category: "unsuitable_content", reasonPl: "Przemoc w zdaniu." },
+      { n: 2, verdict: "fix", category: "unsuitable_content", reasonPl: "Straszne zdanie.", exercise: null, exerciseJsonInvalid: true },
+    ];
+    const result = await reviewFreshExercises(ctx(ready(reviewer), fresh));
+    expect(result.exercises).toEqual(fresh.slice(2));
+    expect(result.droppedCount).toBe(2);
+    expect(result.dropped.map((entry) => [entry.category, entry.reasonPl])).toEqual([
+      ["unsuitable_content", "Przemoc w zdaniu."],
+      ["unsuitable_content", "Straszne zdanie."],
+    ]);
+    expect(result.objectives).toEqual([{ objectiveId: OBJECTIVES[0], status: "reviewed" }]);
+  });
+
   it("fix bez ćwiczenia: twarda kategoria usuwa oryginał, miękka zostawia z uwagą „poprawka odrzucona”", async () => {
     const fresh = await freshPool();
     const reviewer = new FakeLessonReviewer();

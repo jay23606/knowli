@@ -8,6 +8,7 @@ export const REVIEW_CATEGORIES = [
   "ambiguous",
   "wrong_answer",
   "leaked_solution",
+  "unsuitable_content",
   "missing_variant",
   "unnatural_language",
   "unclear_instruction",
@@ -24,6 +25,7 @@ export const HARD_REVIEW_CATEGORIES: ReadonlySet<ReviewCategory> = new Set<Revie
   "ambiguous",
   "wrong_answer",
   "leaked_solution",
+  "unsuitable_content",
 ]);
 
 /** Kategorie wyłącznie informacyjne: `fix`/`drop` traktowane jak `note`. */
@@ -38,7 +40,7 @@ const COMMON_CRITERIA = [
   "Every item of DETERMINISTIC FINDINGS must be removed by changing the sentence or by dropping the exercise.",
   "The language is natural and correct; difficulty is reported only as a note (too_hard), never fixed by simplifying.",
   "The exercise fits the stage and the objective; a correction never changes the checked objective.",
-  "Content is suitable for a child of about 8: no violence, scary content or real people; otherwise drop (category other).",
+  "Content is suitable for a child of about 8: no violence, scary content or real people; otherwise drop with category unsuitable_content.",
 ] as const;
 
 /**

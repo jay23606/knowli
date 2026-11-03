@@ -751,7 +751,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     await expect(page.getByTestId("lesson-review-summary")).toHaveText(
       "Automatyczna kontrola jakości (łącznie we wszystkich generowaniach) — poprawione: 1 · usunięte: 1 · uwagi: 1.",
     );
-    await expect(page.getByTestId("lesson-review-topped-up")).toHaveText("Dogenerowano 2 ćwiczeń, by uzupełnić brakujące etapy.");
+    await expect(page.getByTestId("lesson-review-topped-up")).toHaveText("Dogenerowane ćwiczenia, by uzupełnić brakujące etapy: 2.");
     await expect(page.getByTestId("lesson-review-scope")).toHaveText(messages.lessons.reviewBannerScope);
     // niebieski baner przy pełnej kontroli
     expect(await alertBackgroundIs(banner, "blue")).toBe(true);
@@ -820,7 +820,7 @@ test("kontrola jakości: wariant bez zmian, część niesprawdzona, lekcja niesp
       // dogenerowanie pod etapy nie jest ustaleniem kontroli: „nie znalazła problemów” i osobny wiersz
       review: { ...reviewed, changed: [], dropped: [], notes: [], toppedUp: 3 },
       status: "reviewed", color: "blue", summary: messages.lessons.reviewBannerClean, partial: null, suspicious: null,
-      toppedUp: "Dogenerowano 3 ćwiczeń, by uzupełnić brakujące etapy.",
+      toppedUp: "Dogenerowane ćwiczenia, by uzupełnić brakujące etapy: 3.",
     },
     {
       review: {

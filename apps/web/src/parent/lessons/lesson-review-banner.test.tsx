@@ -25,7 +25,7 @@ describe("reviewBannerContent", () => {
   it("dogenerowanie pod etapy nie psuje „nie znalazła problemów” — osobny wiersz z liczbą", () => {
     const content = reviewBannerContent({ ...base, toppedUp: 4 });
     expect(content).toMatchObject({ tone: "reviewed", summary: messages.lessons.reviewBannerClean, scope: null });
-    expect(content.toppedUp).toBe("Dogenerowano 4 ćwiczeń, by uzupełnić brakujące etapy.");
+    expect(content.toppedUp).toBe("Dogenerowane ćwiczenia, by uzupełnić brakujące etapy: 4.");
     const markup = renderParentMarkup(<LessonReviewBanner review={{ ...base, toppedUp: 4 }} />);
     expect(markup).toContain('data-testid="lesson-review-topped-up"');
     expect(markup).toContain(messages.lessons.reviewBannerClean);
@@ -39,7 +39,7 @@ describe("reviewBannerContent", () => {
       toppedUp: 3,
     });
     expect(content.summary).toBe("Automatyczna kontrola jakości (łącznie we wszystkich generowaniach) — poprawione: 1 · usunięte: 1 · uwagi: 0.");
-    expect(content.toppedUp).toBe("Dogenerowano 3 ćwiczeń, by uzupełnić brakujące etapy.");
+    expect(content.toppedUp).toBe("Dogenerowane ćwiczenia, by uzupełnić brakujące etapy: 3.");
     expect(content.scope).toBe(messages.lessons.reviewBannerScope);
     expect(content.scope).toBe("Liczby dotyczą tylko automatycznej kontroli. Ćwiczenia odrzucone, bo rozwiązanie było widoczne wcześniej, znajdziesz w „Powodach odrzuceń przy generowaniu”.");
     expect(content.dropped).toEqual(["Pogoda — błędna odpowiedź: Błędny klucz. (było: It's ___ → raining)"]);
@@ -88,7 +88,7 @@ describe("reviewBannerContent", () => {
     expect(withCounts.suspicious).toHaveLength(1);
     // samo dogenerowanie: bez podsumowania liczb, wiersz dogenerowania obok linii o zagadnieniu
     const toppedOnly = reviewBannerContent({ ...base, objectives, toppedUp: 2 });
-    expect(toppedOnly).toMatchObject({ summary: null, scope: null, toppedUp: "Dogenerowano 2 ćwiczeń, by uzupełnić brakujące etapy." });
+    expect(toppedOnly).toMatchObject({ summary: null, scope: null, toppedUp: "Dogenerowane ćwiczenia, by uzupełnić brakujące etapy: 2." });
     const markup = renderParentMarkup(<LessonReviewBanner review={{ ...base, objectives }} />);
     expect(markup).not.toContain(messages.lessons.reviewBannerClean);
     expect(markup).not.toContain('data-testid="lesson-review-summary"');

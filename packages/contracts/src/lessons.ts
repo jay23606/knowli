@@ -507,6 +507,7 @@ export const REVIEW_CATEGORY_VALUES = [
   "ambiguous",
   "wrong_answer",
   "leaked_solution",
+  "unsuitable_content",
   "missing_variant",
   "unnatural_language",
   "unclear_instruction",

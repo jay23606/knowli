@@ -107,6 +107,20 @@ describe("decideObjectiveReview", () => {
     expect(result.status).toBe("reviewed");
   });
 
+  it("treść nieodpowiednia dla dziecka (unsuitable_content) jest twarda: drop usuwa, nieważny fix usuwa, ważny fix zamienia", () => {
+    const result = decide(3, 6, [
+      { n: 1, verdict: "drop", category: "unsuitable_content", reasonPl: "Przemoc w zdaniu." },
+      { n: 2, verdict: "fix", category: "unsuitable_content", reasonPl: "Straszne zdanie.", fixValid: false },
+      { n: 3, verdict: "fix", category: "unsuitable_content", reasonPl: "Prawdziwa osoba.", fixValid: true },
+    ]);
+    expect(result.outcomes).toEqual([
+      { kind: "drop", category: "unsuitable_content", reasonPl: "Przemoc w zdaniu." },
+      { kind: "drop", category: "unsuitable_content", reasonPl: "Straszne zdanie." },
+      { kind: "replace", category: "unsuitable_content", reasonPl: "Prawdziwa osoba." },
+    ]);
+    expect(result.status).toBe("reviewed");
+  });
+
   it("fix niepoprawny: twarda kategoria odpada, miękka zostaje z odrzuconą poprawką", () => {
     const result = decide(2, 6, [
       { n: 1, verdict: "fix", category: "leaked_solution", reasonPl: "Zdradza.", fixValid: false },
