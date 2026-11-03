@@ -18,6 +18,8 @@ export interface ReviewBannerContent {
   tone: "reviewed" | "attention";
   /** Podsumowanie; null, gdy jedynym ustaleniem są zagadnienia podejrzane (liczby same zera). */
   summary: string | null;
+  /** Ćwiczenia dogenerowane pod brakujące etapy (osobny wiersz; także obok „nie znalazła problemów”). */
+  toppedUp: string | null;
   /** Zastrzeżenie o zakresie liczb (tylko przy liczbach zmian). */
   scope: string | null;
   partial: string | null;
@@ -39,9 +41,10 @@ export function reviewBannerContent(review: LessonReviewDto): ReviewBannerConten
   const suspicious = review.objectives
     .filter((objective) => objective.status === "suspicious")
     .map((objective) => fillTemplate(messages.lessons.reviewSuspicious, { objective: objective.title }));
-  const counts = { changed: review.changed.length, dropped: review.dropped.length, toppedUp: review.toppedUp, notes: review.notes.length };
+  const counts = { changed: review.changed.length, dropped: review.dropped.length, notes: review.notes.length };
   const anyCount = Object.values(counts).some((n) => n > 0);
-  // „Nie znalazła problemów” tylko przy pełnej kontroli bez zmian i bez zagadnień podejrzanych.
+  // „Nie znalazła problemów” tylko przy pełnej kontroli bez zmian i bez zagadnień podejrzanych
+  // (dogenerowanie pod brakujące etapy nie jest ustaleniem kontroli — ma własny wiersz).
   const clean = review.status === "reviewed" && !anyCount && suspicious.length === 0;
   const summary = review.status === "unreviewed"
     ? fillTemplate(messages.lessons.reviewUnreviewed, {
@@ -55,6 +58,7 @@ export function reviewBannerContent(review: LessonReviewDto): ReviewBannerConten
   return {
     tone: review.status === "reviewed" && suspicious.length === 0 ? "reviewed" : "attention",
     summary,
+    toppedUp: review.toppedUp > 0 ? fillTemplate(messages.lessons.reviewToppedUp, { toppedUp: review.toppedUp }) : null,
     scope: summary !== null && review.status !== "unreviewed" && !clean ? messages.lessons.reviewBannerScope : null,
     partial: review.status === "partial"
       ? fillTemplate(messages.lessons.reviewPartial, {
@@ -90,6 +94,7 @@ export default function LessonReviewBanner({ review }: { review: LessonReviewDto
       data-review-status={review.status} icon={<ParentIcon name={content.tone === "reviewed" ? "info" : "alert-triangle"} />}>
       <Stack gap={6} align="flex-start">
         {content.summary && <Text size="sm" data-testid="lesson-review-summary">{content.summary}</Text>}
+        {content.toppedUp && <Text size="sm" data-testid="lesson-review-topped-up">{content.toppedUp}</Text>}
         {content.scope && <Text size="sm" className="pp-editor-muted" data-testid="lesson-review-scope">{content.scope}</Text>}
         {content.partial && <Text size="sm" data-testid="lesson-review-partial">{content.partial}</Text>}
         {content.suspicious.map((line, i) => <Text key={i} size="sm" data-testid={`lesson-review-suspicious-${i}`}>{line}</Text>)}

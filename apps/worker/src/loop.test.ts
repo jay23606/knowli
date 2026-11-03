@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withConfigDefaults } from "@learning/server";
-import { createWorkerLoop, workerLoopSettingsFromEnv } from "./loop";
+import { createWorkerLoop, reviewerHealthBudgetWarning, workerLoopSettingsFromEnv } from "./loop";
 
 afterEach(() => vi.useRealTimers());
 
@@ -9,6 +9,22 @@ describe("budżety domyślne a próg zdrowia workera", () => {
     const env = withConfigDefaults({});
     const budget = Number(env.UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS) + Number(env.UMIEM_REVIEWER_PHASE_BUDGET_MS);
     expect(budget).toBeLessThan(workerLoopSettingsFromEnv(env).staleMs);
+    expect(reviewerHealthBudgetWarning({ ...env, UMIEM_REVIEWER_ENABLED: "true" })).toBeUndefined();
+  });
+
+  it("ostrzega (bez rzucania) przy włączonym krytyku, gdy suma budżetów sięga progu zdrowia", () => {
+    const env = withConfigDefaults({ UMIEM_REVIEWER_ENABLED: "true", UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS: "660000", UMIEM_REVIEWER_PHASE_BUDGET_MS: "240000" });
+    expect(reviewerHealthBudgetWarning(env)).toBe(
+      "[worker] UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS (660000) + UMIEM_REVIEWER_PHASE_BUDGET_MS (240000) ≥ WORKER_HEALTH_STALE_MS (900000) — długi przebieg generowania lekcji z krytykiem może oznaczyć workera jako „stale”; podnieś WORKER_HEALTH_STALE_MS albo obniż budżety",
+    );
+    expect(reviewerHealthBudgetWarning({ ...env, WORKER_HEALTH_STALE_MS: "900001" })).toBeUndefined();
+  });
+
+  it("krytyk wyłączony albo nieczytelne liczby: bez ostrzeżenia", () => {
+    const tight = { UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS: "900000", UMIEM_REVIEWER_PHASE_BUDGET_MS: "240000" };
+    expect(reviewerHealthBudgetWarning(withConfigDefaults(tight))).toBeUndefined();
+    expect(reviewerHealthBudgetWarning(withConfigDefaults({ ...tight, UMIEM_REVIEWER_ENABLED: "false" }))).toBeUndefined();
+    expect(reviewerHealthBudgetWarning(withConfigDefaults({ ...tight, UMIEM_REVIEWER_ENABLED: "true", UMIEM_REVIEWER_PHASE_BUDGET_MS: "abc" }))).toBeUndefined();
   });
 });
 

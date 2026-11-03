@@ -18,8 +18,17 @@ const base: LessonReviewDto = {
 describe("reviewBannerContent", () => {
   it("pełna kontrola bez zmian: komunikat „nie znalazła problemów”, bez zastrzeżenia o zakresie", () => {
     const content = reviewBannerContent(base);
-    expect(content).toMatchObject({ tone: "reviewed", summary: messages.lessons.reviewBannerClean, scope: null, partial: null, suspicious: [] });
+    expect(content).toMatchObject({ tone: "reviewed", summary: messages.lessons.reviewBannerClean, toppedUp: null, scope: null, partial: null, suspicious: [] });
     expect(content.model).toBe("Sprawdzał model: anthropic/claude-sonnet-5.5");
+  });
+
+  it("dogenerowanie pod etapy nie psuje „nie znalazła problemów” — osobny wiersz z liczbą", () => {
+    const content = reviewBannerContent({ ...base, toppedUp: 4 });
+    expect(content).toMatchObject({ tone: "reviewed", summary: messages.lessons.reviewBannerClean, scope: null });
+    expect(content.toppedUp).toBe("Dogenerowano 4 ćwiczeń, by uzupełnić brakujące etapy.");
+    const markup = renderParentMarkup(<LessonReviewBanner review={{ ...base, toppedUp: 4 }} />);
+    expect(markup).toContain('data-testid="lesson-review-topped-up"');
+    expect(markup).toContain(messages.lessons.reviewBannerClean);
   });
 
   it("liczby zmian z zastrzeżeniem o zakresie i usuniętymi ćwiczeniami w szczegółach", () => {
@@ -29,8 +38,10 @@ describe("reviewBannerContent", () => {
       dropped: [{ objectiveTitle: "Pogoda", category: "wrong_answer", reasonPl: "Błędny klucz.", snippet: "It's ___ → raining" }],
       toppedUp: 3,
     });
-    expect(content.summary).toBe("Automatyczna kontrola jakości — poprawione: 1 · usunięte: 1 · dogenerowane: 3 · uwagi: 0.");
+    expect(content.summary).toBe("Automatyczna kontrola jakości (łącznie we wszystkich generowaniach) — poprawione: 1 · usunięte: 1 · uwagi: 0.");
+    expect(content.toppedUp).toBe("Dogenerowano 3 ćwiczeń, by uzupełnić brakujące etapy.");
     expect(content.scope).toBe(messages.lessons.reviewBannerScope);
+    expect(content.scope).toBe("Liczby dotyczą tylko automatycznej kontroli. Ćwiczenia odrzucone, bo rozwiązanie było widoczne wcześniej, znajdziesz w „Powodach odrzuceń przy generowaniu”.");
     expect(content.dropped).toEqual(["Pogoda — błędna odpowiedź: Błędny klucz. (było: It's ___ → raining)"]);
   });
 
@@ -46,8 +57,8 @@ describe("reviewBannerContent", () => {
       ],
     });
     expect(content.tone).toBe("attention");
-    expect(content.partial).toBe(messages.lessons.reviewPartial.replace("{list}", "Pogoda, Kolory (przekroczony czas); Zwroty (osiągnięto limit wywołań)"));
-    expect(content.summary).toBe("Automatyczna kontrola jakości — poprawione: 0 · usunięte: 0 · dogenerowane: 0 · uwagi: 0.");
+    expect(content.partial).toBe(messages.lessons.reviewPartial.replace("{list}", "Pogoda, Kolory (przekroczony czas); Zwroty (osiągnięto limit sprawdzeń na jedno generowanie)"));
+    expect(content.summary).toBe("Automatyczna kontrola jakości (łącznie we wszystkich generowaniach) — poprawione: 0 · usunięte: 0 · uwagi: 0.");
   });
 
   it("lekcja niesprawdzona: sam komunikat z powodem; zagadnienie podejrzane osobno", () => {
@@ -70,11 +81,14 @@ describe("reviewBannerContent", () => {
       suspicious: [messages.lessons.reviewSuspicious.replace("{objective}", "Ubrania")],
     });
     // z liczbami > 0: liczby z zastrzeżeniem zakresu i linia o zagadnieniu
-    const withCounts = reviewBannerContent({ ...base, objectives, toppedUp: 2 });
+    const withCounts = reviewBannerContent({ ...base, objectives, notes: [{ exerciseId: EX, category: "too_hard", reasonPl: "r", fixRejected: false }] });
     expect(withCounts.tone).toBe("attention");
-    expect(withCounts.summary).toBe("Automatyczna kontrola jakości — poprawione: 0 · usunięte: 0 · dogenerowane: 2 · uwagi: 0.");
+    expect(withCounts.summary).toBe("Automatyczna kontrola jakości (łącznie we wszystkich generowaniach) — poprawione: 0 · usunięte: 0 · uwagi: 1.");
     expect(withCounts.scope).toBe(messages.lessons.reviewBannerScope);
     expect(withCounts.suspicious).toHaveLength(1);
+    // samo dogenerowanie: bez podsumowania liczb, wiersz dogenerowania obok linii o zagadnieniu
+    const toppedOnly = reviewBannerContent({ ...base, objectives, toppedUp: 2 });
+    expect(toppedOnly).toMatchObject({ summary: null, scope: null, toppedUp: "Dogenerowano 2 ćwiczeń, by uzupełnić brakujące etapy." });
     const markup = renderParentMarkup(<LessonReviewBanner review={{ ...base, objectives }} />);
     expect(markup).not.toContain(messages.lessons.reviewBannerClean);
     expect(markup).not.toContain('data-testid="lesson-review-summary"');

@@ -69,6 +69,7 @@ import { assertLessonGenerationFinalizationAllowed, LessonGenerationCancelledErr
 import { DEFAULT_LESSON_GENERATION_POLICY, type LessonGenerationPolicy } from "./lesson-generation-policy";
 import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { committedRetryAfterSourceChange, lockSourceMaterialForCopy } from "../source-materials";
+import { buildLessonPayload } from "./lesson-payload";
 import { acceptFreshLessonPool } from "./lesson-pool-acceptance";
 import { reviewFreshExercises, reviewRunReport, type ReviewPhaseResult } from "./lesson-review";
 import { executeLessonStoryGeneration, queueLessonStoryRunTx } from "./lesson-story-generation";
@@ -1224,52 +1225,6 @@ export function toExerciseDraft(raw: unknown): LessonExerciseDraft {
   };
 }
 
-/** Payload `lesson_exercise` (payload_version 2) z locale przedmiotu. */
-export function buildLessonPayload(
-  ex: LessonExerciseDraft,
-  subject: SubjectModule,
-): Record<string, unknown> {
-  return {
-    exerciseType: ex.exerciseType,
-    objectiveId: ex.objectiveId,
-    ...(ex.instructionPl === undefined ? {} : { instructionPl: ex.instructionPl }),
-    ...(ex.stem === undefined ? {} : { stem: ex.stem }),
-    ...(ex.statement === undefined ? {} : { statement: ex.statement }),
-    ...(ex.prompt === undefined ? {} : { prompt: ex.prompt }),
-    ...(ex.hint === undefined ? {} : { hint: ex.hint }),
-    ...(ex.explanationPl === undefined ? {} : { explanationPl: ex.explanationPl }),
-    ...(ex.transformId === undefined ? {} : { transformId: ex.transformId }),
-    ...(ex.noticeSegments === undefined ? {} : { noticeSegments: ex.noticeSegments }),
-    ...(ex.visualSubject === undefined ? {} : { visualSubject: ex.visualSubject }),
-    answer: ex.answer,
-    acceptedAnswers: [...ex.acceptedAnswers],
-    focus: [...ex.focus],
-    ...(ex.options === undefined ? {} : { options: ex.options }),
-    ...(ex.correctOption === undefined ? {} : { correctOption: ex.correctOption }),
-    ...(ex.items === undefined ? {} : { items: ex.items }),
-    ...(ex.questionType === undefined ? {} : { questionType: ex.questionType }),
-    ...(ex.requiredElements === undefined ? {} : { requiredElements: ex.requiredElements }),
-    ...(ex.supplementaryElements === undefined ? {} : { supplementaryElements: ex.supplementaryElements }),
-    ...(ex.commonErrors === undefined ? {} : { commonErrors: ex.commonErrors }),
-    ...(ex.expectedForm === undefined ? {} : { expectedForm: ex.expectedForm }),
-    ...(ex.familyId === undefined ? {} : { familyId: ex.familyId }),
-    ...(ex.voiceTone === undefined ? {} : { voiceTone: ex.voiceTone }),
-    ...(ex.sourceRefs === undefined ? {} : { sourceRefs: ex.sourceRefs }),
-    ...(ex.calculation === undefined ? {} : { calculation: ex.calculation }),
-    ...(ex.keywordOptions === undefined ? {} : { keywordOptions: ex.keywordOptions.map((option) => ({ id: option.id, text: option.text })) }),
-    ...(ex.keyOptionIds === undefined ? {} : { keyOptionIds: [...ex.keyOptionIds] }),
-    ...(ex.pairs === undefined ? {} : { pairs: ex.pairs.map((pair) => ({ left: pair.left, right: pair.right })) }),
-    ...(ex.extraRight === undefined ? {} : { extraRight: [...ex.extraRight] }),
-    ...(ex.groups === undefined ? {} : { groups: ex.groups.map((group) => ({ id: group.id, label: group.label })) }),
-    ...(ex.groupItems === undefined ? {} : { groupItems: ex.groupItems.map((item) => ({ text: item.text, groupId: item.groupId })) }),
-    ...(ex.clozeText === undefined ? {} : { clozeText: ex.clozeText }),
-    ...(ex.gapAnswers === undefined ? {} : { gapAnswers: [...ex.gapAnswers] }),
-    ...(ex.extraWords === undefined ? {} : { extraWords: [...ex.extraWords] }),
-    answerLocale: subject.answerLocale,
-    promptLocale: subject.promptLocale,
-  };
-}
-
 /** criteria dla umiejętności `objective` (design „Data Models”). */
 export function buildObjectiveCriteria(
   ex: LessonExerciseDraft,
@@ -1883,7 +1838,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         card: (objective?.cards ?? []).map((card) => `${card.title}: ${card.body}`).join("\n"),
       };
     };
-    const reviewPhase = (phaseFresh: readonly LessonExerciseDraft[], phaseExisting: readonly LessonExerciseDraft[], familyScope: string | null) =>
+    const reviewPhase = (phaseFresh: readonly LessonExerciseDraft[], phaseExisting: readonly LessonExerciseDraft[]) =>
       reviewFreshExercises({
         reviewer,
         subject,
@@ -1894,7 +1849,6 @@ export async function executeLessonGeneration(services: Services, runId: string,
         examples: finalExamples,
         objectiveOrder,
         objectiveContext,
-        familyScope,
         callsLeft: reviewCallsLeft,
         reviewDeadlineAtMs,
         cancelPollMs: executionPolicy.cancelPollMs,
@@ -1903,7 +1857,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         runId,
       });
     // Krytyk (spec §5, kroki 5–6) przed regułą twardą: poprawka może usunąć ujawnienie.
-    const mainReview = await reviewPhase(fresh.accepted, existingDrafts, input.regenerate ? runId : null);
+    const mainReview = await reviewPhase(fresh.accepted, existingDrafts);
     const reviewPhases: ReviewPhaseResult[] = [mainReview];
     const leaks = resolveGenerationLeaks({
       existing: existingDrafts,
@@ -1954,8 +1908,29 @@ export async function executeLessonGeneration(services: Services, runId: string,
       console.log(`[lesson] run=${runId} porzucone wyjaśnienia=${droppedExplanations}`);
     }
 
-    // Porażka walidacji (0 nowych ćwiczeń): nawet wtedy rodzic widzi skalę odrzuceń — zapisujemy
-    // liczniki do kontekstu (ta sama straż wersji co przy finalizacji).
+    // Raport kontroli jakości przebiegu scalony z raportem szkicu; listy ćwiczeń tylko dla żywych elementów
+    // wersji (wołać po zapisie ćwiczeń). Także przy porażce walidacji — rodzic widzi usunięcia krytyka.
+    const mergedReview = async (
+      tx: Tx,
+      versionId: string,
+      previous: LessonReviewReport | undefined,
+      saved: readonly { readonly draft: LessonExerciseDraft; readonly exerciseId: string }[],
+    ): Promise<LessonReviewReport> => {
+      const liveIds = new Set(
+        (await tx.select({ itemId: itemRevisions.itemId }).from(itemRevisions).where(eq(itemRevisions.deckVersionId, versionId))).map((row) => row.itemId),
+      );
+      const runReport = reviewRunReport({
+        phases: reviewPhases,
+        saved,
+        subject,
+        toppedUp,
+        ...(reviewerReady ? { model: reviewer.provider!.model } : {}),
+      });
+      return mergeReviewReport(previous, runReport, liveIds);
+    };
+
+    // Porażka walidacji (0 nowych ćwiczeń): nawet wtedy rodzic widzi skalę odrzuceń i usunięcia kontroli
+    // jakości — zapisujemy liczniki i raport do kontekstu (ta sama straż wersji co przy finalizacji).
     const failValidation = async () => {
       await services.db.transaction(async (tx) => {
         const version = (
@@ -1972,6 +1947,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
                 rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount,
                 ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
                 droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
+                review: await mergedReview(tx, version.id, prevContext.review, []),
               } as unknown as Record<string, unknown>,
             })
             .where(eq(deckVersions.id, version.id));
@@ -2007,7 +1983,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         examples: finalExamples,
         runStimuli: earlierExercises,
         runAnswers: earlierAnswers,
-        review: (roundFresh, roundExisting) => reviewPhase(roundFresh, roundExisting, `${runId}-t`),
+        review: reviewPhase,
         reviewReserveMs: reviewerReady ? reviewer.policy.timeoutMs : 0,
       });
       uniqueValid = [...uniqueValid, ...topUp.added];
@@ -2066,6 +2042,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
               rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + writeRejected,
               ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
               droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
+              review: await mergedReview(tx, version.id, prevContext.review, []),
             } as unknown as Record<string, unknown>,
           })
           .where(eq(deckVersions.id, version.id));
@@ -2080,16 +2057,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         accepted,
       );
       // Raport kontroli jakości: wpisy przebiegu scalone z poprzednimi; listy ćwiczeń tylko dla żywych elementów wersji.
-      const liveIds = new Set(
-        (await tx.select({ itemId: itemRevisions.itemId }).from(itemRevisions).where(eq(itemRevisions.deckVersionId, version.id))).map((row) => row.itemId),
-      );
-      const runReport = reviewRunReport({
-        phases: reviewPhases,
-        saved: accepted.map((draft, index) => ({ draft, exerciseId: itemIds[index]! })),
-        subject,
-        toppedUp,
-        ...(reviewerReady ? { model: reviewer.provider!.model } : {}),
-      });
+      const review = await mergedReview(tx, version.id, prevContext.review, accepted.map((draft, index) => ({ draft, exerciseId: itemIds[index]! })));
       // Uzupełnienie lesson_context: przykłady i licznik odrzuconych (sumujemy przy
       // dogenerowaniu). lesson_context jest niezmienny dopiero po publikacji.
       const nextContext: LessonContext = {
@@ -2099,7 +2067,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + writeRejected,
         ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
         droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
-        review: mergeReviewReport(prevContext.review, runReport, liveIds),
+        review,
       };
       await tx
         .update(deckVersions)

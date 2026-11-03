@@ -981,6 +981,11 @@ export class FakeLessonReviewer implements LessonReviewerProvider {
   maxInFlight = 0;
   #inFlight = 0;
 
+  /** Liczba wywołań w toku w tej chwili (testy współbieżności). */
+  get inFlight(): number {
+    return this.#inFlight;
+  }
+
   async reviewLessonObjective(input: LessonReviewInput, signal: AbortSignal): Promise<{ verdicts: unknown[] }> {
     this.inputs.push(input);
     this.#inFlight += 1;

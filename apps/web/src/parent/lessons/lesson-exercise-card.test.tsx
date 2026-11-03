@@ -210,7 +210,7 @@ describe("LessonExerciseCard: automatyczna kontrola jakości", () => {
     expect(reviewNoticeFor(changedEntry, undefined)).toEqual({
       changed: true,
       lines: [
-        messages.lessons.reviewNote.replace("{category}", messages.lessons.reviewCategory.ambiguous!).replace("{reason}", "Dwie poprawne odpowiedzi."),
+        messages.lessons.reviewChangedReason.replace("{category}", messages.lessons.reviewCategory.ambiguous!).replace("{reason}", "Dwie poprawne odpowiedzi."),
         messages.lessons.reviewChangedBefore.replace("{before}", "He ___ → plays"),
         messages.lessons.reviewAddedVariants.replace("{variants}", "is playing, plays"),
       ],
@@ -229,6 +229,8 @@ describe("LessonExerciseCard: automatyczna kontrola jakości", () => {
     expect(markup).toContain('data-testid="exercise-review-badge-0"');
     expect(markup).toContain(messages.lessons.reviewChangedBadge);
     expect(markup).toContain('data-testid="exercise-review-0"');
+    expect(markup).toContain("Poprawka kontroli (niejednoznaczne): Dwie poprawne odpowiedzi.");
+    expect(markup).not.toContain("Uwaga kontroli");
     expect(markup).toContain("Było: He ___ → plays");
     expect(markup).not.toContain("Dodane warianty");
     expect(markup).toContain('aria-describedby="exercise-review-0-text"');
@@ -254,7 +256,7 @@ describe("LessonExerciseCard: automatyczna kontrola jakości", () => {
   it("powód z „{snippet}” i „{reason}” trafia do notki bez ponownego podstawiania", () => {
     const notice = reviewNoticeFor({ ...changedEntry, reasonPl: "Patrz {reason} {snippet}.", beforePl: "{variants}", addedVariants: [] }, undefined)!;
     expect(notice.lines).toEqual([
-      "Uwaga kontroli (niejednoznaczne): Patrz {reason} {snippet}.",
+      "Poprawka kontroli (niejednoznaczne): Patrz {reason} {snippet}.",
       "Było: {variants}",
     ]);
   });

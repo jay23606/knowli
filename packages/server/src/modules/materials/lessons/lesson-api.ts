@@ -41,7 +41,7 @@ import { poolCoverage, validatePool, withoutRedundantAcceptedVariants } from "..
 import { solvedSentencesOf, validateLessonStory, type LessonStory } from "../../../domain/lessons/story";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
-import type { LessonReviewReport } from "../../../domain/lessons/review-report";
+import { statusFromObjectives, type LessonReviewReport } from "../../../domain/lessons/review-report";
 import { assertAssetPublishable, mediaPendingError, reconcileBeforePublish, reconcileDraftAssetsTx, reconcileLessonStoryAssetTx } from "../media-reconciliation";
 import { copyRevisionsSkillsAssets } from "../decks";
 import { supersedeFailedLessonStoryRuns, supersedeLessonRuns } from "../generation-runs";
@@ -52,10 +52,11 @@ import {
   createVersionFromPublished,
   lockVersion,
 } from "../version-ops";
-import { buildLessonPayload, buildObjectiveCriteria, lessonPayloadVersion, splitByPoolExtra, toExerciseDraft } from "./lesson-drafts";
+import { buildObjectiveCriteria, lessonPayloadVersion, splitByPoolExtra, toExerciseDraft } from "./lesson-drafts";
+import { buildLessonPayload } from "./lesson-payload";
 import { latestLessonRunOfPurpose, latestLessonStoryRun } from "./lesson-story-generation";
 import { readLessonAudioStates } from "./lesson-prompt-audio";
-import { exerciseFingerprint } from "./lesson-review";
+import { exerciseFingerprint } from "./lesson-fingerprint";
 
 /**
  * API rodzica dla lekcji (zadanie 11). Cienka logika serwerowa za routerem:
@@ -112,22 +113,26 @@ export function readLessonContext(raw: Record<string, unknown> | null): LessonCo
 /**
  * Raport kontroli jakości dla rodzica: `changed`/`notes` tylko dla ćwiczeń, które są w wersji
  * i których zapisany payload ma ten sam odcisk co przy kontroli (po edycji rodzica wpis jest
- * nieaktualny); tytuły zagadnień zamiast identyfikatorów, suma dogenerowanych; bez odcisków.
- * `undefined`, gdy kontrola była wyłączona dla wszystkich zagadnień (zachowanie jak bez krytyka).
+ * nieaktualny); zagadnienia, usunięcia i dogenerowania tylko dla zagadnień bieżącego tematu (rodzic mógł
+ * usunąć zagadnienie), z tytułami zamiast identyfikatorów i statusem liczonym od nowa; bez odcisków.
+ * `undefined`, gdy kontrola była wyłączona dla wszystkich (pozostałych) zagadnień (zachowanie jak bez krytyka).
  */
 function reviewDto(
   report: LessonReviewReport,
   currentFingerprints: ReadonlyMap<string, string>,
-  objectiveTitle: (objectiveId: string) => string,
+  objectiveTitles: ReadonlyMap<string, string>,
 ): LessonReviewDto | undefined {
-  if (report.objectives.every((objective) => objective.reason === "disabled")) return undefined;
+  const inTopic = (entry: { objectiveId: string }) => objectiveTitles.has(entry.objectiveId);
+  const title = (objectiveId: string) => objectiveTitles.get(objectiveId)!;
+  const objectives = report.objectives.filter(inTopic);
+  if (objectives.every((objective) => objective.reason === "disabled")) return undefined;
   const current = (entry: { exerciseId: string; fingerprint: string }) => currentFingerprints.get(entry.exerciseId) === entry.fingerprint;
   return {
-    status: report.status,
+    status: statusFromObjectives(objectives),
     ...(report.model === undefined ? {} : { model: report.model }),
-    objectives: report.objectives.map((objective) => ({
+    objectives: objectives.map((objective) => ({
       objectiveId: objective.objectiveId,
-      title: objectiveTitle(objective.objectiveId),
+      title: title(objective.objectiveId),
       status: objective.status,
       ...(objective.reason === undefined ? {} : { reason: objective.reason }),
     })),
@@ -138,8 +143,8 @@ function reviewDto(
       beforePl: entry.beforePl,
       addedVariants: [...entry.addedVariants],
     })),
-    dropped: report.dropped.map((entry) => ({
-      objectiveTitle: objectiveTitle(entry.objectiveId),
+    dropped: report.dropped.filter(inTopic).map((entry) => ({
+      objectiveTitle: title(entry.objectiveId),
       category: entry.category,
       reasonPl: entry.reasonPl,
       snippet: entry.snippet,
@@ -150,7 +155,7 @@ function reviewDto(
       reasonPl: entry.reasonPl,
       fixRejected: entry.fixRejected,
     })),
-    toppedUp: report.toppedUp.reduce((sum, entry) => sum + entry.guided + entry.productive + entry.independent, 0),
+    toppedUp: report.toppedUp.filter(inTopic).reduce((sum, entry) => sum + entry.guided + entry.productive + entry.independent, 0),
   };
 }
 
@@ -383,7 +388,7 @@ async function readLessonDraftDto(
     review = reviewDto(
       context.review,
       new Map(revisions.map((r) => [r.itemId, exerciseFingerprint(r.payload)])),
-      (objectiveId) => titles.get(objectiveId) ?? objectiveId,
+      titles,
     );
   }
 

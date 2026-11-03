@@ -1,4 +1,4 @@
-import { REVIEW_CATEGORIES } from "../../domain/lessons/review-criteria";
+import { REVIEW_CATEGORIES, REVIEW_VERDICTS } from "../../domain/lessons/review-criteria";
 
 /** Pole nullable w trybie strict: `anyOf` z `null` (bez typów-unii, które nie wszędzie przechodzą). */
 function nullable(schema: Record<string, unknown>): Record<string, unknown> {
@@ -25,7 +25,7 @@ export const LESSON_REVIEW_JSON_SCHEMA: Record<string, unknown> = {
         required: ["n", "verdict", "category", "reasonPl", "exerciseJson"],
         properties: {
           n: { type: "integer" },
-          verdict: { type: "string", enum: ["ok", "note", "fix", "drop"] },
+          verdict: { type: "string", enum: [...REVIEW_VERDICTS] },
           category: nullable({ type: "string", enum: [...REVIEW_CATEGORIES] }),
           reasonPl: nullable({ type: "string" }),
           exerciseJson: nullable({ type: "string" }),

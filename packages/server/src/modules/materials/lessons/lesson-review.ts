@@ -1,17 +1,17 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { GenerationDeps } from "../../../config";
+import type { GenerationDeps, ReviewerDeps } from "../../../config";
 import { lessonExerciseIdentity, lessonIdentityOptionsOf } from "../../../domain/lessons/exercise-identity";
 import { exerciseExposureText } from "../../../domain/lessons/exposure-key";
 import { findExposureLeaks, type ExposureLeak } from "../../../domain/lessons/exposure-leaks";
-import { findingText, NOTE_ONLY_REVIEW_CATEGORIES, REVIEW_CATEGORIES, reviewRoleFor, type ReviewCategory } from "../../../domain/lessons/review-criteria";
+import { findingText, NOTE_ONLY_REVIEW_CATEGORIES, REVIEW_CATEGORIES, REVIEW_VERDICTS, reviewRoleFor, type ReviewCategory } from "../../../domain/lessons/review-criteria";
 import { exerciseSnippet, statusFromObjectives, type LessonReviewReport, type ReviewReason } from "../../../domain/lessons/review-report";
 import { decideObjectiveReview, type ParsedVerdict } from "../../../domain/lessons/review-verdicts";
 import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
-import type { LessonReviewInput } from "../../../ports/ai";
+import type { LessonReviewerProvider, LessonReviewInput } from "../../../ports/ai";
 import { GenerationProviderError } from "../../../ports/generation-error";
-import { buildLessonPayload } from "./lesson-drafts";
+import { exerciseFingerprint } from "./lesson-fingerprint";
 import { LessonGenerationCancelledError, withLessonGenerationControl } from "./lesson-generation-control";
+import { buildLessonPayload } from "./lesson-payload";
 import { acceptFreshLessonPool } from "./lesson-pool-acceptance";
 
 /**
@@ -51,8 +51,6 @@ export interface ReviewPhaseContext {
   readonly examples: Readonly<Record<string, readonly string[]>>;
   readonly objectiveOrder: readonly string[];
   readonly objectiveContext: (objectiveId: string) => { title: string; kind?: "words" | "frame"; card: string };
-  /** Zakres rodzin przebiegu (informacyjnie; walidacja poprawki nie nadaje go ponownie). */
-  readonly familyScope: string | null;
   /** Wspólny licznik wywołań przebiegu (partia główna i runda pod etap). */
   readonly callsLeft: { value: number };
   /** Termin wywołań krytyka (= termin fazy − rezerwa finalizacji). */
@@ -63,35 +61,12 @@ export interface ReviewPhaseContext {
   readonly runId: string;
 }
 
-/** Kanoniczny JSON: klucze sortowane rekurencyjnie, pola `undefined` pomijane (jak w jsonb). */
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => (item === undefined ? null : canonical(item)));
-  if (value !== null && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(record)
-        .filter((key) => record[key] !== undefined)
-        .sort()
-        .map((key) => [key, canonical(record[key])]),
-    );
-  }
-  return value;
-}
-
-/**
- * Odcisk payloadu ćwiczenia: sha256 kanonicznego JSON. Ten sam dla payloadu z
- * `buildLessonPayload` i dla payloadu odczytanego z bazy (jsonb zmienia kolejność kluczy).
- */
-export function exerciseFingerprint(payload: Readonly<Record<string, unknown>>): string {
-  return createHash("sha256").update(JSON.stringify(canonical(payload))).digest("hex");
-}
-
 const REASON_PATTERN = /^[^\r\n]{1,120}$/u;
 
 /** Surowy werdykt adaptera/fake'a; `exercise` tylko przy `fix` (null = poprawka nieczytelna). */
 const RawVerdictSchema = z.object({
   n: z.number().int(),
-  verdict: z.enum(["ok", "note", "fix", "drop"]),
+  verdict: z.enum(REVIEW_VERDICTS),
   category: z.enum(REVIEW_CATEGORIES).nullish(),
   reasonPl: z.string().nullish(),
   exercise: z.record(z.string(), z.unknown()).nullish(),
@@ -358,22 +333,52 @@ function reviewBatch(
   };
 }
 
-/** Wykonuje fazę przeglądu dla świeżych ćwiczeń przebiegu (opis w nagłówku modułu). */
+/** Nazwa klasy błędu do dziennika (bez komunikatu — może zawierać treść ćwiczeń). */
+function errorClassName(error: unknown): string {
+  if (error instanceof Error) return error.constructor.name || "Error";
+  return typeof error;
+}
+
+/** Faza bez zmian: oryginalne świeże ćwiczenia, każde zagadnienie `unreviewed` z powodem. */
+function unchangedPhase(ctx: ReviewPhaseContext, objectiveIds: readonly string[], reason: ReviewReason): ReviewPhaseResult {
+  return {
+    exercises: [...ctx.fresh],
+    meta: new Map(),
+    objectives: objectiveIds.map((objectiveId) => ({ objectiveId, status: "unreviewed", reason })),
+    dropped: [],
+    droppedCount: 0,
+  };
+}
+
+/**
+ * Wykonuje fazę przeglądu dla świeżych ćwiczeń przebiegu (opis w nagłówku modułu).
+ * Nieprzewidziany błąd poza wywołaniami i walidacją partii (przygotowanie wejścia,
+ * składanie wyniku) nie wywraca przebiegu: faza zwraca oryginały, wszystkie zagadnienia
+ * `unreviewed/failed`. Anulowanie przechodzi dalej.
+ */
 export async function reviewFreshExercises(ctx: ReviewPhaseContext): Promise<ReviewPhaseResult> {
-  const { reviewer, subject } = ctx;
+  const { reviewer } = ctx;
   const objectiveIds = freshObjectiveIds(ctx);
   const provider = reviewer?.state === "ready" ? reviewer.provider : undefined;
   if (reviewer === undefined || reviewer.state !== "ready" || provider === undefined) {
-    const reason: ReviewReason = reviewer?.state === "disabled" || reviewer === undefined ? "disabled" : "not_configured";
-    return {
-      exercises: [...ctx.fresh],
-      meta: new Map(),
-      objectives: objectiveIds.map((objectiveId) => ({ objectiveId, status: "unreviewed", reason })),
-      dropped: [],
-      droppedCount: 0,
-    };
+    return unchangedPhase(ctx, objectiveIds, reviewer?.state === "disabled" || reviewer === undefined ? "disabled" : "not_configured");
   }
-  const { policy } = reviewer;
+  try {
+    return await reviewWithProvider(ctx, reviewer.policy, provider, objectiveIds);
+  } catch (error) {
+    if (error instanceof LessonGenerationCancelledError) throw error;
+    console.log(`[lesson-review] run=${ctx.runId} status=unreviewed reason=failed error=${errorClassName(error)}`);
+    return unchangedPhase(ctx, objectiveIds, "failed");
+  }
+}
+
+async function reviewWithProvider(
+  ctx: ReviewPhaseContext,
+  policy: ReviewerDeps["policy"],
+  provider: LessonReviewerProvider,
+  objectiveIds: readonly string[],
+): Promise<ReviewPhaseResult> {
+  const { subject } = ctx;
 
   // Ustalenia deterministyczne (twarde ujawnienia świeżych ofiar) — raz na fazę.
   const all = [...ctx.existing, ...ctx.fresh];
@@ -476,9 +481,10 @@ export async function reviewFreshExercises(ctx: ReviewPhaseContext): Promise<Rev
     if (outcome.kind === "reviewed") {
       try {
         reviewed = reviewBatch(ctx, batch, outcome.verdicts, current, hardLeakOf, idOf);
-      } catch {
+      } catch (error) {
         // Nieprzewidziany błąd walidacji poprawek: zagadnienie bez zmian, przebieg trwa.
         failure = "failed";
+        console.log(`[lesson-review] run=${ctx.runId} zagadnienie=${slug} błąd walidacji partii error=${errorClassName(error)}`);
       }
     }
     if (reviewed === undefined) {
@@ -507,14 +513,26 @@ export async function reviewFreshExercises(ctx: ReviewPhaseContext): Promise<Rev
   return { exercises, meta, objectives, dropped, droppedCount: dropIndexes.size };
 }
 
-/** Najgorszy stan zagadnienia z kilku faz przebiegu (partia główna i runda pod etap). */
-const STATUS_RANK: Record<LessonReviewReport["objectives"][number]["status"], number> = { reviewed: 0, suspicious: 1, unreviewed: 2 };
+/**
+ * Stan zagadnienia z kilku faz przebiegu (partia główna, potem runda pod etap): rozstrzyga
+ * pierwsza faza, w której zagadnienie wystąpiło, a późniejsza faza `suspicious` oznacza
+ * zagadnienie jako podejrzane. Późniejsza faza bez przeglądu (limit, czas, awaria) nie cofa
+ * zagadnienia przejrzanego wcześniej — ćwiczenia tej fazy mają `machine.reviewed = false`.
+ */
+function combinePhaseStatus(
+  previous: LessonReviewReport["objectives"][number] | undefined,
+  next: LessonReviewReport["objectives"][number],
+): LessonReviewReport["objectives"][number] {
+  if (previous === undefined) return next;
+  if (next.status === "suspicious" && previous.status !== "suspicious") return next;
+  return previous;
+}
 
 /**
- * Raport jednego przebiegu (do scalenia z `mergeReviewReport`): zagadnienia z faz (stan
- * najgorszy z faz), wpisy `changed`/`notes` z meta zapisanych ćwiczeń (po tożsamości obiektu;
+ * Raport jednego przebiegu (do scalenia z `mergeReviewReport`): zagadnienia z faz
+ * (`combinePhaseStatus`), wpisy `changed`/`notes` z meta zapisanych ćwiczeń (po tożsamości obiektu;
  * ćwiczenia usunięte później przez filtry nie mają wpisu), `machine` dla każdego zapisanego
- * ćwiczenia (`reviewed` = zagadnienie przejrzane w fazie, która je oceniła) i usunięcia krytyka.
+ * ćwiczenia (`reviewed` = zagadnienie przejrzane, nie podejrzane, w fazie, która je oceniła) i usunięcia krytyka.
  */
 export function reviewRunReport(input: {
   readonly phases: readonly ReviewPhaseResult[];
@@ -530,7 +548,7 @@ export function reviewRunReport(input: {
     const statusOf = new Map(phase.objectives.map((objective) => [objective.objectiveId, objective.status] as const));
     for (const objective of phase.objectives) {
       const previous = objectives.get(objective.objectiveId);
-      if (previous === undefined || STATUS_RANK[objective.status] > STATUS_RANK[previous.status]) objectives.set(objective.objectiveId, objective);
+      objectives.set(objective.objectiveId, combinePhaseStatus(previous, objective));
     }
     for (const exercise of phase.exercises) reviewed.set(exercise, statusOf.get(exercise.objectiveId) === "reviewed");
     for (const [exercise, entry] of phase.meta) meta.set(exercise, entry);

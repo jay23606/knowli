@@ -21,7 +21,7 @@ import { stageOf } from "../../packages/server/src/domain/lessons/stages";
 import { mergeReviewReport, type LessonReviewReport } from "../../packages/server/src/domain/lessons/review-report";
 import { GenerationProviderError } from "../../packages/server/src/ports/generation-error";
 import { FakeLessonReviewer } from "../../packages/server/src/providers/fake";
-import { exerciseFingerprint } from "../../packages/server/src/modules/materials/lessons/lesson-review";
+import { exerciseFingerprint } from "../../packages/server/src/modules/materials/lessons/lesson-fingerprint";
 import { DEFAULT_LESSON_GENERATION_POLICY, type LessonGenerationPolicy } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
 import type { LessonReviewInput } from "../../packages/server/src/ports/ai";
 import { fakeGeneration, FakeLlmProvider, routeLessonRound, type FakeGeneration, type LessonPoolRequest } from "./fakes";
@@ -498,6 +498,8 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       expect(draft.exercises).toHaveLength(4);
       const report = (await reportOf(draft.id))!;
       expect(report.objectives).toEqual([{ objectiveId: draft.objectiveIds[0], status: "suspicious" }]);
+      expect(report.machine).toHaveLength(4);
+      expect(report.machine.every((entry) => !entry.reviewed)).toBe(true);
       expect(report.dropped).toEqual([]);
       expect(draft.rejectedCount).toBe(0);
     });
@@ -576,19 +578,22 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
     });
 
     it("budżet fazy: krytyk wolniejszy niż budżet → zagadnienia unreviewed/timeout, run succeeded, szkic zapisany", async () => {
+      // Termin wywołań krytyka = start + runTimeoutMs + phaseBudgetMs − 30 s rezerwy ≈ start + 16,5 s,
+      // daleko przed końcem opóźnienia krytyka (60 s) — także na obciążonej maszynie.
+      const DELAY_MS = 60_000;
       const { services, reviewer } = await world({
-        execution: { ...DEFAULT_LESSON_GENERATION_POLICY, requestTimeoutMs: 2_000, runTimeoutMs: 2_000 },
-        policy: { phaseBudgetMs: 31_500, timeoutMs: 60_000 },
+        execution: { ...DEFAULT_LESSON_GENERATION_POLICY, requestTimeoutMs: 2_000, runTimeoutMs: 15_000 },
+        policy: { phaseBudgetMs: 31_500, timeoutMs: 120_000 },
       });
-      reviewer.delayMs = 10_000;
+      reviewer.delayMs = DELAY_MS;
       const startedAt = Date.now();
       const { draft } = await generateChapter(services, TWO_OBJECTIVES);
-      expect(Date.now() - startedAt).toBeLessThan(9_000);
+      expect(Date.now() - startedAt).toBeLessThan(DELAY_MS);
       expect(draft.exercises.length).toBeGreaterThan(0);
       const report = (await reportOf(draft.id))!;
       expect(report.status).toBe("unreviewed");
       expect(report.objectives.map((objective) => objective.reason)).toEqual(["timeout", "timeout"]);
-    }, 20_000);
+    }, 90_000);
 
     it("edycja rodzica wewnątrz wywołania krytyka → run superseded, brak zapisu", async () => {
       const { fakes, services, reviewer } = await world();
@@ -618,7 +623,7 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       reviewer.delayMs = 50;
       const inFlightAtStart: number[] = [];
       reviewer.behavior = (input) => {
-        inFlightAtStart.push(reviewer.maxInFlight);
+        inFlightAtStart.push(reviewer.inFlight);
         return verdictsFor(input, {});
       };
       const material = ["Ubrania", "Pogoda", "Zwierzęta", "Kolory", "Szkoła"].map((title, index) =>
@@ -628,8 +633,29 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       expect(draft.objectiveIds).toHaveLength(5);
       expect(reviewer.inputs).toHaveLength(5);
       expect(inFlightAtStart[0]).toBe(1);
+      expect(Math.max(...inFlightAtStart)).toBeLessThanOrEqual(3);
       expect(reviewer.maxInFlight).toBeLessThanOrEqual(3);
       expect(reviewer.maxInFlight).toBeGreaterThan(1);
+    });
+
+    it("rezerwa krytyka w bramce rundy pod etap: czasu wystarcza bez rezerwy, ale nie z nią → brak żądania rundy", async () => {
+      // Bramka: termin fazy − teraz < requestTimeoutMs + 30 s marginesu + rezerwa (timeoutMs krytyka).
+      // Termin fazy ≈ start + 60 s + 30 s budżetu: bez rezerwy (≈ 32 s) runda by poszła, z rezerwą 120 s — nie.
+      async function run(reviewerTimeoutMs: number) {
+        const { fakes, services } = await world({
+          execution: { ...DEFAULT_LESSON_GENERATION_POLICY, requestTimeoutMs: 2_000, runTimeoutMs: 60_000, cancelPollMs: 10 },
+          policy: { phaseBudgetMs: 30_000, timeoutMs: reviewerTimeoutMs },
+        });
+        routeLessonRound(fakes, async (input) => {
+          const objectiveId = input.objectives[0]!.id;
+          return { exercises: wearPool(objectiveId), examples: { [objectiveId]: ["I wear a coat."] } };
+        });
+        await generateChapter(services, WEAR_MATERIAL, "Ubrania");
+        return fakes.llm.lessonRequests.filter((request) => request.purpose === "stage_top_up").length;
+      }
+      expect(await run(120_000)).toBe(0);
+      // Kontrola: ta sama lekcja z krótką rezerwą dostaje rundę (brak etapu jest, czasu bez rezerwy wystarcza).
+      expect(await run(1_000)).toBe(1);
     });
 
     it("maxCallsPerRun 1 przy dwóch zagadnieniach → drugie unreviewed/limit", async () => {
@@ -642,7 +668,7 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       ]);
     });
 
-    it("limit zużyty w partii głównej → ćwiczenia rundy pod etap unreviewed/limit", async () => {
+    it("limit zużyty w partii głównej → zagadnienie zostaje reviewed, ćwiczenia rundy pod etap machine.reviewed=false", async () => {
       const { fakes, services, reviewer } = await world({ policy: { maxCallsPerRun: 1 } });
       routeLessonRound(fakes, async (input) => {
         const objectiveId = input.objectives[0]!.id;
@@ -653,10 +679,12 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       expect(reviewer.inputs).toHaveLength(1);
       expect(draft.exercises.length).toBeGreaterThan(3);
       const report = (await reportOf(draft.id))!;
-      expect(report.objectives).toEqual([{ objectiveId: draft.objectiveIds[0], status: "unreviewed", reason: "limit" }]);
+      expect(report.objectives).toEqual([{ objectiveId: draft.objectiveIds[0], status: "reviewed" }]);
+      expect(report.status).toBe("reviewed");
       const reviewed = report.machine.filter((entry) => entry.reviewed);
       expect(reviewed).toHaveLength(3);
       expect(report.machine).toHaveLength(draft.exercises.length);
+      expect(report.machine.filter((entry) => !entry.reviewed)).toHaveLength(draft.exercises.length - 3);
     });
   });
 
@@ -691,6 +719,118 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
     // DTO panelu rodzica: suma dogenerowanych ćwiczeń rundy pod etap
     expect(draft.review!.toppedUp).toBe(counts.guided + counts.productive + counts.independent);
     expect(draft.review!.toppedUp).toBeGreaterThan(0);
+  });
+
+  it("krytyk usuwa wszystkie świeże ćwiczenia → run failed/validation, a raport z usunięciami zapisany w kontekście", async () => {
+    const { fakes, services, reviewer } = await world({ execution: MAIN_BATCH_ONLY });
+    routeLessonRound(fakes, async (input) => {
+      const objectiveId = input.objectives[0]!.id;
+      // Tłumaczenie ujawnione przez kartę nie liczy się do bezpiecznika, więc dwa usunięcia z dwóch nie są „podejrzane”.
+      return {
+        exercises: [gap(objectiveId, "Mam na sobie buty. Wpisz brakujące słowo.", "I wear ___.", "boots"), translation(objectiveId, "Mamy płaszcz i buty.", WEAR_TRANSLATION, "coat")],
+        examples: { [objectiveId]: [`${WEAR_TRANSLATION}.`] },
+      };
+    });
+    reviewer.behavior = (input) => input.exercises.map(({ n }) => ({ n, verdict: "drop", category: "wrong_answer", reasonPl: `Błąd ${n}.` }));
+    const { runId, deckId } = await createLessonFromMaterial(services, {
+      subjectId: "english_chapter", topicTitlePl: "Ubrania", material: WEAR_MATERIAL, poolSize: 40, clientRequestId: randomUUID(),
+    });
+    await executeLessonGeneration(services, runId);
+    expect(await readGeneration(services, runId)).toMatchObject({ state: "failed", errorCode: "validation" });
+    expect(reviewer.inputs).toHaveLength(1);
+    const [version] = await query<{ id: string }>("select id from learning_app.deck_versions where deck_id = $1", [deckId]);
+    const report = (await reportOf(version!.id))!;
+    expect(report.dropped.map((entry) => [entry.category, entry.reasonPl])).toEqual([["wrong_answer", "Błąd 1."], ["wrong_answer", "Błąd 2."]]);
+    expect(report.objectives).toEqual([{ objectiveId: expect.any(String), status: "reviewed" }]);
+    expect(report.machine).toEqual([]);
+    expect(report.model).toBe("fake-reviewer-1");
+    const [context] = await query<{ rejected_reasons: Record<string, number> }>(
+      "select lesson_context->'rejectedReasons' as rejected_reasons from learning_app.deck_versions where id = $1", [version!.id],
+    );
+    expect(context!.rejected_reasons).toEqual({ [REVIEW_REASON]: 2 });
+  });
+
+  it("dogenerowanie w szkole: krytyk poprawia członka rodziny → zapisany, rodzina i słowa kluczowe zostają", async () => {
+    const FAMILY = "chrzest-rodzina";
+    const { fakes, services, reviewer } = await world({ execution: MAIN_BATCH_ONLY });
+    const isOpen = (exercise: unknown) => (exercise as Raw).exerciseType === "lesson_open_answer";
+    let regenerating = false;
+    routeLessonRound(fakes, async (input) => {
+      const result = await new FakeLlmProvider().generateLessonPool(input);
+      if (!regenerating) return result;
+      const objectiveId = input.objectives[0]!.id;
+      const base = result.exercises.find(isOpen) as Raw;
+      const family = [1, 2].map((n) => ({ ...base, objectiveId, familyId: FAMILY, prompt: `Pytanie dogenerowane numer ${n}: co zmienił chrzest Polski?` }));
+      const keywords = {
+        exerciseType: "lesson_keywords", objectiveId, familyId: FAMILY,
+        keywordOptions: [{ id: "k1", text: "Europy" }, { id: "k2", text: "władzę" }, { id: "k3", text: "cukry" }, { id: "k4", text: "światła" }],
+        keyOptionIds: ["k1", "k2"], answer: "Europy, władzę", acceptedAnswers: [], focus: [], sourceRefs: [{ quote: "wzmocnił władzę księcia" }],
+      };
+      return { exercises: [...family, keywords], examples: {} };
+    });
+    const { runId, deckId } = await createSchoolLesson(services, {
+      subjectTitlePl: "Przyroda i historia", topicTitlePl: "Materiał pilotażowy", material: SCHOOL_MATERIAL, poolSize: 40, clientRequestId: randomUUID(),
+    });
+    await executeLessonGeneration(services, runId);
+    expect((await readGeneration(services, runId)).state).toBe("succeeded");
+    const draft = (await readLessonDeck(services, deckId)).draft!;
+    const objectiveId = draft.objectiveIds[1]!;
+
+    regenerating = true;
+    const FIXED = "Pytanie dogenerowane numer 1: wyjaśnij, co zmienił chrzest Polski?";
+    reviewer.behavior = (input) => {
+      const n = nOf(input, (exercise) => exercise.familyId !== undefined && exercise.exerciseType === "lesson_open_answer");
+      return verdictsFor(input, { [n]: { n, verdict: "fix", category: "unclear_instruction", reasonPl: "Doprecyzowano pytanie.", exercise: { ...shown(input, n), prompt: FIXED } } });
+    };
+    const callsBefore = reviewer.inputs.length;
+    const { runId: regenRunId, after } = await regenerate(services, deckId, draft, 3, objectiveId);
+    expect((await readGeneration(services, regenRunId)).state).toBe("succeeded");
+    expect(reviewer.inputs.length).toBe(callsBefore + 1);
+    // Krytyk widzi rodzinę z zakresem przebiegu dogenerowania i oddaje ją bez zmian.
+    const scopedFamily = (reviewer.inputs.at(-1)!.exercises.find(({ exercise }) => isOpen(exercise))!.exercise as Raw).familyId as string;
+    expect(scopedFamily).not.toBe(FAMILY);
+    expect(scopedFamily.startsWith(FAMILY)).toBe(true);
+    const family = after.exercises.filter((exercise) => exercise.familyId === scopedFamily);
+    expect(family.filter(isOpen).map((exercise) => exercise.prompt).sort()).toEqual([FIXED, "Pytanie dogenerowane numer 2: co zmienił chrzest Polski?"]);
+    expect(family.filter((exercise) => exercise.exerciseType === "lesson_keywords")).toHaveLength(1);
+    const report = (await reportOf(after.id))!;
+    expect(report.changed).toEqual([expect.objectContaining({ exerciseId: family.find((exercise) => exercise.prompt === FIXED)!.id, reasonPl: "Doprecyzowano pytanie." })]);
+  });
+
+  it("DTO po usunięciu zagadnienia: zagadnienia i usunięcia tylko bieżącego tematu, status liczony od nowa", async () => {
+    const { services, reviewer } = await world({ execution: MAIN_BATCH_ONLY });
+    reviewer.behavior = (input) => {
+      const call = reviewer.inputs.indexOf(input);
+      if (call === 1) {
+        const n = nOf(input, (exercise) => exercise.exerciseType === "lesson_choice");
+        return verdictsFor(input, { [n]: { n, verdict: "drop", category: "wrong_answer", reasonPl: "Błędny klucz." } });
+      }
+      if (call === 2) throw new GenerationProviderError("timeout");
+      return verdictsFor(input, {});
+    };
+    const { draft } = await generateChapter(services, CHAPTER_MATERIAL);
+    expect(draft.objectiveIds).toHaveLength(3);
+    const [first, second, third] = draft.objectiveIds as [string, string, string];
+    expect(draft.review).toMatchObject({ status: "partial", dropped: [expect.objectContaining({ reasonPl: "Błędny klucz." })] });
+    const stored = (await reportOf(draft.id))!;
+    expect(stored.objectives.find((objective) => objective.objectiveId === third)).toMatchObject({ status: "unreviewed", reason: "timeout" });
+
+    const kept = draft.dynamicTopic!.objectives.filter((objective) => objective.id === first);
+    const edited = await editLessonDraft(services, draft.id, {
+      expectedEditNumber: draft.editNumber,
+      dynamicTopic: { objectives: kept.map((objective) => ({ id: objective.id, titlePl: objective.titlePl, cards: objective.cards })) },
+    });
+    expect(edited.objectiveIds).toEqual([first]);
+    expect(edited.review).toEqual(expect.objectContaining({
+      status: "reviewed",
+      objectives: [{ objectiveId: first, title: kept[0]!.titlePl, status: "reviewed" }],
+      dropped: [],
+    }));
+    const shown = JSON.stringify(edited.review);
+    expect(shown).not.toContain(second);
+    expect(shown).not.toContain(third);
+    // Raport w kontekście zostaje nietknięty.
+    expect((await reportOf(draft.id))!.objectives).toHaveLength(3);
   });
 
   it("prywatność: krytyk nie dostaje tematów zdań, imienia ani polecenia rodzica", async () => {

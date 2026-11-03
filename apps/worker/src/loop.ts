@@ -1,3 +1,5 @@
+import { reviewerEnabled } from "@learning/server";
+
 export interface WorkerLoopOptions {
   pollMs: number;
   staleMs: number;
@@ -31,6 +33,22 @@ export function workerLoopSettingsFromEnv(env: Record<string, string | undefined
     pollMs: positiveSetting(env, "WORKER_POLL_MS", 2_000),
     staleMs: positiveSetting(env, "WORKER_HEALTH_STALE_MS", 900_000),
   };
+}
+
+/**
+ * Ostrzeżenie startowe (bez przerywania startu): przy włączonym krytyku lekcji najdłuższy przebieg
+ * generowania (`UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS` + `UMIEM_REVIEWER_PHASE_BUDGET_MS`) nie mieści się
+ * w progu zdrowia `WORKER_HEALTH_STALE_MS`, więc health mógłby zgłosić „stale” w trakcie poprawnego przebiegu.
+ * `env` po `withConfigDefaults`; nieczytelne liczby zostawiamy walidacji przy składaniu usług.
+ */
+export function reviewerHealthBudgetWarning(env: Record<string, string | undefined>): string | undefined {
+  if (!reviewerEnabled(env)) return undefined;
+  const runTimeoutMs = Number(env.UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS);
+  const phaseBudgetMs = Number(env.UMIEM_REVIEWER_PHASE_BUDGET_MS);
+  if (!Number.isFinite(runTimeoutMs) || !Number.isFinite(phaseBudgetMs)) return undefined;
+  const { staleMs } = workerLoopSettingsFromEnv(env);
+  if (runTimeoutMs + phaseBudgetMs < staleMs) return undefined;
+  return `[worker] UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS (${runTimeoutMs}) + UMIEM_REVIEWER_PHASE_BUDGET_MS (${phaseBudgetMs}) ≥ WORKER_HEALTH_STALE_MS (${staleMs}) — długi przebieg generowania lekcji z krytykiem może oznaczyć workera jako „stale”; podnieś WORKER_HEALTH_STALE_MS albo obniż budżety`;
 }
 
 /** Single-flight poll loop; the next pass is scheduled after the current one ends. */

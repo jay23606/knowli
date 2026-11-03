@@ -348,7 +348,6 @@ describe.skipIf(!dumpEnv)("próba „tylko przegląd” krytyka lekcji na prawdz
             const objective = cardOf.get(objectiveId)!;
             return { title: objective.title, ...(objective.kind === undefined ? {} : { kind: objective.kind }), card: objective.card };
           },
-          familyScope: null,
           callsLeft: { value: reviewer.policy.maxCallsPerRun },
           reviewDeadlineAtMs: Date.now() + reviewer.policy.phaseBudgetMs,
           cancelPollMs: 2000,

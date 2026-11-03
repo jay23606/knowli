@@ -153,6 +153,7 @@ describe("createOpenAiLessonReviewer — żądanie", () => {
       expect(user!.content[0]!.text).toContain("--- MATERIAL (begin) ---");
       expect(user!.content[0]!.text).toContain("--- CARD EXAMPLES (begin) ---");
       expect(user!.content[0]!.text).not.toContain("OBJECTIVE");
+      expect(user!.content[0]!.text.split("\n")).toContain("Answer language: en-GB; instruction language: pl-PL.");
     }
     // wspólny prefiks: system i część 1 bajt w bajt takie same dla różnych zagadnień
     expect(first!.messages[0]).toEqual(second!.messages[0]);

@@ -88,18 +88,18 @@ export function reviewNoticeFor(
   note: LessonReviewDto["notes"][number] | undefined,
 ): ExerciseReviewNotice | null {
   if (!changed && !note) return null;
-  const finding = (category: ReviewCategoryDto, reason: string) =>
-    fillTemplate(messages.lessons.reviewNote, { category: reviewCategoryLabel(category), reason });
+  const finding = (template: string, category: ReviewCategoryDto, reason: string) =>
+    fillTemplate(template, { category: reviewCategoryLabel(category), reason });
   const lines: string[] = [];
   if (changed) {
-    lines.push(finding(changed.category, changed.reasonPl));
+    lines.push(finding(messages.lessons.reviewChangedReason, changed.category, changed.reasonPl));
     lines.push(fillTemplate(messages.lessons.reviewChangedBefore, { before: changed.beforePl }));
     if (changed.addedVariants.length > 0) {
       lines.push(fillTemplate(messages.lessons.reviewAddedVariants, { variants: changed.addedVariants.join(", ") }));
     }
   }
   if (note) {
-    lines.push(finding(note.category, note.reasonPl));
+    lines.push(finding(messages.lessons.reviewNote, note.category, note.reasonPl));
     if (note.fixRejected) lines.push(messages.lessons.reviewNoteFixRejected);
   }
   return { changed: changed !== undefined, lines };

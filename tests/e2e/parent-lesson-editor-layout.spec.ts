@@ -749,8 +749,9 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     await expect(banner).not.toHaveAttribute("role", "alert");
     await expect(banner).toHaveAttribute("data-review-status", "reviewed");
     await expect(page.getByTestId("lesson-review-summary")).toHaveText(
-      "Automatyczna kontrola jakości — poprawione: 1 · usunięte: 1 · dogenerowane: 2 · uwagi: 1.",
+      "Automatyczna kontrola jakości (łącznie we wszystkich generowaniach) — poprawione: 1 · usunięte: 1 · uwagi: 1.",
     );
+    await expect(page.getByTestId("lesson-review-topped-up")).toHaveText("Dogenerowano 2 ćwiczeń, by uzupełnić brakujące etapy.");
     await expect(page.getByTestId("lesson-review-scope")).toHaveText(messages.lessons.reviewBannerScope);
     // niebieski baner przy pełnej kontroli
     expect(await alertBackgroundIs(banner, "blue")).toBe(true);
@@ -789,7 +790,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     await expect(badge).toHaveText(messages.lessons.reviewChangedBadge);
     const note = page.getByTestId("exercise-review-0");
     await expect(note).not.toHaveAttribute("role", "alert");
-    await expect(note).toContainText("Uwaga kontroli (niejednoznaczne): Dwie formy pasowały do luki.");
+    await expect(note).toContainText("Poprawka kontroli (niejednoznaczne): Dwie formy pasowały do luki.");
     await expect(note).toContainText("Było: He ___ football (1). → plays");
     await expect(note).toContainText("Dodane warianty: is playing");
     await expect(page.getByTestId("exercise-0")).toHaveAttribute("aria-describedby", "exercise-review-0-text");
@@ -816,6 +817,12 @@ test("kontrola jakości: wariant bez zmian, część niesprawdzona, lekcja niesp
       status: "reviewed", color: "blue", summary: messages.lessons.reviewBannerClean, partial: null, suspicious: null,
     },
     {
+      // dogenerowanie pod etapy nie jest ustaleniem kontroli: „nie znalazła problemów” i osobny wiersz
+      review: { ...reviewed, changed: [], dropped: [], notes: [], toppedUp: 3 },
+      status: "reviewed", color: "blue", summary: messages.lessons.reviewBannerClean, partial: null, suspicious: null,
+      toppedUp: "Dogenerowano 3 ćwiczeń, by uzupełnić brakujące etapy.",
+    },
+    {
       review: {
         ...reviewed, status: "partial",
         objectives: [
@@ -824,8 +831,8 @@ test("kontrola jakości: wariant bez zmian, część niesprawdzona, lekcja niesp
           { objectiveId: "english_grammar.present_simple.questions", title: "Pytania", status: "reviewed" },
         ],
       },
-      status: "partial", color: "yellow", summary: "Automatyczna kontrola jakości — poprawione: 1 · usunięte: 1 · dogenerowane: 2 · uwagi: 1.",
-      partial: messages.lessons.reviewPartial.replace("{list}", `${TITLE_A} (przekroczony czas); ${TITLE_B} (osiągnięto limit wywołań)`),
+      status: "partial", color: "yellow", summary: "Automatyczna kontrola jakości (łącznie we wszystkich generowaniach) — poprawione: 1 · usunięte: 1 · uwagi: 1.",
+      partial: messages.lessons.reviewPartial.replace("{list}", `${TITLE_A} (przekroczony czas); ${TITLE_B} (osiągnięto limit sprawdzeń na jedno generowanie)`),
       suspicious: null,
     },
     {
@@ -855,6 +862,8 @@ test("kontrola jakości: wariant bez zmian, część niesprawdzona, lekcja niesp
     if (item.summary !== messages.lessons.reviewBannerClean) await expect(banner).not.toContainText(messages.lessons.reviewBannerClean);
     if (item.partial) await expect(page.getByTestId("lesson-review-partial")).toHaveText(item.partial);
     else await expect(page.getByTestId("lesson-review-partial")).toHaveCount(0);
+    if (item.toppedUp) await expect(page.getByTestId("lesson-review-topped-up")).toHaveText(item.toppedUp);
+    else if (item.review.toppedUp === 0) await expect(page.getByTestId("lesson-review-topped-up")).toHaveCount(0);
     if (item.suspicious) await expect(page.getByTestId("lesson-review-suspicious-0")).toHaveText(item.suspicious);
     else await expect(page.getByTestId("lesson-review-suspicious-0")).toHaveCount(0);
     // zastrzeżenie o zakresie tylko przy liczbach zmian (tu: wariant „część niesprawdzona”)

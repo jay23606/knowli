@@ -5,10 +5,11 @@ import type { LessonExerciseDraft } from "../../../domain/lessons/types";
 import type { ReviewerDeps } from "../../../config";
 import { GenerationProviderError } from "../../../ports/generation-error";
 import { FakeLessonReviewer, FakeLlmProvider } from "../../../providers/fake";
-import { buildLessonPayload, buildPoolInput, type ObjectiveGenerationLimits } from "./lesson-drafts";
+import { buildPoolInput, type ObjectiveGenerationLimits } from "./lesson-drafts";
+import { buildLessonPayload } from "./lesson-payload";
 import { LessonGenerationCancelledError } from "./lesson-generation-control";
 import { acceptFreshLessonPool } from "./lesson-pool-acceptance";
-import { exerciseFingerprint, reviewFreshExercises } from "./lesson-review";
+import { reviewFreshExercises, reviewRunReport, type ReviewPhaseResult } from "./lesson-review";
 
 const registry = createProductionSubjectRegistry();
 const subject = registry.getSubject("english_grammar")!;
@@ -48,7 +49,6 @@ function ctx(reviewer: ReviewerDeps | undefined, fresh: readonly LessonExerciseD
     examples: {} as Record<string, string[]>,
     objectiveOrder: OBJECTIVES,
     objectiveContext: (objectiveId: string) => ({ title: `Tytuł ${objectiveId.split(".").at(-1)}`, card: "Karta: treść" }),
-    familyScope: null,
     callsLeft: { value: 12 },
     reviewDeadlineAtMs: Date.now() + 60_000,
     cancelPollMs: 1_000,
@@ -65,21 +65,6 @@ function shownExercise(reviewer: FakeLessonReviewer, call: number, n: number): R
 
 afterEach(() => {
   vi.restoreAllMocks();
-});
-
-describe("exerciseFingerprint", () => {
-  it("nie zależy od kolejności kluczy (także zagnieżdżonych) ani od pól undefined; przetrwa JSON jak jsonb", () => {
-    const a = { b: 1, a: { y: [1, { q: 2, p: 1 }], x: "t" }, c: undefined };
-    const b = { a: { x: "t", y: [1, { p: 1, q: 2 }] }, b: 1 };
-    expect(exerciseFingerprint(a)).toBe(exerciseFingerprint(b));
-    expect(exerciseFingerprint(JSON.parse(JSON.stringify(a)) as Record<string, unknown>)).toBe(exerciseFingerprint(a));
-    expect(exerciseFingerprint({ ...b, b: 2 })).not.toBe(exerciseFingerprint(b));
-    expect(exerciseFingerprint(a)).toMatch(/^[0-9a-f]{64}$/u);
-  });
-
-  it("kolejność elementów tablic ma znaczenie", () => {
-    expect(exerciseFingerprint({ list: [1, 2] })).not.toBe(exerciseFingerprint({ list: [2, 1] }));
-  });
 });
 
 describe("reviewFreshExercises", () => {
@@ -131,12 +116,13 @@ describe("reviewFreshExercises", () => {
     reviewer.delayMs = 20;
     const inFlightAtStart: number[] = [];
     reviewer.behavior = (input) => {
-      inFlightAtStart.push(reviewer.maxInFlight);
+      inFlightAtStart.push(reviewer.inFlight);
       return input.exercises.map((exercise) => ({ n: exercise.n, verdict: "ok" }));
     };
     await reviewFreshExercises(ctx(ready(reviewer, { concurrency: 2 }), fresh));
     expect(reviewer.inputs.map((input) => input.objective.id)[0]).toBe("affirmative_base");
     expect(inFlightAtStart[0]).toBe(1);
+    expect(Math.max(...inFlightAtStart)).toBe(2);
     expect(reviewer.maxInFlight).toBe(2);
   });
 
@@ -240,13 +226,15 @@ describe("reviewFreshExercises", () => {
     const fresh = await freshPool(OBJECTIVES.slice(0, 2));
     const reviewer = new FakeLessonReviewer();
     const WORD = "swims";
+    // Odpowiedź B różni się od A (bez duplikatu odpowiedzi), ale ma ten sam klucz ujawnienia.
+    const WORD_B = "Swims";
     reviewer.behavior = (input) => {
       const call = reviewer.inputs.indexOf(input);
       const n = input.exercises.find(({ exercise }) => exercise.exerciseType === (call === 0 ? "lesson_choice" : "lesson_open_answer"))!.n;
       const exercise = { ...input.exercises[n - 1]!.exercise };
       const fix = call === 0
         ? { ...exercise, answer: WORD, options: [{ id: "a", text: WORD }, { id: "b", text: `${WORD}x` }], correctOption: "a" }
-        : { ...exercise, answer: WORD, focus: [WORD] };
+        : { ...exercise, answer: WORD_B, focus: [WORD_B] };
       return [{ n, verdict: "fix", category: "unnatural_language", reasonPl: `Poprawka ${call + 1}.`, exercise: fix }];
     };
     const result = await reviewFreshExercises(ctx(ready(reviewer), fresh));
@@ -255,16 +243,18 @@ describe("reviewFreshExercises", () => {
     const notes = [...result.meta.values()].flatMap((entry) => (entry.note ? [entry.note] : []));
     expect(notes).toEqual([{ category: "unnatural_language", reasonPl: "Poprawka 2.", fixRejected: true }]);
     expect(result.exercises.filter((exercise) => exercise.answer === WORD)).toHaveLength(1);
+    expect(result.exercises.some((exercise) => exercise.answer === WORD_B)).toBe(false);
 
-    // Kontrola: ta sama poprawka B sama (bez poprawki A) jest poprawna — odrzucenie wynika z A.
+    // Kontrola: ta sama poprawka B sama (bez poprawki A) jest poprawna — odrzucenie wynika z ujawnienia przez A.
     const alone = new FakeLessonReviewer();
     alone.behavior = (input) => {
       if (alone.inputs.indexOf(input) === 0) return [];
       const n = input.exercises.find(({ exercise }) => exercise.exerciseType === "lesson_open_answer")!.n;
-      return [{ n, verdict: "fix", category: "unnatural_language", reasonPl: "Poprawka 2.", exercise: { ...input.exercises[n - 1]!.exercise, answer: WORD, focus: [WORD] } }];
+      return [{ n, verdict: "fix", category: "unnatural_language", reasonPl: "Poprawka 2.", exercise: { ...input.exercises[n - 1]!.exercise, answer: WORD_B, focus: [WORD_B] } }];
     };
     const control = await reviewFreshExercises(ctx(ready(alone), fresh));
     expect([...control.meta.values()].filter((entry) => entry.changed)).toHaveLength(1);
+    expect(control.exercises.some((exercise) => exercise.answer === WORD_B)).toBe(true);
   });
 
   it("nieprzewidziany błąd walidacji poprawki: zagadnienie unreviewed/failed bez zmian, reszta przejrzana", async () => {
@@ -355,3 +345,100 @@ describe("reviewFreshExercises", () => {
     expect(reviewer.inputs[0]!.exercises[independent]!.exercise).toEqual({ ...shape, objectiveId: "affirmative_base" });
   });
 });
+
+describe("reviewFreshExercises — błąd poza partią", () => {
+  it("wyjątek przy przygotowaniu wejścia: oryginały, wszystkie zagadnienia unreviewed/failed, w dzienniku tylko klasa błędu", async () => {
+    const fresh = await freshPool(OBJECTIVES.slice(0, 2));
+    const reviewer = new FakeLessonReviewer();
+    const throwing = {
+      ...subject,
+      get prompts(): never {
+        throw new TypeError("treść ćwiczenia w komunikacie");
+      },
+    };
+    const logs: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => void logs.push(args.map(String).join(" ")));
+    const result = await reviewFreshExercises(ctx(ready(reviewer), fresh, { subject: throwing }));
+    result.exercises.forEach((exercise, index) => expect(exercise).toBe(fresh[index]));
+    expect(result.exercises).toHaveLength(fresh.length);
+    expect(result.objectives).toEqual(OBJECTIVES.slice(0, 2).map((objectiveId) => ({ objectiveId, status: "unreviewed", reason: "failed" })));
+    expect(result.meta.size).toBe(0);
+    expect(result.droppedCount).toBe(0);
+    expect(reviewer.inputs).toHaveLength(0);
+    expect(logs).toEqual(["[lesson-review] run=run-1 status=unreviewed reason=failed error=TypeError"]);
+  });
+
+  it("anulowanie nadal przechodzi dalej", async () => {
+    const fresh = await freshPool();
+    const reviewer = new FakeLessonReviewer();
+    reviewer.behavior = () => {
+      throw new LessonGenerationCancelledError("superseded");
+    };
+    await expect(reviewFreshExercises(ctx(ready(reviewer), fresh))).rejects.toBeInstanceOf(LessonGenerationCancelledError);
+  });
+});
+
+describe("reviewRunReport — fazy przebiegu", () => {
+  const phase = (exercises: LessonExerciseDraft[], objectives: ReviewPhaseResult["objectives"]): ReviewPhaseResult => ({
+    exercises, meta: new Map(), objectives, dropped: [], droppedCount: 0,
+  });
+
+  it("zagadnienie przejrzane w partii głównej zostaje reviewed, gdy runda pod etap jest unreviewed; ćwiczenia rundy machine.reviewed=false", async () => {
+    const [main, topUp] = splitPool(await freshPool());
+    for (const reason of ["limit", "timeout", "failed"] as const) {
+      const report = reviewRunReport({
+        phases: [
+          phase(main, [{ objectiveId: OBJECTIVES[0]!, status: "reviewed" }]),
+          phase(topUp, [{ objectiveId: OBJECTIVES[0]!, status: "unreviewed", reason }]),
+        ],
+        saved: [...main, ...topUp].map((draft, index) => ({ draft, exerciseId: `e${index}` })),
+        subject,
+        toppedUp: [],
+      });
+      expect(report.objectives).toEqual([{ objectiveId: OBJECTIVES[0], status: "reviewed" }]);
+      expect(report.status).toBe("reviewed");
+      expect(report.machine.map((entry) => entry.reviewed)).toEqual([...main.map(() => true), ...topUp.map(() => false)]);
+    }
+  });
+
+  it("partia główna unreviewed nie staje się reviewed po przejrzanej rundzie", async () => {
+    const [main, topUp] = splitPool(await freshPool());
+    const report = reviewRunReport({
+      phases: [
+        phase(main, [{ objectiveId: OBJECTIVES[0]!, status: "unreviewed", reason: "timeout" }]),
+        phase(topUp, [{ objectiveId: OBJECTIVES[0]!, status: "reviewed" }]),
+      ],
+      saved: [...main, ...topUp].map((draft, index) => ({ draft, exerciseId: `e${index}` })),
+      subject,
+      toppedUp: [],
+    });
+    expect(report.objectives).toEqual([{ objectiveId: OBJECTIVES[0], status: "unreviewed", reason: "timeout" }]);
+    expect(report.machine.map((entry) => entry.reviewed)).toEqual([...main.map(() => false), ...topUp.map(() => true)]);
+  });
+
+  it("suspicious (w partii głównej albo w rundzie) oznacza zagadnienie; ćwiczenia fazy podejrzanej machine.reviewed=false", async () => {
+    const [main, topUp] = splitPool(await freshPool());
+    const saved = [...main, ...topUp].map((draft, index) => ({ draft, exerciseId: `e${index}` }));
+    const single = reviewRunReport({ phases: [phase([...main, ...topUp], [{ objectiveId: OBJECTIVES[0]!, status: "suspicious" }])], saved, subject, toppedUp: [] });
+    expect(single.objectives).toEqual([{ objectiveId: OBJECTIVES[0], status: "suspicious" }]);
+    expect(single.machine.every((entry) => !entry.reviewed)).toBe(true);
+
+    const late = reviewRunReport({
+      phases: [
+        phase(main, [{ objectiveId: OBJECTIVES[0]!, status: "reviewed" }]),
+        phase(topUp, [{ objectiveId: OBJECTIVES[0]!, status: "suspicious" }]),
+      ],
+      saved,
+      subject,
+      toppedUp: [],
+    });
+    expect(late.objectives).toEqual([{ objectiveId: OBJECTIVES[0], status: "suspicious" }]);
+    expect(late.machine.map((entry) => entry.reviewed)).toEqual([...main.map(() => true), ...topUp.map(() => false)]);
+  });
+});
+
+/** Pula podzielona na „partię główną” i „rundę pod etap” (po połowie). */
+function splitPool(pool: LessonExerciseDraft[]): [LessonExerciseDraft[], LessonExerciseDraft[]] {
+  const half = Math.ceil(pool.length / 2);
+  return [pool.slice(0, half), pool.slice(half)];
+}
