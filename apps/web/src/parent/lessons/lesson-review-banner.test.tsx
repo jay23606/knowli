@@ -115,7 +115,8 @@ describe("LessonReviewBanner", () => {
     const toggle = /<button[^>]*data-testid="lesson-review-details-toggle"[^>]*>/.exec(markup)![0];
     expect(toggle).toContain('aria-expanded="false"');
     const controls = /aria-controls="([^"]+)"/.exec(toggle)![1]!;
-    expect(markup).toMatch(new RegExp(`<div[^>]*id="${controls.replace(/[:]/g, "\\:")}"[^>]*hidden`));
+    const escapedControls = controls.replace(/[.*+?^${}()|[\]\\:]/g, "\\$&");
+    expect(markup).toMatch(new RegExp(`<div[^>]*id="${escapedControls}"[^>]*hidden`));
   });
 
   it("żółty baner, gdy kontrola nie objęła całej lekcji; bez szczegółów, gdy nie ma modelu ani usuniętych", () => {
