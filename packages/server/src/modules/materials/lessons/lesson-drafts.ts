@@ -1984,7 +1984,8 @@ export async function executeLessonGeneration(services: Services, runId: string,
         runStimuli: earlierExercises,
         runAnswers: earlierAnswers,
         review: reviewPhase,
-        reviewReserveMs: reviewerReady ? reviewer.policy.timeoutMs : 0,
+        // Pełny limit krytyka plus rezerwa finalizacji (okno krytyka kończy się 30 s przed deadline'em fazy).
+        reviewReserveMs: reviewerReady ? reviewer.policy.timeoutMs + REVIEW_FINALIZATION_RESERVE_MS : 0,
       });
       uniqueValid = [...uniqueValid, ...topUp.added];
       rejectedCount += topUp.rejectedCount;
