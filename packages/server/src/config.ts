@@ -545,7 +545,10 @@ export function reviewerPublicServiceFromEnv(env: Record<string, string | undefi
   if (env.UMIEM_FAKE_PROVIDERS === "1") return "fake-reviewer-1";
   try {
     const connection = reviewerConnectionFromEnv(env);
-    return connection === undefined ? undefined : `${new URL(connection.baseUrl).host} · ${connection.model}`;
+    if (connection === undefined) return undefined;
+    // Te same opcje pośrednika co w reviewerFromEnv: konfiguracja, której worker nie utworzy, nie dostaje etykiety.
+    chatRequestExtrasFromEnv({ ...env, UMIEM_REVIEWER_BASE_URL: connection.baseUrl }, "UMIEM_REVIEWER");
+    return `${new URL(connection.baseUrl).host} · ${connection.model}`;
   } catch {
     return undefined;
   }
