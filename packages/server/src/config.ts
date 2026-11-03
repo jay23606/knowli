@@ -527,7 +527,8 @@ export function reviewerFromEnv(env: Record<string, string | undefined>, usage?:
       model,
       maxOutputTokens,
       timeoutMs: policy.timeoutMs,
-      requestExtras: chatRequestExtrasFromEnv(env, "UMIEM_REVIEWER"),
+      // Rozstrzygnięty adres (z domyślnym), żeby opcje OpenRouter działały także bez withConfigDefaults.
+      requestExtras: chatRequestExtrasFromEnv({ ...env, UMIEM_REVIEWER_BASE_URL: baseUrl }, "UMIEM_REVIEWER"),
       ...(usage ? { usage } : {}),
     }),
   };

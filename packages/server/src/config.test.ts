@@ -359,6 +359,8 @@ describe("reviewerFromEnv — krytyk lekcji", () => {
   it("błędna opcja pośrednika (UMIEM_REVIEWER_REASONING) zatrzymuje start", () => {
     expect(() => reviewerFromEnv(withConfigDefaults({ ...withKey, UMIEM_REVIEWER_REASONING: "turbo" }))).toThrow(/UMIEM_REVIEWER_REASONING/);
     expect(reviewerFromEnv(withConfigDefaults({ ...withKey, UMIEM_REVIEWER_REASONING: "low" })).state).toBe("ready");
+    // bez withConfigDefaults: domyślny adres OpenRouter też dopuszcza opcje pośrednika
+    expect(reviewerFromEnv({ ...withKey, UMIEM_REVIEWER_REASONING: "low" }).state).toBe("ready");
   });
 
   it("http poza test/development zatrzymuje start", () => {
