@@ -141,3 +141,98 @@ describe("silnik lekcji bez literałów identyfikatorów przedmiotów", () => {
     expect(withoutComments('const url = "http://x"; // "school"')).toBe('const url = "http://x"; ');
   });
 });
+
+/**
+ * Agent puli (`domain/lessons/agent/**`, etap 1 #237) to czysty rdzeń: nie zna
+ * SDK modeli, bazy, modułów, providerów, portów, modułów wbudowanych Node ani konfiguracji środowiska,
+ * a czas, losowość i środowisko dostaje wyłącznie jawnie. Skan musi znaleźć
+ * pliki rdzenia (brak katalogu albo zła ścieżka kończy test błędem, nie zielenią).
+ */
+const agentDir = join(lessonsDir, "agent");
+
+/** Specyfikatory z `from "x"`, `import "x"`, `import("x")` i `require("x")` (komentarze usunięte wcześniej). */
+function importSpecifiers(source: string): string[] {
+  const pattern = /\b(?:from|import|require)\s*\(?\s*["']([^"']+)["']/gu;
+  return [...source.matchAll(pattern)].map((match) => match[1]!);
+}
+
+/** Czy specyfikator łamie granicę czystego rdzenia agenta. */
+function isForbiddenAgentImport(specifier: string): boolean {
+  if (specifier === "ai" || specifier.startsWith("ai/")) return true;
+  if (specifier.startsWith("@openrouter/")) return true;
+  // Moduły wbudowane Node (pliki, sieć, `crypto`, `perf_hooks`) to I/O, losowość albo czas.
+  if (specifier.startsWith("node:")) return true;
+  if (specifier === "drizzle-orm" || specifier.startsWith("drizzle-orm/")) return true;
+  const segments = specifier.split("/");
+  if (segments.some((segment) => segment === "modules" || segment === "providers" || segment === "ports")) return true;
+  return /^config([.-]|$)/u.test(segments[segments.length - 1] ?? "");
+}
+
+const FORBIDDEN_AGENT_TOKENS: readonly RegExp[] = [
+  /\bDate\.now\s*\(/u,
+  /\bnew\s+Date\s*\(/u,
+  /\bMath\.random\s*\(/u,
+  /\bcrypto\.randomUUID\s*\(/u,
+  /\bperformance\.now\s*\(/u,
+  /\bprocess\.env\b/u,
+];
+
+function agentViolations(source: string): string[] {
+  const code = withoutComments(source);
+  return [
+    ...importSpecifiers(code).filter(isForbiddenAgentImport).map((specifier) => `import "${specifier}"`),
+    ...FORBIDDEN_AGENT_TOKENS.filter((token) => token.test(code)).map((token) => `użycie ${token.source}`),
+  ];
+}
+
+function agentSources(): string[] {
+  try {
+    return collectSources(agentDir, () => false);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+describe("czysty rdzeń agenta puli (domain/lessons/agent)", () => {
+  it("żaden plik agenta nie importuje zakazanych modułów ani nie sięga po czas, losowość i środowisko", () => {
+    const files = agentSources();
+    // Dowód, że skan rzeczywiście znajduje pliki rdzenia (nie fałszywie zielony przy złej ścieżce).
+    expect(files.length).toBeGreaterThan(5);
+    const offenders = files.flatMap((file) =>
+      agentViolations(readFileSync(file, "utf8")).map((violation) => `${relativeToServer(file)}: ${violation}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("wykrywa zakazane importy i użycia (dowód czułości testu)", () => {
+    expect(agentViolations('import { generateText } from "ai";')).toEqual(['import "ai"']);
+    expect(agentViolations('import x from "ai/rsc";')).toEqual(['import "ai/rsc"']);
+    expect(agentViolations('import { y } from "@openrouter/ai-sdk-provider";')).toEqual(['import "@openrouter/ai-sdk-provider"']);
+    expect(agentViolations('import { eq } from "drizzle-orm";')).toEqual(['import "drizzle-orm"']);
+    expect(agentViolations('import { a } from "../../modules/learning";')).toEqual(['import "../../modules/learning"']);
+    expect(agentViolations('import { a } from "../../providers/fake";')).toEqual(['import "../../providers/fake"']);
+    expect(agentViolations('import type { P } from "../../ports/llm";')).toEqual(['import "../../ports/llm"']);
+    expect(agentViolations('import { c } from "../../config";')).toEqual(['import "../../config"']);
+    expect(agentViolations('import { c } from "../../config-defaults";')).toEqual(['import "../../config-defaults"']);
+    expect(agentViolations('const m = await import("ai");')).toEqual(['import "ai"']);
+    expect(agentViolations("const t = Date.now();")).toHaveLength(1);
+    expect(agentViolations("const r = Math.random();")).toHaveLength(1);
+    expect(agentViolations("const e = process.env.KEY;")).toHaveLength(1);
+    expect(agentViolations("const d = new Date();")).toHaveLength(1);
+    expect(agentViolations("const d = new  Date(0);")).toHaveLength(1);
+    expect(agentViolations("const id = crypto.randomUUID();")).toHaveLength(1);
+    expect(agentViolations("const t = performance.now();")).toHaveLength(1);
+    expect(agentViolations('import { randomUUID } from "node:crypto";')).toEqual(['import "node:crypto"']);
+    expect(agentViolations('import { readFileSync } from "node:fs";')).toEqual(['import "node:fs"']);
+  });
+
+  it("dopuszcza importy rdzenia i pomija komentarze (dowód braku fałszywych alarmów)", () => {
+    expect(agentViolations('import { a } from "../exposure-leaks";\nimport { b } from "./plan";')).toEqual([]);
+    expect(agentViolations('import { c } from "../card-exposure-sources";')).toEqual([]);
+    expect(agentViolations('import { z } from "zod";')).toEqual([]);
+    expect(agentViolations('import { a } from "../airline";')).toEqual([]);
+    expect(agentViolations('import { n } from "./node-order";\nconst d: Date | undefined = undefined;')).toEqual([]);
+    expect(agentViolations('// Date.now() i process.env tylko w opisie\n/* import x from "ai"; */\nconst ok = 1;')).toEqual([]);
+  });
+});

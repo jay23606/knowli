@@ -7,6 +7,7 @@ import type {
   LessonTopic,
   SubjectModule,
 } from "../../types";
+import { schoolAgentPolicy } from "./agent-policy";
 import { schoolPrompts } from "./prompts";
 import { validateSchoolExercise, validateSchoolPool } from "./validators";
 
@@ -100,4 +101,6 @@ export const schoolSubject: SubjectModule = {
     };
   },
   validatePoolExtra: validateSchoolPool,
+  // Polityka agenta puli: typy ślepe, sanityzacja i bramka podpowiedzi pytań otwartych.
+  agentPolicy: schoolAgentPolicy,
 };

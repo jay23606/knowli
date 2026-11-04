@@ -48,33 +48,56 @@ export interface FreshPoolResult {
   readonly droppedExplanations: number;
 }
 
+export interface SanitizedFreshDraft {
+  readonly draft: LessonExerciseDraft;
+  readonly droppedExplanation: boolean;
+  /** Liczba wariantów `acceptedAnswers` porzuconych jako redundantne wobec odpowiedzi kanonicznej. */
+  readonly droppedVariants: number;
+}
+
+/**
+ * Sanityzacja jednego świeżego ćwiczenia z wyjścia modelu — wspólna dla potoku
+ * `acceptFreshLessonPool` i kierownika agenta. Kolejność kroków jest częścią
+ * kontraktu: ton głosu → wyjaśnienie → puste tablice → dodatki ćwiczenia słuchowego
+ * → rodziny runu → warianty redundantne. Bez `stripParentAddedFlags` (woła go
+ * wywołujący). Warianty acceptedAnswers redundantne wobec odpowiedzi kanonicznej
+ * (np. skrótowa forma przeczenia „to be” przy pełnej) porzucamy — bez tego walidacja
+ * fazy 1 odrzucałaby całe ćwiczenie za wpis nieznoszący informacji (odpowiedź
+ * kanoniczna jest akceptowana automatycznie). Funkcja czysta.
+ */
+export function sanitizeFreshLessonDraft(
+  draft: LessonExerciseDraft,
+  subject: SubjectModule,
+  familyScope: string | null,
+): SanitizedFreshDraft {
+  const toned = withoutVoiceToneUnlessAllowed(draft, subject);
+  const explained = withoutInvalidExplanation(toned, subject);
+  const droppedExplanation = explained !== toned;
+  // Ćwiczenie słuchowe nie ma polecenia, podpowiedzi ani piktogramu: dodatek modelu usuwamy, nie odrzucamy ćwiczenia.
+  const stripped = stripListenChoiceExtras(withoutEmptyOptionalArrays(explained));
+  const scoped = familyScope === null ? stripped : scopeFamiliesToRun(stripped, familyScope);
+  const sanitized = withoutRedundantAcceptedVariants(scoped, subject.normalizer);
+  return {
+    draft: sanitized,
+    droppedExplanation,
+    droppedVariants: scoped.acceptedAnswers.length - sanitized.acceptedAnswers.length,
+  };
+}
+
 export function acceptFreshLessonPool(input: FreshPoolInput): FreshPoolResult {
   const { subject, topic } = input;
   const wellShaped = input.rawExercises.filter(isWellShapedRawExercise);
   const shapeRejected = input.rawExercises.length - wellShaped.length;
-  // Warianty acceptedAnswers redundantne wobec odpowiedzi kanonicznej (np.
-  // skrótowa forma przeczenia „to be” przy pełnej) porzucamy przy przyjęciu
-  // puli — bez tego walidacja fazy 1 odrzucałaby całe ćwiczenie za wpis
-  // nieznoszący informacji (odpowiedź kanoniczna jest akceptowana automatycznie).
+  // Sanityzacja per ćwiczenie (wspólna z kierownikiem agenta); liczniki porzuconych
+  // wyjaśnień i wariantów redundantnych składamy z jej wyników.
   let droppedAcceptedVariants = 0;
   let droppedExplanations = 0;
-  const drafts = wellShaped
-    .map(toExerciseDraft)
-    .map((draft) => withoutVoiceToneUnlessAllowed(draft, subject))
-    .map((draft) => {
-      const sanitized = withoutInvalidExplanation(draft, subject);
-      if (sanitized !== draft) droppedExplanations += 1;
-      return sanitized;
-    })
-    .map(withoutEmptyOptionalArrays)
-    // Ćwiczenie słuchowe nie ma polecenia, podpowiedzi ani piktogramu: dodatek modelu usuwamy, nie odrzucamy ćwiczenia.
-    .map(stripListenChoiceExtras)
-    .map((draft) => (input.familyScope === null ? draft : scopeFamiliesToRun(draft, input.familyScope)))
-    .map((draft) => {
-      const sanitized = withoutRedundantAcceptedVariants(draft, subject.normalizer);
-      droppedAcceptedVariants += draft.acceptedAnswers.length - sanitized.acceptedAnswers.length;
-      return sanitized;
-    });
+  const drafts = wellShaped.map(toExerciseDraft).map((draft) => {
+    const sanitized = sanitizeFreshLessonDraft(draft, subject, input.familyScope);
+    if (sanitized.droppedExplanation) droppedExplanations += 1;
+    droppedAcceptedVariants += sanitized.droppedVariants;
+    return sanitized.draft;
+  });
   // Czyszczenie świeżego wyjścia modelu hakiem przedmiotu (tylko generacja,
   // także dogenerowanie): odrzucenia liczą się do rejectedCount i są zliczone
   // po powodzie w rejectedReasons dla rodzica.

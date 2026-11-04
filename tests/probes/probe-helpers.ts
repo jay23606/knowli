@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -50,6 +50,34 @@ function realpathOrSelf(path: string): string {
   }
 }
 
+/**
+ * Ścieżka po rozwiązaniu dowiązań: istniejąca — `realpath` jej samej; nieistniejąca — `realpath`
+ * najbliższego istniejącego przodka z dołożonymi brakującymi członami. Wiszące dowiązanie (cel nie
+ * istnieje) jest rozwijane do swojego celu, bo zapis przez nie utworzyłby plik w celu.
+ */
+function realpathOfNearest(path: string): string {
+  const missing: string[] = [];
+  let current = path;
+  for (let guard = 0; guard < 64; guard += 1) {
+    if (existsSync(current)) return join(realpathOrSelf(current), ...missing);
+    let linkTarget: string | undefined;
+    try {
+      if (lstatSync(current).isSymbolicLink()) linkTarget = resolve(dirname(current), readlinkSync(current));
+    } catch {
+      // brak wpisu — idziemy do przodka
+    }
+    if (linkTarget !== undefined) {
+      current = linkTarget;
+      continue;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    missing.unshift(basename(current));
+    current = parent;
+  }
+  return join(current, ...missing);
+}
+
 function isInside(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -62,13 +90,19 @@ function isInside(root: string, path: string): boolean {
 export function resolveOutsideRepoPath(raw: string | undefined, name: string): string | undefined {
   if (raw === undefined || raw.trim() === "") return undefined;
   const resolved = resolve(raw);
-  // Katalog nadrzędny po rozwiązaniu dowiązań/junction, żeby link do repozytorium nie ominął sprawdzenia.
-  const directory = existsSync(dirname(resolved)) ? realpathOrSelf(dirname(resolved)) : dirname(resolved);
-  const candidates = [resolved, join(directory, basename(resolved))];
+  // Po rozwiązaniu dowiązań/junction, żeby link do repozytorium nie ominął sprawdzenia.
+  const candidates = [resolved, realpathOfNearest(resolved)];
   for (const root of repositoryRoots().flatMap((item) => [item, realpathOrSelf(item)])) {
     if (candidates.some((candidate) => isInside(root, candidate))) {
       throw new Error(`${name} wskazuje wewnątrz repozytorium (${root}) — plik z danymi podręcznika albo surowym wyjściem modelu nie może leżeć w checkoucie. Podaj ścieżkę poza repozytorium.`);
     }
   }
   return resolved;
+}
+
+/** Lista katalogów z `;` (ścieżki Windows mają `:`), każdy poza repozytorium. */
+export function runDirsOf(raw: string, name: string): string[] {
+  const dirs = raw.split(";").map((item) => item.trim()).filter((item) => item !== "");
+  if (dirs.length === 0) throw new Error(`${name}: pusta lista katalogów`);
+  return dirs.map((dir) => resolveOutsideRepoPath(dir, name)!);
 }

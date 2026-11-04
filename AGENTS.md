@@ -129,6 +129,7 @@ Przypadki użycia serwera są pogrupowane w cztery obszary produktu. Nowy plik u
 - Przypadki użycia koordynują autoryzację, odczyty, wywołanie reguł i zapisy. Kontrolery HTTP, procedury oRPC, MCP oraz zadania workera wywołują przypadki użycia; nie zawierają własnych kopii reguł biznesowych.
 - Dostęp do infrastruktury zamykaj w adapterach. Porty definiuj według potrzeb operacji biznesowej, nie jako kopię API biblioteki ani repozytorium dla każdej tabeli.
 - Nowe przedmioty dodawaj przez `SubjectModule` i rejestr. Nową mechanikę ćwiczenia rozwijaj jawnie w kontraktach, silniku, edytorze i widokach odpowiednich klientów.
+- Agent generujący pulę lekcji (etap 1 #237, `docs/architecture.md` §19.17) czerpie reguły przedmiotu z `SubjectModule.agentPolicy`; silnik i kierownik nie znają identyfikatorów przedmiotów. Pakiety `ai` i `@openrouter/*` są dozwolone wyłącznie w `tests/probes` (od etapu 2 także w jednym pliku adaptera); pilnuje tego `tests/ai-sdk-scope.test.ts`.
 
 ### Transakcje i historia
 

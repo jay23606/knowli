@@ -116,6 +116,71 @@ export interface DynamicTopicData {
   readonly titlePl: string;
   readonly objectives: readonly DynamicObjectiveData[];
 }
+
+/**
+ * Zagadnienie widziane przez agenta puli: cele lekcji w kolejności nauki z
+ * kartami i typami ćwiczeń przedmiotu (filtr `requiredTypes`). Typ żyje tutaj,
+ * a nie w `agent/`, żeby `SubjectModule` nie tworzył cyklu typów z agentem.
+ */
+export interface AgentObjective {
+  readonly id: string;
+  readonly titlePl: string;
+  readonly descriptionEn: string;
+  /** Rodzaj zagadnienia (`words` | `frame`), gdy przedmiot go używa. */
+  readonly kind?: DynamicObjectiveKind;
+  readonly cards: readonly { readonly title: string; readonly body: string }[];
+  readonly exerciseTypes: readonly LessonExerciseType[];
+}
+
+/** Zagadnienie surowego planu agenta (przed nadaniem pełnych identyfikatorów). */
+export interface RawPlanObjective {
+  slug: string;
+  titlePl: string;
+  descriptionEn: string;
+  kind: DynamicObjectiveKind;
+  cards: { title: string; body: string }[];
+  examples: string[];
+}
+
+/** Zastrzeżenie bramki ćwiczenia agenta: kod trafia do `Rejection.code`, powód do modelu. */
+export interface AgentGateFinding {
+  readonly code: string;
+  readonly reason: string;
+}
+
+/**
+ * Polityka przedmiotu dla agenta puli (`SubjectModule.agentPolicy`). Silnik
+ * agenta nie zna identyfikatorów przedmiotów — dziedzinowe reguły przychodzą
+ * wyłącznie tędy. Przedmiot bez polityki nie jest generowany agentem.
+ */
+export interface SubjectAgentPolicy {
+  /** Typy, które checker rozwiązuje „na ślepo” (bez klucza odpowiedzi). */
+  readonly blindSolveTypes: readonly LessonExerciseType[];
+  /** Typy, których warianty odpowiedzi sprawdza checker. */
+  readonly variantCheckTypes: readonly LessonExerciseType[];
+  /** Checker dostaje materiał lekcji (rozwiązanie wymaga materiału). */
+  readonly checkerNeedsMaterial: boolean;
+  readonly independentReserve: number;
+  readonly slack: number;
+  readonly rejectionTexts: { readonly leakVictim: string; readonly leakSource: string };
+  requiredTypes?(objective: AgentObjective): readonly (readonly LessonExerciseType[])[];
+  sanitize?(draft: LessonExerciseDraft): { draft: LessonExerciseDraft; removed: readonly string[] };
+  /** Kod trafia do `Rejection.code` (np. `hint_reveals_answer`), powód do modelu. */
+  exerciseGate?(
+    draft: LessonExerciseDraft,
+    objective: AgentObjective,
+    ctx: { material: string },
+  ): readonly AgentGateFinding[];
+  objectiveGaps?(pool: readonly LessonExerciseDraft[], objective: AgentObjective, ctx: { material: string }): string[];
+  /** Słowa i ramy do pokrycia przez plan (lista dla modelu planera). */
+  planCoverage?(material: string): { readonly words: readonly string[]; readonly frames: readonly string[] };
+  planGate?(plan: readonly RawPlanObjective[], material: string): string[];
+  /**
+   * Dopiski przedmiotu do instrukcji podagenta zagadnienia (po angielsku, dla modelu), np. szkoła:
+   * podpowiedź tylko przy pytaniu otwartym. Brak = bez dopisków (gramatyka zachowuje `hint`).
+   */
+  readonly promptNotes?: readonly string[];
+}
 /** Normalizator odpowiedzi przedmiotu. */
 export interface AnswerNormalizer {
   /** Zbiór równoważnych sekwencji tokenów (np. rozwinięcia skrótów). */
@@ -361,4 +426,6 @@ export interface SubjectModule {
     drafts: readonly LessonExerciseDraft[],
     ctx: { material: string },
   ): ReadonlyMap<number, readonly string[]>;
+  /** Polityka agenta puli; brak = przedmiot nie jest generowany agentem. */
+  readonly agentPolicy?: SubjectAgentPolicy;
 }

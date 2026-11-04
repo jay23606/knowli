@@ -222,7 +222,8 @@ pule) nie ma nowych ujawnień ani nowych błędów `validatePool`/
 `submitExamples(state, objectiveId, lines, ctx)` — dla zagadnień bez
 przykładów z planu (`objectiveSource !== "planner"`, §7.1): 1–3 linie,
 przycięte i ograniczone jak dziś w `executeLessonGeneration`
-(`MAX_TEXT_LENGTH`). Linia odpada, gdy ujawnia rozwiązanie ćwiczenia lekcji
+(`MAX_TEXT_LENGTH`); identyczna linia (po przycięciu) liczy się raz i nie
+zajmuje kolejnego miejsca. Linia odpada, gdy ujawnia rozwiązanie ćwiczenia lekcji
 (twardo, `fixed` lub puli). Zastępuje wcześniejsze przykłady zagadnienia
 (jak ostatnia partia w potoku). Przykłady wpływają na kolejne kontrole
 ujawnień.
@@ -245,6 +246,8 @@ potoku.
 - **pokrycie**: `lessonCoverageGaps` dla tego zagadnienia na całej lekcji
   (ćwiczenia ujawnione nie liczą się; szkoła — różne pytania otwarte), z
   minimum etapu samodzielnego podniesionym o `agentPolicy.independentReserve`;
+  brak różnych pytań otwartych ma osobny komunikat („distinct open answers:
+  n of 2”), nie zaniżony brak etapu samodzielnego;
 - **liczba**: `total` (bez `outsideStages`) ≥ `targetCount`;
 - **wymagane typy**: każda grupa z `agentPolicy.requiredTypes?.(objective)`,
   po odfiltrowaniu przez rdzeń typów spoza `objective.exerciseTypes`, ma co
@@ -314,6 +317,8 @@ interface SubjectAgentPolicy {                     // types.ts
   /** Słowa i ramy do pokrycia przez plan (lista dla modelu planera). */
   planCoverage?(material: string): { readonly words: readonly string[]; readonly frames: readonly string[] };
   planGate?(plan: readonly RawPlanObjective[], material: string): string[];
+  /** Dopiski do instrukcji podagenta (po angielsku); brak = bez dopisków. */
+  readonly promptNotes?: readonly string[];
 }
 ```
 
@@ -371,8 +376,11 @@ dziedzinowych — pilnuje tego istniejący skan literałów w
   **usuwany**; wynik narzędzia mówi o tym modelowi. Świadome odstępstwo od
   issue („chyba że rodzic chce inaczej”): agent nie czyta polecenia rodzica w
   tej sprawie; rodzic dopisuje podpowiedź w edytorze (edycja nie przechodzi
-  przez `sanitize`). Dopisek przepływu narzędzi (próba, potem adapter) mówi
-  modelowi: podpowiedź tylko przy otwartych odpowiedziach.
+  przez `sanitize`). Regułę „podpowiedź tylko przy otwartych odpowiedziach”
+  niesie `promptNotes` polityki szkoły: kierownik przekazuje je w
+  `LessonObjectiveAgentInput.promptNotes`, a adapter dokleja do dopisku
+  przepływu narzędzi; inne przedmioty dopisków nie mają (gramatyka zachowuje
+  `hint`, §4.3).
 - `exerciseGate` — **bramka podpowiedzi** dla `hint` przy
   `lesson_open_answer`:
   - tokenizacja: tekst po `subject.normalizer`, małe litery, podział na
@@ -408,9 +416,8 @@ dziecka jak przykłady, więc generowanie nie może ich używać jako rozwiąza�
   z 1–3 przykładami, części dzielą się dalej po etykiecie „: ”, po „; ” i na
   granicach zdań po `.?!`, a z każdej odpada punktor lub numeracja („- ”,
   „• ”, „* ”, „1. ”, „1) ”) i cudzysłowy na obu brzegach („…”, "…", «…»)
-  przed sprawdzeniem reguły. Gramatyka haka nie dostaje: jej karty mają zdania
-  wplecione w polskie linie z „:” i „→”, których reguła nie łapie, a łapie
-  polski fałszywy alarm („i kropka.”). Szkoła — materiał po polsku.
+  przed sprawdzeniem reguły. Gramatyka haka nie dostaje: reguła zdania dawałaby w jej polskich kartach
+  fałszywe alarmy (np. „i kropka.”). Szkoła — materiał po polsku.
 - Nowa funkcja domenowa `cardExposureSources(subject, topic)` →
   `cardExposureTexts` kart per zagadnienie (bez przykładów).
 - `resolveGenerationLeaks` dostaje opcjonalny parametr `fixedSources`
@@ -463,7 +470,8 @@ interface RunCostSink { record(usd: number | null): void }
 interface LessonObjectiveAgentInput {
   /** Pola promptu produkcyjnego (rola, reguły, typy, materiał, polecenie, tematy zdań, avoidSentences).
    *  Liczby partii (`countPerObjective`, `stageCounts`, `listenChoicePerObjective`) wypełnia kierownik
-   *  z `targets`; `targets` jest jedynym źródłem liczb. */
+   *  z `targets`; `targets` jest jedynym źródłem liczb. `targets.independent` ≥ minimum samodzielnych
+   *  + `independentReserve` (próg `objectiveStatus`); `countPerObjective` = suma etapów. */
   readonly pool: LessonPoolInput;
   readonly objective: {
     readonly id: string; readonly title: string; readonly kind?: "words" | "frame";
@@ -479,6 +487,7 @@ interface LessonObjectiveAgentInput {
     readonly targetCount: number; readonly listenAllowance: number; readonly maxExercises: number;
   };
   readonly maxSteps: number;
+  readonly promptNotes?: readonly string[];       // z SubjectAgentPolicy.promptNotes (§4.4)
 }
 
 interface LessonAgentToolOutcome {               // skrót dla modelu
@@ -721,12 +730,14 @@ koszt; bez treści ćwiczeń, materiału, kart, tematów zdań i `detail`. Test
   portów na AI SDK (`ToolLoopAgent`, `generateText`, OpenRouter, koszt z
   `providerMetadata.openrouter.usage.cost`), przeniesiona do adaptera w etapie
   2. Prompt podagenta: `lessonSystemPrompt` + `lessonUserMaterial` + dopisek
-  przepływu narzędzi z PoC (z regułą „hint only for lesson_open_answer”).
+  przepływu narzędzi z PoC i dopiski przedmiotu z `input.promptNotes` (szkoła:
+  „hint only for lesson_open_answer”; inne przedmioty tej reguły nie dostają).
   Tryb `probe` (uproszczony schemat) usunięty.
 - Zmienne: `UMIEM_PROBE_AGENT_SUBJECT` (`chapter` | `grammar` | `school`),
   `_MATERIAL`, `_OBJECTIVES_DUMP`, `_MODEL`, `_REASONING`, `_SOLVER_MODEL`,
   `_DUMP`, `_TIMEOUT_MS`, `_BUDGET_USD`, `_POOL_SIZE` (domyślnie
-  `defaultPoolSize` liczby zagadnień, jak potok), `UMIEM_PROBE_COSTS`.
+  `defaultPoolSize` liczby zagadnień, jak potok), `UMIEM_PROBE_COSTS`
+  (`UMIEM_PROBE_COSTS_CAP_USD` — limit nowego rejestru, domyślnie 10 USD).
   Ścieżki wyłącznie poza repozytorium (`resolveOutsideRepoPath`).
 - Zrzut `dump.json` (źródło `agent`) w formacie `blind/gen-blind-sheet.cjs`, z
   `rejections` (z `detail`), statystykami, krokami, kosztem i statusami.
@@ -838,10 +849,14 @@ istniejące testy pokrycia, publikacji i sesji bez zmian.
 ### 9.4. Architektura
 
 - `domain/lessons/agent/` nie importuje `ai`, `@openrouter/*`, Drizzle,
-  `modules/`, `providers/`, `ports/` ani konfiguracji (rozszerzenie
+  `modules/`, `providers/`, `ports/`, modułów `node:` ani konfiguracji i nie
+  używa `Date.now`, `new Date(`, `Math.random`, `crypto.randomUUID`,
+  `performance.now`, `process.env` (rozszerzenie
   `domain/lessons/architecture.test.ts`);
-- nowy test: `ai` i `@openrouter/*` nie występują w `packages/**` ani
-  `apps/**` (etap 2 dopuści jeden plik adaptera);
+- nowy test: `ai` i `@openrouter/*` nie występują w żadnym pliku źródłowym
+  repozytorium poza `tests/probes/**` (pomijane zależności i artefakty
+  buildów); manifesty `packages/*` i `apps/*` ich nie deklarują (etap 2
+  dopuści jeden plik adaptera);
 - istniejący skan identyfikatorów przedmiotów obejmuje nowe pliki;
   `module-boundaries.architecture.test.ts` przechodzi.
 
