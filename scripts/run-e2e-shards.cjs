@@ -179,7 +179,8 @@ async function cleanupContainers(runIds) {
   // Sieć bezpieczeństwa: global-teardown Playwrighta usuwa kontenery po
   // przebiegu, ale po twardym przerwaniu mogłyby zostać osierocone.
   for (const runId of runIds) {
-    await exec("docker", ["rm", "-f", `knowli-e2e-${runId}`]).catch(() => undefined);
+    // -v: bez niego zostaje anonimowy wolumen danych Postgresa (por. removeContainer).
+    await exec("docker", ["rm", "-f", "-v", `knowli-e2e-${runId}`]).catch(() => undefined);
   }
 }
 

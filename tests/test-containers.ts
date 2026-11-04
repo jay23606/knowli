@@ -207,7 +207,9 @@ export async function findContainer(name: string): Promise<TestContainer | null>
 }
 
 export async function removeContainer(id: string): Promise<void> {
-  await docker("rm", "-f", id).catch(() => undefined);
+  // -v: obraz postgres trzyma dane w anonimowym wolumenie, a jawne `rm -f`
+  // (inaczej niż samo --rm po zatrzymaniu) bez -v zostawia go na dysku VM.
+  await docker("rm", "-f", "-v", id).catch(() => undefined);
 }
 
 /** Operacje Dockera potrzebne do startu bazy testów; testy podstawiają fake. */
