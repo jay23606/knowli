@@ -177,16 +177,23 @@ export interface GenerationLeakResolution {
  * istniejące ćwiczenia i przykłady są nietykalne, odpadają tylko świeże
  * ćwiczenia i nowe przykłady. Ocena jak w trybie `generation`; ujawnienia
  * miękkie nic nie usuwają.
+ *
+ * `fixedSources` (zagadnienie → teksty) to stałe źródła ujawnień, np. zdania
+ * kart rozdziału: doklejane per zagadnienie PO scaleniu przykładów, więc nowe
+ * przykłady zagadnienia ich nie zastępują. Służą wyłącznie jako źródła reguły
+ * twardej wobec świeżych ćwiczeń; nie wpływają na filtr nowych przykładów,
+ * `keptNewExamples` ani `droppedExampleCount`.
  */
 export function resolveGenerationLeaks(input: {
   readonly existing: readonly LessonExerciseDraft[];
   readonly fresh: readonly LessonExerciseDraft[];
   readonly existingExamples: Readonly<Record<string, readonly string[]>>;
   readonly newExamples: Readonly<Record<string, readonly string[]>>;
+  readonly fixedSources?: Readonly<Record<string, readonly string[]>>;
   readonly objectiveOrder: readonly string[];
   readonly subject: LeakSubject;
 }): GenerationLeakResolution {
-  const { existing, fresh, existingExamples, newExamples, objectiveOrder, subject } = input;
+  const { existing, fresh, existingExamples, newExamples, fixedSources = {}, objectiveOrder, subject } = input;
   const judge = { subject, mode: "generation" } as const;
 
   // Nowy przykład ujawniający rozwiązanie istniejącego ćwiczenia odpada.
@@ -200,10 +207,16 @@ export function resolveGenerationLeaks(input: {
     }
   }
 
-  // Końcowe przykłady: stare z zagadnieniami zastąpionymi przez zachowane nowe.
+  // Końcowe przykłady: stare z zagadnieniami zastąpionymi przez zachowane nowe,
+  // a do każdego zagadnienia dokleja się jego stałe źródła (konkatenacja).
+  const merged: Record<string, readonly string[]> = { ...existingExamples, ...keptNewExamples };
+  const withFixed: Record<string, readonly string[]> = { ...merged };
+  for (const [objectiveId, texts] of Object.entries(fixedSources)) {
+    withFixed[objectiveId] = [...(merged[objectiveId] ?? []), ...texts];
+  }
   const all: ExposureLeakInput = {
     exercises: [...existing, ...fresh],
-    examples: { ...existingExamples, ...keptNewExamples },
+    examples: withFixed,
     objectiveOrder,
     subject,
     mode: "generation",

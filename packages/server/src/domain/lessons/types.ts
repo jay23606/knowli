@@ -304,6 +304,13 @@ export interface SubjectModule {
    */
   normalizeExposureText?(text: string): string;
   /**
+   * Teksty z treści kart zagadnienia, które dziecko widzi jako gotowe
+   * rozwiązania (np. zdania z przykładów kart rozdziału). Generator i reguła
+   * twarda traktują je jak ujawnienia, więc ćwiczenia samodzielne nie mogą ich
+   * powtarzać. Tylko generowanie; brak = karty nie ujawniają rozwiązań.
+   */
+  cardExposureTexts?(cards: readonly { readonly body: string }[]): string[];
+  /**
    * Walidacja i czyszczenie WYŁĄCZNIE świeżo wygenerowanych ćwiczeń (wyjście
    * modelu, także dogenerowanie): odrzuca ćwiczenie z powodem albo zwraca je
    * w `kept` już bez pojedynczych wadliwych elementów (np. wariantów odpowiedzi).

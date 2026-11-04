@@ -24,6 +24,7 @@ import {
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
 import { avoidSentencesFor } from "../../../domain/lessons/avoid-sentences";
+import { cardExposureSources } from "../../../domain/lessons/card-exposure-sources";
 import { explanationTextErrors } from "../../../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
 import { resolveGenerationLeaks } from "../../../domain/lessons/exposure-leaks";
@@ -1387,6 +1388,11 @@ interface StageTopUpContext {
   readonly kept: readonly LessonExerciseDraft[];
   /** Końcowe przykłady kart (szkic z zachowanymi nowymi); runda ich nie zmienia. */
   readonly examples: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Zdania z kart rozdziału (`cardExposureSources`): stałe źródła reguły twardej i podpowiedź
+   * `avoidSentences` rundy; nie są przykładami kart, więc nie wpływają na pokrycie ani zapis.
+   */
+  readonly cardSources: Readonly<Record<string, readonly string[]>>;
   /** Bodźce i odpowiedzi surowych ćwiczeń partii głównej (advisory „nie powtarzaj”, numeracja fake'a). */
   readonly runStimuli: readonly LessonExerciseStimulus[];
   readonly runAnswers: readonly string[];
@@ -1467,7 +1473,7 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
           byExercise ? [] : [...new Set([...existing.map((exercise) => exercise.answer), ...runAnswers])],
           byExercise ? uniqueStimuli([...existing.map((exercise) => lessonExerciseStimulusRecord(exercise, identityOptions)), ...runStimuli]) : [],
           input.interests,
-          { avoidSentences: avoidSentencesFor({ examples: ctx.examples, exercises: existing, subject }), purpose: "stage_top_up" },
+          { avoidSentences: avoidSentencesFor({ examples: mergeExamples(ctx.examples, ctx.cardSources), exercises: existing, subject }), purpose: "stage_top_up" },
         );
         const poolInput: LessonPoolInput = { ...base, countPerObjective: count, stageCounts: { ...deficits } };
         // callSoft sam sprawdza aktualność runu przed żądaniem i po nim.
@@ -1497,6 +1503,7 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
           fresh: reviewed.exercises,
           existingExamples: ctx.examples,
           newExamples: {},
+          fixedSources: ctx.cardSources,
           objectiveOrder: ctx.objectiveOrder,
           subject,
         });
@@ -1646,6 +1653,10 @@ export async function executeLessonGeneration(services: Services, runId: string,
   // Limity celów runu (zamówiona liczba i przyznany dodatek słuchowy) — egzekwowane po walidacji.
   const objectiveLimits = new Map<string, ObjectiveGenerationLimits>();
   const examples: Record<string, string[]> = {};
+  // Zdania z kart rozdziału (ustawiane po rozwiązaniu tematu): dziecko widzi je jako gotowe rozwiązania.
+  // Idą tylko do podpowiedzi `avoidSentences` i jako stałe źródła reguły twardej — nie do zapisanych
+  // przykładów ani pokrycia.
+  let cardSources: Record<string, string[]> = {};
   const executionPolicy = deps.lessonExecution ?? DEFAULT_LESSON_GENERATION_POLICY;
   const runDeadlineAtMs = runStartedAtMs + executionPolicy.runTimeoutMs;
   // Tożsamość runu w bazie (partie i runda pod etap): edycja rodzica, retry albo publikacja ją zmieniają.
@@ -1708,6 +1719,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
     if (!activeTopic) {
       throw new AppError("validation", { message: "lesson topic unresolved" });
     }
+    cardSources = cardExposureSources(subject, activeTopic);
     for (const batch of batches) {
       await control.assertCurrent();
       const batchStartedAtMs = Date.now();
@@ -1730,7 +1742,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
           // Rozwiązania widziane wcześniej (przykłady kart, szkic i wcześniejsze partie): generator ich nie
           // powtarza w ćwiczeniach samodzielnych — podpowiedź, egzekwuje ją reguła twarda po generacji.
           avoidSentences: avoidSentencesFor({
-            examples: mergeExamples(draftExamples, examples),
+            examples: mergeExamples(mergeExamples(draftExamples, examples), cardSources),
             exercises: [...existingDrafts, ...earlierDrafts],
             subject,
           }),
@@ -1864,6 +1876,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
       fresh: mainReview.exercises,
       existingExamples: draftExamples,
       newExamples: examples,
+      fixedSources: cardSources,
       objectiveOrder,
       subject,
     });
@@ -1981,6 +1994,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         existingDrafts,
         kept: uniqueValid,
         examples: finalExamples,
+        cardSources,
         runStimuli: earlierExercises,
         runAnswers: earlierAnswers,
         review: reviewPhase,
