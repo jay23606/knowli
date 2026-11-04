@@ -338,6 +338,7 @@ export const messages = {
       not_assessed: "Nie sprawdzono",
     },
     pronunciationNote: "Wynik wymowy to automatyczna ocena usługi {provider}, nie dokładna miara znajomości słowa.",
+    pronunciationScoreAria: "{target}: wynik {score} z 100, {band}",
     dueForPractice: "Do ćwiczeń",
     dueEmpty: "Na razie nic pilnego.",
     confusions: "Najczęstsze pomyłki",

@@ -150,7 +150,7 @@ function SkillsCard({ progress }: { progress: ProgressDto }) {
   );
 }
 
-function PronunciationCard({ progress }: { progress: ProgressDto }) {
+export function PronunciationCard({ progress }: { progress: ProgressDto }) {
   const { pronunciation } = progress;
   return (
     <Card testId="progress-pronunciation" title={messages.progress.pronunciationTitle} icon="mic">
@@ -158,19 +158,29 @@ function PronunciationCard({ progress }: { progress: ProgressDto }) {
         <Stack gap="xs">
           {pronunciation.latestScores.map((score) => {
             const tone = score.band === "correct" ? "success" : score.band === "partial" ? "warning" : "neutral";
+            const bandLabel =
+              score.band === "correct"
+                ? messages.children.pronunciationBandCorrect
+                : score.band === "partial"
+                  ? messages.children.pronunciationBandPartial
+                  : messages.children.pronunciationBandBelow;
             return (
               <div className="pp-prog-pron" key={score.target}>
                 <span className="pp-prog-pron-word" lang="en-GB">{score.target}</span>
-                <span className="pp-prog-pron-track" role="img" aria-label={String(score.score)}>
+                <span
+                  className="pp-prog-pron-track"
+                  role="img"
+                  aria-label={fill(messages.progress.pronunciationScoreAria, {
+                    target: score.target,
+                    score: score.score,
+                    band: bandLabel,
+                  })}
+                >
                   <span style={{ width: `${Math.max(0, Math.min(100, score.score))}%` }} />
                 </span>
                 <span className="pp-prog-pron-v">{score.score}</span>
                 <span className="pp-status-badge" data-tone={tone}>
-                  {score.band === "correct"
-                    ? messages.children.pronunciationBandCorrect
-                    : score.band === "partial"
-                      ? messages.children.pronunciationBandPartial
-                      : messages.children.pronunciationBandBelow}
+                  {bandLabel}
                 </span>
               </div>
             );
