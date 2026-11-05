@@ -4,7 +4,6 @@
  * domenę (feedback) trafiają do klienta w DTO — tutaj tylko stałe etykiety.
  */
 import type { TestGoal } from "./mock-tests";
-import type { ReviewCategoryDto, ReviewReasonDto } from "./lessons";
 
 export const messages = {
   app: {
@@ -975,8 +974,8 @@ export const messages = {
     themesRemove: "Usuń tematy",
     themesRemoveHint: "Usunięcie tematów nie zmienia gotowych ćwiczeń — możesz je poprawić w edytorze.",
     themesEmpty: "Zainteresowania dodasz w profilu dziecka.",
-    themesService: "Tematy zdań trafią do usługi: {service}. Z profilu wysyłamy tylko tematy — bez imienia i roku urodzenia. Zdania z tymi tematami może też zobaczyć usługa oceniająca odpowiedzi oraz automatyczna kontrola jakości (gdy jest włączona).",
-    themesServiceUnknown: "Tematy zdań trafią do usługi generującej. Z profilu wysyłamy tylko tematy — bez imienia i roku urodzenia. Zdania z tymi tematami może też zobaczyć usługa oceniająca odpowiedzi oraz automatyczna kontrola jakości (gdy jest włączona).",
+    themesService: "Tematy zdań trafią do usługi: {service}. Z profilu wysyłamy tylko tematy — bez imienia i roku urodzenia. Zdania z tymi tematami może też zobaczyć usługa oceniająca odpowiedzi.",
+    themesServiceUnknown: "Tematy zdań trafią do usługi generującej. Z profilu wysyłamy tylko tematy — bez imienia i roku urodzenia. Zdania z tymi tematami może też zobaczyć usługa oceniająca odpowiedzi.",
     poolSizeLabel: "Wielkość puli ćwiczeń",
     poolSizeHint: "Od 20 do 120 ćwiczeń. Domyślnie większa z liczb 60 i 12 × liczba reguł.",
     createLesson: "Utwórz lekcję",
@@ -1126,43 +1125,6 @@ export const messages = {
     exposureLeakSoft: "Tę samą odpowiedź ma ćwiczenie {n} — jako sprawdzenie samodzielne liczy się tylko jedno z nich.",
     exposureLeakShow: "Pokaż ćwiczenie {n}",
     exposureLeakStale: "Zapisz zmiany, aby sprawdzić to ponownie.",
-    reviewBanner: "Automatyczna kontrola jakości (łącznie we wszystkich generowaniach) — poprawione: {changed} · usunięte: {dropped} · uwagi: {notes}.",
-    reviewToppedUp: "Dogenerowane ćwiczenia, by uzupełnić brakujące etapy: {toppedUp}.",
-    reviewBannerClean: "Automatyczna kontrola jakości nie znalazła problemów.",
-    reviewBannerScope: "Liczby dotyczą tylko automatycznej kontroli. Ćwiczenia odrzucone, bo rozwiązanie było widoczne wcześniej, znajdziesz w „Powodach odrzuceń przy generowaniu”.",
-    reviewDetails: "Szczegóły kontroli",
-    reviewModel: "Sprawdzał model: {model}",
-    reviewPartial: "Automatyczna kontrola nie sprawdziła części zagadnień: {list}. Przejrzyj te ćwiczenia uważniej.",
-    reviewUnreviewed: "Automatyczna kontrola nie sprawdziła tej lekcji ({reason}). Przejrzyj ćwiczenia uważniej.",
-    reviewSuspicious: "Kontrola chciała zmienić większość ćwiczeń zagadnienia „{objective}” — zostawiono je bez zmian, przejrzyj je.",
-    reviewReason: {
-      disabled: "kontrola wyłączona",
-      not_configured: "kontrola nie jest skonfigurowana",
-      failed: "błąd usługi",
-      timeout: "przekroczony czas",
-      limit: "osiągnięto limit sprawdzeń na jedno generowanie",
-    } satisfies Record<ReviewReasonDto, string>,
-    reviewCategory: {
-      ambiguous: "niejednoznaczne",
-      wrong_answer: "błędna odpowiedź",
-      leaked_solution: "zdradza rozwiązanie",
-      unsuitable_content: "nieodpowiednie dla dziecka",
-      missing_variant: "brak wariantu odpowiedzi",
-      unnatural_language: "nienaturalny język",
-      unclear_instruction: "niejasne polecenie",
-      wrong_explanation: "błędne wyjaśnienie",
-      off_material: "spoza materiału",
-      too_hard: "może być za trudne",
-      other: "inne",
-    } satisfies Record<ReviewCategoryDto, string>,
-    reviewChangedBadge: "Poprawione automatycznie",
-    reviewChangedBefore: "Było: {before}",
-    reviewAddedVariants: "Dodane warianty: {variants}",
-    reviewChangedReason: "Poprawka kontroli ({category}): {reason}",
-    reviewNote: "Uwaga kontroli ({category}): {reason}",
-    reviewNoteFixRejected: "Kontrola zaproponowała poprawkę, ale nie przeszła ona sprawdzenia — ćwiczenie zostało bez zmian.",
-    reviewDroppedItem: "{objective} — {category}: {reason} (było: {snippet})",
-    reviewServiceInfo: "Materiał lekcji i gotowe ćwiczenia trafiają też do automatycznej kontroli jakości ({service}). Nie wysyłamy do niej imienia, wieku ani odpowiedzi dziecka.",
     generationServiceInfo: "Materiał lekcji trafia do usługi generującej ćwiczenia: {service}. Nie wysyłamy do niej imienia, wieku ani odpowiedzi dziecka.",
     generationServicesInfo: "Materiał lekcji trafia do usług generujących ćwiczenia: {service}. Nie wysyłamy do nich imienia, wieku ani odpowiedzi dziecka.",
     checkServiceInfo: "Gotowe ćwiczenia trafiają też do drugiego modelu, który rozwiązuje je na próbę ({service}). Nie wysyłamy do niego imienia, wieku ani odpowiedzi dziecka.",

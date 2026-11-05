@@ -228,7 +228,6 @@ export { createOpenAiCompatibleGrader } from "./providers/openai-compatible/grad
 export { createOpenAiCompatibleSessionActivityReviewer } from "./providers/openai-compatible/session-activity";
 export { createOpenAiCompatibleSttProvider } from "./providers/openai-compatible/stt";
 export { sessionActivityFromEnv, DEFAULT_SESSION_ACTIVITY_TIMEOUT_MS, type SessionActivityDeps } from "./config";
-export { reviewerFromEnv, reviewerPublicServiceFromEnv, type ReviewerDeps, type ReviewerPolicy, type ReviewerState } from "./config";
 export {
   MAX_AUDIO_BYTES,
   MAX_AUDIO_SECONDS,

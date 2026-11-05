@@ -290,26 +290,23 @@ test("tryb ciemny obejmuje formularz nowej lekcji", async ({ page }) => {
 
 /**
  * Przedmioty generowane agentem puli (spec etapu 2a §11): usługi generowania z katalogu przedmiotu,
- * drugi model rozwiązujący ćwiczenia (wariant z materiałem wg polityki checkera), bez komunikatu krytyka.
+ * drugi model rozwiązujący ćwiczenia (wariant z materiałem wg polityki checkera).
  */
 const GEN = ["openrouter.ai · google/gemini-3.8-flash", "openrouter.ai · google/gemini-3.8-pro"];
 const CHECK = "openrouter.ai · deepseek/deepseek-v4.1-flash-1017";
-const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
 const agentCatalog = {
   ...catalog,
-  reviewService: REVIEW,
   subjects: catalog.subjects.map((subject) => subject.id === "english_chapter"
     ? subject
     : { ...subject, generationServices: GEN, checkService: CHECK, ...(subject.id === "school" ? { checkServiceIncludesMaterial: true } : {}) }),
 };
 
-test("przedmiot z agentem puli: usługi generowania i drugi model, bez komunikatu krytyka, bez przewijania w poziomie", async ({ page }) => {
+test("przedmiot z agentem puli: usługi generowania i drugi model, bez przewijania w poziomie", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openNewLesson(page, () => 202, Promise.resolve(), children, agentCatalog);
   await expect(page.getByTestId("lesson-themes")).toContainText(messages.lessons.themesService.replace("{service}", GEN[0]!));
   await expect(page.getByTestId("lesson-generation-service")).toHaveText(messages.lessons.generationServicesInfo.replace("{service}", GEN.join(", ")));
   await expect(page.getByTestId("lesson-check-service")).toHaveText(messages.lessons.checkServiceInfo.replace("{service}", CHECK));
-  await expect(page.getByTestId("lesson-review-service")).toHaveCount(0);
   await expectNoHorizontalOverflow(page);
 
   // szkoła: wariant z materiałem
@@ -317,8 +314,7 @@ test("przedmiot z agentem puli: usługi generowania i drugi model, bez komunikat
   await expect(page.getByTestId("lesson-check-service")).toHaveText(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
   await expectNoHorizontalOverflow(page);
 
-  // rozdział (potok): komunikat krytyka zamiast komunikatów agenta
+  // rozdział (potok): bez komunikatów agenta
   await page.getByTestId("lesson-subject").selectOption("english_chapter");
   await expect(page.getByTestId("lesson-check-service")).toHaveCount(0);
-  await expect(page.getByTestId("lesson-review-service")).toHaveText(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
 });

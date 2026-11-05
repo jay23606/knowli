@@ -190,15 +190,12 @@ export default function LessonSupervisionPanel({
   deckId,
   childrenList,
   gradingModel,
-  reviewService,
   onRegenerate,
 }: {
   deckId: string;
   childrenList: ChildDto[];
   /** Nazwa modelu oceniającego (gdy dostępny) — do tekstu o providerze. */
   gradingModel: string | null;
-  /** Etykieta usługi automatycznej kontroli jakości (gdy włączona) — informacja obok modelu oceniającego. */
-  reviewService?: string;
   /** Dogenerowanie ćwiczeń dla celu z wyczerpaną pulą (reużywa akcji edytora). */
   onRegenerate?: (objectiveId: string) => void;
 }) {
@@ -262,11 +259,6 @@ export default function LessonSupervisionPanel({
           <Text size="sm" mt={4} className="pp-editor-muted" data-testid="grading-provider">
             {gradingModel ? fill(messages.lessons.gradingProvider, { model: gradingModel }) : messages.lessons.gradingProviderNone}
           </Text>
-          {reviewService && (
-            <Text size="sm" mt={4} className="pp-editor-muted" data-testid="review-service">
-              {messages.lessons.reviewServiceInfo.replace("{service}", () => reviewService)}
-            </Text>
-          )}
         </div>
 
         {childrenList.length > 0 && (

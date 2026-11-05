@@ -21,9 +21,8 @@ import DeckSessionTaskBudgetSettings from "../DeckSessionTaskBudgetSettings";
 import type { EditorLeaveState } from "../useParentLeaveGuard";
 import { orpc } from "../query-client";
 import LessonSupervisionPanel from "./LessonSupervisionPanel";
-import LessonReviewBanner from "./LessonReviewBanner";
 import { GenerationGapBadge, LessonGenerationGapsAlert } from "./LessonGenerationGaps";
-import LessonExerciseCard, { leakNoticeFor, reviewNoticeFor, type CalculationControls, type ExerciseReviewNotice, type LeakNotice } from "./LessonExerciseCard";
+import LessonExerciseCard, { leakNoticeFor, type CalculationControls, type LeakNotice } from "./LessonExerciseCard";
 import ArchiveLessonDialog from "./ArchiveLessonDialog";
 import LessonSourceNote from "./LessonSourceNote";
 import LessonStorySection from "./LessonStorySection";
@@ -847,11 +846,6 @@ export default function LessonEditor({
   cardActionsRef.current = { toggle: toggleCard, mutate: mutateExercise, remove: removeExercise, play: playAsset, showSource };
 
   const leakByExercise = new Map((active?.exposureLeaks ?? []).map((leak) => [leak.exerciseId, leak]));
-  // Wpisy kontroli jakości (serwer zostawia tylko ćwiczenia, których zapisana treść nie zmieniła się od kontroli).
-  const reviewChangedByExercise = new Map((active?.review?.changed ?? []).map((entry) => [entry.exerciseId, entry]));
-  const reviewNoteByExercise = new Map((active?.review?.notes ?? []).map((entry) => [entry.exerciseId, entry]));
-  const reviewNotice = (ex: EditableLessonExercise): ExerciseReviewNotice | null =>
-    ex.id === undefined ? null : reviewNoticeFor(reviewChangedByExercise.get(ex.id), reviewNoteByExercise.get(ex.id));
   /** Ostrzeżenie o ujawnionym rozwiązaniu ćwiczenia; źródło spoza formularza (usunięte) → prośba o zapis. */
   const leakNotice = (ex: EditableLessonExercise): LeakNotice | null => {
     const leak = ex.id === undefined ? undefined : leakByExercise.get(ex.id);
@@ -891,7 +885,6 @@ export default function LessonEditor({
         open={openCards.has(ex.id ?? ex.clientKey) || changed || errors !== undefined}
         changed={changed}
         leak={leakNotice(ex)}
-        review={reviewNotice(ex)}
         hadAudio={savedAudio !== null}
         errors={errors}
         audio={asset ? { state: asset.state, assetId: asset.assetId ?? null } : null}
@@ -1278,7 +1271,6 @@ export default function LessonEditor({
         deckId={deckId}
         childrenList={childrenList}
         gradingModel={deck.grading.available ? (deck.grading.model ?? null) : null}
-        {...(deck.reviewService ? { reviewService: deck.reviewService } : {})}
         onRegenerate={draft ? (objectiveId) => void regenerate(objectiveId) : undefined}
       />
     </Stack>
@@ -1375,7 +1367,6 @@ export default function LessonEditor({
           </div>
         )}
         {draft?.generationGaps && <LessonGenerationGapsAlert gaps={draft.generationGaps} />}
-        {active?.review && <LessonReviewBanner review={active.review} />}
         {error && !showActionBar && errorAlert}
 
         {conflict && (

@@ -11,7 +11,7 @@ import {
 } from "../usage/record-http";
 
 /**
- * Wspólna koperta żądań lekcyjnych (strict `json_schema`) generatora i krytyka
+ * Wspólna koperta żądań lekcyjnych (strict `json_schema`) generatora
  * lekcji: timeout, fetch, mapowanie błędów HTTP/odmowy/długości, parsowanie
  * treści i zapis kosztów (jedno żądanie HTTP = jeden zapis).
  */

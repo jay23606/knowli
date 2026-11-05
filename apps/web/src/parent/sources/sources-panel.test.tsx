@@ -103,17 +103,7 @@ describe("SourcePage", () => {
     expect(markup).not.toContain('data-testid="source-body"');
   });
 
-  it("informacja o automatycznej kontroli jakości przy przyciskach lekcji, gdy katalog podaje jej usługę", () => {
-    const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
-    const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, { ...fullCatalog, reviewService: REVIEW }));
-    expect(markup).toContain('data-testid="source-review-service"');
-    expect(markup).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
-    const without = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source));
-    expect(without).not.toContain('data-testid="source-review-service"');
-  });
-
   describe("przedmioty z agentem puli (checkService)", () => {
-    const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
     const GEN = ["openrouter.ai · a", "openrouter.ai · b"];
     const CHECK = "openrouter.ai · c";
     const agentCatalog = (chapterOnly: boolean): SubjectCatalogDto => ({
@@ -122,10 +112,9 @@ describe("SourcePage", () => {
         { ...fullCatalog.subjects[1]!, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true },
         chapterOnly ? { ...fullCatalog.subjects[2]!, generationServices: GEN, checkService: CHECK } : fullCatalog.subjects[2]!,
       ],
-      reviewService: REVIEW,
     });
 
-    it("usługi generowania i drugi model w wariancie szkolnym (z materiałem), krytyk tylko dla przedmiotu potoku", () => {
+    it("usługi generowania i drugi model w wariancie szkolnym (z materiałem)", () => {
       const both = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, agentCatalog(true)));
       expect(both).toContain(messages.lessons.generationServicesInfo.replace("{service}", GEN.join(", ")));
       // te same usługi generowania przy obu przyciskach: komunikat tylko raz
@@ -135,14 +124,10 @@ describe("SourcePage", () => {
       expect(both).toContain(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
       expect(both).toContain('data-testid="source-check-service-chapter"');
       expect(both).toContain(messages.lessons.checkServiceInfo.replace("{service}", CHECK));
-      // oba przyciski prowadzą do agenta: krytyk ich nie obejmuje
-      expect(both).not.toContain('data-testid="source-review-service"');
 
       const mixed = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, agentCatalog(false)));
       expect(mixed).toContain('data-testid="source-check-service-school"');
       expect(mixed).not.toContain('data-testid="source-check-service-chapter"');
-      // przycisk rozdziału prowadzi do przedmiotu potoku, więc komunikat krytyka zostaje
-      expect(mixed).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
     });
 
     it("ocena pytań otwartych: komunikat tylko przy przedmiocie z openCheckService", () => {
@@ -158,7 +143,7 @@ describe("SourcePage", () => {
     });
 
     it("bez checkService nie ma komunikatów agenta", () => {
-      const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, { ...fullCatalog, reviewService: REVIEW }));
+      const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, fullCatalog));
       expect(markup).not.toContain('data-testid="source-check-service-school"');
       expect(markup).not.toContain('data-testid="source-generation-service-school"');
     });

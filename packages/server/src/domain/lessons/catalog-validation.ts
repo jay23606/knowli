@@ -57,11 +57,6 @@ export function validateSubject(module: SubjectModule): string[] {
     errors.push("Przedmiot: lessonStory wymaga niepustego prompts.storyRules");
   }
 
-  // Krytyk lekcji składa wiadomość systemową z reguł przedmiotu — bez nich nie ma przeglądu.
-  if (!module.prompts.reviewRules?.trim()) {
-    errors.push("prompts.reviewRules: wymagane dla przeglądu");
-  }
-
   // Nagranie zdania to jedyny bodziec wyboru ze słuchu: bez TTS zdania zadanie nie byłoby wydawalne.
   if (module.exerciseTypes.includes("lesson_listen_choice") && module.ttsForFeedbackSentence !== true) {
     errors.push("Przedmiot: „lesson_listen_choice” wymaga ttsForFeedbackSentence (nagrania zdania)");

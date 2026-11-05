@@ -833,61 +833,6 @@ describe("tematy zdań z zainteresowań dziecka (#197)", () => {
   });
 });
 
-describe("raport automatycznej kontroli jakości (review, reviewService)", () => {
-  const draft = {
-    id: UUID, deckId: UUID2, editNumber: 1, status: "draft", title: "Present Simple",
-    subjectId: "english_grammar", topicId: "present_simple", topicVersion: 1,
-    objectiveIds: ["o1"], examples: {}, exercises: [], assets: [], rejectedCount: 0, coverage: [],
-  };
-  const review = {
-    status: "partial",
-    model: "anthropic/claude-sonnet-5.5",
-    objectives: [
-      { objectiveId: "o1", title: "Końcówka -s", status: "reviewed" },
-      { objectiveId: "o2", title: "Przeczenia", status: "unreviewed", reason: "timeout" },
-      { objectiveId: "o3", title: "Pytania", status: "suspicious" },
-    ],
-    changed: [{ exerciseId: UUID, category: "ambiguous", reasonPl: "Dwie poprawne odpowiedzi.", beforePl: "He ___ → plays", addedVariants: ["is playing"] }],
-    dropped: [{ objectiveTitle: "Końcówka -s", category: "wrong_answer", reasonPl: "Błędny klucz.", snippet: "She ___ → play" }],
-    notes: [{ exerciseId: UUID3, category: "too_hard", reasonPl: "Trudne słowo.", fixRejected: false }],
-    toppedUp: 3,
-  };
-
-  it("review jest opcjonalne; pełny raport przechodzi", () => {
-    expect(LessonDraftDtoSchema.parse(draft).review).toBeUndefined();
-    expect(LessonDraftDtoSchema.parse({ ...draft, review }).review).toEqual(review);
-  });
-
-  it("raport jest ścisły: odrzuca nieznane pola, kategorie, powody i ujemne dogenerowanie", () => {
-    for (const bad of [
-      { ...review, extra: 1 },
-      { ...review, status: "unknown" },
-      { ...review, toppedUp: -1 },
-      { ...review, toppedUp: 1.5 },
-      { ...review, objectives: [{ ...review.objectives[1], reason: "other" }] },
-      { ...review, objectives: [{ ...review.objectives[0], fingerprint: "f" }] },
-      { ...review, changed: [{ ...review.changed[0], fingerprint: "f" }] },
-      { ...review, changed: [{ ...review.changed[0], exerciseId: "nie-uuid" }] },
-      { ...review, changed: [{ ...review.changed[0], category: "nonsense" }] },
-      { ...review, dropped: [{ ...review.dropped[0], objectiveId: "o1" }] },
-      { ...review, notes: [{ ...review.notes[0], fixRejected: "tak" }] },
-      { ...review, machine: [] },
-    ]) {
-      expect(LessonDraftDtoSchema.safeParse({ ...draft, review: bad }).success).toBe(false);
-    }
-  });
-
-  it("reviewService jest opcjonalne w katalogu i w zestawie (stare ładunki przechodzą)", () => {
-    expect(SubjectCatalogDtoSchema.parse({ subjects: [] })).not.toHaveProperty("reviewService");
-    expect(SubjectCatalogDtoSchema.parse({ subjects: [], reviewService: "openrouter.ai · m" }).reviewService).toBe("openrouter.ai · m");
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [], reviewService: "" }).success).toBe(false);
-    const deck = { id: UUID, title: "T", state: "draft", draft, published: null, generation: null, assignments: [], grading: { available: false } };
-    expect(LessonDeckDtoSchema.parse(deck)).not.toHaveProperty("reviewService");
-    expect(LessonDeckDtoSchema.parse({ ...deck, reviewService: "openrouter.ai · m" }).reviewService).toBe("openrouter.ai · m");
-    expect(LessonDeckDtoSchema.safeParse({ ...deck, reviewService: "" }).success).toBe(false);
-  });
-});
-
 describe("usługi generowania per przedmiot i luki generowania (agent puli, etap 2a)", () => {
   const subject = { id: "school", titlePl: "Szkoła", creation: "material", subjectTitleRequired: true, topics: [] };
   const draft = {

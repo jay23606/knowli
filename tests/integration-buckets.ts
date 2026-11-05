@@ -13,8 +13,9 @@
  * z `--reporter=json`) z pełnego lokalnego przebiegu sekwencyjnego sprzed baz
  * workerów, 2026-11-04 (baza testów w tmpfs bez fsync): suma plików ~326 s, kosze po
  * ~109 s sumy czasów plików (czas zegarowy kosza ze startem kontenera
- * i importem modułów to ok. 145 s przy trzech koszach naraz). Najdłuższe pliki:
- * `lesson-review.test.ts` (~34 s) i `learning-algorithm.test.ts` (~30 s).
+ * i importem modułów to ok. 145 s przy trzech koszach naraz). Najdłuższy plik:
+ * `learning-algorithm.test.ts` (~30 s); pomiar obejmował jeszcze `lesson-review.test.ts` (~34 s),
+ * usunięty razem z krytykiem lekcji (#237).
  * Gdy czasy plików mocno urosną, przelicz pomiar i ułóż kosze od nowa.
  * Wybór kosza daje `UMIEM_INTEGRATION_BUCKET` (1..N)
  * w vitest.integration.config.ts; bez niego biegnie cały zestaw.
@@ -80,7 +81,6 @@ export const INTEGRATION_BUCKETS: readonly (readonly string[])[] = [
     lesson-exposure-report.test.ts
     lesson-listen-choice.test.ts
     lesson-question-audio.test.ts
-    lesson-review.test.ts
     lesson-sentence-audio.test.ts
     lesson-sessions.test.ts
     lesson-story-session.test.ts

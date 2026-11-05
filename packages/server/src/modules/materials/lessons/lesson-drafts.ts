@@ -29,7 +29,6 @@ import { explanationTextErrors } from "../../../domain/lessons/exercise-explanat
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
 import { resolveGenerationLeaks } from "../../../domain/lessons/exposure-leaks";
 import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE, stageDeficits, type StageDeficits } from "../../../domain/lessons/lesson-coverage";
-import { mergeReviewReport, type LessonReviewReport } from "../../../domain/lessons/review-report";
 import {
   DEFAULT_LESSON_POLICY,
   defaultPoolSize,
@@ -80,7 +79,6 @@ import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { committedRetryAfterSourceChange, lockSourceMaterialForCopy } from "../source-materials";
 import { buildLessonPayload } from "./lesson-payload";
 import { acceptFreshLessonPool } from "./lesson-pool-acceptance";
-import { reviewFreshExercises, reviewRunReport, type ReviewPhaseResult } from "./lesson-review";
 import { executeLessonStoryGeneration, queueLessonStoryRunTx } from "./lesson-story-generation";
 
 /**
@@ -117,8 +115,6 @@ export interface LessonContext {
   droppedObjectiveCount?: number;
   /** Historyjka na koniec sesji (przedmioty z `lessonStory`); zapisuje ją run historyjki albo rodzic. */
   story?: LessonStory;
-  /** Raport automatycznej kontroli jakości (krytyk) z przebiegów generowania tej wersji; nie przechodzi do nowej wersji. */
-  review?: LessonReviewReport;
   /** Zagadnienia do uzupełnienia po częściowym generowaniu agentem (panel rodzica); bez treści. */
   generationGaps?: LessonGenerationGap[];
 }
@@ -539,10 +535,6 @@ const LISTEN_CHOICE_PER_OBJECTIVE = 2;
 const EXPOSURE_LEAK_REASON = "rozwiązanie widoczne wcześniej";
 /** Powód odrzucenia świeżych słów kluczowych, których rodzina pytań otwartych odpadła (klucz `rejectedReasons`). */
 const ORPHAN_KEYWORDS_REASON = "ćwiczenie bez rodziny pytań otwartych";
-/** Powód usunięcia świeżego ćwiczenia przez krytyka (klucz `rejectedReasons`, widoczny dla rodzica). */
-const REVIEW_DROP_REASON = "odrzucone przez kontrolę jakości";
-/** Rezerwa finalizacji (walidacja i zapis) przed terminem fazy przeglądu (spec etapu przeglądu §6.1). */
-const REVIEW_FINALIZATION_RESERVE_MS = 30_000;
 
 /**
  * Ile ćwiczeń słuchowych generator może jeszcze dodać do celu: limit na cel minus ćwiczenia
@@ -1287,7 +1279,7 @@ async function nextPosition(tx: Tx, versionId: string): Promise<number> {
  * lekcje mają jedną umiejętność (`objective`) i inny payload, więc współdzielenie
  * pętli słówek (iterującej VOCABULARY_SKILLS) zmieniłoby zachowanie słówek —
  * zapis jest celowo osobny (udokumentowane w raporcie). Zwraca identyfikatory
- * elementów (`learning_items.id`) w kolejności wejścia (raport kontroli jakości).
+ * elementów (`learning_items.id`) w kolejności wejścia.
  */
 export async function applyLessonExercises(
   tx: Tx,
@@ -1406,10 +1398,6 @@ interface StageTopUpContext {
   /** Bodźce i odpowiedzi surowych ćwiczeń partii głównej (advisory „nie powtarzaj”, numeracja fake'a). */
   readonly runStimuli: readonly LessonExerciseStimulus[];
   readonly runAnswers: readonly string[];
-  /** Faza przeglądu krytyka dla świeżych ćwiczeń rundy (istniejące = szkic + przyjęte wcześniej). */
-  readonly review: (fresh: readonly LessonExerciseDraft[], existing: readonly LessonExerciseDraft[]) => Promise<ReviewPhaseResult>;
-  /** Czas zostawiany na wywołanie krytyka po wywołaniu generatora rundy (0 bez krytyka). */
-  readonly reviewReserveMs: number;
 }
 
 /** Bodźce bez powtórzeń (przyjęte ćwiczenia runu są też wśród jego surowych bodźców). */
@@ -1435,21 +1423,17 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
   added: LessonExerciseDraft[];
   rejectedCount: number;
   rejectedReasons: Record<string, number>;
-  reviews: ReviewPhaseResult[];
-  toppedUp: LessonReviewReport["toppedUp"];
 }> {
   const { runId, subject, topic, input } = ctx;
   const kept: LessonExerciseDraft[] = [...ctx.kept];
   const added: LessonExerciseDraft[] = [];
-  const reviews: ReviewPhaseResult[] = [];
-  const toppedUp: LessonReviewReport["toppedUp"] = [];
   let rejectedCount = 0;
   let rejectedReasons: Record<string, number> = {};
   const deficitsOf = (objectiveId: string) =>
     stageDeficits({ subject, exercises: [...ctx.existingDrafts, ...kept], examples: ctx.examples, objectiveIds: ctx.objectiveOrder }, objectiveId);
   const total = (deficits: StageDeficits) => deficits.guided + deficits.productive + deficits.independent;
   if (!ctx.objectiveIds.some((objectiveId) => total(deficitsOf(objectiveId)) > 0)) {
-    return { added, rejectedCount, rejectedReasons, reviews, toppedUp };
+    return { added, rejectedCount, rejectedReasons };
   }
   const byExercise = subject.poolDeduplication === "exercise";
   const identityOptions = lessonIdentityOptionsOf(subject);
@@ -1466,7 +1450,7 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
         const deficits = deficitsOf(objectiveId);
         const count = total(deficits);
         if (count === 0) continue;
-        if (ctx.runDeadlineAtMs - Date.now() < ctx.policy.requestTimeoutMs + STAGE_TOP_UP_MARGIN_MS + ctx.reviewReserveMs) {
+        if (ctx.runDeadlineAtMs - Date.now() < ctx.policy.requestTimeoutMs + STAGE_TOP_UP_MARGIN_MS) {
           console.log(`[lesson] run=${runId} dogenerowanie pod etap: pominięte: brak czasu`);
           return;
         }
@@ -1505,12 +1489,9 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
           objectiveLimits: new Map([[objectiveId, { count, listen: 0 }]]),
         });
         const trimmed = trimToStageDeficits(fresh.accepted, deficits);
-        // Krytyk ocenia tylko ćwiczenia rundy; reguła twarda działa na jego wyniku (także bez krytyka).
-        const reviewed = await ctx.review(trimmed.kept, existing);
-        reviews.push(reviewed);
         const leaks = resolveGenerationLeaks({
           existing,
-          fresh: reviewed.exercises,
+          fresh: trimmed.kept,
           existingExamples: ctx.examples,
           newExamples: {},
           fixedSources: ctx.cardSources,
@@ -1522,16 +1503,14 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
         added.push(...orphans.kept);
         const leakRejected = leaks.droppedFresh.length;
         rejectedCount += fresh.shapeRejected + scoped.outOfScopeCount + fresh.refineRejected + fresh.rejected.length +
-          trimmed.rejected.length + fresh.duplicateCount + reviewed.droppedCount + leakRejected + orphans.dropped;
+          trimmed.rejected.length + fresh.duplicateCount + leakRejected + orphans.dropped;
         rejectedReasons = sumRejectedReasons(
           sumRejectedReasons(rejectedReasons, fresh.refinedReasons),
           {
-            ...reasonCount(REVIEW_DROP_REASON, reviewed.droppedCount),
             ...reasonCount(EXPOSURE_LEAK_REASON, leakRejected),
             ...reasonCount(ORPHAN_KEYWORDS_REASON, orphans.dropped),
           },
         );
-        if (orphans.kept.length > 0) toppedUp.push({ objectiveId, ...stageCountsOf(orphans.kept) });
         console.log(
           `[lesson] run=${runId} dogenerowanie pod etap: zagadnienie=${objectiveId.split(".").at(-1)} guided=${deficits.guided} productive=${deficits.productive} independent=${deficits.independent} przyjęte=${orphans.kept.length}`,
         );
@@ -1541,17 +1520,7 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
     if (error instanceof LessonGenerationCancelledError) throw error;
     console.error(`[lesson] run=${runId} dogenerowanie pod etap: błąd=${classifyLessonGenerationFailure(error).errorCode}`);
   }
-  return { added, rejectedCount, rejectedReasons, reviews, toppedUp };
-}
-
-/** Liczby ćwiczeń etapów (raport `toppedUp`); typy spoza ścieżki etapów pominięte. */
-function stageCountsOf(exercises: readonly LessonExerciseDraft[]): { guided: number; productive: number; independent: number } {
-  const counts = { guided: 0, productive: 0, independent: 0 };
-  for (const exercise of exercises) {
-    const stage = stageOf(exercise.exerciseType);
-    if (!outsideStagePath(exercise.exerciseType) && (stage === "guided" || stage === "productive" || stage === "independent")) counts[stage] += 1;
-  }
-  return counts;
+  return { added, rejectedCount, rejectedReasons };
 }
 
 /** Bieżąca próba runu puli: straż zapisu (stan `running`, ta sama próba i ten sam numer edycji szkicu). */
@@ -1577,14 +1546,6 @@ export interface LessonPoolWriteContext {
  * szkicu po odrzuceniach samego zapisu (kolizje z historyjką, słowa kluczowe bez rodziny); puste przy porażce.
  */
 type LessonContextExtension = (next: LessonContext, written: readonly LessonExerciseDraft[]) => LessonContext;
-
-/** Raport kontroli jakości przebiegu scalony z raportem szkicu (wołany w transakcji zapisu, po zapisie ćwiczeń). */
-type LessonPoolReview = (
-  tx: Tx,
-  versionId: string,
-  previous: LessonReviewReport | undefined,
-  saved: readonly { readonly draft: LessonExerciseDraft; readonly exerciseId: string }[],
-) => Promise<LessonReviewReport>;
 
 type LessonPoolWriteOutcome = "succeeded" | "failed_validation" | "superseded" | "gone";
 
@@ -1621,31 +1582,27 @@ export async function markLessonRun(
 
 /**
  * Kontekst szkicu po porażce walidacji: liczniki próby (plus odrzucenia samego zapisu) zsumowane
- * z poprzednimi i raport kontroli jakości — bez `review` raport w kontekście zostaje bez zmian.
+ * z poprzednimi.
  */
-async function failedValidationContext(
-  tx: Tx,
-  versionId: string,
+function failedValidationContext(
   prevContext: LessonContext,
   context: LessonPoolWriteContext,
   writeRejected: number,
   rejectedReasons: Record<string, number>,
-  review: LessonPoolReview | undefined,
   extendContext: LessonContextExtension | undefined,
-): Promise<LessonContext> {
+): LessonContext {
   const next: LessonContext = {
     ...prevContext,
     rejectedCount: (prevContext.rejectedCount ?? 0) + context.rejectedCount + writeRejected,
     ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
     droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + context.droppedObjectiveCount,
-    ...(review === undefined ? {} : { review: await review(tx, versionId, prevContext.review, []) }),
   };
   return extendContext === undefined ? next : extendContext(next, []);
 }
 
 /**
- * Porażka walidacji (0 nowych ćwiczeń): nawet wtedy rodzic widzi skalę odrzuceń i usunięcia kontroli
- * jakości — zapisujemy liczniki i raport do kontekstu (ta sama straż wersji co przy finalizacji).
+ * Porażka walidacji (0 nowych ćwiczeń): nawet wtedy rodzic widzi skalę odrzuceń — zapisujemy
+ * liczniki do kontekstu (ta sama straż wersji co przy finalizacji).
  * `onTransaction` (ścieżka agenta) działa w tej samej transakcji, przed zmianą stanu runu.
  */
 export async function failLessonPoolValidation(
@@ -1653,7 +1610,6 @@ export async function failLessonPoolValidation(
   args: {
     run: LessonRunIdentity;
     context: LessonPoolWriteContext;
-    review?: LessonPoolReview;
     extendContext?: LessonContextExtension;
     onTransaction?: (tx: Tx) => Promise<void>;
   },
@@ -1666,7 +1622,7 @@ export async function failLessonPoolValidation(
     if (version && version.state !== "published" && version.editNumber === run.expectedEditNumber) {
       const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
       const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, args.context.rejectedReasons);
-      const nextContext = await failedValidationContext(tx, version.id, prevContext, args.context, 0, rejectedReasons, args.review, args.extendContext);
+      const nextContext = failedValidationContext(prevContext, args.context, 0, rejectedReasons, args.extendContext);
       await tx
         .update(deckVersions)
         .set({ lessonContext: nextContext as unknown as Record<string, unknown> })
@@ -1682,7 +1638,7 @@ export async function failLessonPoolValidation(
  * Straże (bieżąca próba, termin finalizacji, wersja szkicu), odrzucenie kolizji z historyjką i słów
  * kluczowych bez rodziny, zapis ćwiczeń, `lesson_context` z licznikami zsumowanymi z poprzednimi,
  * uzgodnienie mediów, podbicie numeru edycji, anulowanie innych runów, kolejka historyjki, stan
- * `review` i sukces runu. `onSuccessTransaction` tylko w gałęzi sukcesu, przed podbiciem numeru edycji
+ * wersji `review` i sukces runu. `onSuccessTransaction` tylko w gałęzi sukcesu, przed podbiciem numeru edycji
  * (bez niego — potok — sukces zeruje `agent_checkpoint`);
  * `onFailedValidationTransaction` tylko w gałęzi porażki walidacji (zapis odrzucił wszystko), przed zmianą
  * stanu runu.
@@ -1698,8 +1654,6 @@ export async function finalizeLessonPoolWrite(
     existingDrafts: readonly LessonExerciseDraft[];
     accepted: readonly LessonExerciseDraft[];
     context: LessonPoolWriteContext;
-    /** Brak = raport krytyka w kontekście zostaje bez zmian (ścieżka agenta). */
-    review?: LessonPoolReview;
     /** Ścieżka agenta: dodatkowe pola kontekstu i zapisy w tej samej transakcji (sukces albo porażka walidacji). */
     extendContext?: LessonContextExtension;
     onSuccessTransaction?: (tx: Tx) => Promise<void>;
@@ -1748,9 +1702,7 @@ export async function finalizeLessonPoolWrite(
       reasonCount(ORPHAN_KEYWORDS_REASON, writeOrphans.dropped),
     );
     if (accepted.length === 0) {
-      const failedContext = await failedValidationContext(
-        tx, version.id, prevContext, context, writeRejected, rejectedReasons, args.review, args.extendContext,
-      );
+      const failedContext = failedValidationContext(prevContext, context, writeRejected, rejectedReasons, args.extendContext);
       await tx
         .update(deckVersions)
         .set({ lessonContext: failedContext as unknown as Record<string, unknown> })
@@ -1759,17 +1711,13 @@ export async function finalizeLessonPoolWrite(
       await markLessonRun(tx, services.clock, run, "failed", "validation");
       return "failed_validation";
     }
-    const itemIds = await applyLessonExercises(
+    await applyLessonExercises(
       tx,
       { id: version.id, deckId: version.deckId },
       subject,
       args.topicVersion,
       accepted,
     );
-    // Raport kontroli jakości: wpisy przebiegu scalone z poprzednimi; listy ćwiczeń tylko dla żywych elementów wersji.
-    const review = args.review === undefined
-      ? undefined
-      : await args.review(tx, version.id, prevContext.review, accepted.map((draft, index) => ({ draft, exerciseId: itemIds[index]! })));
     // Uzupełnienie lesson_context: przykłady i licznik odrzuconych (sumujemy przy
     // dogenerowaniu). lesson_context jest niezmienny dopiero po publikacji.
     // Pełna generacja zastępuje pulę: luki poprzedniego generowania agentem są nieaktualne (ścieżka
@@ -1782,7 +1730,6 @@ export async function finalizeLessonPoolWrite(
       rejectedCount: (prevContext.rejectedCount ?? 0) + context.rejectedCount + writeRejected,
       ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
       droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + context.droppedObjectiveCount,
-      ...(review === undefined ? {} : { review }),
     };
     const nextContext = args.extendContext === undefined ? baseContext : args.extendContext(baseContext, accepted);
     await tx
@@ -2105,14 +2052,6 @@ export async function executeLessonGeneration(services: Services, runId: string,
     return;
   }
 
-  // Faza przeglądu krytyka (spec etapu przeglądu §6.1): gotowy krytyk wydłuża termin finalizacji
-  // o własny budżet; wywołania krytyka kończą się 30 s przed nim. Bez krytyka terminy jak dotąd.
-  const reviewer = deps.reviewer;
-  const reviewerReady = reviewer?.state === "ready" && reviewer.provider !== undefined;
-  const phaseDeadlineAtMs = reviewerReady ? runDeadlineAtMs + reviewer.policy.phaseBudgetMs : runDeadlineAtMs;
-  const reviewDeadlineAtMs = phaseDeadlineAtMs - REVIEW_FINALIZATION_RESERVE_MS;
-  const reviewCallsLeft = { value: reviewer?.policy.maxCallsPerRun ?? 0 };
-
   // Walidacja puli w domenie: pojedyncze reguły + duplikaty, także wobec
   // odpowiedzi już w szkicu (existingAnswers z partii dogenerowania). Najpierw
   // strażnik KSZTAŁTU: rekord o złym kształcie tablic (np. options=[null,…])
@@ -2121,12 +2060,11 @@ export async function executeLessonGeneration(services: Services, runId: string,
   // Całość walidacji + zapisu w terminalnym try/catch: nawet nieprzewidziany
   // wyjątek rozlicza run (failed/validation), nie zostawia go w stanie running.
   try {
-    assertLessonGenerationFinalizationAllowed(phaseDeadlineAtMs, options.signal);
+    assertLessonGenerationFinalizationAllowed(runDeadlineAtMs, options.signal);
     if (!topic) {
       await markCurrentRun(services.db, "failed", "validation");
       return;
     }
-    const activeTopic = topic;
     const fresh = acceptFreshLessonPool({
       rawExercises,
       subject,
@@ -2151,39 +2089,9 @@ export async function executeLessonGeneration(services: Services, runId: string,
       ...draftExamples,
       ...resolveGenerationLeaks({ existing: existingDrafts, fresh: [], existingExamples: draftExamples, newExamples: examples, objectiveOrder, subject }).keptNewExamples,
     };
-    const objectiveContext = (objectiveId: string) => {
-      const objective = activeTopic.objectives.find((candidate) => candidate.id === objectiveId);
-      const kind = dynamicTopicData?.objectives.find((candidate) => candidate.id === objectiveId)?.kind;
-      return {
-        title: objective?.titlePl ?? "",
-        ...(kind === undefined ? {} : { kind }),
-        card: (objective?.cards ?? []).map((card) => `${card.title}: ${card.body}`).join("\n"),
-      };
-    };
-    const reviewPhase = (phaseFresh: readonly LessonExerciseDraft[], phaseExisting: readonly LessonExerciseDraft[]) =>
-      reviewFreshExercises({
-        reviewer,
-        subject,
-        topic: activeTopic,
-        material: input.material,
-        fresh: phaseFresh,
-        existing: phaseExisting,
-        examples: finalExamples,
-        objectiveOrder,
-        objectiveContext,
-        callsLeft: reviewCallsLeft,
-        reviewDeadlineAtMs,
-        cancelPollMs: executionPolicy.cancelPollMs,
-        assertCurrent: runIsCurrent,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-        runId,
-      });
-    // Krytyk (spec §5, kroki 5–6) przed regułą twardą: poprawka może usunąć ujawnienie.
-    const mainReview = await reviewPhase(fresh.accepted, existingDrafts);
-    const reviewPhases: ReviewPhaseResult[] = [mainReview];
     const leaks = resolveGenerationLeaks({
       existing: existingDrafts,
-      fresh: mainReview.exercises,
+      fresh: fresh.accepted,
       existingExamples: draftExamples,
       newExamples: examples,
       fixedSources: cardSources,
@@ -2195,13 +2103,11 @@ export async function executeLessonGeneration(services: Services, runId: string,
     let uniqueValid = orphans.kept;
     const leakRejected = leaks.droppedFresh.length;
     let rejectedCount = shapeRejected + outOfScopeCount + fresh.refineRejected + rejected.length + dupAgainstExisting +
-      mainReview.droppedCount + leakRejected + orphans.dropped;
+      leakRejected + orphans.dropped;
     let runRejectedReasons = sumRejectedReasons(fresh.refinedReasons, {
-      ...reasonCount(REVIEW_DROP_REASON, mainReview.droppedCount),
       ...reasonCount(EXPOSURE_LEAK_REASON, leakRejected),
       ...reasonCount(ORPHAN_KEYWORDS_REASON, orphans.dropped),
     });
-    let toppedUp: LessonReviewReport["toppedUp"] = [];
 
     console.log(
       `[lesson] run=${runId} walidacja puli: ${summarizeLessonPoolValidation({
@@ -2231,27 +2137,6 @@ export async function executeLessonGeneration(services: Services, runId: string,
       console.log(`[lesson] run=${runId} porzucone wyjaśnienia=${droppedExplanations}`);
     }
 
-    // Raport kontroli jakości przebiegu scalony z raportem szkicu; listy ćwiczeń tylko dla żywych elementów
-    // wersji (wołać po zapisie ćwiczeń). Także przy porażce walidacji — rodzic widzi usunięcia krytyka.
-    const mergedReview = async (
-      tx: Tx,
-      versionId: string,
-      previous: LessonReviewReport | undefined,
-      saved: readonly { readonly draft: LessonExerciseDraft; readonly exerciseId: string }[],
-    ): Promise<LessonReviewReport> => {
-      const liveIds = new Set(
-        (await tx.select({ itemId: itemRevisions.itemId }).from(itemRevisions).where(eq(itemRevisions.deckVersionId, versionId))).map((row) => row.itemId),
-      );
-      const runReport = reviewRunReport({
-        phases: reviewPhases,
-        saved,
-        subject,
-        toppedUp,
-        ...(reviewerReady ? { model: reviewer.provider!.model } : {}),
-      });
-      return mergeReviewReport(previous, runReport, liveIds);
-    };
-
     // Wynik próby do kontekstu szkicu — liczniki czytane w chwili zapisu (runda pod etap je zwiększa).
     const writeContext = (): LessonPoolWriteContext => ({
       ...(dynamicTopicData ? { dynamicTopic: dynamicTopicData } : {}),
@@ -2260,8 +2145,8 @@ export async function executeLessonGeneration(services: Services, runId: string,
       rejectedReasons: runRejectedReasons,
       droppedObjectiveCount,
     });
-    // Porażka walidacji (0 nowych ćwiczeń): liczniki i raport krytyka i tak trafiają do kontekstu.
-    const failValidation = () => failLessonPoolValidation(services, { run: lessonRun, context: writeContext(), review: mergedReview });
+    // Porażka walidacji (0 nowych ćwiczeń): liczniki i tak trafiają do kontekstu.
+    const failValidation = () => failLessonPoolValidation(services, { run: lessonRun, context: writeContext() });
 
     // Runda pod brakujący etap (spec etapu przeglądu lekcji): po regule ujawnień, przed zapisem.
     // Pełna generacja bez przyjętych ćwiczeń kończy się porażką bez rundy; ręczne dogenerowanie
@@ -2280,7 +2165,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         input,
         graderAvailable,
         policy: executionPolicy,
-        runDeadlineAtMs: phaseDeadlineAtMs,
+        runDeadlineAtMs,
         signal: options.signal,
         assertCurrent: runIsCurrent,
         objectiveIds: batches.map((batch) => batch.objectiveId),
@@ -2291,15 +2176,10 @@ export async function executeLessonGeneration(services: Services, runId: string,
         cardSources,
         runStimuli: earlierExercises,
         runAnswers: earlierAnswers,
-        review: reviewPhase,
-        // Pełny limit krytyka plus rezerwa finalizacji (okno krytyka kończy się 30 s przed deadline'em fazy).
-        reviewReserveMs: reviewerReady ? reviewer.policy.timeoutMs + REVIEW_FINALIZATION_RESERVE_MS : 0,
       });
       uniqueValid = [...uniqueValid, ...topUp.added];
       rejectedCount += topUp.rejectedCount;
       runRejectedReasons = sumRejectedReasons(runRejectedReasons, topUp.rejectedReasons);
-      reviewPhases.push(...topUp.reviews);
-      toppedUp = topUp.toppedUp;
     }
     if (uniqueValid.length === 0) {
       await failValidation();
@@ -2314,8 +2194,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
       existingDrafts,
       accepted: uniqueValid,
       context: writeContext(),
-      review: mergedReview,
-      finalizationDeadlineAtMs: phaseDeadlineAtMs,
+      finalizationDeadlineAtMs: runDeadlineAtMs,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
     console.log(`[lesson] run=${runId} zakończony durationMs=${Date.now() - runStartedAtMs}`);

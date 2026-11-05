@@ -237,13 +237,6 @@ export interface SubjectPromptProfile {
    * rodzica i idą do wiadomości użytkownika, nigdy do tej reguły.
    */
   readonly interestsRule?: string;
-  /**
-   * Reguły krytyka lekcji specyficzne dla przedmiotu (po angielsku; doklejane do
-   * wiadomości systemowej krytyka obok kryteriów wspólnych). Wymagane niepuste dla
-   * każdego rejestrowanego przedmiotu (`validateSubject`); NIE trafia do profilu
-   * promptu generatora (`buildPoolInput` kopiuje pola jawnie).
-   */
-  readonly reviewRules?: string;
 }
 
 /**

@@ -8,7 +8,7 @@ import type { SubjectPromptProfile } from "../../types";
  * rozdziału (walidacja słownikowa odrzuca resztę); polskie zdanie-bodziec
  * stoi w `instructionPl`, bo kartkówka usuwa `hint`.
  */
-/** Słowa funkcyjne dozwolone obok materiału — jedna lista dla generatora i krytyka. */
+/** Słowa funkcyjne dozwolone obok materiału — lista dla generatora. */
 export const CHAPTER_FUNCTION_WORDS = "I, you, he, she, my, a, the, is, are, do, can, and, in, on, this, what, today, very";
 
 export const englishChapterPrompts: SubjectPromptProfile = {
@@ -112,14 +112,4 @@ export const englishChapterPrompts: SubjectPromptProfile = {
     "Polish meaning', split across the cards; for 'frame' the pattern with 1 to 3 English examples from the material " +
     "WITHOUT their Polish translations (the pattern may be explained in Polish). No card contains a Polish sentence " +
     "together with its English translation — translating sentences is the child's exercise.",
-  reviewRules:
-    `Chapter exercises use ONLY English words, phrases and sentence frames of the parent's material plus basic function words (${CHAPTER_FUNCTION_WORDS}); ` +
-    "the pronouns we and they may replace a name, as in generation. Inflected forms and contractions of material words are part of the material. " +
-    "Any other English word is an off_material finding. " +
-    "A frame-key word is a fixed word of the objective's sentence frame (e.g. 'wearing' in 'I'm wearing (a) ...', 'weather' in " +
-    "'What's the weather like?'). A gap or an option is never only function words: it is a content word of the objective, a frame-key word, " +
-    "or a short phrase that holds a frame-key word together with a function word (e.g. 'I'm wearing', 'are you wearing'). " +
-    "The Polish stimulus sentence in instructionPl is unambiguous: one answer fits its meaning, up to equivalent accepted variants. " +
-    "In a cloze the gaps are not interchangeable: exactly one bank word fits each gap by its Polish meaning, no two gap words " +
-    "could swap places, and the trap word (an extra word of the bank) fits no gap.",
 };

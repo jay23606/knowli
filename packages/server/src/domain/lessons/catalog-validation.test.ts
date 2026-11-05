@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { validateSubject } from "./catalog-validation";
-import { createSubjectRegistry } from "./registry";
 import { createProductionSubjectRegistry, PRODUCTION_SUBJECTS } from "./subjects";
 import { historyLikeSubject } from "./testing/history-like-subject";
 import type { SubjectModule } from "./types";
@@ -68,28 +67,6 @@ describe("validateSubject — reguły (po jednym przypadku negatywnym)", () => {
     expect(storyErrors({ ...subject, lessonStory: true, prompts: { ...subject.prompts, storyRules: "  " } })).toHaveLength(1);
     expect(storyErrors({ ...subject, lessonStory: true, prompts: { ...subject.prompts, storyRules: "Write a story." } })).toEqual([]);
     expect(storyErrors({ ...subject, lessonStory: false })).toEqual([]);
-  });
-
-  it("każdy przedmiot wymaga niepustego prompts.reviewRules", () => {
-    const subject = cloneSubject();
-    const reviewErrors = (candidate: SubjectModule) =>
-      validateSubject(candidate).filter((error) => error.includes("reviewRules"));
-    expect(reviewErrors({ ...subject, prompts: { ...subject.prompts, reviewRules: undefined } })).toEqual([
-      "prompts.reviewRules: wymagane dla przeglądu",
-    ]);
-    expect(reviewErrors({ ...subject, prompts: { ...subject.prompts, reviewRules: "  " } })).toHaveLength(1);
-    expect(reviewErrors(subject)).toEqual([]);
-  });
-
-  it("rejestr odrzuca przedmiot bez reviewRules, a przedmioty produkcyjne przechodzą", () => {
-    const subject = cloneSubject();
-    expect(() => createSubjectRegistry([{ ...subject, prompts: { ...subject.prompts, reviewRules: undefined } }])).toThrow(
-      /prompts\.reviewRules: wymagane dla przeglądu/,
-    );
-    for (const production of PRODUCTION_SUBJECTS) {
-      expect(production.prompts.reviewRules?.trim()).toBeTruthy();
-      expect(validateSubject(production)).toEqual([]);
-    }
   });
 
   it("dopuszcza ten sam id tematu w różnych wersjach", () => {

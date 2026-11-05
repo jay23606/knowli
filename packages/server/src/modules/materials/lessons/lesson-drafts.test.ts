@@ -484,15 +484,6 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
     expect(build(englishGrammarSubject).promptProfile).not.toHaveProperty("typeRules");
   });
 
-  it("reguły przeglądu krytyka nie trafiają do profilu promptu generatora", () => {
-    for (const subject of [schoolSubject, englishGrammarSubject]) {
-      expect(subject.prompts.reviewRules).toBeTruthy();
-      const profile = build(subject).promptProfile;
-      expect(profile).not.toHaveProperty("reviewRules");
-      expect(JSON.stringify(profile)).not.toContain(subject.prompts.reviewRules!);
-    }
-  });
-
   describe("tematy zdań z zainteresowań dziecka", () => {
     const buildWith = (subject: SubjectModule, interests?: readonly string[]) => {
       const resolved = topic(subject);

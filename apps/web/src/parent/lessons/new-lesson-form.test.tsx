@@ -52,12 +52,11 @@ const values = (overrides: Partial<NewLessonValues> = {}): NewLessonValues => ({
 });
 
 /** Formularz z wczytanym katalogiem, w którym pierwszym przedmiotem jest podany (renderowanie statyczne nie wykonuje zapytań). */
-function renderWithCatalog(first: unknown, extras: { children?: unknown[]; generationService?: string; reviewService?: string } = {}): string {
+function renderWithCatalog(first: unknown, extras: { children?: unknown[]; generationService?: string } = {}): string {
   const queryClient = new QueryClient();
   queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, {
     subjects: [first],
     ...(extras.generationService ? { generationService: extras.generationService } : {}),
-    ...(extras.reviewService ? { reviewService: extras.reviewService } : {}),
   } as unknown as SubjectCatalogDto);
   if (extras.children) queryClient.setQueryData(orpc.children.list.queryOptions().queryKey, extras.children as never);
   return renderParentMarkup(<NewLessonForm onCreated={vi.fn()} onCancel={vi.fn()} registerEditorState={vi.fn()} />, queryClient);
@@ -430,28 +429,14 @@ describe("NewLessonForm", () => {
       expect(buildCommand(values(), path, undefined, ["dinozaury"]).command).toMatchObject({ interests: ["dinozaury"] });
     });
 
-    it("informacja o automatycznej kontroli jakości tylko, gdy katalog podaje jej usługę", () => {
-      const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
-      const withReview = renderWithCatalog(grammar, { reviewService: REVIEW });
-      expect(withReview).toContain('data-testid="lesson-review-service"');
-      expect(withReview).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
-      for (const first of [grammar, school, chapter]) {
-        expect(renderWithCatalog(first)).not.toContain('data-testid="lesson-review-service"');
-      }
-      // tematy zdań: notka wspomina kontrolę jakości (gdy włączona)
-      expect(messages.lessons.themesService).toContain("automatyczna kontrola jakości");
-      expect(messages.lessons.themesServiceUnknown).toContain("automatyczna kontrola jakości");
-    });
-
     describe("przedmiot z agentem puli (checkService)", () => {
       // model agenta, potem usługa UMIEM_LLM (etap zagadnień / historyjka) — ta sama co katalogowa
       const GEN = ["openrouter.ai · google/gemini-3.8-pro", SERVICE];
       const CHECK = "openrouter.ai · deepseek/deepseek-v4.1-flash-1017";
-      const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
       const agentGrammar = { ...grammar, generationServices: GEN, checkService: CHECK };
 
-      it("wariant bez materiału: usługi generowania z katalogu przedmiotu, drugi model, bez krytyka", () => {
-        const markup = renderWithCatalog(agentGrammar, { generationService: SERVICE, reviewService: REVIEW });
+      it("wariant bez materiału: usługi generowania z katalogu przedmiotu, drugi model", () => {
+        const markup = renderWithCatalog(agentGrammar, { generationService: SERVICE });
         expect(markup).toContain('data-testid="lesson-check-service"');
         expect(markup).toContain(messages.lessons.checkServiceInfo.replace("{service}", CHECK));
         expect(markup).not.toContain(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
@@ -460,14 +445,12 @@ describe("NewLessonForm", () => {
         expect(markup).toContain(messages.lessons.themesService.replace("{service}", GEN[0]!));
         expect(markup).not.toContain(messages.lessons.themesService.replace("{service}", GEN.join(", ")));
         expect(markup).not.toContain(messages.lessons.themesService.replace("{service}", SERVICE));
-        expect(markup).not.toContain('data-testid="lesson-review-service"');
       });
 
       it("wariant z materiałem (checkServiceIncludesMaterial)", () => {
-        const markup = renderWithCatalog({ ...school, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true }, { reviewService: REVIEW });
+        const markup = renderWithCatalog({ ...school, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true });
         expect(markup).toContain(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
         expect(markup).not.toContain(messages.lessons.checkServiceInfo.replace("{service}", CHECK));
-        expect(markup).not.toContain('data-testid="lesson-review-service"');
       });
 
       it("ocena pytań otwartych: komunikat pod komunikatem drugiego modelu; bez openCheckService go nie ma", () => {
@@ -487,9 +470,8 @@ describe("NewLessonForm", () => {
         expect(markup).not.toContain(messages.lessons.generationServicesInfo.replace("{service}", GEN[0]!));
       });
 
-      it("przedmiot potoku: komunikat krytyka, bez komunikatów agenta", () => {
-        const markup = renderWithCatalog(grammar, { generationService: SERVICE, reviewService: REVIEW });
-        expect(markup).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
+      it("przedmiot potoku: usługa tematów zdań z katalogu, bez komunikatów agenta", () => {
+        const markup = renderWithCatalog(grammar, { generationService: SERVICE });
         expect(markup).toContain(messages.lessons.themesService.replace("{service}", SERVICE));
         expect(markup).not.toContain('data-testid="lesson-check-service"');
         expect(markup).not.toContain('data-testid="lesson-generation-service"');
@@ -516,6 +498,18 @@ describe("NewLessonForm", () => {
       expect(markup).not.toContain('data-testid="lesson-themes-insert-c2"');
       expect(markup).toContain(messages.lessons.themesServiceUnknown);
       expect(markup).not.toContain("{service}");
+    });
+
+    it("notka o usłudze nie wspomina o automatycznej kontroli jakości, a o ocenie odpowiedzi tak", () => {
+      for (const [key, markup] of [
+        ["themesService", renderWithCatalog(grammar, { children: [ola], generationService: SERVICE })],
+        ["themesServiceUnknown", renderWithCatalog(grammar, { children: [ola] })],
+      ] as const) {
+        expect(markup, key).not.toMatch(/kontrol[aię] jakości/i);
+        expect(messages.lessons[key], key).not.toMatch(/kontrol[aię] jakości/i);
+        expect(messages.lessons[key], key).toContain("usługa oceniająca odpowiedzi");
+      }
+      expect(messages.lessons.themesService).toContain("{service}");
     });
 
     it("sekcja ukryta dla rozdziału, szkoły i przedmiotu bez flagi", () => {

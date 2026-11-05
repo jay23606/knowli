@@ -305,12 +305,10 @@ export default function SourcePage({
   // pokaże własny komunikat z ponowieniem.
   const lessonKinds = sourceLessonKinds(catalogQuery.data);
   const lessonButtons = LESSON_BUTTONS.filter((button) => lessonKinds === null || lessonKinds.includes(button.kind));
-  // przedmiot z agentem puli (`checkService`) ma własne usługi i drugi model; krytyk lekcji go nie przegląda,
-  // więc jego komunikat zostaje tylko wtedy, gdy któryś przycisk prowadzi do przedmiotu potoku
+  // przedmiot z agentem puli (`checkService`) ma własne usługi i drugi model
   const buttonServices = lessonButtons
     .map((button) => ({ kind: button.kind, info: subjectServiceInfo(sourceLessonSubject(catalogQuery.data, button.kind)) }))
     .filter(({ info }) => info.check !== null);
-  const showReviewService = lessonButtons.length > buttonServices.length;
 
   return (
     <Stack gap="lg" className="pp-editor pp-source-page" data-testid="source-page">
@@ -352,11 +350,6 @@ export default function SourcePage({
           {info.openCheck && <Text size="sm" className="pp-editor-muted" data-testid={`source-open-check-service-${kind}`}>{info.openCheck}</Text>}
         </Stack>
       ))}
-      {showReviewService && catalogQuery.data?.reviewService && (
-        <Text size="sm" className="pp-editor-muted" data-testid="source-review-service">
-          {messages.lessons.reviewServiceInfo.replace("{service}", () => catalogQuery.data!.reviewService!)}
-        </Text>
-      )}
 
       {error && (
         <Alert ref={errorAlert} tabIndex={-1} color="red" variant="light" role="alert" data-testid="source-error" icon={<ParentIcon name="alert-triangle" />}>

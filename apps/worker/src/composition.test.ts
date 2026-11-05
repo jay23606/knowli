@@ -33,4 +33,16 @@ describe("buildWorkerServices", () => {
       await pool.end();
     }
   });
+
+  it("pozostawione błędne UMIEM_REVIEWER_* nie zatrzymują workera", async () => {
+    vi.stubEnv("DATABASE_URL", "postgres://test:test@127.0.0.1:1/worker-composition");
+    vi.stubEnv("UMIEM_FAKE_PROVIDERS", "1");
+    vi.stubEnv("UMIEM_REVIEWER_ENABLED", "true");
+    vi.stubEnv("UMIEM_REVIEWER_CONCURRENCY", "abc");
+    vi.stubEnv("UMIEM_REVIEWER_REASONING", "turbo");
+
+    let built: ReturnType<typeof buildWorkerServices> | undefined;
+    expect(() => { built = buildWorkerServices(); }).not.toThrow();
+    await built?.pool.end();
+  });
 });

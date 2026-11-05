@@ -1,3 +1,5 @@
+> Krytyk (PR 2 tego etapu) usunięty w etapie 3 #237 PR 1 (2026-11-05); reguła twarda ujawnień zostaje; runda pod etap zostanie usunięta w etapie 3 PR 2 (do tego czasu zostaje w kodzie).
+
 # Etap przeglądu przy generowaniu lekcji (kontrola ujawnień + krytyk) — design
 
 Data: 2026-11-02. Status: projekt zaakceptowany w rozmowie przez właściciela 2026-11-02;

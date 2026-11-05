@@ -130,7 +130,7 @@ describe("koszty prób", () => {
 
 describe("probeEndpointHost", () => {
   it("OpenRouter po https: zwraca host (bez ścieżki i klucza)", () => {
-    expect(probeEndpointHost("https://openrouter.ai/api/v1", "UMIEM_REVIEWER_BASE_URL")).toBe("openrouter.ai");
+    expect(probeEndpointHost("https://openrouter.ai/api/v1", "UMIEM_GRADER_BASE_URL")).toBe("openrouter.ai");
     expect(probeEndpointHost(" https://eu.openrouter.ai/api/v1 ", "UMIEM_LLM_BASE_URL")).toBe("eu.openrouter.ai");
   });
 

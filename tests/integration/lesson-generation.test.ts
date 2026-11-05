@@ -6,6 +6,7 @@ import {
   computeTargetKey,
   createChild,
   createLesson,
+  createLessonDraftFromPublished,
   createLessonFromMaterial,
   createSchoolLesson,
   claimQueuedRun,
@@ -76,8 +77,42 @@ function command(overrides: Partial<LessonCommand> = {}): LessonCommand {
   };
 }
 
+/** Request puli wisi do przerwania; `entered` mówi, że run już w nim czeka. */
+function hangLessonRequests(fakes: FakeGeneration) {
+  // Limity z zapasem na obciążony procesor: przerwanie przychodzi z edycji/shutdownu,
+  // a request przed nim nie może sam wygasnąć (wcześniej 2 s).
+  fakes.deps.lessonExecution = { requestTimeoutMs: 10_000, runTimeoutMs: 15_000, cancelPollMs: 10 };
+  let enter!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  let requestSignal!: AbortSignal;
+  fakes.deps.llm.generateLessonPool = async (_input, signal) => {
+    requestSignal = signal!;
+    enter();
+    return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+  };
+  return { entered, signal: () => requestSignal };
+}
+
+/** Zapis klucza kontekstu lekcji bezpośrednio w bazie (dane sprzed zmiany kodu). */
+async function setLessonContextKey(versionId: string, key: string, value: unknown) {
+  await pool.query(
+    "update learning_app.deck_versions set lesson_context = jsonb_set(lesson_context, $1::text[], $2::jsonb) where id = $3",
+    [[key], JSON.stringify(value), versionId],
+  );
+}
+
 describe("generowanie puli lekcji (integracja)", () => {
   const disposers: Array<() => Promise<void>> = [];
+
+  async function generatedLessonDraft() {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const services = lessonServices(fakes);
+    const { runId, deckId } = await createLesson(services, command());
+    await executeLessonGeneration(services, runId);
+    expect((await readGeneration(services, runId)).state).toBe("succeeded");
+    return { services, deckId, draft: (await readLessonDeck(services, deckId)).draft! };
+  }
 
   beforeEach(async () => {
     await pool.query(
@@ -981,51 +1016,31 @@ describe("generowanie puli lekcji (integracja)", () => {
 
   it("edycja rodzica przerywa request w toku i nie zapisuje spóźnionego wyniku", async () => {
     const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
-    // Limity z zapasem na obciążony procesor: przerwanie przychodzi z edycji/shutdownu,
-    // a request przed nim nie może sam wygasnąć (wcześniej 2 s).
-    fakes.deps.lessonExecution = { requestTimeoutMs: 10_000, runTimeoutMs: 15_000, cancelPollMs: 10 };
+    const hang = hangLessonRequests(fakes);
     const services = lessonServices(fakes);
-    let enter!: () => void;
-    const entered = new Promise<void>((resolve) => { enter = resolve; });
-    let requestSignal!: AbortSignal;
-    fakes.deps.llm.generateLessonPool = async (_input, signal) => {
-      requestSignal = signal!;
-      enter();
-      return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
-    };
     const { runId } = await createLesson(services, command());
     const run = await readGeneration(services, runId);
     const pending = executeLessonGeneration(services, runId);
-    await entered;
+    await hang.entered;
     await editLessonDraft(services, run.deckVersionId!, { expectedEditNumber: 1, title: "Nowa treść rodzica" });
     await pending;
-    expect(requestSignal.aborted).toBe(true);
+    expect(hang.signal().aborted).toBe(true);
     expect((await readGeneration(services, runId)).state).toBe("superseded");
     expect(await query("select id from learning_app.item_revisions where deck_version_id=$1", [run.deckVersionId])).toHaveLength(0);
   });
 
   it("shutdown oddaje aktualny run do kolejki bez cofania wykorzystanej próby", async () => {
     const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
-    // Limity z zapasem na obciążony procesor: przerwanie przychodzi z edycji/shutdownu,
-    // a request przed nim nie może sam wygasnąć (wcześniej 2 s).
-    fakes.deps.lessonExecution = { requestTimeoutMs: 10_000, runTimeoutMs: 15_000, cancelPollMs: 10 };
+    const hang = hangLessonRequests(fakes);
     const services = lessonServices(fakes);
-    let enter!: () => void;
-    const entered = new Promise<void>((resolve) => { enter = resolve; });
-    let requestSignal!: AbortSignal;
-    fakes.deps.llm.generateLessonPool = async (_input, signal) => {
-      requestSignal = signal!;
-      enter();
-      return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
-    };
     const { runId } = await createLesson(services, command());
     const controller = new AbortController();
     const pending = executeLessonGeneration(services, runId, { signal: controller.signal });
-    await entered;
+    await hang.entered;
     controller.abort();
     await pending;
     const result = await readGeneration(services, runId);
-    expect(requestSignal.aborted).toBe(true);
+    expect(hang.signal().aborted).toBe(true);
     expect(result.state).toBe("queued");
     expect(result.attempts).toBe(1);
     expect(await query("select id from learning_app.item_revisions where deck_version_id=$1", [result.deckVersionId])).toHaveLength(0);
@@ -1520,6 +1535,40 @@ describe("generowanie puli lekcji (integracja)", () => {
     await expect(
       editLessonDraft(services, edited.id, { expectedEditNumber: edited.editNumber, exercises: forged }),
     ).rejects.toMatchObject({ code: "validation" });
+  });
+
+  it("„Utwórz nową wersję” → kopia bez review i bez generationGaps", async () => {
+    const { services, deckId, draft } = await generatedLessonDraft();
+
+    // Dawny raport krytyka i luki agenta tamtej wersji (pola kontekstu).
+    await setLessonContextKey(draft.id, "review", { status: "reviewed", objectives: [] });
+    await setLessonContextKey(draft.id, "generationGaps", [{ objectiveId: draft.objectiveIds[0], reason: "incomplete" }]);
+    await publishLessonDraft(services, draft.id, draft.editNumber);
+    const copy = await createLessonDraftFromPublished(services, deckId);
+
+    const contextOf = (id: string) => query<{ review: unknown; gaps: unknown }>(
+      "select lesson_context->'review' as review, lesson_context->'generationGaps' as gaps from learning_app.deck_versions where id = $1",
+      [id],
+    );
+    expect(copy.id).not.toBe(draft.id);
+    expect(await contextOf(copy.id)).toEqual([{ review: null, gaps: null }]);
+    const [source] = await contextOf(draft.id);
+    expect(source!.review).not.toBeNull();
+    expect(source!.gaps).not.toBeNull();
+    expect(copy.examples).toEqual(draft.examples);
+    expect(copy).not.toHaveProperty("generationGaps");
+  });
+
+  it("DTO szkicu nie ma review mimo starego klucza w kontekście", async () => {
+    const { services, deckId, draft } = await generatedLessonDraft();
+
+    await setLessonContextKey(draft.id, "review", {
+      status: "reviewed",
+      objectives: [{ objectiveId: draft.objectiveIds[0], status: "reviewed" }],
+      notes: [], changed: [], dropped: [], machine: [], toppedUp: [],
+    });
+
+    expect((await readLessonDeck(services, deckId)).draft).not.toHaveProperty("review");
   });
 
   describe("reguła twarda: rozwiązanie widoczne wcześniej (spec etapu przeglądu §5.2)", () => {

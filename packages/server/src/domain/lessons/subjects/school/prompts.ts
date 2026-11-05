@@ -65,10 +65,4 @@ export const schoolPrompts: SubjectPromptProfile = {
       "Gap words are concepts, names or numbers from the material, never conjunctions, prepositions or words guessable " +
       "from grammar alone. Distractors come from the same material and category.",
   },
-  reviewRules:
-    "The answer and the required elements of every exercise follow from the parent's material; a fact, date or definition " +
-    "outside the material is an off_material finding. A corrected exercise never adds facts outside the material. " +
-    "sourceRefs are verbatim quotes copied from the material, never paraphrases. " +
-    "Exercises of one question family (the same familyId) have the same model answer and the same required elements, " +
-    "only the wording of the question differs.",
 };

@@ -5,7 +5,7 @@ type CatalogSubject = SubjectCatalogDto["subjects"][number];
 /**
  * Informacje o usługach, do których trafia lekcja przedmiotu generowanego agentem puli
  * (wpis katalogu z `checkService`). Pola `null`, gdy przedmiot nie ma nadpisania — wtedy
- * obowiązują dotychczasowe komunikaty (usługa katalogowa i krytyk).
+ * obowiązuje dotychczasowy komunikat (usługa katalogowa).
  */
 export interface SubjectServiceInfo {
   /** Usługi generujące, np. „host · model, host · model”. */

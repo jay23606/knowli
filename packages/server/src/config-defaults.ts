@@ -41,22 +41,6 @@ export const CONFIG_DEFAULTS = {
   UMIEM_GRADER_MAX_CALLS_PER_SESSION: "20",
   UMIEM_SESSION_ACTIVITY_TIMEOUT_MS: "60000",
 
-  // ── Krytyk lekcji (worker): przegląd świeżych ćwiczeń po walidacji ──
-  // Domyślnie wyłączony; włączony z UMIEM_REVIEWER_API_KEY albo wspólnym
-  // OPENROUTER_API_KEY (tylko https OpenRouter). Do modelu trafia wyłącznie
-  // materiał rodzica i ćwiczenia — bez danych dziecka. Rozumowanie
-  // (UMIEM_REVIEWER_REASONING) zostaje nieustawione.
-  UMIEM_REVIEWER_ENABLED: "false",
-  UMIEM_REVIEWER_BASE_URL: "https://openrouter.ai/api/v1",
-  UMIEM_REVIEWER_MODEL: "anthropic/claude-sonnet-5.5",
-  UMIEM_REVIEWER_TIMEOUT_MS: "120000",
-  UMIEM_REVIEWER_CONCURRENCY: "3",
-  UMIEM_REVIEWER_MAX_OUTPUT_TOKENS: "6000",
-  UMIEM_REVIEWER_MAX_CALLS_PER_RUN: "12",
-  // Budżet fazy krytyka; razem z limitem przebiegu generacji musi mieścić się
-  // w WORKER_HEALTH_STALE_MS (pilnuje apps/worker/src/loop.test.ts).
-  UMIEM_REVIEWER_PHASE_BUDGET_MS: "240000",
-
   // ── Obrazy (OpenAI, klucz OPENAI_API_KEY) ──
   UMIEM_IMAGE_PROVIDER: "openai",
   UMIEM_IMAGE_MODEL: "gpt-image-2.5-sunburst",
@@ -96,6 +80,7 @@ export const CONFIG_DEFAULTS = {
 
   // ── Worker ──
   WORKER_POLL_MS: "2000",
+  // Limit runu generacji lekcji mieści się w progu zdrowia; pilnuje apps/worker/src/loop.test.ts.
   WORKER_HEALTH_STALE_MS: "900000",
 } as const satisfies Record<string, string>;
 

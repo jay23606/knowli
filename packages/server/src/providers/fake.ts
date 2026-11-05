@@ -8,8 +8,6 @@ import type {
   ImageProvider,
   LessonObjectivesInput,
   LessonPoolInput,
-  LessonReviewInput,
-  LessonReviewerProvider,
   LessonStoryInput,
   LlmGeneratedItem,
   LlmGenerateDeckInput,
@@ -1016,56 +1014,6 @@ export function fakeGraderDeps(
     maxCallsPerSession: options.maxCallsPerSession ?? 20,
     timeoutMs: options.timeoutMs ?? 8000,
   };
-}
-
-/** Zachowanie fake krytyka lekcji: surowe werdykty dla wejścia zagadnienia. */
-export type FakeReviewBehavior = (input: LessonReviewInput, signal: AbortSignal) => unknown[] | Promise<unknown[]>;
-
-/**
- * Deterministyczny fake `LessonReviewerProvider`: domyślnie `ok` dla każdego
- * ćwiczenia; rejestruje wejścia i najwyższą liczbę równoległych wywołań.
- */
-export class FakeLessonReviewer implements LessonReviewerProvider {
-  readonly name = "fake-reviewer";
-  readonly model = "fake-reviewer-1";
-  readonly inputs: LessonReviewInput[] = [];
-  behavior: FakeReviewBehavior = (input) => input.exercises.map((exercise) => ({ n: exercise.n, verdict: "ok" }));
-  delayMs = 0;
-  maxInFlight = 0;
-  #inFlight = 0;
-
-  /** Liczba wywołań w toku w tej chwili (testy współbieżności). */
-  get inFlight(): number {
-    return this.#inFlight;
-  }
-
-  async reviewLessonObjective(input: LessonReviewInput, signal: AbortSignal): Promise<{ verdicts: unknown[] }> {
-    this.inputs.push(input);
-    this.#inFlight += 1;
-    this.maxInFlight = Math.max(this.maxInFlight, this.#inFlight);
-    try {
-      if (this.delayMs > 0) {
-        await new Promise<void>((resolve, reject) => {
-          if (signal.aborted) {
-            reject(new DOMException("aborted", "AbortError"));
-            return;
-          }
-          const timer = setTimeout(() => {
-            signal.removeEventListener("abort", onAbort);
-            resolve();
-          }, this.delayMs);
-          const onAbort = () => {
-            clearTimeout(timer);
-            reject(new DOMException("aborted", "AbortError"));
-          };
-          signal.addEventListener("abort", onAbort, { once: true });
-        });
-      }
-      return { verdicts: await this.behavior(input, signal) };
-    } finally {
-      this.#inFlight -= 1;
-    }
-  }
 }
 
 /**

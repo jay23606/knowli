@@ -61,7 +61,7 @@ export interface SourceVersion {
   lessonContext: Record<string, unknown> | null;
 }
 
-/** Kopia `lesson_context` bez raportu kontroli jakości i bez luk generowania agentem (pozostałe pola bez zmian). */
+/** Kopia `lesson_context` bez dawnego raportu krytyka (`review`) i bez luk generowania agentem (pozostałe pola bez zmian). */
 function withoutRunReports(context: Record<string, unknown> | null | undefined): Record<string, unknown> | null | undefined {
   if (!context || (!("review" in context) && !("generationGaps" in context))) return context;
   const { review: _review, generationGaps: _generationGaps, ...rest } = context;
@@ -113,7 +113,7 @@ export async function createVersionFromPublished(
       .where(eq(deckVersions.deckId, deckId))
   )[0]!;
 
-  // Raport kontroli jakości (`review`) i luki generowania agentem (`generationGaps`) dotyczą przebiegów
+  // Dawny raport krytyka (`review`) i luki generowania agentem (`generationGaps`) dotyczą przebiegów
   // generowania tamtej wersji — nowa wersja ich nie dziedziczy.
   const lessonContext = withoutRunReports(source.lessonContext);
   const newVersionId = randomUUID();

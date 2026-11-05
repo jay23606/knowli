@@ -68,8 +68,7 @@ const { eq } = createRequire(new URL("../../packages/server/package.json", impor
  *   tylko `UMIEM_PROBE_COSTS_INIT=1`, z limitem `UMIEM_PROBE_COSTS_CAP_USD`, domyślnie 10 USD): przed startem „wydane + szacunek > limit → stop”, przed
  *   pierwszym płatnym wywołaniem wpis tymczasowy z szacunkiem (zabity proces nadal się liczy), po
  *   próbie (także po błędzie) zastąpiony kosztem z `usage.cost`, a gdy go brak albo jest poniżej
- *   0,005 USD na wywołanie — szacunkiem z flagą `estimated`. Włączony krytyk lekcji (konfiguracja
- *   z env, bez zmian) podnosi szacunek o jedno generowanie;
+ *   0,005 USD na wywołanie — szacunkiem z flagą `estimated`;
  * - `UMIEM_PROBE_ALLOW_HOST` — host usługi inny niż OpenRouter dopuszczony jawnie (domyślnie próba
  *   odmawia wywołania innego hosta i każdego adresu bez https); nagłówek próby wypisuje model i host;
  * - `UMIEM_PROBE_DUMP` — plik JSON z pełnym szkicem i surowym wyjściem modelu do ręcznej oceny;
@@ -299,21 +298,18 @@ describe.skipIf(!enabled)("próba generowania lekcji na prawdziwym modelu", () =
     const usage: UsageRecorder = { record: (event) => void events.push(event), flush: async () => undefined };
     const deps = createGenerationDepsFromEnv(env, usage);
     if (!deps) throw new Error("Brak konfiguracji LLM (UMIEM_LLM_* / OPENAI_API_KEY) w .env — próba nie ma czego wywołać.");
-    const reviewerState = deps.reviewer?.state ?? "disabled";
     // Przed płatnym wywołaniem: dane idą tylko do OpenRouter po https (inny host — jawne UMIEM_PROBE_ALLOW_HOST).
     const allowHost = process.env.UMIEM_PROBE_ALLOW_HOST;
     const llmHost = probeEndpointHost(env.UMIEM_LLM_BASE_URL?.trim() || LLM_DEFAULT_BASE_URL, "UMIEM_LLM_BASE_URL", allowHost);
-    const reviewerHost = reviewerState === "ready" ? probeEndpointHost(env.UMIEM_REVIEWER_BASE_URL, "UMIEM_REVIEWER_BASE_URL", allowHost) : undefined;
 
-    // Włączony krytyk (konfiguracja z env) liczony jak dodatkowe generowanie — górna granica jego wywołań.
-    const estimateUsd = estimateProbeCostUsd({ generations: reviewerState === "ready" ? 2 : 1 });
+    const estimateUsd = estimateProbeCostUsd({ generations: 1 });
     const ledger =
       process.env.UMIEM_PROBE_COSTS_INIT === "1"
         ? initCostLedger(costsPath, costCapFromEnv(process.env.UMIEM_PROBE_COSTS_CAP_USD))
         : readCostLedger(costsPath);
-    assertWithinCostCap(ledger, estimateUsd, `generowanie ${subjectKind}${reviewerState === "ready" ? " z krytykiem" : ""}`);
+    assertWithinCostCap(ledger, estimateUsd, `generowanie ${subjectKind}`);
     const costEntry = {
-      probe: `chapter:${subjectKind}${reviewerState === "ready" ? "+review" : ""}`,
+      probe: `chapter:${subjectKind}`,
       dump: materialPath === undefined ? "default-grammar-material" : basename(materialPath),
     };
     // Katalogi wszystkich plików wyjściowych przed płatnym wywołaniem: brak katalogu nie może zmarnować generowania.
@@ -330,7 +326,7 @@ describe.skipIf(!enabled)("próba generowania lekcji na prawdziwym modelu", () =
     const titleOf = { chapter: "Angielski — rozdział", school: "szkoła (Geografia)", grammar: "Angielski — gramatyka (Present Simple)" } as const;
     line("");
     line(`=== Próba generowania: ${titleOf[subjectKind]} ===`);
-    line(`model=${recorded.llm.model} host=${llmHost} krytyk=${reviewerState}${reviewerState === "ready" ? ` (${deps.reviewer!.provider!.model}, host=${reviewerHost})` : ""} pula=${poolSize} materiał=${material.length} znaków; ` +
+    line(`model=${recorded.llm.model} host=${llmHost} pula=${poolSize} materiał=${material.length} znaków; ` +
       `szacunek=${estimateUsd.toFixed(2)} USD, wydane dotąd=${ledger.spentUsd.toFixed(4)} z ${ledger.capUsd} USD`);
 
     // Odrzucenia reguł puli widać tylko w dzienniku generacji ("walidacja puli ... reguły:").
@@ -339,7 +335,7 @@ describe.skipIf(!enabled)("próba generowania lekcji na prawdziwym modelu", () =
     const originalLog = console.log;
     console.log = (...args: unknown[]) => {
       const text = args.map(String).join(" ");
-      if (text.startsWith("[lesson]") || text.startsWith("[lesson-review]")) {
+      if (text.startsWith("[lesson]")) {
         lessonLog.push(text);
         return;
       }
@@ -352,9 +348,7 @@ describe.skipIf(!enabled)("próba generowania lekcji na prawdziwym modelu", () =
     const clientRequestId = randomUUID();
     let runId: string;
     let deckId: string;
-    const costOf = (operation?: string) => events
-      .filter((event) => operation === undefined || (operation === "lesson_review") === (event.operation === "lesson_review"))
-      .reduce((sum, event) => sum + (event.providerCostUsd ?? 0), 0);
+    const costOf = () => events.reduce((sum, event) => sum + (event.providerCostUsd ?? 0), 0);
     const resultsPath = join(outDir, `chapter-${new Date().toISOString().replace(/[:.]/gu, "-")}.json`);
     /** Plik wyników: wspólna część (wejście, model, czas, wywołania, koszt) i stan przebiegu. */
     const resultsOf = (run: { state: string; errorCode: string | null; durationMs: number } & Record<string, unknown>): Record<string, unknown> => ({
@@ -363,11 +357,10 @@ describe.skipIf(!enabled)("próba generowania lekcji na prawdziwym modelu", () =
       subjectKind,
       material: materialPath === undefined ? { file: null, chars: material.length } : { file: basename(materialPath), sha256: sha256File(materialPath), chars: material.length },
       model: recorded.llm.model,
-      reviewer: { state: reviewerState, ...(reviewerState === "ready" ? { model: deps.reviewer!.provider!.model, policy: deps.reviewer!.policy } : {}) },
       poolSize,
       ...run,
       calls: recorded.calls,
-      costUsd: { total: costOf(), generation: costOf("generation"), review: costOf("lesson_review") },
+      costUsd: { total: costOf() },
       tokens: {
         in: events.reduce((sum, event) => sum + (event.inputTokens ?? 0), 0),
         out: events.reduce((sum, event) => sum + (event.outputTokens ?? 0), 0),
@@ -403,12 +396,10 @@ describe.skipIf(!enabled)("próba generowania lekcji na prawdziwym modelu", () =
     } finally {
       console.log = originalLog;
       // Koszt zawsze do rejestru — także po błędzie (pieniądze są wydane); brak usage.cost przy wywołaniach → szacunek.
-      const reviewCalls = events.filter((event) => event.operation === "lesson_review").length;
-      const generationCalls = events.length - reviewCalls;
       const { costUsd, estimated } = ledgerCost({
         measuredUsd: costOf(),
         calls: events.length,
-        fallbackUsd: estimateProbeCostUsd({ generations: (generationCalls > 0 ? 1 : 0) + (reviewCalls > 0 ? 1 : 0) }),
+        fallbackUsd: estimateProbeCostUsd({ generations: events.length > 0 ? 1 : 0 }),
       });
       if (estimated) line(`UWAGA: ${events.length} wywołań bez usage.cost — do rejestru wpisany szacunek ${costUsd.toFixed(4)} USD`);
       const updated = settleCostEntry(costsPath, provisionalId, {
@@ -417,7 +408,7 @@ describe.skipIf(!enabled)("próba generowania lekcji na prawdziwym modelu", () =
         costUsd,
         ...(estimated ? { estimated } : {}),
       });
-      line(`koszt próby=${costOf().toFixed(4)} USD (generator ${costOf("generation").toFixed(4)}, krytyk ${costOf("lesson_review").toFixed(4)}); ` +
+      line(`koszt próby=${costOf().toFixed(4)} USD; ` +
         `łącznie wydane=${updated.spentUsd.toFixed(4)} z ${updated.capUsd} USD`);
     }
     const durationMs = Date.now() - started;
@@ -459,7 +450,6 @@ describe.skipIf(!enabled)("próba generowania lekcji na prawdziwym modelu", () =
         subjectKind,
         materialSha256: materialPath === undefined ? null : sha256File(materialPath),
         model: recorded.llm.model,
-        reviewer: reviewerState,
         runState: run.state,
         phase: "final draft after executeLessonGeneration (hard exposure rule and top-up applied)",
       });

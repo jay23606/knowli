@@ -13,6 +13,7 @@ import {
   englishGrammarSubject,
   executeLessonGeneration,
   historyLikeSubject,
+  readLessonDeck,
   regenerateObjective,
   retryGeneration,
   runDueGenerationWork,
@@ -25,9 +26,8 @@ import type { LessonCommand } from "@learning/contracts";
 import { testDatabase } from "./helpers";
 import { ManualClock } from "./helpers";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
-import type { LessonReviewReport } from "../../packages/server/src/domain/lessons/review-report";
 import { GenerationProviderError } from "../../packages/server/src/ports/generation-error";
-import { FakeAnswerGrader, FakeLessonReviewer } from "../../packages/server/src/providers/fake";
+import { FakeAnswerGrader } from "../../packages/server/src/providers/fake";
 import {
   FakeExerciseChecker,
   FakeLessonPoolAgent,
@@ -296,22 +296,11 @@ describe("agent puli lekcji (integracja)", () => {
       "Zagadnienie 2: Góry Polski",
       "Tatry są najwyższymi górami Polski. Sudety leżą na południowym zachodzie.",
     ].join("\n");
-    const PRESET_REVIEW: LessonReviewReport = {
-      status: "reviewed",
-      model: "fake-reviewer-1",
-      objectives: [],
-      changed: [],
-      dropped: [],
-      notes: [],
-      toppedUp: [],
-      machine: [],
-    };
 
     interface AgentWorld {
       fakes: FakeGeneration;
       services: Services;
       agent: FakeLessonPoolAgent;
-      reviewer: FakeLessonReviewer;
       clock: ManualClock;
     }
 
@@ -333,7 +322,7 @@ describe("agent puli lekcji (integracja)", () => {
     }
 
     /**
-     * Produkcyjny rejestr, fake LLM, fake agenta (domyślnie „jak LLM”), checker niedostępny, gotowy krytyk.
+     * Produkcyjny rejestr, fake LLM, fake agenta (domyślnie „jak LLM”), checker niedostępny.
      * Kontroler sprawdza bieżącość próby co 20 ms (edycja i „Ponów” w trakcie przerywają próbę od razu).
      */
     async function agentWorld(subjects: string[], agentOptions: AgentScript = {}, world: WorldOptions = {}): Promise<AgentWorld> {
@@ -350,15 +339,9 @@ describe("agent puli lekcji (integracja)", () => {
         ...(world.finalizationReserveMs === undefined ? {} : { finalizationReserveMs: world.finalizationReserveMs }),
       };
       fakes.deps.lessonExecution = { ...DEFAULT_LESSON_GENERATION_POLICY, cancelPollMs: 20, ...world.execution };
-      const reviewer = new FakeLessonReviewer();
-      fakes.deps.reviewer = {
-        state: "ready",
-        provider: reviewer,
-        policy: { timeoutMs: 60_000, concurrency: 3, maxCallsPerRun: 12, phaseBudgetMs: 240_000 },
-      };
       fakes.deps.lessonAgent = lessonAgent;
       const clock = new ManualClock();
-      return { fakes, services: servicesWith(fakes, fakes.deps, clock), agent, reviewer, clock };
+      return { fakes, services: servicesWith(fakes, fakes.deps, clock), agent, clock };
     }
 
     interface VersionRow {
@@ -493,8 +476,8 @@ describe("agent puli lekcji (integracja)", () => {
     const summaryOf = (row: FullRunRow) =>
       row.agent_checkpoint as { totalSpentUsd: number; objectives: Record<string, { status: string; accepted: number }> };
 
-    it("rozdział: planer → szkic, dynamicTopic, przykłady, editNumber+1, podsumowanie bez treści, krytyk nie wołany i jego raport bez zmian", async () => {
-      const { fakes, services, agent, reviewer } = await agentWorld(["english_chapter"]);
+    it("rozdział: planer → szkic, dynamicTopic, przykłady, editNumber+1, podsumowanie bez treści", async () => {
+      const { fakes, services, agent } = await agentWorld(["english_chapter"]);
       const { runId, deckId } = await createLessonFromMaterial(services, {
         subjectId: "english_chapter",
         topicTitlePl: "Unit 1",
@@ -503,7 +486,6 @@ describe("agent puli lekcji (integracja)", () => {
         clientRequestId: randomUUID(),
       });
       const before = await versionOf(runId);
-      await setContextField(before.id, "review", PRESET_REVIEW);
 
       await executeLessonGeneration(services, runId);
 
@@ -519,16 +501,12 @@ describe("agent puli lekcji (integracja)", () => {
         dynamicTopic: { objectives: { id: string; kind?: string }[] };
         objectiveIds: string[];
         examples: Record<string, string[]>;
-        review: unknown;
       };
       const objectiveIds = context.dynamicTopic.objectives.map((objective) => objective.id);
       expect(objectiveIds).toEqual([1, 2, 3].map((n) => `english_chapter.d${deckId}.part_${n}`));
       expect(context.dynamicTopic.objectives.map((objective) => objective.kind)).toEqual(["words", "words", "frame"]);
       expect(context.objectiveIds).toEqual(objectiveIds);
       for (const id of objectiveIds) expect(context.examples[id]!.length).toBeGreaterThan(0);
-      // Krytyk nie jest wołany na ścieżce agenta, a raport w kontekście zostaje bez zmian.
-      expect(reviewer.inputs).toEqual([]);
-      expect(context.review).toEqual(PRESET_REVIEW);
       expectSummaryWithoutContent(row.agent_checkpoint, 1);
       // Rozdział nie ma historyjki — kolejkę historyjki sprawdza test gramatyki (przedmiot z `lessonStory`).
       expect(await storyRunStates(after.id)).toEqual([]);
@@ -693,6 +671,35 @@ describe("agent puli lekcji (integracja)", () => {
       expect(agent.calls).toEqual([]);
       expect(agent.planCalls).toEqual([]);
       expect(fakes.llm.lessonRequests.length).toBeGreaterThan(0);
+    });
+
+    it("potok: nowy szkic bez klucza review", async () => {
+      const { fakes, services, agent } = await agentWorld(["english_chapter"]);
+      const { runId } = await createLesson(services, command());
+
+      await executeLessonGeneration(services, runId);
+
+      expect((await fullRun(runId)).state).toBe("succeeded");
+      expect(agent.calls).toEqual([]);
+      expect(fakes.llm.lessonRequests.length).toBeGreaterThan(0);
+      expect((await versionOf(runId)).lesson_context).not.toHaveProperty("review");
+    });
+
+    it("potok: stary klucz review w szkicu — run succeeded, klucz zostaje, DTO go nie ma", async () => {
+      const { fakes, services, agent } = await agentWorld(["english_chapter"]);
+      const { runId, deckId } = await createLesson(services, command());
+      const before = await versionOf(runId);
+      // Dane sprzed usunięcia krytyka: klucz zostaje w szkicu, ale nikt go nie czyta ani nie pokazuje.
+      await setContextField(before.id, "review", { status: "reviewed", objectives: [] });
+
+      await executeLessonGeneration(services, runId);
+
+      expect((await fullRun(runId)).state).toBe("succeeded");
+      expect(agent.calls).toEqual([]);
+      expect(fakes.llm.lessonRequests.length).toBeGreaterThan(0);
+      const after = await versionOf(runId);
+      expect(after.lesson_context).toHaveProperty("review");
+      expect((await readLessonDeck(services, deckId)).draft).not.toHaveProperty("review");
     });
 
     it("potok: attempts > MAX przy złożonym agencie i przedmiocie spoza listy → attempts_exhausted bez wywołań", async () => {

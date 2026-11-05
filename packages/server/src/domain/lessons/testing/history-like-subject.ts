@@ -64,8 +64,6 @@ export const historyLikeSubject: SubjectModule = {
     generationRole: "Jesteś autorem ćwiczeń z historii Polski dla dzieci.",
     gradingRole: "Oceniasz, czy dziecko poprawnie podało fakt historyczny, nie styl wypowiedzi.",
     almostDefinition: "„almost”, gdy fakt jest zasadniczo trafny, ale niepełny lub z drobną nieścisłością.",
-    reviewRules:
-      "The answer and the required facts follow from the material. A correction never adds facts outside the material.",
   },
   validateExercise: () => [],
   ttsForAnswers: false,

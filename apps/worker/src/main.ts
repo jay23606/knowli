@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { buildWorkerServices } from "./composition";
 import { shutdownWorker } from "./shutdown";
 import { countForeignPendingTts, prepareUiAudio, withConfigDefaults } from "@learning/server";
-import { createWorkerLoop, reviewerHealthBudgetWarning, workerLoopSettingsFromEnv } from "./loop";
+import { createWorkerLoop, workerLoopSettingsFromEnv } from "./loop";
 import { processDueWork } from "./tasks";
 
 const HEALTH_PORT = Number(process.env.WORKER_HEALTH_PORT ?? 9301);
@@ -16,8 +16,6 @@ async function main(): Promise<void> {
     console.warn(`[worker] ${foreignTts} oczekujących nagrań TTS zleconych przy innym providerze/modelu niż UMIEM_TTS_PROVIDER/UMIEM_TTS_MODEL tego workera — nie zostaną wykonane; sprawdź, czy web i worker mają te same ustawienia TTS`);
   }
   const env = withConfigDefaults(process.env);
-  const budgetWarning = reviewerHealthBudgetWarning(env);
-  if (budgetWarning) console.warn(budgetWarning);
   const settings = workerLoopSettingsFromEnv(env);
   const loop = createWorkerLoop({
     ...settings,

@@ -1,3 +1,5 @@
+> Krytyk (PR 2 tego etapu) usunięty w etapie 3 #237 PR 1 (2026-11-05); reguła twarda ujawnień zostaje; runda pod etap zostanie usunięta w etapie 3 PR 2 (do tego czasu zostaje w kodzie).
+
 # Etap przeglądu lekcji — PR 2: krytyk (Claude Sonnet 5.5) — plan wdrożenia
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

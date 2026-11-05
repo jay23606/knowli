@@ -154,45 +154,6 @@ export interface LessonStoryInput {
   readonly avoidSentences: readonly string[];
 }
 
-/** Jedno świeże ćwiczenie przebiegu w kształcie generatora (bez identyfikatorów bazy). */
-export interface LessonReviewExerciseInput {
-  readonly n: number;
-  readonly exercise: Readonly<Record<string, unknown>>;
-}
-
-/**
- * Wejście krytyka lekcji dla jednego zagadnienia: wyłącznie treść materiału
- * i ćwiczeń — bez danych dziecka, identyfikatorów i polecenia rodzica.
- */
-export interface LessonReviewInput {
-  readonly subjectTitle: string;
-  readonly answerLocale: string;
-  readonly promptLocale: string;
-  readonly reviewRole: string;
-  /** MATERIAL (lekcja). */
-  readonly material: string;
-  /** Wszystkie karty lekcji (jeden blok, wspólny prefiks). */
-  readonly cardExamples: Readonly<Record<string, readonly string[]>>;
-  readonly objective: {
-    readonly id: string;
-    readonly title: string;
-    readonly kind?: "words" | "frame";
-    readonly card: string;
-  };
-  /** EXISTING EXERCISES zagadnienia — tylko kontekst, krytyk ich nie ocenia. */
-  readonly existingExercises: readonly Readonly<Record<string, unknown>>[];
-  readonly exercises: readonly LessonReviewExerciseInput[];
-  /** Angielski szablon ustaleń z walidacji. */
-  readonly findings: readonly string[];
-}
-
-export interface LessonReviewerProvider {
-  readonly name: string;
-  readonly model: string;
-  /** Surowe werdykty `{ verdicts }`; walidację i mapowanie robi przypadek użycia. */
-  reviewLessonObjective(input: LessonReviewInput, signal: AbortSignal): Promise<{ verdicts: unknown[] }>;
-}
-
 /**
  * Licznik kosztu runu agenta puli (etap 1 issue #237). Adapter zgłasza KAŻDE żądanie HTTP, także
  * nieudane i ponowione: kwotę w USD albo `null`, gdy koszt jest nieznany (kierownik liczy wtedy

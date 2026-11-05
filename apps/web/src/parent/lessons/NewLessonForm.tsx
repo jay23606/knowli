@@ -465,8 +465,6 @@ export default function NewLessonForm({
   const themesService = themesTarget
     ? messages.lessons.themesService.replace("{service}", () => themesTarget)
     : messages.lessons.themesServiceUnknown;
-  // krytyk lekcji nie przegląda puli agenta, więc jego komunikat znika przy przedmiocie z `checkService`
-  const reviewService = serviceInfo.check === null ? catalog?.reviewService : undefined;
 
   const submitError = form.errors.submit;
   const counterTemplate = fromMaterial ? messages.lessons.schoolMaterialCounter : messages.lessons.materialCounter;
@@ -681,11 +679,6 @@ export default function NewLessonForm({
             )}
             {serviceInfo.openCheck && (
               <Text size="sm" className="pp-editor-muted" data-testid="lesson-open-check-service">{serviceInfo.openCheck}</Text>
-            )}
-            {reviewService && (
-              <Text size="sm" className="pp-editor-muted" data-testid="lesson-review-service">
-                {messages.lessons.reviewServiceInfo.replace("{service}", () => reviewService)}
-              </Text>
             )}
 
             {submitError && (

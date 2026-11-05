@@ -53,7 +53,7 @@ import { DEFAULT_LESSON_AGENT_POLICY } from "./lesson-pool-agent-policy";
 /**
  * Ścieżka agenta w `executeLessonGeneration` (spec etapu 2a §7–§10): próba runu puli lekcji generowana
  * kierownikiem `runLessonPoolAgent` z punktem kontrolnym w wierszu runu, wynik próby z funkcji czystych
- * (`lesson-agent-outcome.ts`) i wspólny zapis do szkicu (`finalizeLessonPoolWrite`, bez krytyka).
+ * (`lesson-agent-outcome.ts`) i wspólny zapis do szkicu (`finalizeLessonPoolWrite`).
  * Granica transakcji: zapis do szkicu i podsumowanie punktu kontrolnego w jednej transakcji; zapisy
  * postępu w trakcie — osobno, pod strażą tożsamości próby. Logi `[lesson-agent]` bez treści ćwiczeń,
  * materiału, kart i tematów zdań.
@@ -251,7 +251,7 @@ export async function executeLessonAgentGeneration(
       ? (progress.objectives[addObjectiveId!]?.exercises.length ?? 0)
       : Object.values(progress.objectives).reduce((sum, entry) => sum + entry.exercises.length, 0);
 
-  /** Kontrola końcowa na całości i wspólny zapis do szkicu (§10), bez krytyka, z podsumowaniem w tej samej transakcji. */
+  /** Kontrola końcowa na całości i wspólny zapis do szkicu (§10) z podsumowaniem w tej samej transakcji. */
   const finalize = async (progress: LessonAgentProgress): Promise<void> => {
     const { topic, dynamicTopic } = lessonTopicOf(progress);
     const lessonOrder = topic.objectives.map((objective) => objective.id);
@@ -343,7 +343,7 @@ export async function executeLessonAgentGeneration(
       return;
     }
     if (outcome.kind === "failed" && outcome.errorCode === "validation") {
-      // Jak `failValidation` potoku: liczniki trafiają do kontekstu szkicu (raport krytyka bez zmian). Postęp
+      // Jak `failValidation` potoku: liczniki trafiają do kontekstu szkicu. Postęp
       // zostaje do „Ponów” z licznikami wyzerowanymi w tej samej transakcji — kolejny zapis do szkicu doliczy
       // tylko nowe usunięcia, nie te już policzone w kontekście.
       // `latest` dopiero po zatwierdzeniu: przy wycofanej transakcji zapis best-effort zostawia liczniki,
