@@ -14,10 +14,46 @@ import { schoolSubject } from "../domain/lessons/subjects/school/module";
 import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../domain/lessons/types";
 import { objectiveBatchCounts, poolStageCounts, toExerciseDraft } from "../modules/materials/lessons/lesson-drafts";
 import { isMaterialVocabularyTarget, materialPhraseIndex } from "../domain/lessons/subjects/english/material-phrase";
+import type { GraderInput } from "../ports/ai";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_FAKE_DECK_ITEMS, FAKE_HOLD_MAX_AGE_MS, FAKE_SLOW_DELAY_MS, FAKE_SLOW_MARKER, FakeImageProvider, FakeLessonReviewer, FakeLlmProvider, FakeTtsProvider, waitWhileFakeHeld } from "./fake";
+import { DEFAULT_FAKE_DECK_ITEMS, FAKE_HOLD_MAX_AGE_MS, FAKE_SLOW_DELAY_MS, FAKE_SLOW_MARKER, FakeAnswerGrader, FakeImageProvider, FakeLessonReviewer, FakeLlmProvider, FakeTtsProvider, waitWhileFakeHeld } from "./fake";
+
+describe("FakeAnswerGrader — koszt runu", () => {
+  const input: GraderInput = {
+    subjectTitle: "Angielski", topicTitle: "Present Simple",
+    roleProfile: { gradingRole: "grade", almostDefinition: "almost" },
+    instruction: "Uzupełnij.", stimulus: "He ___ (play).",
+    objective: { description: "-s", errorCategories: [{ code: "missing_s", label: "Brak -s" }] },
+    acceptedAnswers: ["plays"], childAnswer: "plays",
+  };
+  const sink = () => {
+    const recorded: (number | null)[] = [];
+    return { recorded, record: (usd: number | null) => { recorded.push(usd); } };
+  };
+
+  it("zgłasza domyślny koszt 0.0005 raz na wywołanie i zapisuje wywołanie", async () => {
+    const grader = new FakeAnswerGrader();
+    const cost = sink();
+    await grader.grade(input, AbortSignal.timeout(1000), cost);
+    expect(cost.recorded).toEqual([0.0005]);
+    expect(grader.requests).toHaveLength(1);
+  });
+
+  it("costUsd z opcji, także null", async () => {
+    const cost = sink();
+    await new FakeAnswerGrader({ costUsd: 0.01 }).grade(input, AbortSignal.timeout(1000), cost);
+    await new FakeAnswerGrader({ costUsd: null }).grade(input, AbortSignal.timeout(1000), cost);
+    expect(cost.recorded).toEqual([0.01, null]);
+  });
+
+  it("bez sinka nic się nie zmienia", async () => {
+    const grader = new FakeAnswerGrader();
+    await expect(grader.grade(input, AbortSignal.timeout(1000))).resolves.toBeDefined();
+    expect(grader.callCount).toBe(1);
+  });
+});
 
 describe("bramka fake providerów E2E (holdFile)", () => {
   it("zestaw, TTS i obraz czekają, dopóki plik bramki istnieje", async () => {

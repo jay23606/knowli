@@ -20,6 +20,7 @@ import {
 } from "./lesson-agent-checkpoint";
 import {
   acceptedInLessonOrder,
+  agentCheckStartLine,
   generationGapsOf,
   lessonAgentRunInputFor,
   lessonAgentRunOutcome,
@@ -46,7 +47,7 @@ import {
 import { classifyLessonGenerationFailure, lessonRetryDelayMs } from "./lesson-generation-errors";
 import { LessonGenerationCancelledError, withLessonGenerationControl, type LessonGenerationControl } from "./lesson-generation-control";
 import { DEFAULT_LESSON_GENERATION_POLICY } from "./lesson-generation-policy";
-import { kindsOf, lessonAgentLimits, runLessonPoolAgent, type LessonPoolAgentResult, type SettledObjective } from "./lesson-pool-agent";
+import { emptyLessonPoolAgentStats, kindsOf, lessonAgentLimits, runLessonPoolAgent, type LessonPoolAgentResult, type SettledObjective } from "./lesson-pool-agent";
 import { DEFAULT_LESSON_AGENT_POLICY } from "./lesson-pool-agent-policy";
 
 /**
@@ -86,7 +87,7 @@ function settledResult(settled: SettledObjective): LessonPoolAgentResult {
   return {
     planStatus: "not_needed",
     objectives: [settled],
-    stats: { submitted: 0, accepted: 0, rejectedByKind: {}, checkUnavailable: 0, checkerCalls: 0, invariantViolations: 0, refused: 0 },
+    stats: emptyLessonPoolAgentStats(),
     rejections: [],
     spentUsd: settled.spentUsd,
     unknownCostCalls: 0,
@@ -403,7 +404,7 @@ export async function executeLessonAgentGeneration(
     const emptyAttempt: LessonPoolAgentResult = {
       planStatus: "not_needed",
       objectives: [],
-      stats: { submitted: 0, accepted: 0, rejectedByKind: {}, checkUnavailable: 0, checkerCalls: 0, invariantViolations: 0, refused: 0 },
+      stats: emptyLessonPoolAgentStats(),
       rejections: [],
       spentUsd: begin.budgetSpentUsd,
       unknownCostCalls: 0,
@@ -430,6 +431,8 @@ export async function executeLessonAgentGeneration(
     console.log(
       `[lesson-agent] run=${runId} start mode=${mode} attempt=${attempts} resumed=${Object.keys(begin.objectives).length} pool=${input.poolSize} remainingMs=${remainingMs}`,
     );
+    // Stan kontroli etapu 2b (sędzia podpowiedzi, kontrola otwarta z graderem): jedna linia, bez treści.
+    console.log(agentCheckStartLine(runId, subject, agentDeps.grader !== undefined));
     // Kopia robocza do zapisów w trakcie; scalenie wyniku liczy się od `begin` (inaczej wydatek i histogram dwa razy).
     let working = begin;
     const result = await control.run((agentSignal) =>
@@ -437,6 +440,7 @@ export async function executeLessonAgentGeneration(
         {
           agent: agentDeps.agent,
           checker: agentDeps.checker,
+          ...(agentDeps.grader === undefined ? {} : { grader: agentDeps.grader }),
           subjects: services.subjects,
           policy: { ...agentDeps.policy, runTimeoutMs: remainingMs },
         },

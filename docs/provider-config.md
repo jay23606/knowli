@@ -105,7 +105,8 @@ składa (dostaje z env tylko listę przedmiotów i etykiety usług dla panelu
 rodzica), a przedmioty spoza listy generuje dotychczasowy potok. Adapter (AI SDK)
 mówi wyłącznie z OpenRouter (`https://openrouter.ai/api/v1`): generator i
 checker (drugi model, który rozwiązuje ćwiczenia na próbę i ocenia warianty
-odpowiedzi) to osobne wywołania z własnym modelem i wysiłkiem rozumowania.
+odpowiedzi, a w szkole także podpowiedzi) to osobne wywołania z własnym modelem
+i wysiłkiem rozumowania.
 
 | Zmienna | Domyślnie (`config-defaults.ts`) | Znaczenie |
 | --- | --- | --- |
@@ -154,7 +155,10 @@ Zasady:
   tylko listę przedmiotów, nie modele, wysiłki ani routing.
 - **Koszty.** Każde żądanie agenta i checkera trafia do dziennika kosztów
   (`feature = lesson_generation`, `provider = openrouter`, operacje `agent_plan`,
-  `agent_objective`, `check_solve`, `check_variants`; `docs/architecture.md` §23).
+  `agent_objective`, `check_solve`, `check_variants`, w szkole `check_hints`,
+  `check_open`; `docs/architecture.md` §23). Wywołania gradera kontroli
+  otwartych odpowiedzi zapisują `lesson_generation` / `check_grade` (dostawca z
+  `UMIEM_GRADER_BASE_URL`).
   Przebieg kontrolny 2026-11-04 na domyślnych modelach: 103 s, 0,142 USD,
   74 z 94 ćwiczeń przyjętych.
 - **Prywatność.** Do generatora trafia to samo co w potoku (materiał, polecenie
@@ -163,13 +167,30 @@ Zasady:
   Adapter nie loguje treści ani body błędów dostawcy; klucz tylko w adapterze.
   Panel rodzica informuje, do których usług trafia lekcja (formularz lekcji i
   strona źródła).
+- **Kontrole modelem w szkole (etap 2b).** W szkole checker sprawdza też
+  podpowiedzi pytań otwartych (fakty spoza materiału, polszczyzna, odpowiedź
+  podana innymi słowami) i pisze dwie różne poprawne odpowiedzi na każde pytanie
+  otwarte, które ocenia prawdziwy grader. Wymaga to `UMIEM_GRADER_*` także w
+  **workerze** (adres, model; klucz albo rezerwa `OPENROUTER_API_KEY`): grader jest
+  domyślnie włączony, gdy jest `OPENROUTER_API_KEY`, więc kontrola działa wtedy
+  domyślnie dla przedmiotów agenta. Bez pełnej konfiguracji gradera w workerze
+  kontrola otwarta jest wyłączona (log startu runu `openCheck=off`), a reszta
+  agenta działa jak wcześniej; osobnego wyłącznika ani nowych zmiennych nie ma.
+  Do gradera trafia to samo co przy dziecku (pytanie, kryteria, cytaty z
+  materiału) z odpowiedzią modelu zamiast odpowiedzi dziecka; werdykty nie trafiają
+  do `lesson_verdicts`. Po 3 kolejnych porażkach gradera w próbie runu agent przestaje
+  go wołać (log `grader_unavailable`, raz na próbę: po ponowieniu zadania wyłącznik
+  startuje od nowa), a kolejne ćwiczenia przechodzą bez kontroli otwartej;
+  ćwiczenia z nieudanym wywołaniem dostają notę „niesprawdzone”.
+  Nieznany koszt wywołania gradera liczy się do budżetu runu jako 0,002 USD.
 
 ## Ocena odpowiedzi lekcji (web)
 
 Model oceniający otwarte odpowiedzi lekcji (gramatyka itp.) jest zgodny z
-OpenAI (`POST {baseUrl}/chat/completions`). Działa WYŁĄCZNIE w procesie web i
-tylko dla odpowiedzi tekstowych, których nie rozstrzygnęło dopasowanie
-deterministyczne (`no_match`). Worker gradera nie potrzebuje.
+OpenAI (`POST {baseUrl}/chat/completions`). Działa w procesie web i tylko dla
+odpowiedzi tekstowych, których nie rozstrzygnęło dopasowanie deterministyczne
+(`no_match`). Worker składa ten sam adapter wyłącznie do kontroli otwartych
+odpowiedzi szkoły w agencie puli (sekcja „Agent puli lekcji”, etap 2b).
 
 | Element | Wartość | Uwagi |
 | --- | --- | --- |

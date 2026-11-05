@@ -41,6 +41,14 @@ describe("chapterAgentPolicy — wartości i typy", () => {
     expect(chapterAgentPolicy.checkerNeedsMaterial).toBe(false);
   });
 
+  it("nie ma sędziego podpowiedzi ani kontroli otwartej (zachowanie jak w 2a)", () => {
+    expect(chapterAgentPolicy.hintJudgeTypes).toBeUndefined();
+    expect(chapterAgentPolicy.openAnswerCheckTypes).toBeUndefined();
+    for (const key of ["hintUnsupported", "hintLanguage", "hintReveals", "openMissing", "openWrong"] as const) {
+      expect(chapterAgentPolicy.rejectionTexts[key]).toBeUndefined();
+    }
+  });
+
   it("typy ślepe i wariantów należą do przedmiotu, bez keywords i listen_choice", () => {
     const subjectTypes = new Set<string>(englishChapterSubject.exerciseTypes);
     for (const type of [...chapterAgentPolicy.blindSolveTypes, ...chapterAgentPolicy.variantCheckTypes]) {

@@ -43,13 +43,35 @@ export type CheckResult<T> =
   | { readonly kind: "unavailable" }
   | { readonly kind: "done"; readonly value: T };
 
+/** Werdykt sędziego podpowiedzi (etap 2b §6.4); `reason` ≤ 200 znaków, tylko dla modelu agenta. */
+export type AgentHintVerdict =
+  | { readonly verdict: "ok" }
+  | { readonly verdict: "unsupported" | "language" | "reveals"; readonly reason: string };
+
+/** Wynik jednej odpowiedzi kontroli otwartej: ocena wiedzy plus teksty braków i błędów (nigdy do Kid DTO). */
+export interface OpenGraded {
+  readonly answer: string;
+  readonly knowledge: "correct" | "partial" | "incorrect";
+  /** Teksty brakujących elementów wymaganych. */
+  readonly missing: readonly string[];
+  /** Błędne stwierdzenia i pomylone pojęcia (jako „said → meant”). */
+  readonly wrong: readonly string[];
+}
+
+/** Kontrola otwarta jest `done` tylko, gdy obie odpowiedzi (dwóch rozwiązujących) mają wynik. */
+export interface OpenCheckOutcome {
+  readonly answers: readonly [OpenGraded, OpenGraded];
+}
+
 export interface CandidateChecks {
   readonly solve: CheckResult<readonly string[]>;
   readonly variants: CheckResult<readonly boolean[]>;
+  readonly hint: CheckResult<AgentHintVerdict>;
+  readonly open: CheckResult<OpenCheckOutcome>;
 }
 
 export interface Rejection {
-  readonly kind: "shape" | "rule" | "lesson" | "leak" | "blind" | "variant" | "limit";
+  readonly kind: "shape" | "rule" | "lesson" | "leak" | "blind" | "variant" | "hint" | "open" | "limit";
   /** Stały kod reguły, bez treści (logi, trwały zapis). */
   readonly code: string;
   /** Tekst dla modelu (angielski), może zawierać treść. */
@@ -297,17 +319,50 @@ function quotedList(texts: readonly string[]): string {
   return texts.length === 0 ? "nothing" : texts.map(quoted).join(", ");
 }
 
+/** Kod i powód odrzucenia przez sędziego podpowiedzi (§6.4); brak szablonu przedmiotu daje sam powód. */
+function hintFinding(verdict: AgentHintVerdict, ctx: AgentCheckContext): { code: string; reason: string } | undefined {
+  if (verdict.verdict === "ok") return undefined;
+  const texts = ctx.subject.agentPolicy.rejectionTexts;
+  const [code, template] =
+    verdict.verdict === "unsupported"
+      ? (["hint_unsupported", texts.hintUnsupported] as const)
+      : verdict.verdict === "language"
+        ? (["hint_language", texts.hintLanguage] as const)
+        : (["hint_reveals_paraphrase", texts.hintReveals] as const);
+  return { code, reason: [template, verdict.reason].filter((part) => part !== undefined && part !== "").join(" ") };
+}
+
 /**
- * Kroki 5–6 (wyniki checkera dla oczyszczonego szkicu): `na` przechodzi,
+ * Powód odrzucenia kontroli otwartej: pierwsza nieprzyjęta odpowiedź. Błędy wygrywają z brakami:
+ * odpowiedź z błędnymi stwierdzeniami albo `incorrect` dostaje `openWrong` (sprawdź model i kryteria
+ * z materiałem), a `openMissing` (rozluźnij kryteria) tylko `partial` bez błędów — inaczej odpowiedź
+ * sprzeczna z materiałem skłaniałaby agenta do luzowania kryteriów (§13). Lista błędów jest zawsze,
+ * gdy niepusta, także obok braków.
+ */
+function openFinding(outcome: OpenCheckOutcome, ctx: AgentCheckContext): { code: string; reason: string } | undefined {
+  const failed = outcome.answers.find((graded) => graded.knowledge !== "correct");
+  if (failed === undefined) return undefined;
+  const texts = ctx.subject.agentPolicy.rejectionTexts;
+  const wrongFirst = failed.wrong.length > 0 || failed.knowledge === "incorrect";
+  const parts = [wrongFirst ? (texts.openWrong ?? "") : (texts.openMissing ?? ""), `Answer: ${quoted(failed.answer)}.`];
+  if (failed.missing.length > 0 || !wrongFirst) parts.push(`Missing: ${quotedList(failed.missing)}`);
+  if (failed.wrong.length > 0 || (wrongFirst && failed.missing.length === 0)) parts.push(`Errors: ${quotedList(failed.wrong)}`);
+  return { code: "open_not_accepted", reason: parts.join(" ").trim() };
+}
+
+/**
+ * Kroki 5–7 (wyniki checkera dla oczyszczonego szkicu): `na` przechodzi,
  * `unavailable` przechodzi z `unchecked`, `done` może odrzucić. Ślepe
- * rozwiązanie wygrywa z wariantami.
+ * rozwiązanie wygrywa z wariantami, a oba z sędzią podpowiedzi i kontrolą
+ * otwartą; te dwie są oceniane razem (jedno odrzucenie z kodem pierwszej
+ * — podpowiedzi — i wszystkimi powodami, żeby agent poprawił wszystko naraz).
  */
 function checkerSteps(
   draft: LessonExerciseDraft,
   checks: CandidateChecks,
   ctx: AgentCheckContext,
 ): { ok: true; unchecked: boolean } | { ok: false; rejection: Rejection } {
-  const { solve, variants } = checks;
+  const { solve, variants, hint, open } = checks;
   if (solve.kind === "done" && !blindMatches(draft, solve.value, ctx.subject.normalizer)) {
     return reject("blind", "blind_mismatch", [
       `an independent solver who saw only the child's view answered ${quotedList(solve.value)}, which does not match the answer key; make the exercise unambiguous or fix the key`,
@@ -323,7 +378,14 @@ function checkerSteps(
       );
     }
   }
-  return { ok: true, unchecked: solve.kind === "unavailable" || variants.kind === "unavailable" };
+  const hintIssue = hint.kind === "done" ? hintFinding(hint.value, ctx) : undefined;
+  const openIssue = open.kind === "done" ? openFinding(open.value, ctx) : undefined;
+  const issues = [hintIssue, openIssue].filter((issue) => issue !== undefined);
+  if (issues.length > 0) {
+    return reject(hintIssue !== undefined ? "hint" : "open", issues[0]!.code, issues.map((issue) => issue.reason));
+  }
+  const unavailable = [solve, variants, hint, open].some((result) => result.kind === "unavailable");
+  return { ok: true, unchecked: unavailable };
 }
 
 /**

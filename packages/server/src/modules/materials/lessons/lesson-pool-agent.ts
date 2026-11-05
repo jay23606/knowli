@@ -21,6 +21,7 @@ import type {
   LessonTopic,
 } from "../../../domain/lessons/types";
 import type { LessonExerciseCheckerProvider, LessonPoolAgentProvider, LlmLessonStageCounts, RunCostSink } from "../../../ports/ai";
+import { AgentCheckRun, CHECK_COUNTER_KEYS, type AgentCheckGrader, type CheckCounterKey } from "./lesson-agent-check-run";
 import { deadlineSignal, Semaphore, untilAborted } from "./lesson-agent-timers";
 import { listenChoiceAllowance, mergeExamples, objectiveBatchCounts, poolStageCounts } from "./lesson-drafts";
 import { objectiveAgentInput } from "./lesson-pool-agent-input";
@@ -126,7 +127,11 @@ export interface LessonPoolAgentRunInput {
   readonly onObjectiveSettled?: (settled: SettledObjective) => Promise<void>;
 }
 
-export interface LessonPoolAgentStats {
+/**
+ * Statystyki runu. Od etapu 2b także liczniki kontroli (`CHECK_COUNTER_KEYS`, §7.4): sędzia podpowiedzi,
+ * kontrola otwarta i grader (wywołania, pozycje bez wyniku, błędy i odrzucone werdykty).
+ */
+export type LessonPoolAgentStats = {
   submitted: number;
   accepted: number;
   rejectedByKind: Record<string, number>;
@@ -134,7 +139,7 @@ export interface LessonPoolAgentStats {
   checkerCalls: number;
   invariantViolations: number;
   refused: number;
-}
+} & Record<CheckCounterKey, number>;
 
 export interface LessonPoolAgentResult {
   readonly planStatus: "accepted" | "plan_failed" | "not_needed";
@@ -151,6 +156,8 @@ export interface LessonPoolAgentResult {
 export interface LessonPoolAgentDeps {
   readonly agent: LessonPoolAgentProvider;
   readonly checker: LessonExerciseCheckerProvider;
+  /** Grader kontroli otwartej (etap 2b); brak = kontrola otwarta nie dotyczy. Strukturalnie `AgentGraderDeps`. */
+  readonly grader?: AgentCheckGrader;
   readonly subjects: Pick<SubjectRegistry, "getSubject">;
   /** Brak pól = `DEFAULT_LESSON_AGENT_POLICY`. */
   readonly policy?: Partial<LessonAgentPolicy>;
@@ -163,8 +170,18 @@ function slugOf(objectiveId: string): string {
   return objectiveId.slice(objectiveId.lastIndexOf(".") + 1);
 }
 
-function emptyStats(): LessonPoolAgentStats {
-  return { submitted: 0, accepted: 0, rejectedByKind: {}, checkUnavailable: 0, checkerCalls: 0, invariantViolations: 0, refused: 0 };
+/** Zerowe statystyki runu (także wynik „bez kierownika” w `lesson-agent-generation.ts`). */
+export function emptyLessonPoolAgentStats(): LessonPoolAgentStats {
+  return {
+    submitted: 0,
+    accepted: 0,
+    rejectedByKind: {},
+    checkUnavailable: 0,
+    checkerCalls: 0,
+    invariantViolations: 0,
+    refused: 0,
+    ...Object.fromEntries(CHECK_COUNTER_KEYS.map((key) => [key, 0])),
+  } as LessonPoolAgentStats;
 }
 
 /** Przedmiot z rejestru, zdolny do agenta i obsługujący źródło zagadnień; inaczej błąd walidacji bez wywołań. */
@@ -306,7 +323,7 @@ export async function runLessonPoolAgent(
           planStatus: "plan_failed",
           planFailure: plan.failure,
           objectives: [],
-          stats: emptyStats(),
+          stats: emptyLessonPoolAgentStats(),
           rejections: [],
           spentUsd: cost.spentUsd,
           unknownCostCalls: cost.unknownCalls,
@@ -419,9 +436,11 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
     state = next;
   };
 
-  const stats = emptyStats();
+  const stats = emptyLessonPoolAgentStats();
   const rejections: RejectionLogEntry[] = [];
   const checkerSemaphore = new Semaphore(policy.checkerConcurrency);
+  // Wspólne dla runu: semafor gradera, pamięć wyników kontroli i wyłącznik gradera (etap 2b).
+  const checkRun = new AgentCheckRun(policy);
   const objectiveSemaphore = new Semaphore(policy.concurrency);
 
   // Błąd haka (albo kierownika) przerywa wszystkie zagadnienia przez wspólny sygnał.
@@ -458,6 +477,7 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
     stats.accepted += delta.accepted ?? 0;
     stats.checkerCalls += delta.checkerCalls ?? 0;
     stats.checkUnavailable += delta.checkUnavailable ?? 0;
+    for (const key of CHECK_COUNTER_KEYS) stats[key] += delta[key] ?? 0;
     track.accepted += delta.accepted ?? 0;
   };
 
@@ -535,6 +555,8 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
       ctx,
       checker: deps.checker,
       checkerSemaphore,
+      checkRun,
+      ...(deps.grader === undefined ? {} : { grader: deps.grader }),
       cost: budget,
       objectiveSignal,
       policy,
@@ -550,6 +572,10 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
         stats.refused += 1;
       },
       onStats: addStats(track),
+      // Wyłącznik otwiera się raz na run (`AgentCheckRun.recordGraderFailure`), więc log jest jednorazowy.
+      onGraderBreaker: () => {
+        console.log(`[lesson-agent] run=${input.runId} grader_unavailable`);
+      },
     });
     active.add(handle);
     let steps = 0;

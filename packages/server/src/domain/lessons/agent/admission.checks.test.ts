@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { MAX_TEXT_LENGTH } from "../pool-validation";
 import { schoolSubject } from "../subjects/school/module";
-import { A, B, choice, contextFor, gap, NA_CHECKS, open, stateWith } from "../testing/agent-admission-fixtures";
+import { schoolAgentPolicy } from "../subjects/school/agent-policy";
+import { A, B, choice, contextFor, gap, NA_CHECKS, open, stateWith, subject } from "../testing/agent-admission-fixtures";
 import { withAgentPolicy } from "../testing/agent-test-subject";
 import type { LessonExerciseDraft } from "../types";
-import { admitBatch, precheckBatch, submitExamples, type AgentCheckContext, type CandidateChecks } from "./admission";
+import {
+  admitBatch,
+  precheckBatch,
+  submitExamples,
+  type AgentCheckContext,
+  type AgentHintVerdict,
+  type CandidateChecks,
+  type OpenGraded,
+} from "./admission";
 import { agentObjectivesOf } from "./capable";
 import { createLessonAgentState, poolOf, type LessonAgentState } from "./state";
 
@@ -24,32 +33,32 @@ function acceptAll(state: LessonAgentState, objectiveId: string, drafts: readonl
 
 describe("admitBatch — ślepe rozwiązanie (krok 5)", () => {
   it("solve na → przyjęte, unchecked: false", () => {
-    const result = submitWith(stateWith(), A, [choice(A, 1)], [{ solve: { kind: "na" }, variants: { kind: "na" } }]);
+    const result = submitWith(stateWith(), A, [choice(A, 1)], [{ solve: { kind: "na" }, variants: { kind: "na" }, hint: { kind: "na" }, open: { kind: "na" } }]);
     expect(result.results).toEqual([{ accepted: "ex1", sanitized: [], unchecked: false }]);
   });
 
   it("solve unavailable → przyjęte, unchecked: true", () => {
-    const result = submitWith(stateWith(), A, [choice(A, 1)], [{ solve: { kind: "unavailable" }, variants: { kind: "na" } }]);
+    const result = submitWith(stateWith(), A, [choice(A, 1)], [{ solve: { kind: "unavailable" }, variants: { kind: "na" }, hint: { kind: "na" }, open: { kind: "na" } }]);
     expect(result.results).toEqual([{ accepted: "ex1", sanitized: [], unchecked: true }]);
     expect(poolOf(result.state, A)).toHaveLength(1);
   });
 
   it("variants unavailable przy zgodnym rozwiązaniu → przyjęte, unchecked: true", () => {
     const draft = { ...open(A, "Kiedy?", "w 966 roku"), acceptedAnswers: ["966"] };
-    const result = submitWith(stateWith(), A, [draft], [{ solve: { kind: "done", value: ["w 966 roku"] }, variants: { kind: "unavailable" } }]);
+    const result = submitWith(stateWith(), A, [draft], [{ solve: { kind: "done", value: ["w 966 roku"] }, variants: { kind: "unavailable" }, hint: { kind: "na" }, open: { kind: "na" } }]);
     expect(result.results).toEqual([{ accepted: "ex1", sanitized: [], unchecked: true }]);
   });
 
   it("solve done zgodne (także wariant) → przyjęte, unchecked: false", () => {
     const draft = { ...open(A, "Kiedy?", "w 966 roku"), acceptedAnswers: ["966"] };
-    const result = submitWith(stateWith(), A, [draft], [{ solve: { kind: "done", value: ["966"] }, variants: { kind: "done", value: [true] } }]);
+    const result = submitWith(stateWith(), A, [draft], [{ solve: { kind: "done", value: ["966"] }, variants: { kind: "done", value: [true] }, hint: { kind: "na" }, open: { kind: "na" } }]);
     expect(result.results).toEqual([{ accepted: "ex1", sanitized: [], unchecked: false }]);
   });
 
   it("solve done z rozjazdem → blind_mismatch z odpowiedzią solvera w reasons; pula bez zmian", () => {
     const state = stateWith();
     const result = submitWith(state, A, [choice(A, 1), choice(A, 2)], [
-      { solve: { kind: "done", value: ["dystraktor 1"] }, variants: { kind: "na" } },
+      { solve: { kind: "done", value: ["dystraktor 1"] }, variants: { kind: "na" }, hint: { kind: "na" }, open: { kind: "na" } },
       NA_CHECKS,
     ]);
     const [first, second] = result.results;
@@ -62,13 +71,13 @@ describe("admitBatch — ślepe rozwiązanie (krok 5)", () => {
 
   it("kroki 1–4 wygrywają z checkerem: duplikat z rozjazdem to lesson_pool", () => {
     const state = acceptAll(stateWith(), A, [choice(A, 1)]);
-    const result = submitWith(state, A, [choice(A, 1)], [{ solve: { kind: "done", value: ["zła"] }, variants: { kind: "na" } }]);
+    const result = submitWith(state, A, [choice(A, 1)], [{ solve: { kind: "done", value: ["zła"] }, variants: { kind: "na" }, hint: { kind: "na" }, open: { kind: "na" } }]);
     expect(result.results[0]).toMatchObject({ rejected: { code: "lesson_pool" } });
   });
 
   it("rozjazd wygrywa z odrzuconym wariantem: blind_mismatch", () => {
     const draft = { ...open(A, "Kiedy?", "w 966 roku"), acceptedAnswers: ["966"] };
-    const result = submitWith(stateWith(), A, [draft], [{ solve: { kind: "done", value: ["1000"] }, variants: { kind: "done", value: [false] } }]);
+    const result = submitWith(stateWith(), A, [draft], [{ solve: { kind: "done", value: ["1000"] }, variants: { kind: "done", value: [false] }, hint: { kind: "na" }, open: { kind: "na" } }]);
     expect(result.results[0]).toMatchObject({ rejected: { code: "blind_mismatch" } });
   });
 
@@ -81,7 +90,7 @@ describe("admitBatch — ślepe rozwiązanie (krok 5)", () => {
 describe("admitBatch — warianty (krok 6)", () => {
   it("variants [true, false] → variant_rejected z odrzuconym wariantem w reasons", () => {
     const draft = { ...open(A, "Kiedy?", "w 966 roku"), acceptedAnswers: ["966", "w X wieku"] };
-    const result = submitWith(stateWith(), A, [draft], [{ solve: { kind: "na" }, variants: { kind: "done", value: [true, false] } }]);
+    const result = submitWith(stateWith(), A, [draft], [{ solve: { kind: "na" }, variants: { kind: "done", value: [true, false] }, hint: { kind: "na" }, open: { kind: "na" } }]);
     expect(result.results[0]).toMatchObject({ rejected: { kind: "variant", code: "variant_rejected" } });
     const reasons = (result.results[0] as { rejected: { reasons: readonly string[] } }).rejected.reasons;
     expect(reasons).toHaveLength(1);
@@ -94,8 +103,153 @@ describe("admitBatch — warianty (krok 6)", () => {
     const draft = { ...open(A, "Kiedy?", "w 966 roku"), acceptedAnswers: ["DROP", "966", "w X wieku"] };
     const prechecked = precheckBatch(stateWith(), A, [draft], ctx);
     expect(prechecked[0]).toMatchObject({ pass: true, draft: { acceptedAnswers: ["966", "w X wieku"] } });
-    const result = admitBatch(stateWith(), A, prechecked, [{ solve: { kind: "na" }, variants: { kind: "done", value: [false, true] } }], ctx);
+    const result = admitBatch(stateWith(), A, prechecked, [{ solve: { kind: "na" }, variants: { kind: "done", value: [false, true] }, hint: { kind: "na" }, open: { kind: "na" } }], ctx);
     expect((result.results[0] as { rejected: { reasons: readonly string[] } }).rejected.reasons[0]).toContain('"966"');
+  });
+});
+
+describe("admitBatch — sędzia podpowiedzi i kontrola otwarta (etap 2b)", () => {
+  // Przedmiot testowy z tekstami odrzuceń szkoły: decyzja zależy tylko od wyników kontroli i szablonów.
+  const school = withAgentPolicy(subject, { rejectionTexts: schoolAgentPolicy.rejectionTexts });
+  const schoolCtx = contextFor({ subject: school });
+  const texts = schoolAgentPolicy.rejectionTexts;
+  const draft = open(A, "Kiedy?", "w 966 roku");
+
+  const graded = (knowledge: OpenGraded["knowledge"], answer: string, missing: readonly string[] = [], wrong: readonly string[] = []): OpenGraded => ({
+    answer,
+    knowledge,
+    missing,
+    wrong,
+  });
+  const correct = (answer: string) => graded("correct", answer);
+  const openDone = (first: OpenGraded, second: OpenGraded): CandidateChecks["open"] => ({ kind: "done", value: { answers: [first, second] } });
+  const hintDone = (verdict: AgentHintVerdict): CandidateChecks["hint"] => ({ kind: "done", value: verdict });
+  const checks = (partial: Partial<CandidateChecks>): CandidateChecks => ({ ...NA_CHECKS, ...partial });
+
+  function admitOne(candidate: LessonExerciseDraft, partial: Partial<CandidateChecks>) {
+    const prechecked = precheckBatch(stateWith(), A, [candidate], schoolCtx);
+    const result = admitBatch(stateWith(), A, prechecked, [checks(partial)], schoolCtx);
+    return { ...result, entry: result.results[0]! };
+  }
+
+  const rejectedOf = (entry: unknown) => (entry as { rejected: { kind: string; code: string; reasons: readonly string[] } }).rejected;
+
+  it.each([
+    ["unsupported", "hint_unsupported", texts.hintUnsupported],
+    ["language", "hint_language", texts.hintLanguage],
+    ["reveals", "hint_reveals_paraphrase", texts.hintReveals],
+  ] as const)("hint %s → odrzucenie hint/%s: szablon i powód sędziego w jednym wierszu", (verdict, code, template) => {
+    const { entry, state } = admitOne(draft, { hint: hintDone({ verdict, reason: "the hint says X" }) });
+    const rejection = rejectedOf(entry);
+    expect(rejection).toMatchObject({ kind: "hint", code });
+    expect(rejection.reasons).toHaveLength(1);
+    expect(rejection.reasons[0]!.startsWith(template!)).toBe(true);
+    expect(rejection.reasons[0]).toContain("the hint says X");
+    expect(poolOf(state, A)).toHaveLength(0);
+  });
+
+  it("hint ok → przyjęte bez unchecked", () => {
+    expect(admitOne(draft, { hint: hintDone({ verdict: "ok" }) }).entry).toEqual({ accepted: "ex1", sanitized: [], unchecked: false });
+  });
+
+  it("open: obie odpowiedzi correct → przyjęte bez unchecked", () => {
+    expect(admitOne(draft, { open: openDone(correct("a"), correct("b")) }).entry).toEqual({ accepted: "ex1", sanitized: [], unchecked: false });
+  });
+
+  it("open: druga partial z missing → open_not_accepted z openMissing, odpowiedzią drugiej i brakującym elementem", () => {
+    const { entry, state } = admitOne(draft, { open: openDone(correct("Mieszko"), graded("partial", "Mieszko I przyjął chrzest.", ["Odra"])) });
+    const rejection = rejectedOf(entry);
+    expect(rejection).toMatchObject({ kind: "open", code: "open_not_accepted" });
+    expect(rejection.reasons).toHaveLength(1);
+    expect(rejection.reasons[0]!.startsWith(texts.openMissing!)).toBe(true);
+    expect(rejection.reasons[0]).toContain('Answer: "Mieszko I przyjął chrzest."');
+    expect(rejection.reasons[0]).toContain('Missing: "Odra"');
+    expect(poolOf(state, A)).toHaveLength(0);
+  });
+
+  it("open: partial bez missing, ale z wrong → openWrong ze stwierdzeniem", () => {
+    const { entry } = admitOne(draft, { open: openDone(graded("partial", "Wisła płynie do Morza Czarnego.", [], ["Wisła płynie do Morza Czarnego"]), correct("b")) });
+    const rejection = rejectedOf(entry);
+    expect(rejection).toMatchObject({ kind: "open", code: "open_not_accepted" });
+    expect(rejection.reasons[0]!.startsWith(texts.openWrong!)).toBe(true);
+    expect(rejection.reasons[0]).toContain('Answer: "Wisła płynie do Morza Czarnego."');
+    expect(rejection.reasons[0]).toContain('Errors: "Wisła płynie do Morza Czarnego"');
+    expect(rejection.reasons[0]).not.toContain(texts.openMissing!);
+  });
+
+  it("open: partial z missing i wrong → openWrong z obiema listami (błędy wygrywają z brakami)", () => {
+    const { entry } = admitOne(draft, {
+      open: openDone(graded("partial", "Mieszko I przyjął chrzest w 1000 roku.", ["Odra"], ["chrzest w 1000 roku"]), correct("b")),
+    });
+    const rejection = rejectedOf(entry);
+    expect(rejection).toMatchObject({ kind: "open", code: "open_not_accepted" });
+    expect(rejection.reasons).toHaveLength(1);
+    expect(rejection.reasons[0]!.startsWith(texts.openWrong!)).toBe(true);
+    expect(rejection.reasons[0]).not.toContain(texts.openMissing!);
+    expect(rejection.reasons[0]).toContain('Answer: "Mieszko I przyjął chrzest w 1000 roku."');
+    expect(rejection.reasons[0]).toContain('Missing: "Odra"');
+    expect(rejection.reasons[0]).toContain('Errors: "chrzest w 1000 roku"');
+  });
+
+  it("open: incorrect z samym missing → openWrong z brakującym elementem, bez pustej listy błędów", () => {
+    const { entry } = admitOne(draft, { open: openDone(graded("incorrect", "Bolesław Chrobry.", ["Mieszko I"]), correct("b")) });
+    const rejection = rejectedOf(entry);
+    expect(rejection).toMatchObject({ kind: "open", code: "open_not_accepted" });
+    expect(rejection.reasons[0]!.startsWith(texts.openWrong!)).toBe(true);
+    expect(rejection.reasons[0]).not.toContain(texts.openMissing!);
+    expect(rejection.reasons[0]).toContain('Missing: "Mieszko I"');
+    expect(rejection.reasons[0]).not.toContain("Errors:");
+  });
+
+  it("open: pierwsza incorrect → odrzucenie z pierwszą odpowiedzią (nie z drugą)", () => {
+    const { entry } = admitOne(draft, { open: openDone(graded("incorrect", "pierwsza", [], ["błąd"]), graded("partial", "druga", ["Odra"])) });
+    const rejection = rejectedOf(entry);
+    expect(rejection.reasons).toHaveLength(1);
+    expect(rejection.reasons[0]).toContain('"pierwsza"');
+    expect(rejection.reasons[0]).not.toContain('"druga"');
+  });
+
+  it("hint reveals + open partial → jedno odrzucenie z kodem podpowiedzi i obydwoma powodami", () => {
+    const { entry } = admitOne(draft, {
+      hint: hintDone({ verdict: "reveals", reason: "paraphrase of the answer" }),
+      open: openDone(correct("a"), graded("partial", "druga", ["Odra"])),
+    });
+    const rejection = rejectedOf(entry);
+    expect(rejection).toMatchObject({ kind: "hint", code: "hint_reveals_paraphrase" });
+    expect(rejection.reasons).toHaveLength(2);
+    expect(rejection.reasons[0]!.startsWith(texts.hintReveals!)).toBe(true);
+    expect(rejection.reasons[1]!.startsWith(texts.openMissing!)).toBe(true);
+  });
+
+  it("hint ok + open partial → open_not_accepted", () => {
+    const { entry } = admitOne(draft, { hint: hintDone({ verdict: "ok" }), open: openDone(graded("partial", "a", ["Odra"]), correct("b")) });
+    expect(rejectedOf(entry)).toMatchObject({ kind: "open", code: "open_not_accepted" });
+  });
+
+  it("hint unavailable + open obie correct → przyjęte z unchecked: true", () => {
+    expect(admitOne(draft, { hint: { kind: "unavailable" }, open: openDone(correct("a"), correct("b")) }).entry).toEqual({
+      accepted: "ex1",
+      sanitized: [],
+      unchecked: true,
+    });
+  });
+
+  it("hint unavailable + open partial → odrzucenie (odrzucenie wygrywa z notą)", () => {
+    const { entry } = admitOne(draft, { hint: { kind: "unavailable" }, open: openDone(graded("partial", "a", ["Odra"]), correct("b")) });
+    expect(rejectedOf(entry)).toMatchObject({ kind: "open", code: "open_not_accepted" });
+  });
+
+  it("open unavailable → przyjęte z unchecked: true", () => {
+    expect(admitOne(draft, { open: { kind: "unavailable" } }).entry).toEqual({ accepted: "ex1", sanitized: [], unchecked: true });
+  });
+
+  it("blind_mismatch z done i hint unsupported → odrzucenie blind (kroki 2a pierwsze)", () => {
+    const withSolve = { ...draft, acceptedAnswers: [] };
+    const { entry } = admitOne(withSolve, {
+      solve: { kind: "done", value: ["1000"] },
+      hint: hintDone({ verdict: "unsupported", reason: "r" }),
+    });
+    expect(rejectedOf(entry)).toMatchObject({ kind: "blind", code: "blind_mismatch" });
   });
 });
 

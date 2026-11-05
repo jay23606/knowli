@@ -317,11 +317,14 @@ export interface LessonPoolAgentProvider {
 }
 
 /**
- * Niezależny solver i sędzia wariantów ćwiczeń agenta puli. Wywołania paczkowe: jedno żądanie na
- * paczkę `submit`, materiał raz. `null` w odpowiedzi = brak wyniku dla pozycji (`unavailable`).
- * Do checkera trafia wyłącznie jego wejście: widoki, liczby odpowiedzi, odpowiedź i warianty oraz
- * materiał, gdy przedmiot go wymaga. `solve` nigdy nie dostaje klucza odpowiedzi (sam widok i liczba
- * odpowiedzi); `judgeVariants` dostaje odpowiedź kanoniczną i warianty, bo ocenia ich równoważność.
+ * Niezależny solver i sędzia ćwiczeń agenta puli. Wywołania paczkowe: jedno żądanie na paczkę
+ * `submit`, materiał raz. `null` w odpowiedzi = brak wyniku dla pozycji (`unavailable`).
+ * Do checkera trafia wyłącznie jego wejście: widoki, liczby odpowiedzi, odpowiedź, warianty,
+ * teksty elementów wymaganych i podpowiedź oraz materiał, gdy przedmiot go wymaga. `solve` i
+ * `solveOpen` nigdy nie dostają klucza odpowiedzi (sam widok); `judgeVariants` dostaje odpowiedź
+ * kanoniczną i warianty, bo ocenia ich równoważność; `judgeHints` dostaje odpowiedź wzorcową,
+ * `requiredElements[].text` i podpowiedź, bo ocenia, czy podpowiedź zdradza odpowiedź albo element
+ * wymagany. Nigdy polecenie rodzica, tematy zdań, karty ani dane dziecka.
  */
 export interface LessonExerciseCheckerProvider {
   readonly name: string;
@@ -342,7 +345,38 @@ export interface LessonExerciseCheckerProvider {
     cost: RunCostSink,
     signal: AbortSignal,
   ): Promise<{ readonly equivalent: readonly (readonly boolean[] | null)[] }>;
+  /** Sędzia podpowiedzi pytań otwartych (etap 2b §4): `null` na pozycji = niesprawdzone. */
+  judgeHints(
+    input: {
+      readonly items: readonly {
+        readonly view: string;
+        readonly answer: string;
+        readonly requiredElements: readonly string[];
+        readonly hint: string;
+      }[];
+      readonly material?: string;
+    },
+    cost: RunCostSink,
+    signal: AbortSignal,
+  ): Promise<{ readonly verdicts: readonly (HintVerdict | null)[] }>;
+  /**
+   * Rozwiązujący pytania otwarte (etap 2b §4): dwie różne odpowiedzi na pozycję (inny wybór albo
+   * inne sformułowanie), oceniane potem przez grader; `null` = brak wyniku.
+   */
+  solveOpen(
+    input: { readonly items: readonly { readonly view: string }[]; readonly material?: string },
+    cost: RunCostSink,
+    signal: AbortSignal,
+  ): Promise<{ readonly answers: readonly (readonly [string, string] | null)[] }>;
 }
+
+/**
+ * Werdykt sędziego podpowiedzi; `reason` (≤ 200 znaków, po angielsku) tylko dla modelu agenta.
+ * Strukturalnie zgodny z `AgentHintVerdict` z domeny (port nie importuje domeny).
+ */
+export type HintVerdict =
+  | { readonly verdict: "ok" }
+  | { readonly verdict: "unsupported" | "language" | "reveals"; readonly reason: string };
 
 export interface LlmProvider {
   readonly name: string;
@@ -497,7 +531,10 @@ export interface GraderInput {
   };
   /** Zatwierdzone warianty poprawnej odpowiedzi (dane referencyjne). */
   readonly acceptedAnswers: readonly string[];
-  /** Odpowiedź dziecka przekazywana jako dane: ≤ 200 znaków (lekcje), ≤ 600 (odpowiedzi szkolne). */
+  /**
+   * Odpowiedź dziecka przekazywana jako dane: ≤ 200 znaków (lekcje), ≤ 600 (odpowiedzi szkolne).
+   * W kontroli agenta puli (etap 2b) to odpowiedź rozwiązującego modelu, nie dziecka.
+   */
   readonly childAnswer: string;
   /**
    * Dane ścieżki szkolnej (Etap 2): elementy wymagane ćwiczenia, forma i cytaty
@@ -528,7 +565,13 @@ export interface AnswerGraderProvider {
   readonly promptVersion: string;
   /** Wersja promptu dla konkretnego wejścia (szkoła/grupa); brak = `promptVersion`. */
   promptVersionForInput?(input: GraderInput): string;
-  grade(input: GraderInput, signal: AbortSignal): Promise<unknown>;
+  /**
+   * `cost` (opcjonalny) dostaje kwotę żądania HTTP według reguł kosztu runu agenta puli
+   * (`architecture.md` §23): odpowiedź spoza 2xx → `0`, brak odpowiedzi albo nieczytelne ciało
+   * 2xx → `null`, 2xx → `usage.cost` z treści, gdy dostawca go podaje, inaczej `null`. Web woła
+   * bez niego; woła agent puli przy kontrolach (etap 2b #237).
+   */
+  grade(input: GraderInput, signal: AbortSignal, cost?: RunCostSink): Promise<unknown>;
 }
 
 /**

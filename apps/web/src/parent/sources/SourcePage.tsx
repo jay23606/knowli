@@ -349,6 +349,7 @@ export default function SourcePage({
             <Text size="sm" className="pp-editor-muted" data-testid={`source-generation-service-${kind}`}>{info.generation}</Text>
           )}
           {info.check && <Text size="sm" className="pp-editor-muted" data-testid={`source-check-service-${kind}`}>{info.check}</Text>}
+          {info.openCheck && <Text size="sm" className="pp-editor-muted" data-testid={`source-open-check-service-${kind}`}>{info.openCheck}</Text>}
         </Stack>
       ))}
       {showReviewService && catalogQuery.data?.reviewService && (

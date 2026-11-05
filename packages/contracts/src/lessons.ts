@@ -118,6 +118,8 @@ export const SubjectCatalogDtoSchema = z.object({
     checkService: z.string().min(1).optional(),
     /** Czy do drugiego modelu trafia też materiał lekcji (polityka checkera przedmiotu); ma sens przy `checkService`. */
     checkServiceIncludesMaterial: z.boolean().optional(),
+    /** Etykieta usługi oceny odpowiedzi próbnych do pytań otwartych (grader; agent puli, kontrola otwarta); brak = bez tej kontroli. */
+    openCheckService: z.string().min(1).optional(),
     topics: z.array(z.object({
       id: z.string().min(1),
       version: z.number().int().positive(),

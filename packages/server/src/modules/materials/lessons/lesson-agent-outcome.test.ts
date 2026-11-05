@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { LessonAgentDeps } from "../../../config";
 import { AppError } from "../../../errors";
 import { A, B, choice, gap, keywords, listen, subject as fixtureSubject, topic } from "../../../domain/lessons/testing/agent-admission-fixtures";
+import { withAgentPolicy } from "../../../domain/lessons/testing/agent-test-subject";
 import type { DynamicTopicData, LessonExerciseDraft, SubjectModule } from "../../../domain/lessons/types";
 import { emptyLessonAgentProgress, type LessonAgentProgress } from "./lesson-agent-checkpoint";
 import {
   acceptedInLessonOrder,
+  agentCheckStartLine,
   generationGapsOf,
   lessonAgentRunInputFor,
   lessonAgentRunOutcome,
@@ -16,7 +18,7 @@ import {
   type LessonAgentRunInputArgs,
 } from "./lesson-agent-outcome";
 import { scopeFamiliesToRun, type LessonRunInput } from "./lesson-drafts";
-import type { LessonPoolAgentResult, SettledObjective } from "./lesson-pool-agent";
+import { emptyLessonPoolAgentStats, type LessonPoolAgentResult, type SettledObjective } from "./lesson-pool-agent";
 
 /** Przedmioty wg cech, nie identyfikatorów: katalog, dynamiczny z planerem (rozdział), dynamiczny bez (szkoła). */
 const catalog: SubjectModule = fixtureSubject;
@@ -419,7 +421,7 @@ function attemptResult(objectives: SettledObjective[], overrides: Partial<Lesson
   return {
     planStatus: "not_needed",
     objectives,
-    stats: { submitted: 0, accepted: 0, rejectedByKind: {}, checkUnavailable: 0, checkerCalls: 0, invariantViolations: 0, refused: 0 },
+    stats: emptyLessonPoolAgentStats(),
     rejections: [],
     spentUsd: 0,
     unknownCostCalls: 0,
@@ -460,7 +462,7 @@ describe("mergeAttemptIntoProgress", () => {
     const result = attemptResult([settled(B, "incomplete", [gapB])], {
       spentUsd: 0.375,
       rejections: [rejection("leak"), rejection("duplicate")],
-      stats: { submitted: 3, accepted: 1, rejectedByKind: {}, checkUnavailable: 0, checkerCalls: 0, invariantViolations: 2, refused: 0 },
+      stats: { ...emptyLessonPoolAgentStats(), submitted: 3, accepted: 1, invariantViolations: 2 },
     });
     expect(mergeAttemptIntoProgress(start, result, "pool")).toEqual({
       ...start,
@@ -473,6 +475,19 @@ describe("mergeAttemptIntoProgress", () => {
       rejectionCodes: { leak: 3, duplicate: 1 },
       removedAfterAcceptance: 3,
     });
+  });
+
+  it("liczniki kontroli: sumowane między próbami jak histogram, bez pola gdy nic nie policzono", () => {
+    const counted = (stats: Partial<LessonPoolAgentResult["stats"]>) =>
+      attemptResult([], { stats: { ...emptyLessonPoolAgentStats(), ...stats } });
+    // Zero liczników (jak w 2a) nie dodaje pola do punktu kontrolnego.
+    expect(mergeAttemptIntoProgress(emptyLessonAgentProgress(), counted({}), "pool")).not.toHaveProperty("checkCounters");
+    const first = mergeAttemptIntoProgress(emptyLessonAgentProgress(), counted({ hintChecks: 2, openChecks: 1, graderCalls: 3 }), "pool");
+    expect(first.checkCounters).toEqual({ hintChecks: 2, openChecks: 1, graderCalls: 3 });
+    const second = mergeAttemptIntoProgress(first, counted({ hintChecks: 1, graderCalls: 2, graderErrors: 1, openUnavailable: 1 }), "pool");
+    expect(second.checkCounters).toEqual({ hintChecks: 3, openChecks: 1, graderCalls: 5, graderErrors: 1, openUnavailable: 1 });
+    // Próba bez nowych liczników zachowuje dotychczasowe.
+    expect(mergeAttemptIntoProgress(second, counted({}), "pool").checkCounters).toEqual(second.checkCounters);
   });
 
   it("pula: kod porażki zagadnienia i temat planu z wyniku", () => {
@@ -560,3 +575,23 @@ describe("mergeGenerationGaps", () => {
   });
 });
 
+
+describe("agentCheckStartLine", () => {
+  const grammar = withAgentPolicy(fixtureSubject, {});
+  const school = withAgentPolicy(fixtureSubject, { hintJudgeTypes: ["lesson_open_answer"], openAnswerCheckTypes: ["lesson_open_answer"] });
+
+  it("szkoła z graderem → hintJudge=on openCheck=on", () => {
+    expect(agentCheckStartLine("run-1", school, true)).toBe("[lesson-agent] run=run-1 hintJudge=on openCheck=on");
+  });
+
+  it("szkoła bez gradera → openCheck=off, sędzia podpowiedzi zostaje", () => {
+    expect(agentCheckStartLine("run-1", school, false)).toBe("[lesson-agent] run=run-1 hintJudge=on openCheck=off");
+  });
+
+  it("gramatyka (bez list etapu 2b), z graderem albo bez → oba off", () => {
+    expect(agentCheckStartLine("run-1", grammar, true)).toBe("[lesson-agent] run=run-1 hintJudge=off openCheck=off");
+    expect(agentCheckStartLine("run-1", grammar, false)).toBe("[lesson-agent] run=run-1 hintJudge=off openCheck=off");
+    expect(agentCheckStartLine("run-1", withAgentPolicy(fixtureSubject, { hintJudgeTypes: [], openAnswerCheckTypes: [] }), true))
+      .toBe("[lesson-agent] run=run-1 hintJudge=off openCheck=off");
+  });
+});

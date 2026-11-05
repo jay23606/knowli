@@ -679,6 +679,9 @@ export default function NewLessonForm({
             {serviceInfo.check && (
               <Text size="sm" className="pp-editor-muted" data-testid="lesson-check-service">{serviceInfo.check}</Text>
             )}
+            {serviceInfo.openCheck && (
+              <Text size="sm" className="pp-editor-muted" data-testid="lesson-open-check-service">{serviceInfo.openCheck}</Text>
+            )}
             {reviewService && (
               <Text size="sm" className="pp-editor-muted" data-testid="lesson-review-service">
                 {messages.lessons.reviewServiceInfo.replace("{service}", () => reviewService)}

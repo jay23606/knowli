@@ -35,6 +35,8 @@ export type LessonAgentProgress = {
   readonly totalSpentUsd: number;
   /** Histogram kodów odrzuceń, bez treści. */
   readonly rejectionCodes: Record<string, number>;
+  /** Liczniki kontroli etapu 2b (`CHECK_COUNTER_KEYS`), sumowane między próbami; brak w punktach kontrolnych etapu 2a. */
+  readonly checkCounters?: Record<string, number>;
   readonly removedAfterAcceptance: number;
 };
 
@@ -44,6 +46,7 @@ export type LessonAgentSummary = {
   readonly objectives: Record<string, { readonly status: string; readonly accepted: number; readonly failureCode?: string }>;
   readonly totalSpentUsd: number;
   readonly rejectionCodes: Record<string, number>;
+  readonly checkCounters?: Record<string, number>;
   readonly attempts: number;
 };
 
@@ -85,6 +88,8 @@ const progressSchema = z.object({
   budgetSpentUsd: nonNegative,
   totalSpentUsd: nonNegative,
   rejectionCodes: z.record(z.string(), count),
+  // Opcjonalne: punkty kontrolne etapu 2a (w produkcji) nie mają tego pola.
+  checkCounters: z.record(z.string(), count).optional(),
   removedAfterAcceptance: count,
 });
 
@@ -135,6 +140,7 @@ export function parseLessonAgentProgress(value: unknown, runId?: string): Lesson
     budgetSpentUsd: data.budgetSpentUsd,
     totalSpentUsd: data.totalSpentUsd,
     rejectionCodes: data.rejectionCodes,
+    ...(data.checkCounters === undefined ? {} : { checkCounters: data.checkCounters }),
     removedAfterAcceptance: data.removedAfterAcceptance,
   };
 }
@@ -173,6 +179,7 @@ export function summarizeLessonAgentProgress(progress: LessonAgentProgress, atte
     objectives,
     totalSpentUsd: progress.totalSpentUsd,
     rejectionCodes: { ...progress.rejectionCodes },
+    ...(progress.checkCounters === undefined ? {} : { checkCounters: { ...progress.checkCounters } }),
     attempts,
   };
 }

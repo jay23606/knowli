@@ -250,6 +250,8 @@ function agentServicesOf(services: Services, subject: SubjectModule) {
     generationServices,
     checkService: agent.checkService,
     checkServiceIncludesMaterial: policy.checkerNeedsMaterial,
+    // ocena odpowiedzi próbnych do pytań otwartych: tylko przedmiot z takimi typami i skonfigurowany grader
+    ...(policy.openAnswerCheckTypes?.length && agent.openCheckService ? { openCheckService: agent.openCheckService } : {}),
   };
 }
 

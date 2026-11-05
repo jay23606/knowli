@@ -16,6 +16,7 @@ import type {
   LlmProvider,
   PronunciationProvider,
   PronunciationResult,
+  RunCostSink,
   SessionActivityReviewTask,
   SessionActivityReviewer,
   SttProvider,
@@ -889,10 +890,13 @@ export class FakeAnswerGrader implements AnswerGraderProvider {
   #byAnswer = new Map<string, FakeGraderBehavior>();
   #default: FakeGraderBehavior | null = null;
   #keywordRouting = false;
+  #costUsd: number | null;
 
-  constructor(options: { promptVersion?: string; keywordRouting?: boolean } = {}) {
+  /** `costUsd` to koszt zgłaszany do `RunCostSink` raz na wywołanie (testy budżetu agenta); `null` = nieznany. */
+  constructor(options: { promptVersion?: string; keywordRouting?: boolean; costUsd?: number | null } = {}) {
     this.promptVersion = options.promptVersion ?? "fake-grader-v1";
     this.#keywordRouting = options.keywordRouting ?? false;
+    this.#costUsd = options.costUsd === undefined ? 0.0005 : options.costUsd;
   }
 
   /** Programuje werdykt dla konkretnej (surowej) odpowiedzi dziecka. */
@@ -915,8 +919,9 @@ export class FakeAnswerGrader implements AnswerGraderProvider {
     return this.requests.length;
   }
 
-  async grade(input: GraderInput, signal: AbortSignal): Promise<unknown> {
+  async grade(input: GraderInput, signal: AbortSignal, cost?: RunCostSink): Promise<unknown> {
     this.requests.push(input);
+    cost?.record(this.#costUsd);
     const key = input.childAnswer.trim().toLowerCase();
     const behavior = this.#byAnswer.get(key) ?? this.#default ?? (input.school ? this.#schoolVerdict(input) : this.#keywordVerdict(input));
     if (behavior.delayMs && behavior.delayMs > 0) {

@@ -121,4 +121,45 @@ describe("lessonAgentDepsFromEnv", () => {
     expect(deps.checker.model).toBe("deepseek/deepseek-test");
     expect(deps.policy).toMatchObject({ concurrency: 2 });
   });
+
+  describe("grader kontroli otwartej (etap 2b)", () => {
+    const base = { OPENROUTER_API_KEY: "sk-or-v1-test", UMIEM_LESSON_AGENT_SUBJECTS: "english_chapter" };
+
+    it("tryb rzeczywisty z UMIEM_GRADER_* → grader z timeoutMs z env", () => {
+      const env = withConfigDefaults({
+        ...base,
+        UMIEM_GRADER_BASE_URL: "https://grader.example/v1",
+        UMIEM_GRADER_API_KEY: "secret",
+        UMIEM_GRADER_MODEL: "cheap-1",
+        UMIEM_GRADER_TIMEOUT_MS: "1234",
+      });
+      const deps = lessonAgentDepsFromEnv(env, subjects, createTestRecorder())!;
+      expect(deps.grader?.timeoutMs).toBe(1234);
+      expect(deps.grader?.provider.model).toBe("cheap-1");
+    });
+
+    it("domyślna konfiguracja z kluczem OpenRouter też składa grader (domyślny timeout)", () => {
+      const deps = lessonAgentDepsFromEnv(withConfigDefaults(base), subjects, createTestRecorder())!;
+      expect(deps.grader).toBeDefined();
+      expect(deps.grader?.timeoutMs).toBe(8000);
+    });
+
+    it("bez konfiguracji gradera → brak pola (kontrola otwarta nie dotyczy)", () => {
+      // Bez domyślnych (withConfigDefaults) i bez adresu/modelu gradera: tylko klucz agenta.
+      const deps = lessonAgentDepsFromEnv({ ...base, UMIEM_LESSON_AGENT_MODEL: "m", UMIEM_LESSON_AGENT_CHECKER_MODEL: "c" }, subjects)!;
+      expect(deps).toBeDefined();
+      expect(deps.grader).toBeUndefined();
+    });
+
+    it("UMIEM_FAKE_PROVIDERS=1 → brak gradera nawet z pełną konfiguracją", () => {
+      const env = withConfigDefaults({
+        UMIEM_FAKE_PROVIDERS: "1",
+        UMIEM_LESSON_AGENT_SUBJECTS: "english_chapter",
+        UMIEM_GRADER_BASE_URL: "https://grader.example/v1",
+        UMIEM_GRADER_API_KEY: "secret",
+        UMIEM_GRADER_MODEL: "cheap-1",
+      });
+      expect(lessonAgentDepsFromEnv(env, subjects, createTestRecorder())!.grader).toBeUndefined();
+    });
+  });
 });

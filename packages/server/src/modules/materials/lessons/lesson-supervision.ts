@@ -23,11 +23,11 @@ import {
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
 import { mapObjectiveStatus } from "../../../domain/lessons/progress-status";
-import { BASE_ERROR_CATEGORIES } from "../../../domain/lessons/base-error-categories";
 import { answersEquivalent } from "../../../domain/lessons/pool-validation";
 import type { LearningObjective, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { bumpEditNumber, lockVersion } from "../version-ops";
+import { lessonCategoryLabels } from "./lesson-grader-input";
 import { createLessonDraftFromPublished } from "./lesson-api";
 import { buildObjectiveCriteria, toExerciseDraft } from "./lesson-drafts";
 import { buildLessonPayload } from "./lesson-payload";
@@ -80,15 +80,6 @@ function requireTopic(subject: SubjectModule, topicId: string, version: number, 
   return topic;
 }
 
-/** Etykiety kategorii błędów dla tematu: bazowe ∪ przedmiotu ∪ tematu, po kodzie. */
-function categoryLabels(subject: SubjectModule, topic: LessonTopic): Map<string, string> {
-  const labels = new Map<string, string>();
-  for (const category of BASE_ERROR_CATEGORIES) labels.set(category.code, category.labelPl);
-  for (const category of subject.errorCategories) labels.set(category.code, category.labelPl);
-  for (const category of topic.extraErrorCategories) labels.set(category.code, category.labelPl);
-  return labels;
-}
-
 /** Rozwiązuje aktywną (opublikowaną, inaczej edytowalną) wersję lekcji deckId. */
 async function activeLessonVersion(
   db: Executor,
@@ -138,7 +129,7 @@ export async function lessonObjectiveProgress(
   // Szkic szkolny przed zakończeniem generacji nie ma jeszcze zagadnień — brak postępu do pokazania.
   if (subject.buildDynamicTopic && !context.dynamicTopic) return [];
   const topic = requireTopic(subject, context.topicId, context.topicVersion, context.dynamicTopic);
-  const labels = categoryLabels(subject, topic);
+  const labels = lessonCategoryLabels(subject, topic);
   const objectiveById = new Map<string, LearningObjective>();
   for (const o of topic.objectives) objectiveById.set(o.id, o);
 

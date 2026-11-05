@@ -1,4 +1,5 @@
 import type {
+  HintVerdict,
   LessonAgentPlanInput,
   LessonExerciseCheckerProvider,
   LessonObjectiveAgentInput,
@@ -303,6 +304,8 @@ export class FakeLessonPoolAgent implements LessonPoolAgentProvider {
 
 type SolveInput = Parameters<LessonExerciseCheckerProvider["solve"]>[0];
 type JudgeInput = Parameters<LessonExerciseCheckerProvider["judgeVariants"]>[0];
+type HintInput = Parameters<LessonExerciseCheckerProvider["judgeHints"]>[0];
+type OpenInput = Parameters<LessonExerciseCheckerProvider["solveOpen"]>[0];
 
 export interface FakeExerciseCheckerOptions {
   /** `view → odpowiedzi` (null = brak wyniku); domyślnie pusta lista, czyli rozjazd. */
@@ -315,11 +318,19 @@ export interface FakeExerciseCheckerOptions {
   /** Werdykt dla jednego wariantu (null = brak wyniku pozycji); domyślnie `true`. */
   judge?: (variant: string) => boolean | null;
   judgeBatch?: (items: readonly unknown[]) => (boolean[] | null)[] | "throw" | "hang" | "stall";
+  /** Werdykt sędziego podpowiedzi dla pozycji (null = niesprawdzone); domyślnie `{ verdict: "ok" }`. */
+  judgeHint?: (item: HintInput["items"][number]) => HintVerdict | null;
+  /** Tryb awarii całej paczki `judgeHints` (`undefined` = liczy `judgeHint` per pozycja); jak `solveBatch`. */
+  hintBatch?: (items: HintInput["items"]) => (HintVerdict | null)[] | "throw" | "hang" | "stall" | undefined;
+  /** Dwie odpowiedzi rozwiązującego otwarte dla widoku (null = brak wyniku); domyślnie `["A", "B"]`. */
+  solveOpen?: (view: string) => readonly [string, string] | null;
+  /** Tryb awarii całej paczki `solveOpen` (`undefined` = liczy `solveOpen` per pozycja). */
+  openBatch?: (items: OpenInput["items"]) => ((readonly [string, string]) | null)[] | "throw" | "hang" | "stall" | undefined;
   /** Koszt jednego wywołania; domyślnie 0, `null` = nieznany. */
   costUsd?: number | null;
   /** Wywołania czekają na tę obietnicę (testy równoległości); przerwanie sygnału przerywa oczekiwanie. */
   gate?: Promise<void>;
-  /** Kontrola niedostępna (tryb fake workera): `solve` i `judgeVariants` dają `null` dla każdej pozycji. */
+  /** Kontrola niedostępna (tryb fake workera): wszystkie metody dają `null` dla każdej pozycji. */
   unavailable?: true;
 }
 
@@ -328,6 +339,8 @@ export class FakeExerciseChecker implements LessonExerciseCheckerProvider {
   readonly model = "fake-lesson-checker-model";
   readonly solveCalls: SolveInput[] = [];
   readonly judgeCalls: JudgeInput[] = [];
+  readonly hintCalls: HintInput[] = [];
+  readonly openCalls: OpenInput[] = [];
   private readonly meter = new ConcurrencyMeter();
 
   constructor(private readonly options: FakeExerciseCheckerOptions = {}) {}
@@ -369,6 +382,36 @@ export class FakeExerciseChecker implements LessonExerciseCheckerProvider {
           return verdicts.every((verdict): verdict is boolean => verdict !== null) ? verdicts : null;
         }),
       };
+    });
+  }
+
+  judgeHints(input: HintInput, cost: RunCostSink, signal: AbortSignal): Promise<{ verdicts: (HintVerdict | null)[] }> {
+    this.hintCalls.push(input);
+    return this.meter.track(async () => {
+      await this.admit(cost, signal);
+      if (this.options.unavailable) return { verdicts: input.items.map(() => null) };
+      const batch = this.options.hintBatch?.(input.items);
+      if (batch === "throw") throw new Error("fake checker: judgeHints failed");
+      if (batch === "hang") return rejectOnAbort(signal).promise;
+      if (batch === "stall") return stalled();
+      if (batch) return { verdicts: batch };
+      const judge = this.options.judgeHint ?? (() => ({ verdict: "ok" }) as const);
+      return { verdicts: input.items.map((item) => judge(item)) };
+    });
+  }
+
+  solveOpen(input: OpenInput, cost: RunCostSink, signal: AbortSignal): Promise<{ answers: ((readonly [string, string]) | null)[] }> {
+    this.openCalls.push(input);
+    return this.meter.track(async () => {
+      await this.admit(cost, signal);
+      if (this.options.unavailable) return { answers: input.items.map(() => null) };
+      const batch = this.options.openBatch?.(input.items);
+      if (batch === "throw") throw new Error("fake checker: solveOpen failed");
+      if (batch === "hang") return rejectOnAbort(signal).promise;
+      if (batch === "stall") return stalled();
+      if (batch) return { answers: batch };
+      const solve = this.options.solveOpen ?? (() => ["A", "B"] as const);
+      return { answers: input.items.map((item) => solve(item.view)) };
     });
   }
 

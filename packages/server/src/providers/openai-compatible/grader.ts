@@ -1,6 +1,7 @@
-import type { AnswerGraderProvider, GraderInput } from "../../ports/ai";
+import type { AnswerGraderProvider, GraderInput, RunCostSink } from "../../ports/ai";
 import { withChatRequestExtras, type ChatRequestExtras } from "../chat-request-options";
 import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
+import { usageFromPayload } from "../usage/payload";
 import { recordHttpError, recordResponse, recordTransportFailure, recordUnreadable } from "../usage/record-http";
 
 /**
@@ -25,6 +26,11 @@ export interface OpenAiCompatibleGraderOptions {
   requestExtras?: ChatRequestExtras;
   /** Zapis kosztów wywołań (spec cost-tracking §4.2); bez niego adapter działa jak dotąd. */
   usage?: UsageRecorder;
+  /**
+   * Zastępuje etykietę zapisu kosztów (`answer_grading` / `grade` albo `grade_school`) — używa
+   * jej adapter składany dla kontroli agenta puli (etap 2b #237), żeby koszt trafił do runu.
+   */
+  usageLabel?: { readonly feature: "lesson_generation"; readonly operation: "check_grade" };
   /** Wstrzykiwalny `fetch` dla testów (jak adaptery Azure). */
   fetchImpl?: (
     url: string,
@@ -154,6 +160,16 @@ function extractJson(content: string): unknown {
   }
 }
 
+/** Koszt runu to best-effort jak `UsageRecorder`: wyjątek licznika nie zmienia wyniku adaptera. */
+function reportCost(cost: RunCostSink | undefined, usd: number | null): void {
+  if (!cost) return;
+  try {
+    cost.record(usd);
+  } catch {
+    // licznik kosztu nie wpływa na ocenę
+  }
+}
+
 export function createOpenAiCompatibleGrader(options: OpenAiCompatibleGraderOptions): AnswerGraderProvider {
   const doFetch = options.fetchImpl ?? ((url, init) => fetch(url, init as RequestInit));
   const provider = providerFromBaseUrl(options.baseUrl);
@@ -162,10 +178,10 @@ export function createOpenAiCompatibleGrader(options: OpenAiCompatibleGraderOpti
     model: options.model,
     promptVersion: PROMPT_VERSION,
     promptVersionForInput: (input: GraderInput) => (input.school ? SCHOOL_PROMPT_VERSION : PROMPT_VERSION),
-    async grade(input: GraderInput, signal: AbortSignal): Promise<unknown> {
+    async grade(input: GraderInput, signal: AbortSignal, cost?: RunCostSink): Promise<unknown> {
       const base = {
-        feature: "answer_grading",
-        operation: input.school ? "grade_school" : "grade",
+        feature: options.usageLabel?.feature ?? "answer_grading",
+        operation: options.usageLabel?.operation ?? (input.school ? "grade_school" : "grade"),
         provider,
         model: options.model,
       } as const;
@@ -192,10 +208,12 @@ export function createOpenAiCompatibleGrader(options: OpenAiCompatibleGraderOpti
         });
       } catch (error) {
         recordTransportFailure(options.usage, base);
+        reportCost(cost, null);
         throw error;
       }
       if (!response.ok) {
         recordHttpError(options.usage, base, response.status);
+        reportCost(cost, 0);
         // bez body w komunikacie — może zawierać echo odpowiedzi dziecka; bez tokenu
         throw new Error(`grader request failed: ${response.status}`);
       }
@@ -206,10 +224,12 @@ export function createOpenAiCompatibleGrader(options: OpenAiCompatibleGraderOpti
         payload = (await response.json()) as typeof payload;
       } catch (error) {
         recordUnreadable(options.usage, base, response.status);
+        reportCost(cost, null);
         throw error;
       }
       // płatna odpowiedź jest zapisana zanim treść zostanie zwalidowana
       recordResponse(options.usage, base, response.status, payload);
+      reportCost(cost, usageFromPayload(payload).providerCostUsd ?? null);
       const content = payload.choices?.[0]?.message?.content;
       if (!content) {
         throw new Error("grader returned no content");

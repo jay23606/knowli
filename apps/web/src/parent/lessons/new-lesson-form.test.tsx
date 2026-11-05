@@ -470,6 +470,17 @@ describe("NewLessonForm", () => {
         expect(markup).not.toContain('data-testid="lesson-review-service"');
       });
 
+      it("ocena pytań otwartych: komunikat pod komunikatem drugiego modelu; bez openCheckService go nie ma", () => {
+        const OPEN = "openrouter.ai · google/gemini-3.8-flash";
+        const withOpen = renderWithCatalog({ ...school, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true, openCheckService: OPEN });
+        expect(withOpen).toContain('data-testid="lesson-open-check-service"');
+        expect(withOpen).toContain(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
+        expect(withOpen).toContain(messages.lessons.openCheckServiceInfo.replace("{service}", OPEN));
+        expect(withOpen.indexOf('data-testid="lesson-check-service"')).toBeLessThan(withOpen.indexOf('data-testid="lesson-open-check-service"'));
+        const without = renderWithCatalog({ ...school, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true });
+        expect(without).not.toContain('data-testid="lesson-open-check-service"');
+      });
+
       it("jedna usługa generowania: liczba pojedyncza", () => {
         const markup = renderWithCatalog({ ...agentGrammar, generationServices: [GEN[0]!] });
         expect(markup).toContain(messages.lessons.generationServiceInfo.replace("{service}", GEN[0]!));

@@ -11,6 +11,7 @@ import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import type { LessonAgentPlanInput, LessonPoolAgentProvider, RunCostSink } from "../../../ports/ai";
 import { GenerationProviderError } from "../../../ports/generation-error";
+import { FakeAnswerGrader } from "../../../providers/fake";
 import {
   FakeExerciseChecker,
   FakeLessonPoolAgent,
@@ -1002,5 +1003,125 @@ describe("runLessonPoolAgent — hak planu, przykłady początkowe i porażki (e
     expect(result.objectives[0]!.failure).toEqual({ errorCode: "provider_rate_limit", retryable: true, retryAfterMs: 5000 });
     expect(result.objectives[1]).toMatchObject({ objectiveId: B, status: "failed" });
     expect(result.objectives[1]!.failure).toEqual({ errorCode: "provider_configuration", retryable: false });
+  });
+});
+
+describe("runLessonPoolAgent — grader kontroli otwartej (etap 2b)", () => {
+  // Przedmiot testowy z listami szkoły: sędzia podpowiedzi i kontrola otwarta dla pytań otwartych.
+  const school = withAgentPolicy(fixtureSubject, {
+    blindSolveTypes: schoolAgentPolicy.blindSolveTypes,
+    variantCheckTypes: schoolAgentPolicy.variantCheckTypes,
+    hintJudgeTypes: schoolAgentPolicy.hintJudgeTypes!,
+    openAnswerCheckTypes: schoolAgentPolicy.openAnswerCheckTypes!,
+    checkerNeedsMaterial: true,
+    rejectionTexts: schoolAgentPolicy.rejectionTexts,
+  });
+  const ELEMENTS = [
+    { id: "e1", text: "Wisła" },
+    { id: "e2", text: "płynie przez Kraków" },
+  ];
+  const IDS = ELEMENTS.map((element) => element.id);
+  const correctVerdict = {
+    knowledge: "correct",
+    precision: "concise",
+    matchedElementIds: IDS,
+    missingElementIds: [],
+    incorrectStatements: [],
+    redundantFragments: [],
+    offTopicFragments: [],
+    confusedConcepts: [],
+    note: "",
+  };
+  const schoolOpen = (objectiveId: string, n: number, extra: Partial<LessonExerciseDraft> = {}): LessonExerciseDraft => ({
+    ...open(objectiveId, `Pytanie otwarte numer ${n}?`, `odpowiedź wzorcowa ${n}`),
+    requiredElements: ELEMENTS,
+    ...extra,
+  });
+  const withGrader = (grader: FakeAnswerGrader) => ({ grader: { provider: grader, timeoutMs: 60_000 } });
+  const schoolInput = (overrides: Partial<LessonPoolAgentRunInput> = {}) => runInput({ subjectId: school.id, skipObjectives: [B], ...overrides });
+  const graderLines = () =>
+    vi.mocked(console.log).mock.calls.map((call) => String(call[0])).filter((line) => line.includes("grader_unavailable"));
+
+  it("deps.grader dociera do narzędzi, a liczniki kontroli trafiają do stats", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: correctVerdict });
+    const { checker, deps } = setup({
+      subjects: [school],
+      agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [schoolOpen(A, 1, { hint: "Pomyśl o rzekach." })] } }] } },
+    });
+    const result = await runLessonPoolAgent({ ...deps, ...withGrader(grader) }, schoolInput(), never);
+    expect(grader.requests).toHaveLength(2);
+    expect(checker.openCalls).toHaveLength(1);
+    expect(result.objectives[0]!.exercises).toHaveLength(1);
+    expect(result.stats).toMatchObject({
+      hintChecks: 1,
+      openChecks: 1,
+      graderCalls: 2,
+      hintUnavailable: 0,
+      openUnavailable: 0,
+      graderErrors: 0,
+      graderInvalidVerdicts: 0,
+    });
+    // Grader nie wlicza się do wywołań checkera (sędzia + rozwiązujący otwarte).
+    expect(result.stats.checkerCalls).toBeGreaterThan(0);
+  });
+
+  it("bez deps.grader kontrola otwarta nie dotyczy, a liczniki gradera zostają zerowe", async () => {
+    const { checker, deps } = setup({
+      subjects: [school],
+      agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [schoolOpen(A, 1)] } }] } },
+    });
+    const result = await runLessonPoolAgent(deps, schoolInput(), never);
+    expect(checker.openCalls).toHaveLength(0);
+    expect(result.stats).toMatchObject({ openChecks: 0, graderCalls: 0 });
+    expect(result.objectives[0]!.exercises).toHaveLength(1);
+  });
+
+  it("jedna instancja AgentCheckRun na run: pamięć kontroli działa między zagadnieniami", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: correctVerdict });
+    const same = (objectiveId: string) => schoolOpen(objectiveId, 1);
+    const { checker, deps } = setup({
+      subjects: [school],
+      // Jedno zagadnienie naraz: wynik pierwszego trafia do pamięci runu, zanim drugie wyśle to samo ćwiczenie.
+      agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [same(A)] } }], [SLUG_B]: [{ submit: { exercises: [same(B)] } }] } },
+    });
+    const result = await runLessonPoolAgent(
+      { ...deps, ...withGrader(grader), policy: { concurrency: 1 } },
+      schoolInput({ skipObjectives: [] }),
+      never,
+    );
+    expect(result.objectives.map((objective) => objective.objectiveId)).toEqual([A, B]);
+    // To samo ćwiczenie w dwóch zagadnieniach: jedno `solveOpen` i jedna para wywołań gradera.
+    expect(checker.openCalls).toHaveLength(1);
+    expect(grader.requests).toHaveLength(2);
+    expect(result.stats.openChecks).toBe(1);
+  });
+
+  it("wyłącznik gradera: grader_unavailable w logu dokładnie raz na run, kontrola otwarta wyłączona do końca", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ error: "boom" });
+    const { checker, deps } = setup({
+      subjects: [school],
+      agent: {
+        objectives: {
+          [SLUG_A]: [1, 2, 3, 4].map((n) => ({ submit: { exercises: [schoolOpen(A, n)] } })),
+        },
+      },
+    });
+    const result = await runLessonPoolAgent({ ...deps, ...withGrader(grader) }, schoolInput(), never);
+    expect(graderLines()).toEqual(["[lesson-agent] run=run-1 grader_unavailable"]);
+    // Trzecia i czwarta paczka po otwarciu wyłącznika: bez `solveOpen` i bez wywołań gradera.
+    expect(checker.openCalls).toHaveLength(2);
+    expect(result.stats.graderErrors).toBe(grader.requests.length);
+    expect(result.stats.openUnavailable).toBe(2);
+    expect(result.objectives[0]!.exercises).toHaveLength(4);
+  });
+
+  it("bez awarii gradera nie ma logu grader_unavailable", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: correctVerdict });
+    const { deps } = setup({
+      subjects: [school],
+      agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [schoolOpen(A, 1)] } }] } },
+    });
+    await runLessonPoolAgent({ ...deps, ...withGrader(grader) }, schoolInput(), never);
+    expect(graderLines()).toEqual([]);
   });
 });

@@ -27,14 +27,14 @@ import { ManualClock } from "./helpers";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
 import type { LessonReviewReport } from "../../packages/server/src/domain/lessons/review-report";
 import { GenerationProviderError } from "../../packages/server/src/ports/generation-error";
-import { FakeLessonReviewer } from "../../packages/server/src/providers/fake";
+import { FakeAnswerGrader, FakeLessonReviewer } from "../../packages/server/src/providers/fake";
 import {
   FakeExerciseChecker,
   FakeLessonPoolAgent,
   type FakeAgentStep,
   type FakeLessonPoolAgentOptions,
 } from "../../packages/server/src/providers/fake-lesson-agent";
-import type { LlmProvider } from "../../packages/server/src/ports/ai";
+import type { HintVerdict, LlmProvider } from "../../packages/server/src/ports/ai";
 import {
   DEFAULT_LESSON_GENERATION_POLICY,
   type LessonGenerationPolicy,
@@ -326,6 +326,10 @@ describe("agent puli lekcji (integracja)", () => {
       readonly policy?: LessonAgentDeps["policy"];
       readonly finalizationReserveMs?: number;
       readonly execution?: Partial<LessonGenerationPolicy>;
+      /** Checker zamiast domyślnego „niedostępnego” (etap 2b: kontrole szkoły). */
+      readonly checker?: FakeExerciseChecker;
+      /** Grader kontroli otwartej (etap 2b); brak = kontrola otwarta nie dotyczy. */
+      readonly grader?: FakeAnswerGrader;
     }
 
     /**
@@ -340,7 +344,8 @@ describe("agent puli lekcji (integracja)", () => {
       const lessonAgent: LessonAgentDeps = {
         subjects: new Set(subjects),
         agent,
-        checker: new FakeExerciseChecker({ unavailable: true }),
+        checker: world.checker ?? new FakeExerciseChecker({ unavailable: true }),
+        ...(world.grader === undefined ? {} : { grader: { provider: world.grader, timeoutMs: 5_000 } }),
         policy: world.policy ?? {},
         ...(world.finalizationReserveMs === undefined ? {} : { finalizationReserveMs: world.finalizationReserveMs }),
       };
@@ -1662,6 +1667,347 @@ describe("agent puli lekcji (integracja)", () => {
         expect(after.length).toBeGreaterThanOrEqual(before.length + 2);
         expect(after.map((item) => item.payload.stem)).not.toContain(lateCollision.stem);
         expect(contextOf(await versionOf(add.runId)).rejectedCount).toBe((contextBefore.rejectedCount ?? 0) + 3);
+      });
+    });
+
+    describe("kontrole szkoły (etap 2b: sędzia podpowiedzi, kontrola otwarta)", () => {
+      /** Marker pytania spornego w widoku ćwiczenia: rozwiązujący odpowiada na nie pełną i niepełną odpowiedzią. */
+      const DISPUTED = "SPORNE";
+      const FULL = "Wisła i Odra";
+      const PARTIAL = "Tylko Wisła";
+      const BAD_HINT = "Podpowiedź o zakręcie rzeki, której nie ma w materiale.";
+      const GOOD_HINT = "Pomyśl o rzekach przepływających przez kraj.";
+      const START_LINE = /^\[lesson-agent\] run=\S+ hintJudge=(on|off) openCheck=(on|off)$/u;
+
+      type Exercise = Record<string, unknown>;
+      const isOpen = (exercise: unknown): exercise is Exercise =>
+        (exercise as { exerciseType?: unknown } | null)?.exerciseType === "lesson_open_answer";
+
+      /** Surowy werdykt gradera szkoły: pełna partycja `required` na trafione i `missing`. */
+      function schoolVerdict(required: readonly string[], missing: readonly string[], knowledge: "correct" | "partial" | "incorrect") {
+        return {
+          knowledge,
+          precision: "concise",
+          matchedElementIds: required.filter((id) => !missing.includes(id)),
+          missingElementIds: [...missing],
+          incorrectStatements: [],
+          redundantFragments: [],
+          offTopicFragments: [],
+          confusedConcepts: [],
+          note: "",
+        };
+      }
+
+      /**
+       * Grader: domyślnie `correct` dla jednego elementu `e1` (pytania fake'a); pytania sporne (dwa elementy
+       * `e1`, `e2`) dostają `correct` dla pełnej odpowiedzi rozwiązującego i `partial` dla niepełnej.
+       */
+      function schoolGrader(): FakeAnswerGrader {
+        return new FakeAnswerGrader()
+          .onDefault({ raw: schoolVerdict(["e1"], [], "correct") })
+          .onAnswer(FULL, { raw: schoolVerdict(["e1", "e2"], [], "correct") })
+          .onAnswer(PARTIAL, { raw: schoolVerdict(["e1", "e2"], ["e2"], "partial") });
+      }
+
+      /** Checker szkoły: zamknięte ćwiczenia niesprawdzone, pytanie sporne ma niepełną odpowiedź rozwiązującego. */
+      function schoolChecker(options: { judgeHint?: (item: { hint: string }) => HintVerdict | null } = {}): FakeExerciseChecker {
+        return new FakeExerciseChecker({
+          solve: () => null,
+          solveOpen: (view) => (view.includes(DISPUTED) ? [FULL, PARTIAL] : ["A", "B"]),
+          ...(options.judgeHint === undefined ? {} : { judgeHint: options.judgeHint }),
+        });
+      }
+
+      /** Pytanie wymagające dwóch elementów: odpowiedź rozwiązującego jest niepełna względem drugiego. */
+      const disputed = (exercise: Exercise): Exercise => ({
+        ...exercise,
+        prompt: `${String(exercise.prompt)} ${DISPUTED}`,
+        requiredElements: [{ id: "e1", text: "Wisła" }, { id: "e2", text: "Odra" }],
+      });
+
+      /** Poprawka pytania spornego: inne pytanie i jeden wymagany element (grader ocenia `correct`). */
+      const repaired = (exercise: Exercise): Exercise => ({
+        ...exercise,
+        prompt: "Podaj najdłuższą rzekę Polski.",
+        requiredElements: [{ id: "e1", text: "Wisła" }],
+      });
+
+      /**
+       * Generator: wynik fake LLM, w którym `edit` zmienia pierwsze pytanie otwarte (`all` — każde) albo — z
+       * `only` — wynik ma tylko to jedno, zmienione pytanie (poprawka jednego ćwiczenia). `offset` przesuwa
+       * indeks odpowiedzi za pulę i prosi o jedno ćwiczenie etapu samodzielnego (dogenerowanie).
+       */
+      function openPool(
+        llm: LlmProvider,
+        edit: (exercise: Exercise) => Exercise,
+        options: { all?: true; only?: true; offset?: number } = {},
+      ): LlmProvider {
+        return {
+          generateLessonPool: async (input: Parameters<LlmProvider["generateLessonPool"]>[0], signal?: AbortSignal) => {
+            const request =
+              options.offset === undefined
+                ? input
+                : {
+                    ...input,
+                    existingExercises: Array.from({ length: options.offset }, () => ({})) as unknown as typeof input.existingExercises,
+                    stageCounts: { guided: 0, productive: 0, independent: 1 },
+                  };
+            const result = await llm.generateLessonPool(request, signal);
+            const first = result.exercises.find(isOpen);
+            if (options.only) return { ...result, exercises: first === undefined ? [] : [edit(first)], examples: {} };
+            const exercises = result.exercises.map((exercise) => (isOpen(exercise) && (options.all || exercise === first) ? edit(exercise) : exercise));
+            return { ...result, exercises };
+          },
+        } as unknown as LlmProvider;
+      }
+
+      function schoolLesson(services: Services) {
+        return createSchoolLesson(services, {
+          subjectTitlePl: "Geografia",
+          topicTitlePl: "Polska",
+          // Jedno zagadnienie: pule fake'a różnych zagadnień mają wspólne odpowiedzi i ujawniają się nawzajem.
+          material: ["Zagadnienie 1: Rzeki Polski", "Wisła jest najdłuższą rzeką Polski. Odra płynie na zachodzie kraju."].join("\n"),
+          poolSize: 40,
+          clientRequestId: randomUUID(),
+        });
+      }
+
+      /** Pytania otwarte zapisane w szkicu (treść pytania i podpowiedź). */
+      async function savedOpen(versionId: string): Promise<{ prompt: string; hint: string | null }[]> {
+        return query<{ prompt: string; hint: string | null }>(
+          `select payload->>'prompt' as prompt, payload->>'hint' as hint from learning_app.item_revisions
+            where deck_version_id = $1 and payload->>'exerciseType' = 'lesson_open_answer' order by position`,
+          [versionId],
+        );
+      }
+
+      interface RunSummary {
+        rejectionCodes: Record<string, number>;
+        checkCounters?: Record<string, number>;
+      }
+      const summaryCodes = (row: FullRunRow) => row.agent_checkpoint as RunSummary;
+
+      /** Wszystkie wiersze zapisane przez `fn` w `console.log` (każdy argument jako tekst). */
+      async function withLogLines<T>(fn: () => Promise<T>): Promise<string[]> {
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        try {
+          await fn();
+          return log.mock.calls.map((call) => call.map((part) => (typeof part === "string" ? part : JSON.stringify(part))).join(" "));
+        } finally {
+          log.mockRestore();
+        }
+      }
+
+      /** Wiersze startowe kontroli (`hintJudge=… openCheck=…`) zapisane przez `fn` w `console.log`. */
+      async function withStartLines<T>(fn: () => Promise<T>): Promise<string[]> {
+        return (await withLogLines(fn)).filter((line) => START_LINE.test(line));
+      }
+
+      /** Prywatność (§8): treść kontroli (odpowiedzi rozwiązującego, podpowiedzi, powody) nie trafia do logów ani do runu. */
+      function expectNoCheckContent(lines: readonly string[], row: FullRunRow, texts: readonly string[]): void {
+        const logs = lines.join("\n");
+        const runJson = JSON.stringify(row);
+        expect(lines.length).toBeGreaterThan(0);
+        for (const text of texts) {
+          expect(logs, text).not.toContain(text);
+          expect(runJson, text).not.toContain(text);
+        }
+      }
+
+      it("open_not_accepted then fix: niepełna odpowiedź rozwiązującego odrzuca pytanie, poprawka trafia do szkicu", async () => {
+        const grader = schoolGrader();
+        const checker = schoolChecker();
+        const { services } = await agentWorld(
+          ["school"],
+          (fakes) => ({
+            objectives: {
+              rzeki_polski: [
+                llmStep(openPool(fakes.llm, disputed)),
+                llmStep(openPool(fakes.llm, (exercise) => repaired(disputed(exercise)), { only: true })),
+              ],
+            },
+          }),
+          { checker, grader },
+        );
+        const { runId } = await schoolLesson(services);
+
+        const lines = await withLogLines(() => executeLessonGeneration(services, runId));
+        const startLines = lines.filter((line) => START_LINE.test(line));
+
+        const row = await fullRun(runId);
+        expect(row.state).toBe("succeeded");
+        // Odpowiedzi rozwiązującego (także odrzucona niepełna) ani brakujący element w powodzie nie trafiają do logów i podsumowania.
+        expectNoCheckContent(lines, row, [FULL, PARTIAL, 'Missing: "Odra"']);
+        const summary = summaryCodes(row);
+        expect(summary.rejectionCodes.open_not_accepted).toBe(1);
+        expect(summary.checkCounters!.openChecks).toBeGreaterThanOrEqual(1);
+        expect(summary.checkCounters!.graderCalls).toBeGreaterThanOrEqual(1);
+        expect(summary.checkCounters!.graderErrors ?? 0).toBe(0);
+        const version = await versionOf(runId);
+        const saved = await savedOpen(version.id);
+        expect(saved.map((entry) => entry.prompt)).toContain("Podaj najdłuższą rzekę Polski.");
+        expect(saved.some((entry) => entry.prompt.includes(DISPUTED))).toBe(false);
+        expect(contextOf(version).generationGaps).toBeUndefined();
+        // Grader dostał niepełną odpowiedź rozwiązującego pytania spornego.
+        expect(grader.requests.map((request) => request.childAnswer)).toContain(PARTIAL);
+        // Log startu kontroli (jedyny test składania sędziego i gradera w ścieżce generacji): raz na próbę.
+        expect(startLines).toEqual([`[lesson-agent] run=${runId} hintJudge=on openCheck=on`]);
+      });
+
+      it("repeated rejections leave objective incomplete: kroki zagadnienia wyczerpane na odrzuceniach → luka incomplete", async () => {
+        const grader = schoolGrader();
+        const checker = schoolChecker();
+        const { services, agent } = await agentWorld(
+          ["school"],
+          (fakes) => {
+            const everyDisputed = llmStep(openPool(fakes.llm, disputed, { all: true }));
+            return { objectives: { rzeki_polski: [everyDisputed, everyDisputed, everyDisputed, everyDisputed, everyDisputed] } };
+          },
+          { checker, grader, policy: { maxStepsPerObjective: 3 } },
+        );
+        const { runId } = await schoolLesson(services);
+        // Ostatnia automatyczna próba: nieukończone zagadnienie trafia do szkicu jako luka.
+        await pool.query("update learning_app.generation_runs set attempts = 2 where id = $1", [runId]);
+
+        await executeLessonGeneration(services, runId);
+
+        const row = await fullRun(runId);
+        expect(row.state).toBe("succeeded");
+        const rivers = agent.calls.find((call) => slugOf(call.objectiveId) === "rzeki_polski")!;
+        expect(rivers.outcomes).toHaveLength(3);
+        const version = await versionOf(runId);
+        expect(contextOf(version).generationGaps).toEqual([{ objectiveId: rivers.objectiveId, reason: "incomplete" }]);
+        expect(summaryCodes(row).rejectionCodes.open_not_accepted).toBeGreaterThanOrEqual(3);
+        expect(summaryOf(row).objectives[rivers.objectiveId]).toMatchObject({ status: "incomplete" });
+        expect((await savedOpen(version.id)).some((entry) => entry.prompt.includes(DISPUTED))).toBe(false);
+      });
+
+      it("grader throws → accepted unchecked: awaria gradera nie odrzuca ćwiczeń, liczniki w podsumowaniu", async () => {
+        const grader = new FakeAnswerGrader().onDefault({ error: "grader offline" });
+        const checker = schoolChecker();
+        const { services } = await agentWorld(["school"], {}, { checker, grader });
+        const { runId } = await schoolLesson(services);
+
+        await executeLessonGeneration(services, runId);
+
+        const row = await fullRun(runId);
+        expect(row.state).toBe("succeeded");
+        const summary = summaryCodes(row);
+        expect(summary.checkCounters!.graderErrors).toBeGreaterThanOrEqual(1);
+        expect(summary.rejectionCodes.open_not_accepted).toBeUndefined();
+        expect(grader.requests.length).toBeGreaterThanOrEqual(1);
+        const version = await versionOf(runId);
+        expect((await savedOpen(version.id)).length).toBeGreaterThan(0);
+        expect(contextOf(version).generationGaps).toBeUndefined();
+      });
+
+      it("no grader → no open calls: bez gradera rozwiązujący i grader nie są wołane, sędzia podpowiedzi działa", async () => {
+        const checker = schoolChecker({ judgeHint: () => ({ verdict: "ok" }) });
+        const { services } = await agentWorld(
+          ["school"],
+          (fakes) => ({ objectives: { rzeki_polski: [llmStep(openPool(fakes.llm, (exercise) => ({ ...exercise, hint: GOOD_HINT })))] } }),
+          { checker },
+        );
+        const { runId } = await schoolLesson(services);
+
+        const startLines = await withStartLines(() => executeLessonGeneration(services, runId));
+
+        const row = await fullRun(runId);
+        expect(row.state).toBe("succeeded");
+        expect(checker.openCalls).toHaveLength(0);
+        const summary = summaryCodes(row);
+        expect(summary.checkCounters?.openChecks ?? 0).toBe(0);
+        expect(summary.checkCounters?.graderCalls ?? 0).toBe(0);
+        // Sędzia podpowiedzi nadal działa: podpowiedź pytania trafiła do niego i do szkicu.
+        expect(checker.hintCalls.flatMap((call) => call.items.map((item) => item.hint))).toEqual([GOOD_HINT]);
+        expect((await savedOpen((await versionOf(runId)).id)).map((entry) => entry.hint)).toContain(GOOD_HINT);
+        expect(startLines).toEqual([`[lesson-agent] run=${runId} hintJudge=on openCheck=off`]);
+      });
+
+      it("hint unsupported then fix: podpowiedź spoza materiału odrzucona, poprawka bez podpowiedzi przyjęta", async () => {
+        const grader = schoolGrader();
+        const JUDGE_REASON = "the material says nothing about it";
+        const checker = schoolChecker({
+          judgeHint: (item) => (item.hint === BAD_HINT ? { verdict: "unsupported", reason: JUDGE_REASON } : { verdict: "ok" }),
+        });
+        const { services } = await agentWorld(
+          ["school"],
+          (fakes) => ({
+            objectives: {
+              rzeki_polski: [
+                llmStep(openPool(fakes.llm, (exercise) => ({ ...exercise, hint: BAD_HINT }))),
+                llmStep(openPool(fakes.llm, (exercise) => exercise, { only: true })),
+              ],
+            },
+          }),
+          { checker, grader },
+        );
+        const { runId } = await schoolLesson(services);
+
+        const lines = await withLogLines(() => executeLessonGeneration(services, runId));
+
+        const row = await fullRun(runId);
+        expect(row.state).toBe("succeeded");
+        // Zła podpowiedź i powód sędziego tylko w pamięci kontroli — nie w logach ani podsumowaniu.
+        expectNoCheckContent(lines, row, [BAD_HINT, JUDGE_REASON]);
+        const summary = summaryCodes(row);
+        expect(summary.rejectionCodes.hint_unsupported).toBe(1);
+        expect(summary.rejectionCodes.open_not_accepted).toBeUndefined();
+        expect(summary.checkCounters!.hintChecks).toBeGreaterThanOrEqual(1);
+        const version = await versionOf(runId);
+        const saved = await savedOpen(version.id);
+        expect(saved.length).toBeGreaterThan(0);
+        expect(saved.every((entry) => entry.hint !== BAD_HINT)).toBe(true);
+        expect(contextOf(version).generationGaps).toBeUndefined();
+      });
+
+      it("add mode applies checks: Dogeneruj +1 w szkole woła rozwiązującego, odrzuca pytanie i przyjmuje poprawkę", async () => {
+        const grader = schoolGrader();
+        const checker = schoolChecker();
+        const { services, agent } = await agentWorld(
+          ["school"],
+          (fakes) => ({
+            objectives: {
+              rzeki_polski: {
+                calls: [
+                  [llmStep(fakes.llm)],
+                  [
+                    llmStep(openPool(fakes.llm, disputed, { only: true, offset: 100 })),
+                    llmStep(openPool(fakes.llm, (exercise) => repaired(disputed(exercise)), { only: true, offset: 100 })),
+                  ],
+                ],
+              },
+            },
+          }),
+          { checker, grader },
+        );
+        const school = await schoolLesson(services);
+        await executeLessonGeneration(services, school.runId);
+        expect((await fullRun(school.runId)).state).toBe("succeeded");
+        const draft = await versionOf(school.runId);
+        const rivers = (draft.lesson_context as { objectiveIds: string[] }).objectiveIds.find((id) => slugOf(id) === "rzeki_polski")!;
+        const openBefore = await savedOpen(draft.id);
+        const callsBefore = checker.openCalls.length;
+
+        const add = await regenerateObjective(services, {
+          deckId: school.deckId,
+          objectiveId: rivers,
+          count: 1,
+          expectedEditNumber: draft.edit_number,
+          clientRequestId: randomUUID(),
+        });
+        await executeLessonGeneration(services, add.runId);
+
+        const row = await fullRun(add.runId);
+        expect(row.state).toBe("succeeded");
+        expect(agent.calls.filter((call) => call.objectiveId === rivers)).toHaveLength(2);
+        // Kontrola otwarta działa w dogenerowaniu: rozwiązujący wołany, sporne pytanie odrzucone, poprawka dopisana.
+        expect(checker.openCalls.length).toBeGreaterThan(callsBefore);
+        expect(summaryCodes(row).rejectionCodes.open_not_accepted).toBe(1);
+        const after = await savedOpen(draft.id);
+        expect(after).toHaveLength(openBefore.length + 1);
+        expect(after.at(-1)!.prompt).toBe("Podaj najdłuższą rzekę Polski.");
+        expect(after.some((entry) => entry.prompt.includes(DISPUTED))).toBe(false);
       });
     });
   });

@@ -13,6 +13,14 @@ describe("grammarAgentPolicy", () => {
     expect(grammarAgentPolicy.checkerNeedsMaterial).toBe(false);
   });
 
+  it("nie ma sędziego podpowiedzi ani kontroli otwartej (zachowanie jak w 2a)", () => {
+    expect(grammarAgentPolicy.hintJudgeTypes).toBeUndefined();
+    expect(grammarAgentPolicy.openAnswerCheckTypes).toBeUndefined();
+    for (const key of ["hintUnsupported", "hintLanguage", "hintReveals", "openMissing", "openWrong"] as const) {
+      expect(grammarAgentPolicy.rejectionTexts[key]).toBeUndefined();
+    }
+  });
+
   it("typy ślepe to zbiór PoC (gałąź nie-szkolna) przecięty z typami gramatyki", () => {
     expect(grammarAgentPolicy.blindSolveTypes).toEqual([
       "lesson_choice",

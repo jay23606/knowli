@@ -19,6 +19,8 @@ export interface SubjectServiceInfo {
   generation: string | null;
   /** Komunikat o drugim modelu rozwiązującym ćwiczenia; wariant z materiałem wg polityki checkera. */
   check: string | null;
+  /** Komunikat o usłudze oceniającej odpowiedzi próbne do pytań otwartych (grader); tylko przy `check`. */
+  openCheck: string | null;
 }
 
 export function subjectServiceInfo(subject: CatalogSubject | undefined): SubjectServiceInfo {
@@ -26,7 +28,7 @@ export function subjectServiceInfo(subject: CatalogSubject | undefined): Subject
   const list = subject?.generationServices ?? [];
   const services = list.length > 0 ? list.join(", ") : null;
   const themesService = list[0] ?? null;
-  if (!checkService) return { generationServices: services, themesService, generation: null, check: null };
+  if (!checkService) return { generationServices: services, themesService, generation: null, check: null, openCheck: null };
   const checkTemplate = subject.checkServiceIncludesMaterial ? messages.lessons.checkServiceInfoWithMaterial : messages.lessons.checkServiceInfo;
   // Kilka usług (agent i UMIEM_LLM) — liczba mnoga.
   const generationTemplate = list.length > 1 ? messages.lessons.generationServicesInfo : messages.lessons.generationServiceInfo;
@@ -35,5 +37,6 @@ export function subjectServiceInfo(subject: CatalogSubject | undefined): Subject
     themesService,
     generation: services ? generationTemplate.replace("{service}", () => services) : null,
     check: checkTemplate.replace("{service}", () => checkService),
+    openCheck: subject.openCheckService ? messages.lessons.openCheckServiceInfo.replace("{service}", () => subject.openCheckService!) : null,
   };
 }

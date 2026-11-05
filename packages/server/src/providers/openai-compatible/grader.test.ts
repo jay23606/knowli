@@ -277,3 +277,89 @@ describe("createOpenAiCompatibleGrader — zapis kosztów (usage)", () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+describe("createOpenAiCompatibleGrader — kontrola agenta puli (usageLabel i koszt runu)", () => {
+  const usageLabel = { feature: "lesson_generation", operation: "check_grade" } as const;
+  const make = (
+    fetchImpl: (url: string, init: CapturedRequest["init"]) => Promise<Response>,
+    extra: { usage?: UsageRecorder; withLabel?: boolean } = {},
+  ) =>
+    createOpenAiCompatibleGrader({
+      baseUrl: "https://openrouter.ai/api/v1", apiKey: "secret-token", model: "google/gemini-3.8-flash", fetchImpl,
+      ...(extra.usage ? { usage: extra.usage } : {}),
+      ...(extra.withLabel === false ? {} : { usageLabel }),
+    });
+  const sink = () => {
+    const recorded: (number | null)[] = [];
+    return { recorded, record: (usd: number | null) => { recorded.push(usd); } };
+  };
+  const withUsage = (cost?: number) => new Response(
+    JSON.stringify({ choices: [{ message: { content: VALID_JSON } }], usage: { prompt_tokens: 5, completion_tokens: 2, ...(cost === undefined ? {} : { cost }) } }),
+    { status: 200 },
+  );
+
+  it("usageLabel zastępuje etykietę zapisu w UsageRecorder (także dla ścieżki szkolnej)", async () => {
+    const rec = createTestRecorder();
+    const grader = make(async () => withUsage(0.0012), { usage: rec });
+    await grader.grade(input, AbortSignal.timeout(1000));
+    await grader.grade({ ...input, school: {
+      question: "Q?", modelAnswer: "A.", requiredElements: [{ id: "e1", text: "t" }],
+      supplementaryElements: [], commonErrors: [], expectedForm: "short", sourceQuotes: [],
+    } }, AbortSignal.timeout(1000));
+    expect(rec.events).toHaveLength(2);
+    for (const event of rec.events) expect(event).toMatchObject({ feature: "lesson_generation", operation: "check_grade", provider: "openrouter" });
+  });
+
+  it("2xx z usage.cost → cost.record(koszt) raz", async () => {
+    const cost = sink();
+    await make(async () => withUsage(0.0012)).grade(input, AbortSignal.timeout(1000), cost);
+    expect(cost.recorded).toEqual([0.0012]);
+  });
+
+  it("2xx bez usage.cost → cost.record(null) raz", async () => {
+    const cost = sink();
+    await make(async () => withUsage()).grade(input, AbortSignal.timeout(1000), cost);
+    expect(cost.recorded).toEqual([null]);
+  });
+
+  it("HTTP 500 → cost.record(0) raz", async () => {
+    const cost = sink();
+    await expect(make(async () => new Response("x", { status: 500 })).grade(input, AbortSignal.timeout(1000), cost))
+      .rejects.toThrow("grader request failed: 500");
+    expect(cost.recorded).toEqual([0]);
+  });
+
+  it("błąd sieci → cost.record(null) raz", async () => {
+    const cost = sink();
+    await expect(make(async () => { throw new TypeError("fetch failed"); }).grade(input, AbortSignal.timeout(1000), cost))
+      .rejects.toThrow("fetch failed");
+    expect(cost.recorded).toEqual([null]);
+  });
+
+  it("nieczytelne ciało 2xx → cost.record(null) raz", async () => {
+    const cost = sink();
+    await expect(make(async () => new Response("<html>", { status: 200 })).grade(input, AbortSignal.timeout(1000), cost))
+      .rejects.toBeInstanceOf(SyntaxError);
+    expect(cost.recorded).toEqual([null]);
+  });
+
+  it("2xx z niepoprawną treścią modelu też zgłasza koszt (płatna odpowiedź)", async () => {
+    const cost = sink();
+    const response = new Response(JSON.stringify({ choices: [{ message: { content: "not json" } }], usage: { cost: 0.003 } }), { status: 200 });
+    await expect(make(async () => response).grade(input, AbortSignal.timeout(1000), cost)).rejects.toThrow("non-JSON");
+    expect(cost.recorded).toEqual([0.003]);
+  });
+
+  it("bez usageLabel i bez cost zachowanie jest dotychczasowe (answer_grading/grade)", async () => {
+    const rec = createTestRecorder();
+    const grader = make(async () => withUsage(0.0012), { usage: rec, withLabel: false });
+    await expect(grader.grade(input, AbortSignal.timeout(1000))).resolves.toMatchObject({ verdict: "incorrect" });
+    expect(rec.events[0]).toMatchObject({ feature: "answer_grading", operation: "grade" });
+  });
+
+  it("wyjątek z cost.record nie zmienia wyniku adaptera", async () => {
+    const throwing = { record: () => { throw new Error("sink"); } };
+    await expect(make(async () => withUsage(0.001)).grade(input, AbortSignal.timeout(1000), throwing))
+      .resolves.toMatchObject({ verdict: "incorrect" });
+  });
+});

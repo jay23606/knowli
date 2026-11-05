@@ -564,6 +564,71 @@ describe("FakeExerciseChecker", () => {
     expect(solved.answers).toEqual([null, null]);
     expect(judged.equivalent).toEqual([null]);
   });
+
+  describe("judgeHints i solveOpen (etap 2b)", () => {
+    const hintItem = { view: "v", answer: "a", requiredElements: ["e"], hint: "h" };
+
+    it("domyślnie: werdykt ok i para A/B; wejścia zapisane w hintCalls i openCalls", async () => {
+      const checker = new FakeExerciseChecker({});
+      const cost = costSink();
+      const hintInput = { items: [hintItem, hintItem], material: "mat" };
+      const openInput = { items: [{ view: "q1" }, { view: "q2" }] };
+      const hints = await checker.judgeHints(hintInput, cost, signal());
+      const open = await checker.solveOpen(openInput, cost, signal());
+      expect(hints.verdicts).toEqual([{ verdict: "ok" }, { verdict: "ok" }]);
+      expect(open.answers).toEqual([["A", "B"], ["A", "B"]]);
+      expect(checker.hintCalls).toEqual([hintInput]);
+      expect(checker.openCalls).toEqual([openInput]);
+      expect(cost.values).toEqual([0, 0]);
+    });
+
+    it("judgeHint i solveOpen liczą per pozycja, a null oznacza brak wyniku", async () => {
+      const checker = new FakeExerciseChecker({
+        judgeHint: (item) => (item.view === "skip" ? null : { verdict: "reveals", reason: `leak in ${item.view}` }),
+        solveOpen: (view) => (view === "skip" ? null : [view, `${view}!`]),
+      });
+      const hints = await checker.judgeHints({ items: [{ ...hintItem, view: "x" }, { ...hintItem, view: "skip" }] }, costSink(), signal());
+      const open = await checker.solveOpen({ items: [{ view: "q" }, { view: "skip" }] }, costSink(), signal());
+      expect(hints.verdicts).toEqual([{ verdict: "reveals", reason: "leak in x" }, null]);
+      expect(open.answers).toEqual([["q", "q!"], null]);
+    });
+
+    it('hintBatch i openBatch: "throw" rzuca po zapisie kosztu, "hang" czeka na przerwanie', async () => {
+      const throwing = new FakeExerciseChecker({ hintBatch: () => "throw", openBatch: () => "throw", costUsd: 0.04 });
+      const cost = costSink();
+      await expect(throwing.judgeHints({ items: [hintItem] }, cost, signal())).rejects.toThrow();
+      await expect(throwing.solveOpen({ items: [{ view: "q" }] }, cost, signal())).rejects.toThrow();
+      expect(cost.values).toEqual([0.04, 0.04]);
+
+      const hanging = new FakeExerciseChecker({ hintBatch: () => "hang", openBatch: () => "hang" });
+      const controller = new AbortController();
+      const reason = new Error("checker-timeout");
+      const hinting = hanging.judgeHints({ items: [hintItem] }, costSink(), controller.signal);
+      const solving = hanging.solveOpen({ items: [{ view: "q" }] }, costSink(), controller.signal);
+      controller.abort(reason);
+      await expect(hinting).rejects.toBe(reason);
+      await expect(solving).rejects.toBe(reason);
+    });
+
+    it("hintBatch zwracający undefined wraca do judgeHint; wspólny licznik równoległości", async () => {
+      const checker = new FakeExerciseChecker({ hintBatch: () => undefined, openBatch: () => undefined });
+      const hints = await checker.judgeHints({ items: [hintItem] }, costSink(), signal());
+      expect(hints.verdicts).toEqual([{ verdict: "ok" }]);
+      await Promise.all([
+        checker.judgeHints({ items: [hintItem] }, costSink(), signal()),
+        checker.solveOpen({ items: [{ view: "q" }] }, costSink(), signal()),
+      ]);
+      expect(checker.maxConcurrent).toBe(2);
+    });
+
+    it("unavailable → null dla każdej pozycji nowych metod", async () => {
+      const checker = new FakeExerciseChecker({ unavailable: true });
+      const hints = await checker.judgeHints({ items: [hintItem, hintItem] }, costSink(), signal());
+      const open = await checker.solveOpen({ items: [{ view: "q" }, { view: "r" }, { view: "s" }] }, costSink(), signal());
+      expect(hints.verdicts).toEqual([null, null]);
+      expect(open.answers).toEqual([null, null, null]);
+    });
+  });
 });
 
 describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedostępny)", () => {

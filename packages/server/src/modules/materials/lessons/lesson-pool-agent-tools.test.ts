@@ -17,10 +17,12 @@ import { withAgentPolicy } from "../../../domain/lessons/testing/agent-test-subj
 import type { AgentCapableSubject } from "../../../domain/lessons/agent/capable";
 import type { LessonExerciseDraft, LessonTopic } from "../../../domain/lessons/types";
 import type { LessonAgentToolOutcome } from "../../../ports/ai";
+import { FakeAnswerGrader } from "../../../providers/fake";
 import { FakeExerciseChecker, type FakeExerciseCheckerOptions } from "../../../providers/fake-lesson-agent";
+import { AgentCheckRun } from "./lesson-agent-check-run";
 import { deadlineSignal, Semaphore } from "./lesson-agent-timers";
-import { DEFAULT_LESSON_AGENT_POLICY, RunCostMeter } from "./lesson-pool-agent-policy";
-import { createObjectiveTools, type RejectionLogEntry } from "./lesson-pool-agent-tools";
+import { DEFAULT_LESSON_AGENT_POLICY, RunCostMeter, type LessonAgentPolicy } from "./lesson-pool-agent-policy";
+import { createObjectiveTools, type ObjectiveToolsStats, type RejectionLogEntry } from "./lesson-pool-agent-tools";
 import { DEFAULT_LESSON_GENERATION_POLICY } from "./lesson-generation-policy";
 
 /** Rozwiązujący fake'a: „Pytanie numer N” → `odpowiedź N`, inne widoki → „966”. */
@@ -38,6 +40,11 @@ interface SetupOptions {
   material?: string;
   signal?: AbortSignal;
   semaphore?: Semaphore;
+  grader?: FakeAnswerGrader;
+  graderTimeoutMs?: number;
+  policy?: LessonAgentPolicy;
+  checkRun?: AgentCheckRun;
+  objectiveId?: string;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -47,8 +54,12 @@ function setup(options: SetupOptions = {}) {
   const checker = new FakeExerciseChecker({ solve: solveByNumber, ...options.checker });
   const cost = options.cost ?? new RunCostMeter(0, 1, 0.02);
   const semaphore = options.semaphore ?? new Semaphore(4);
+  const policy = options.policy ?? DEFAULT_LESSON_AGENT_POLICY;
+  const checkRun = options.checkRun ?? new AgentCheckRun(policy);
+  const stats: Record<string, number> = {};
+  let breakerOpened = 0;
   const handle = createObjectiveTools({
-    objectiveId: A,
+    objectiveId: options.objectiveId ?? A,
     getState: () => state,
     setState: (next) => {
       state = next;
@@ -58,13 +69,21 @@ function setup(options: SetupOptions = {}) {
     checkerSemaphore: semaphore,
     cost,
     objectiveSignal: options.signal ?? new AbortController().signal,
-    policy: DEFAULT_LESSON_AGENT_POLICY,
+    policy,
     familyScope: null,
     examplesFixed: options.examplesFixed ?? true,
+    checkRun,
+    ...(options.grader === undefined ? {} : { grader: { provider: options.grader, timeoutMs: options.graderTimeoutMs ?? 60_000 } }),
     onRejection: (entry) => rejections.push(entry),
     onRefusal: (code) => refusals.push(code),
+    onStats: (delta: Partial<ObjectiveToolsStats>) => {
+      for (const [key, value] of Object.entries(delta)) stats[key] = (stats[key] ?? 0) + (value ?? 0);
+    },
+    onGraderBreaker: () => {
+      breakerOpened += 1;
+    },
   });
-  return { ...handle, state: () => state, rejections, refusals, checker, cost, semaphore };
+  return { ...handle, state: () => state, rejections, refusals, checker, cost, semaphore, checkRun, stats, breakerOpened: () => breakerOpened };
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -97,6 +116,10 @@ describe("polityka agenta i licznik kosztu", () => {
       runTimeoutMs: DEFAULT_LESSON_GENERATION_POLICY.runTimeoutMs,
       runBudgetUsd: 1,
       unknownCallEstimateUsd: 0.02,
+      graderConcurrency: 4,
+      graderStageTimeoutMs: 30_000,
+      unknownGraderCallEstimateUsd: 0.002,
+      graderBreakerThreshold: 3,
     });
   });
 
@@ -544,6 +567,7 @@ describe("sekcja krytyczna przyjęcia", () => {
       policy: DEFAULT_LESSON_AGENT_POLICY,
       familyScope: null,
       examplesFixed: true,
+      checkRun: new AgentCheckRun(DEFAULT_LESSON_AGENT_POLICY),
       onRejection: () => undefined,
     });
     const pending = tools.submit({ exercises: [choice(A, 1)] });
@@ -563,6 +587,7 @@ describe("sekcja krytyczna przyjęcia", () => {
       policy: DEFAULT_LESSON_AGENT_POLICY,
       familyScope: null,
       examplesFixed: true,
+      checkRun: new AgentCheckRun(DEFAULT_LESSON_AGENT_POLICY),
       onRejection: () => undefined,
     });
     expect((await other.tools.submit({ exercises: [choice(B, 7)] })).results).toEqual([{ index: 0, accepted: "ex1" }]);
@@ -573,5 +598,317 @@ describe("sekcja krytyczna przyjęcia", () => {
     expect(poolOf(state, A).map((entry) => entry.id)).toEqual(["ex2"]);
     // Po checkerze: jeden odczyt stanu do przyjęcia, zaraz potem podmiana (status liczony po niej).
     expect(events.slice(0, 2)).toEqual(["get", "set"]);
+  });
+});
+
+describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)", () => {
+  // Przedmiot testowy z listami i tekstami szkoły: pytanie otwarte bez ślepego rozwiązania, z sędzią i kontrolą otwartą.
+  const school = withAgentPolicy(subject, {
+    blindSolveTypes: schoolAgentPolicy.blindSolveTypes,
+    variantCheckTypes: schoolAgentPolicy.variantCheckTypes,
+    hintJudgeTypes: schoolAgentPolicy.hintJudgeTypes!,
+    openAnswerCheckTypes: schoolAgentPolicy.openAnswerCheckTypes!,
+    checkerNeedsMaterial: true,
+    rejectionTexts: schoolAgentPolicy.rejectionTexts,
+  });
+  const texts = schoolAgentPolicy.rejectionTexts;
+  const ELEMENTS = [
+    { id: "e1", text: "Wisła" },
+    { id: "e2", text: "płynie przez Kraków" },
+  ];
+  const IDS = ELEMENTS.map((element) => element.id);
+  const BAD_HINT = "ZŁA PODPOWIEDŹ";
+
+  function schoolOpen(n: number, extra: Partial<LessonExerciseDraft> = {}): LessonExerciseDraft {
+    return { ...open(A, `Pytanie otwarte numer ${n}?`, `odpowiedź wzorcowa ${n}`), requiredElements: ELEMENTS, ...extra };
+  }
+
+  /** Surowy werdykt gradera szkoły: `missing` z listy wymaganej, reszta trafiona (pełna partycja). */
+  function schoolVerdictFor(ids: readonly string[], missing: readonly string[], knowledge: "correct" | "partial" | "incorrect") {
+    return {
+      knowledge,
+      precision: "concise",
+      matchedElementIds: ids.filter((id) => !missing.includes(id)),
+      missingElementIds: [...missing],
+      incorrectStatements: [],
+      redundantFragments: [],
+      offTopicFragments: [],
+      confusedConcepts: [],
+      note: "",
+    };
+  }
+
+  const correctGrader = (options: { costUsd?: number | null } = {}) =>
+    new FakeAnswerGrader(options).onDefault({ raw: schoolVerdictFor(IDS, [], "correct") });
+
+  const judgeBadHint: FakeExerciseCheckerOptions["judgeHint"] = (item) =>
+    item.hint === BAD_HINT ? { verdict: "unsupported", reason: "the material says nothing about it" } : { verdict: "ok" };
+
+  it("blank hint skips judgeHints: pusta podpowiedź nie trafia do sędziego", async () => {
+    const grader = correctGrader();
+    const tools = setup({ subject: school, grader });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1, { hint: "   " })] });
+    expect(tools.checker.hintCalls).toHaveLength(0);
+    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+  });
+
+  it("grammar with grader makes no open calls: przedmiot bez list etapu 2b nie woła sędziego, rozwiązującego ani gradera", async () => {
+    const grader = correctGrader();
+    const tools = setup({ grader, checker: { solve: () => ["odpowiedź wzorcowa 1"] } });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1, { hint: "Pomyśl o rzekach." })] });
+    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(tools.checker.hintCalls).toHaveLength(0);
+    expect(tools.checker.openCalls).toHaveLength(0);
+    expect(grader.requests).toHaveLength(0);
+  });
+
+  it("no grader skips solveOpen: bez gradera kontrola otwarta nie dotyczy, przyjęcie bez noty", async () => {
+    const tools = setup({ subject: school });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
+    expect(tools.checker.openCalls).toHaveLength(0);
+    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+  });
+
+  it("sędzia i rozwiązujący dostają widok, odpowiedź, elementy, podpowiedź i materiał", async () => {
+    const grader = correctGrader();
+    const tools = setup({ subject: school, grader, material: "MATERIAŁ LEKCJI" });
+    await tools.tools.submit({ exercises: [schoolOpen(1, { hint: "Pomyśl o rzekach." })] });
+    expect(tools.checker.hintCalls).toEqual([
+      {
+        items: [
+          {
+            view: expect.stringContaining("Pytanie otwarte numer 1?"),
+            answer: "odpowiedź wzorcowa 1",
+            requiredElements: ["Wisła", "płynie przez Kraków"],
+            hint: "Pomyśl o rzekach.",
+          },
+        ],
+        material: "MATERIAŁ LEKCJI",
+      },
+    ]);
+    expect(tools.checker.openCalls).toEqual([{ items: [{ view: expect.stringContaining("Pytanie otwarte numer 1?") }], material: "MATERIAŁ LEKCJI" }]);
+    expect(tools.stats).toMatchObject({ hintChecks: 1, openChecks: 1, graderCalls: 2 });
+  });
+
+  it("deterministic match skips grader: odpowiedzi równoważne kluczowi nie idą do gradera", async () => {
+    const grader = correctGrader();
+    const tools = setup({ subject: school, grader, checker: { solveOpen: () => ["odpowiedź wzorcowa 1", "odpowiedź wzorcowa 1."] } });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
+    expect(grader.requests).toHaveLength(0);
+    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(tools.stats).toMatchObject({ openChecks: 1 });
+    expect(tools.stats.graderCalls ?? 0).toBe(0);
+  });
+
+  it("equal pair graded once: para równa po normalizacji to jedno wywołanie gradera", async () => {
+    const grader = correctGrader();
+    const tools = setup({ subject: school, grader, checker: { solveOpen: () => ["Wisła", "wisła."] } });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
+    expect(grader.requests).toHaveLength(1);
+    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    const request = grader.requests[0]!;
+    expect(request.childAnswer).toBe("Wisła");
+    expect(request.stimulus).toBe("Pytanie otwarte numer 1?");
+    expect(request.school?.requiredElements).toEqual(ELEMENTS);
+    expect(request.acceptedAnswers).toEqual(["odpowiedź wzorcowa 1"]);
+  });
+
+  it("partial rejects with open_not_accepted: brakujący element w powodzie dla modelu", async () => {
+    const grader = correctGrader().onAnswer("Tylko Wisła", { raw: schoolVerdictFor(IDS, ["e2"], "partial") });
+    const tools = setup({ subject: school, grader, checker: { solveOpen: () => ["odpowiedź wzorcowa 1", "Tylko Wisła"] } });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
+    const errors = (outcome.results[0] as { readonly errors: readonly string[] }).errors;
+    expect(errors[0]).toContain(texts.openMissing!);
+    expect(errors[0]).toContain('"Tylko Wisła"');
+    expect(errors[0]).toContain('"płynie przez Kraków"');
+    expect(tools.rejections).toEqual([expect.objectContaining({ kind: "open", code: "open_not_accepted" })]);
+    expect(poolIds(tools.state())).toEqual([]);
+  });
+
+  it("grader hang hits stage timeout: pozycje niesprawdzone, a odrzucenie podpowiedzi ma pierwszeństwo przed notą", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: schoolVerdictFor(IDS, [], "correct"), delayMs: 10_000 });
+    const policy = { ...DEFAULT_LESSON_AGENT_POLICY, graderStageTimeoutMs: 50 };
+    const tools = setup({ subject: school, grader, policy, checker: { judgeHint: judgeBadHint } });
+    const outcome = await tools.tools.submit({
+      exercises: [schoolOpen(1, { hint: "Pomyśl o rzekach." }), schoolOpen(2, { hint: BAD_HINT })],
+    });
+    expect(outcome.results[0]).toEqual({ index: 0, accepted: "ex1", note: "unchecked" });
+    expect(outcome.results[1]).toEqual({ index: 1, errors: [expect.stringContaining(texts.hintUnsupported!)] });
+    expect(tools.rejections.map((entry) => [entry.kind, entry.code])).toEqual([["hint", "hint_unsupported"]]);
+    expect(tools.stats).toMatchObject({ hintChecks: 2, openChecks: 2, openUnavailable: 2 });
+    expect(tools.stats.hintUnavailable ?? 0).toBe(0);
+  });
+
+  it("stage cut is not a grader failure: wywołania w locie przerwane limitem etapu nie liczą się do wyłącznika", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: schoolVerdictFor(IDS, [], "correct"), delayMs: 10_000 });
+    const policy = { ...DEFAULT_LESSON_AGENT_POLICY, graderStageTimeoutMs: 50 };
+    const checkRun = new AgentCheckRun(policy);
+    const tools = setup({ subject: school, grader, policy, checkRun });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1), schoolOpen(2)] });
+    // Cztery wywołania w locie (dwie pary) przerwane limitem etapu: więcej niż próg wyłącznika.
+    expect(grader.requests).toHaveLength(4);
+    expect(outcome.results).toEqual([
+      { index: 0, accepted: "ex1", note: "unchecked" },
+      { index: 1, accepted: "ex2", note: "unchecked" },
+    ]);
+    expect(checkRun.graderOpen()).toBe(false);
+    expect(tools.breakerOpened()).toBe(0);
+    expect(tools.stats.graderErrors ?? 0).toBe(0);
+    expect(tools.stats).toMatchObject({ graderCalls: 4, openUnavailable: 2 });
+  });
+
+  it("own grader timeout is a failure: własny termin gradera (przed limitem etapu) liczy się do graderErrors", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: schoolVerdictFor(IDS, [], "correct"), delayMs: 10_000 });
+    const tools = setup({ subject: school, grader, graderTimeoutMs: 20 });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
+    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1", note: "unchecked" }]);
+    expect(tools.stats).toMatchObject({ graderCalls: 2, graderErrors: 2, openUnavailable: 1 });
+    expect(tools.checkRun.graderOpen()).toBe(false);
+  });
+
+  it("budget exhausted before stage 2:koszt solveOpen wyczerpuje budżet, grader niewołany", async () => {
+    const grader = correctGrader();
+    const cost = new RunCostMeter(0, 0.05, 0.02);
+    const tools = setup({ subject: school, grader, cost, checker: { costUsd: 0.05 } });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
+    expect(tools.checker.openCalls).toHaveLength(1);
+    expect(grader.requests).toHaveLength(0);
+    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1", note: "unchecked" }]);
+    expect(tools.stats).toMatchObject({ openUnavailable: 1 });
+  });
+
+  it("unknown grader cost uses small estimate: dwa wywołania o nieznanym koszcie to 2 × 0.002", async () => {
+    const grader = correctGrader({ costUsd: null });
+    const cost = new RunCostMeter(0, 1, 0.02);
+    const tools = setup({ subject: school, grader, cost });
+    await tools.tools.submit({ exercises: [schoolOpen(1)] });
+    expect(grader.requests).toHaveLength(2);
+    expect(cost.spentUsd).toBeCloseTo(0.004);
+  });
+
+  it("breaker opens after 3 failures: kolejna paczka bez solveOpen i grade, przyjęcie bez noty", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ error: "boom" });
+    const checkRun = new AgentCheckRun(DEFAULT_LESSON_AGENT_POLICY);
+    const tools = setup({ subject: school, grader, checkRun });
+    expect((await tools.tools.submit({ exercises: [schoolOpen(1)] })).results).toEqual([{ index: 0, accepted: "ex1", note: "unchecked" }]);
+    expect(tools.breakerOpened()).toBe(0);
+    await tools.tools.submit({ exercises: [schoolOpen(2)] });
+    expect(tools.breakerOpened()).toBe(1);
+    expect(checkRun.graderOpen()).toBe(true);
+    const requests = grader.requests.length;
+    expect(tools.checker.openCalls).toHaveLength(2);
+
+    const third = await tools.tools.submit({ exercises: [schoolOpen(3)] });
+    expect(third.results).toEqual([{ index: 0, accepted: "ex3" }]);
+    expect(tools.checker.openCalls).toHaveLength(2);
+    expect(grader.requests).toHaveLength(requests);
+    expect(tools.breakerOpened()).toBe(1);
+    expect(tools.stats.graderErrors).toBe(requests);
+  });
+
+  it("invalid verdict is unavailable: werdykt odrzucony walidacją daje unchecked", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: { knowledge: "correct", matchedElementIds: [], missingElementIds: [] } });
+    const tools = setup({ subject: school, grader, checker: { solveOpen: () => ["odpowiedź wzorcowa 1", "Wisła"] } });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
+    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1", note: "unchecked" }]);
+    expect(tools.stats).toMatchObject({ graderCalls: 1, graderInvalidVerdicts: 1, openUnavailable: 1 });
+    expect(tools.stats.graderErrors ?? 0).toBe(0);
+  });
+
+  it("memo skips repeated open check: poprawka samej podpowiedzi nie powtarza kontroli otwartej", async () => {
+    const grader = correctGrader();
+    const tools = setup({ subject: school, grader, checker: { judgeHint: judgeBadHint } });
+    const first = await tools.tools.submit({ exercises: [schoolOpen(1, { hint: BAD_HINT })] });
+    expect(first.results[0]).toEqual({ index: 0, errors: [expect.stringContaining(texts.hintUnsupported!)] });
+    expect(tools.checker.openCalls).toHaveLength(1);
+    const requests = grader.requests.length;
+    expect(requests).toBe(2);
+
+    const second = await tools.tools.submit({ exercises: [schoolOpen(1, { hint: "Pomyśl o rzekach." })] });
+    expect(second.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(tools.checker.openCalls).toHaveLength(1);
+    expect(tools.checker.hintCalls).toHaveLength(2);
+    expect(grader.requests).toHaveLength(requests);
+    expect(tools.stats).toMatchObject({ openChecks: 1, hintChecks: 2 });
+  });
+
+  it("memo key includes the objective: to samo ćwiczenie w dwóch celach to dwie kontrole otwarte", async () => {
+    const grader = correctGrader();
+    const checkRun = new AgentCheckRun(DEFAULT_LESSON_AGENT_POLICY);
+    const first = setup({ subject: school, grader, checkRun });
+    const second = setup({ subject: school, grader, checkRun, objectiveId: B });
+    // Własne polecenie: widok bez tytułu celu, więc identyczny w obu celach (wejście gradera już nie).
+    const exercise = schoolOpen(1, { instructionPl: "Odpowiedz pełnym zdaniem." });
+    expect((await first.tools.submit({ exercises: [exercise] })).results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect((await second.tools.submit({ exercises: [{ ...exercise, objectiveId: B }] })).results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(first.checker.openCalls).toHaveLength(1);
+    expect(second.checker.openCalls).toHaveLength(1);
+    expect(checkRun.openMemo.size).toBe(2);
+  });
+
+  it("breaker opened during stage 1: pozycje bez oceny nie dotyczą (bez noty i bez openUnavailable)", async () => {
+    const grader = correctGrader();
+    const checkRun = new AgentCheckRun(DEFAULT_LESSON_AGENT_POLICY);
+    // Inne zagadnienie otwiera wyłącznik, zanim ta paczka dojdzie do etapu 2.
+    const tripBreaker = () => {
+      while (!checkRun.graderOpen()) checkRun.recordGraderFailure();
+    };
+    const tools = setup({
+      subject: school,
+      grader,
+      checkRun,
+      checker: {
+        solveOpen: () => {
+          tripBreaker();
+          return ["Wisła", "Odra"];
+        },
+      },
+    });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
+    expect(tools.checker.openCalls).toHaveLength(1);
+    expect(grader.requests).toHaveLength(0);
+    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(tools.stats.openUnavailable ?? 0).toBe(0);
+    expect(checkRun.openMemo.size).toBe(0);
+  });
+
+  it("refused batch does not count unavailable: odmowa po zamknięciu nie liczy hintUnavailable ani openUnavailable", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: schoolVerdictFor(IDS, [], "correct"), delayMs: 60_000 });
+    const tools = setup({ subject: school, grader });
+    const pending = tools.tools.submit({ exercises: [schoolOpen(1)] });
+    await vi.waitFor(() => expect(grader.requests).toHaveLength(2));
+    await tools.close();
+    expect((await pending).results).toEqual([{ index: 0, errors: ["tools are closed"] }]);
+    expect(tools.stats.openUnavailable ?? 0).toBe(0);
+    expect(tools.stats.hintUnavailable ?? 0).toBe(0);
+  });
+
+  it("close during grade releases grader slots: odmowa refused_closed, wszystkie miejsca semafora wolne", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: schoolVerdictFor(IDS, [], "correct"), delayMs: 60_000 });
+    const checkRun = new AgentCheckRun(DEFAULT_LESSON_AGENT_POLICY);
+    const tools = setup({ subject: school, grader, checkRun });
+    const before = tools.state();
+    const pending = tools.tools.submit({ exercises: [schoolOpen(1)] });
+    await vi.waitFor(() => expect(grader.requests).toHaveLength(2));
+    await tools.close();
+    expect((await pending).results).toEqual([{ index: 0, errors: ["tools are closed"] }]);
+    expect(tools.refusals).toEqual(["refused_closed"]);
+    expect(tools.state()).toBe(before);
+    // Zamknięcie nie jest awarią gradera.
+    expect(tools.stats.graderErrors ?? 0).toBe(0);
+    expect(checkRun.graderOpen()).toBe(false);
+
+    const gate = deferred();
+    let started = 0;
+    const runs = Array.from({ length: checkRun.graderSemaphore.limit }, () =>
+      checkRun.graderSemaphore.run(async () => {
+        started += 1;
+        await gate.promise;
+      }),
+    );
+    await flush();
+    expect(started).toBe(checkRun.graderSemaphore.limit);
+    gate.resolve();
+    await Promise.all(runs);
   });
 });

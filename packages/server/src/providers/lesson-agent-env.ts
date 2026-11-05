@@ -1,4 +1,5 @@
 import {
+  agentGraderFromEnv,
   lessonAgentPolicyFromEnv,
   lessonAgentSettingsFromEnv,
   lessonAgentSubjectsFromEnv,
@@ -21,7 +22,9 @@ import { AiSdkExerciseChecker, AiSdkLessonPoolAgent } from "./openai/lesson-pool
  *   „jak LLM” (`fromLlm`) i checker bez wyniku (ćwiczenia przechodzą bez kontroli); bez
  *   `usage` — fake nie woła żadnej usługi, więc tryb fake nie zapisuje kosztów;
  * - inaczej {@link lessonAgentSettingsFromEnv}: `undefined` (pusta lista albo brak klucza)
- *   → `undefined`, czyli lekcje generuje potok; ustawienia → adaptery OpenRouter.
+ *   → `undefined`, czyli lekcje generuje potok; ustawienia → adaptery OpenRouter oraz,
+ *   przy pełnej konfiguracji `UMIEM_GRADER_*`, grader kontroli otwartej (etap 2b; tryb fake
+ *   go nie składa).
  */
 export function lessonAgentDepsFromEnv(
   env: Record<string, string | undefined>,
@@ -42,6 +45,8 @@ export function lessonAgentDepsFromEnv(
   const settings = lessonAgentSettingsFromEnv(env, subjects);
   if (settings === undefined) return undefined;
   const common = { apiKey: settings.apiKey, ...(usage ? { usage } : {}) };
+  // Grader kontroli otwartej (etap 2b): ta sama konfiguracja `UMIEM_GRADER_*` co w web; brak = bez kontroli.
+  const grader = agentGraderFromEnv(env, usage);
   return {
     subjects: settings.subjects,
     agent: new AiSdkLessonPoolAgent({
@@ -56,6 +61,7 @@ export function lessonAgentDepsFromEnv(
       effort: settings.checkerEffort,
       ...(settings.checkerProvider ? { provider: settings.checkerProvider } : {}),
     }),
+    ...(grader === undefined ? {} : { grader }),
     policy: settings.policy,
   };
 }

@@ -145,6 +145,18 @@ describe("SourcePage", () => {
       expect(mixed).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
     });
 
+    it("ocena pytań otwartych: komunikat tylko przy przedmiocie z openCheckService", () => {
+      const OPEN = "openrouter.ai · g";
+      const catalog: SubjectCatalogDto = {
+        ...agentCatalog(true),
+        subjects: agentCatalog(true).subjects.map((s) => (s.id === fullCatalog.subjects[1]!.id ? { ...s, openCheckService: OPEN } : s)),
+      };
+      const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, catalog));
+      expect(markup).toContain('data-testid="source-open-check-service-school"');
+      expect(markup).toContain(messages.lessons.openCheckServiceInfo.replace("{service}", OPEN));
+      expect(markup).not.toContain('data-testid="source-open-check-service-chapter"');
+    });
+
     it("bez checkService nie ma komunikatów agenta", () => {
       const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, { ...fullCatalog, reviewService: REVIEW }));
       expect(markup).not.toContain('data-testid="source-check-service-school"');

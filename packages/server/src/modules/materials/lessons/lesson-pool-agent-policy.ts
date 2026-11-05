@@ -23,6 +23,14 @@ export interface LessonAgentPolicy {
   readonly runBudgetUsd: number;
   /** Szacunek kosztu żądania o nieznanym koszcie (`record(null)`). */
   readonly unknownCallEstimateUsd: number;
+  /** Miejsca osobnego semafora gradera kontroli otwartej (etap 2b §7.2); bez env. */
+  readonly graderConcurrency: number;
+  /** Limit etapu 2 paczki (grader) liczony od startu etapu; po nim pozycje niesprawdzone. */
+  readonly graderStageTimeoutMs: number;
+  /** Szacunek kosztu wywołania gradera o nieznanym koszcie (zamiast `unknownCallEstimateUsd`). */
+  readonly unknownGraderCallEstimateUsd: number;
+  /** Wyłącznik gradera po tylu kolejnych porażkach (błąd, termin, werdykt odrzucony walidacją). */
+  readonly graderBreakerThreshold: number;
 }
 
 export const DEFAULT_LESSON_AGENT_POLICY: LessonAgentPolicy = {
@@ -35,6 +43,10 @@ export const DEFAULT_LESSON_AGENT_POLICY: LessonAgentPolicy = {
   runTimeoutMs: DEFAULT_LESSON_GENERATION_POLICY.runTimeoutMs,
   runBudgetUsd: 1,
   unknownCallEstimateUsd: 0.02,
+  graderConcurrency: 4,
+  graderStageTimeoutMs: 30_000,
+  unknownGraderCallEstimateUsd: 0.002,
+  graderBreakerThreshold: 3,
 };
 
 /** Powody przerwania terminem runu i zagadnienia (`deadlineSignal`). */

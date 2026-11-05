@@ -20,6 +20,9 @@ const VARIANT_CHECK_TYPES: readonly LessonExerciseType[] = ["lesson_gap"];
 /** Podpowiedź ma sens wyłącznie przy pytaniu otwartym; rodzic dopisuje ją innym typom w edytorze. */
 const HINT_TYPE: LessonExerciseType = "lesson_open_answer";
 
+/** Kontrola otwarta (rozwiązujący + grader) dotyczy wyłącznie pytania otwartego. */
+const OPEN_CHECK_TYPE: LessonExerciseType = "lesson_open_answer";
+
 const normalizer = baseNormalizer;
 
 /** Dopisek dla podagenta: odpowiednik `sanitize` (podpowiedź poza pytaniem otwartym i tak jest usuwana). */
@@ -30,6 +33,8 @@ const PROMPT_NOTES: readonly string[] = [
 export const schoolAgentPolicy: SubjectAgentPolicy = {
   blindSolveTypes: BLIND_SOLVE_TYPES,
   variantCheckTypes: VARIANT_CHECK_TYPES,
+  hintJudgeTypes: [HINT_TYPE],
+  openAnswerCheckTypes: [OPEN_CHECK_TYPE],
   checkerNeedsMaterial: true,
   independentReserve: 1,
   slack: 2,
@@ -38,6 +43,19 @@ export const schoolAgentPolicy: SubjectAgentPolicy = {
     leakVictim:
       "An independent answer must not be visible earlier — ask about a different fact of the material or phrase the question differently.",
     leakSource: "Use a different fact or phrase the question differently.",
+    hintUnsupported:
+      "The hint states something the material does not support. Rewrite the hint using only facts from the material, or set hint to null.",
+    hintLanguage: "The hint is not correct Polish. Fix the wording, or set hint to null.",
+    hintReveals:
+      "The hint gives away the answer or a required element in other words. Hint at the reasoning, not the content, or set hint to null.",
+    openMissing:
+      "A correct answer that follows the question was not accepted: it lacks required elements the question does not actually demand. " +
+      "Make requiredElements match what the question asks (for “any two”, require what every valid choice satisfies and move specific examples to supplementaryElements), " +
+      "or make the question ask for exactly those elements. Do not drop elements the question genuinely requires; " +
+      "if the answer below is wrong according to the material, make the question more precise.",
+    openWrong:
+      "An answer based on the material was graded as containing errors. Check that the model answer and the criteria agree with the material; " +
+      "if the answer below is wrong according to the material, make the question more precise or add the mistake to commonErrors.",
   },
   sanitize(draft: LessonExerciseDraft) {
     if (draft.exerciseType === HINT_TYPE || draft.hint === undefined) return { draft, removed: [] };

@@ -193,6 +193,8 @@ function meteredChecker(inner: LessonExerciseCheckerProvider, meter: ProbeMeter)
     model: inner.model,
     solve: (input, cost, signal) => inner.solve(input, meter.sink("checker", cost), signal),
     judgeVariants: (input, cost, signal) => inner.judgeVariants(input, meter.sink("checker", cost), signal),
+    judgeHints: (input, cost, signal) => inner.judgeHints(input, meter.sink("checker", cost), signal),
+    solveOpen: (input, cost, signal) => inner.solveOpen(input, meter.sink("checker", cost), signal),
   };
 }
 

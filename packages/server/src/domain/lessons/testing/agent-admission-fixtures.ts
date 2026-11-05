@@ -44,7 +44,7 @@ export function stateWith(overrides: Partial<LessonAgentStateInput> = {}): Lesso
   return createLessonAgentState({ topic, objectives, fixed: [], examples: {}, fixedSources: {}, ...overrides });
 }
 
-export const NA_CHECKS: CandidateChecks = { solve: { kind: "na" }, variants: { kind: "na" } };
+export const NA_CHECKS: CandidateChecks = { solve: { kind: "na" }, variants: { kind: "na" }, hint: { kind: "na" }, open: { kind: "na" } };
 
 export function naChecks(count: number): CandidateChecks[] {
   return Array.from({ length: count }, () => NA_CHECKS);

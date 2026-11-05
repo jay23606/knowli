@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentObjective, LessonExerciseDraft } from "../../types";
 import { baseNormalizer } from "../../normalize";
+import { createProductionSubjectRegistry } from "..";
 import { schoolAgentPolicy } from "./agent-policy";
 import { schoolSubject } from "./module";
 
@@ -47,6 +48,43 @@ describe("schoolAgentPolicy — wartości i typy", () => {
 
   it("warianty sprawdza się tylko przy lukach", () => {
     expect(schoolAgentPolicy.variantCheckTypes).toEqual(["lesson_gap"]);
+  });
+
+  it("sędzia podpowiedzi i kontrola otwarta dotyczą wyłącznie pytania otwartego", () => {
+    expect(schoolAgentPolicy.hintJudgeTypes).toEqual(["lesson_open_answer"]);
+    expect(schoolAgentPolicy.openAnswerCheckTypes).toEqual(["lesson_open_answer"]);
+    const subjectTypes = new Set<string>(schoolSubject.exerciseTypes);
+    for (const type of [...(schoolAgentPolicy.hintJudgeTypes ?? []), ...(schoolAgentPolicy.openAnswerCheckTypes ?? [])]) {
+      expect(subjectTypes.has(type)).toBe(true);
+    }
+  });
+
+  it("każdy zarejestrowany przedmiot: niepusta lista kontroli ma komplet tekstów odrzuceń, a sędzia podpowiedzi wymaga materiału", () => {
+    const policies = createProductionSubjectRegistry()
+      .listSubjects()
+      .flatMap((subject) => (subject.agentPolicy === undefined ? [] : [[subject.id, subject.agentPolicy] as const]));
+    // Szkoła ma obie listy: niezmiennik nie jest pusty.
+    expect(policies.map(([id]) => id)).toContain(schoolSubject.id);
+    for (const [id, policy] of policies) {
+      const texts = policy.rejectionTexts;
+      if ((policy.hintJudgeTypes ?? []).length > 0) {
+        expect(policy.checkerNeedsMaterial, id).toBe(true);
+        for (const text of [texts.hintUnsupported, texts.hintLanguage, texts.hintReveals]) expect(text?.length ?? 0, id).toBeGreaterThan(0);
+      }
+      if ((policy.openAnswerCheckTypes ?? []).length > 0) {
+        for (const text of [texts.openMissing, texts.openWrong]) expect(text?.length ?? 0, id).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("teksty odrzuceń wskazują, co poprawić, i nie pozwalają wyrzucić wymaganych elementów", () => {
+    const texts = schoolAgentPolicy.rejectionTexts;
+    expect(texts.hintUnsupported).toContain("set hint to null");
+    expect(texts.hintLanguage).toContain("not correct Polish");
+    expect(texts.hintReveals).toContain("Hint at the reasoning, not the content");
+    expect(texts.openMissing).toContain("supplementaryElements");
+    expect(texts.openMissing).toContain("Do not drop elements the question genuinely requires");
+    expect(texts.openWrong).toContain("commonErrors");
   });
 
   it("leakVictim nie wspomina pokoju i podpowiada inny fakt lub inne sformułowanie", () => {

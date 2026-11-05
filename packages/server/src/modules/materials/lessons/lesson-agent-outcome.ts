@@ -3,6 +3,7 @@ import { AppError } from "../../../errors";
 import { outsideStagePath } from "../../../domain/lessons/stages";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import type { LessonAgentObjectiveProgress, LessonAgentProgress } from "./lesson-agent-checkpoint";
+import { CHECK_COUNTER_KEYS } from "./lesson-agent-check-run";
 import type { LessonGenerationGap, LessonRunInput } from "./lesson-drafts";
 import type { AgentObjectiveSource, LessonPoolAgentResult, LessonPoolAgentRunInput } from "./lesson-pool-agent";
 
@@ -18,6 +19,17 @@ export type { LessonGenerationGap };
 /** Agent wtedy i tylko wtedy, gdy są zależności agenta, przedmiot jest na liście konfiguracji i ma politykę agenta. */
 export function lessonGeneratorFor(subject: SubjectModule, agent: LessonAgentDeps | undefined): "agent" | "pipeline" {
   return agent !== undefined && agent.subjects.has(subject.id) && subject.agentPolicy !== undefined ? "agent" : "pipeline";
+}
+
+/**
+ * Linia logu startu runu (etap 2b §7.4), bez treści: `hintJudge` — przedmiot ma niepustą listę typów sędziego
+ * podpowiedzi; `openCheck` — niepusta lista typów kontroli otwartej i worker ma grader (`hasGrader`).
+ */
+export function agentCheckStartLine(runId: string, subject: SubjectModule, hasGrader: boolean): string {
+  const policy = subject.agentPolicy;
+  const hintJudge = (policy?.hintJudgeTypes?.length ?? 0) > 0;
+  const openCheck = (policy?.openAnswerCheckTypes?.length ?? 0) > 0 && hasGrader;
+  return `[lesson-agent] run=${runId} hintJudge=${hintJudge ? "on" : "off"} openCheck=${openCheck ? "on" : "off"}`;
 }
 
 /** Nowe ćwiczenia liczone jak `counts.total` statusu: typy na ścieżce etapów, bez słów kluczowych i słuchowych. */
@@ -253,7 +265,7 @@ export function outcomeObjectivesOf(progress: LessonAgentProgress, result: Lesso
  * Scalenie wyniku próby z postępem Z POCZĄTKU próby (tym, z którego zbudowano wejście): wpis zagadnienia
  * uruchomionego w próbie zastępuje poprzedni (pula) albo dopisuje nowe ćwiczenia (dodaj N); zagadnienia
  * `complete` pominięte w próbie zostają. Wydatek: budżet = licznik kierownika (zawiera `initialSpentUsd`),
- * łącznie + przyrost próby; histogram kodów odrzuceń i usunięcia bezpiecznika kierownika sumowane.
+ * łącznie + przyrost próby; histogram kodów odrzuceń, liczniki kontroli (2b) i usunięcia bezpiecznika kierownika sumowane.
  */
 export function mergeAttemptIntoProgress(
   progress: LessonAgentProgress,
@@ -274,6 +286,12 @@ export function mergeAttemptIntoProgress(
   }
   const rejectionCodes = { ...progress.rejectionCodes };
   for (const rejection of result.rejections) rejectionCodes[rejection.code] = (rejectionCodes[rejection.code] ?? 0) + 1;
+  // Liczniki kontroli (etap 2b): sumowane jak histogram; pole powstaje dopiero po pierwszym niezerowym liczniku.
+  const checkCounters: Record<string, number> = { ...progress.checkCounters };
+  for (const key of CHECK_COUNTER_KEYS) {
+    const delta = result.stats[key];
+    if (delta > 0) checkCounters[key] = (checkCounters[key] ?? 0) + delta;
+  }
   const attemptSpentUsd = Math.max(0, result.spentUsd - progress.budgetSpentUsd);
   const dynamicTopic = progress.dynamicTopic ?? result.dynamicTopic;
   return {
@@ -283,6 +301,7 @@ export function mergeAttemptIntoProgress(
     budgetSpentUsd: progress.budgetSpentUsd + attemptSpentUsd,
     totalSpentUsd: progress.totalSpentUsd + attemptSpentUsd,
     rejectionCodes,
+    ...(Object.keys(checkCounters).length === 0 ? {} : { checkCounters }),
     removedAfterAcceptance: progress.removedAfterAcceptance + result.stats.invariantViolations,
   };
 }

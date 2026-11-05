@@ -909,6 +909,14 @@ describe("usługi generowania per przedmiot i luki generowania (agent puli, etap
     expect(withServices.checkServiceIncludesMaterial).toBe(true);
   });
 
+  it("openCheckService (ocena odpowiedzi próbnych do pytań otwartych): opcjonalne, bez pustego napisu", () => {
+    expect(SubjectCatalogDtoSchema.parse({ subjects: [subject] }).subjects[0]!).not.toHaveProperty("openCheckService");
+    const parsed = SubjectCatalogDtoSchema.parse({ subjects: [{ ...subject, openCheckService: "openrouter.ai · g" }] }).subjects[0]!;
+    expect(parsed.openCheckService).toBe("openrouter.ai · g");
+    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, openCheckService: "" }] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, openCheckService: 1 }] }).success).toBe(false);
+  });
+
   it("pola usług odrzucają puste wartości i złe typy", () => {
     for (const bad of [
       { generationServices: [] },

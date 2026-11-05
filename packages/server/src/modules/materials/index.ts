@@ -15,6 +15,9 @@ export { enqueueDeckGeneration, executeGeneration, readGeneration, retryGenerati
 export { buildPayload, payloadToItem, validateItems } from "./item-payload";
 export { createLessonDraftFromPublished, deckIdOfLessonVersion, editLessonDraft, lessonCatalog, publishLessonDraft, readLessonDeck } from "./lessons/lesson-api";
 export { applyLessonExercises, createLesson, createLessonFromMaterial, createSchoolLesson, executeLessonGeneration, regenerateObjective, splitStages } from "./lessons/lesson-drafts";
+export { lessonCategoryLabels, lessonGraderInput, lessonInstructionOf, schoolCriteriaOf } from "./lessons/lesson-grader-input";
+export type { OpenAnswerFields } from "./lessons/lesson-grader-input";
+export type { SchoolCriteria } from "../../domain/lessons/types";
 export { regenerateLessonStory } from "./lessons/lesson-story-generation";
 export { regenerateLessonCardAudio, regenerateLessonPromptAudio, regenerateLessonStoryAudio } from "./lessons/lesson-prompt-audio";
 export { acceptVerdictAsVariant, decideLessonVerdict, lessonObjectiveProgress, listLessonVerdicts } from "./lessons/lesson-supervision";
