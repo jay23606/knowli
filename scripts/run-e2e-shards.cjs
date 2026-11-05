@@ -13,12 +13,11 @@
  */
 "use strict";
 
-const { spawn, execFile } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const path = require("node:path");
-const { promisify } = require("node:util");
+const { DETACHED, exec, killTree, prefixStream } = require("./child-process-tree.cjs");
 
-const exec = promisify(execFile);
 const repoRoot = path.resolve(__dirname, "..");
 const NEXT_BIN = path.join(repoRoot, "apps/web/node_modules/next/dist/bin/next");
 const PLAYWRIGHT_CLI = path.join(repoRoot, "node_modules/@playwright/test/cli.js");
@@ -89,8 +88,6 @@ function parseInteger(name, value, min, max) {
   return parsed;
 }
 
-const DETACHED = process.platform !== "win32";
-
 function runInherit(args, cwd, env) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { cwd, env, stdio: "inherit", detached: DETACHED });
@@ -104,35 +101,6 @@ function runInherit(args, cwd, env) {
       if (code === 0) resolve();
       else reject(new Error(`Polecenie zakończyło się kodem ${String(code)}: ${args.join(" ")}`));
     });
-  });
-}
-
-function killTree(child, signal = "SIGTERM") {
-  if (child.pid === undefined || child.exitCode !== null) return;
-  if (process.platform === "win32") {
-    exec("taskkill", ["/pid", String(child.pid), "/T", "/F"]).catch(() => undefined);
-    return;
-  }
-  // POSIX: dzieci startują detached, więc sygnał idzie do całej grupy
-  // procesów (Playwright, `next start`, worker ze świata global-setup).
-  try {
-    process.kill(-child.pid, signal);
-  } catch {
-    child.kill(signal);
-  }
-}
-
-function prefixStream(stream, prefix, target) {
-  let buffer = "";
-  stream.setEncoding("utf8");
-  stream.on("data", (chunk) => {
-    buffer += chunk;
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) target.write(`${prefix} ${line}\n`);
-  });
-  stream.on("end", () => {
-    if (buffer) target.write(`${prefix} ${buffer}\n`);
   });
 }
 
@@ -154,6 +122,16 @@ function runPlaywright(label, runId, port, playwrightArgs, extraEnv = {}) {
         // Kosz tylko z extraEnv danego świata; wartość z powłoki nie może
         // zawęzić innych światów (pusta = wszystkie specy real).
         UMIEM_E2E_BUCKET: "",
+        // Własny cache transformacji Playwrighta per świat (i per checkout):
+        // światy startujące naraz zapisywały te same pliki wspólnego
+        // %TEMP%\playwright-transform-cache i na Windows global-setup padał
+        // z EPERM przy pierwszym przebiegu po zmianie kodu. PWTEST_CACHE_DIR
+        // to wewnętrzna zmienna Playwrighta (lib/common/index.js) — po
+        // aktualizacji sprawdź, czy nadal działa. Ustawiona w powłoce wraca
+        // do jednego wspólnego katalogu, a drugi równoległy przebieg w tym
+        // samym checkoucie (inny --base-port) dzieli katalogi z pierwszym.
+        PWTEST_CACHE_DIR: process.env.PWTEST_CACHE_DIR
+          ?? path.join(repoRoot, "node_modules/.cache/playwright-transform", label.replace(/[^a-z0-9-]+/gi, "-")),
         ...extraEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],

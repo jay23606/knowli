@@ -798,7 +798,10 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
   });
 
   it("DTO po usunięciu zagadnienia: zagadnienia i usunięcia tylko bieżącego tematu, status liczony od nowa", async () => {
-    const { services, reviewer } = await world({ execution: MAIN_BATCH_ONLY });
+    // Wywołania 1 i 2 przy concurrency > 1 biegną równolegle i kolejność ich startu
+    // zależy od czasu odpowiedzi bazy; numer wywołania wskazuje zagadnienie tylko
+    // przy przeglądzie po kolei.
+    const { services, reviewer } = await world({ execution: MAIN_BATCH_ONLY, policy: { concurrency: 1 } });
     reviewer.behavior = (input) => {
       const call = reviewer.inputs.indexOf(input);
       if (call === 1) {
