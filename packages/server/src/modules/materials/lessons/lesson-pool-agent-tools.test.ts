@@ -34,7 +34,7 @@ interface SetupOptions {
   subject?: AgentCapableSubject;
   state?: LessonAgentState;
   cost?: RunCostMeter;
-  examplesFromPlan?: boolean;
+  examplesFixed?: boolean;
   material?: string;
   signal?: AbortSignal;
   semaphore?: Semaphore;
@@ -60,7 +60,7 @@ function setup(options: SetupOptions = {}) {
     objectiveSignal: options.signal ?? new AbortController().signal,
     policy: DEFAULT_LESSON_AGENT_POLICY,
     familyScope: null,
-    examplesFromPlan: options.examplesFromPlan ?? true,
+    examplesFixed: options.examplesFixed ?? true,
     onRejection: (entry) => rejections.push(entry),
     onRefusal: (code) => refusals.push(code),
   });
@@ -217,14 +217,14 @@ describe("submit — parsowanie i wynik dla modelu", () => {
   });
 
   it("examples: \"x\" → błąd przykładów; przykłady z planu są ignorowane z notą", async () => {
-    const own = setup({ examplesFromPlan: false });
+    const own = setup({ examplesFixed: false });
     const bad = await own.tools.submit({ exercises: [], examples: "x" as unknown as unknown[] });
     expect(bad.examples).toEqual({ accepted: 0, errors: ["examples must be an array of strings"] });
     const good = await own.tools.submit({ exercises: [], examples: ["Mieszko I rządził Polską."] });
     expect(good.examples).toEqual({ accepted: 1, errors: [] });
     expect(own.state().examples.get(A)).toEqual(["Mieszko I rządził Polską."]);
 
-    const fromPlan = setup({ examplesFromPlan: true });
+    const fromPlan = setup({ examplesFixed: true });
     const ignored = await fromPlan.tools.submit({ exercises: [], examples: ["Mieszko I rządził Polską."] });
     expect(ignored.examples).toEqual({ accepted: 0, errors: ["examples are fixed by the plan"] });
     expect(fromPlan.state().examples.get(A)).toBeUndefined();
@@ -306,7 +306,7 @@ describe("submit — checker", () => {
       objectives: agentObjectivesOf(markedTopic),
       fixedSources: { [A]: ["ZNACZNIK-ZDANIA-KARTY"] },
     });
-    const tools = setup({ state, examplesFromPlan: false, material: "ZNACZNIK-MATERIAŁU" });
+    const tools = setup({ state, examplesFixed: false, material: "ZNACZNIK-MATERIAŁU" });
     await tools.tools.submit({ exercises: [choice(A, 1), gapWithVariant], examples: ["ZNACZNIK-PRZYKŁADU jest tutaj."] });
     expect(tools.checker.solveCalls).toHaveLength(1);
     expect(tools.checker.judgeCalls).toHaveLength(1);
@@ -543,7 +543,7 @@ describe("sekcja krytyczna przyjęcia", () => {
       objectiveSignal: new AbortController().signal,
       policy: DEFAULT_LESSON_AGENT_POLICY,
       familyScope: null,
-      examplesFromPlan: true,
+      examplesFixed: true,
       onRejection: () => undefined,
     });
     const pending = tools.submit({ exercises: [choice(A, 1)] });
@@ -562,7 +562,7 @@ describe("sekcja krytyczna przyjęcia", () => {
       objectiveSignal: new AbortController().signal,
       policy: DEFAULT_LESSON_AGENT_POLICY,
       familyScope: null,
-      examplesFromPlan: true,
+      examplesFixed: true,
       onRejection: () => undefined,
     });
     expect((await other.tools.submit({ exercises: [choice(B, 7)] })).results).toEqual([{ index: 0, accepted: "ex1" }]);

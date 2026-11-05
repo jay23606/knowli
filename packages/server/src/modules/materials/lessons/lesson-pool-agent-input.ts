@@ -4,7 +4,7 @@ import { allExamples, orderedLesson, type LessonAgentState } from "../../../doma
 import { avoidSentencesFor } from "../../../domain/lessons/avoid-sentences";
 import { lessonPoolMinimums } from "../../../domain/lessons/lesson-coverage";
 import type { AgentObjective, LessonTopic } from "../../../domain/lessons/types";
-import type { LessonObjectiveAgentInput } from "../../../ports/ai";
+import type { LessonObjectiveAgentInput, LlmLessonStageCounts } from "../../../ports/ai";
 import { buildPoolInput, poolStageCounts } from "./lesson-drafts";
 
 /**
@@ -24,8 +24,15 @@ export interface ObjectiveAgentInputArgs {
   readonly instruction?: string;
   readonly interests?: readonly string[];
   readonly graderAvailable: boolean;
-  readonly examplesFromPlan: boolean;
+  /** `true` = przykłady kart są ustalone (plan albo wznowienie); w porcie pole `objective.examplesFromPlan`. */
+  readonly examplesFixed: boolean;
   readonly maxSteps: number;
+  /**
+   * Liczby promptu wyliczone przez wołającego zamiast z `limits` — tryb „dodaj N” (spec etapu 2a §6.4):
+   * podział etapów z braków etapów i `remaining` (bez `fixed` i bez podnoszenia etapu samodzielnego),
+   * `targetCount` = suma etapów, `listenAllowance` = reszta dodatku słuchowego. `maxExercises` z `limits`.
+   */
+  readonly promptTargets?: { readonly stages: LlmLessonStageCounts; readonly listenAllowance: number };
 }
 
 function cardsText(objective: AgentObjective): string {
@@ -46,12 +53,13 @@ function agentStageCounts(subject: AgentCapableSubject, objective: AgentObjectiv
 export function objectiveAgentInput(args: ObjectiveAgentInputArgs): LessonObjectiveAgentInput {
   const { subject, topic, state, objective, limits } = args;
   const examples = allExamples(state);
-  const stages = agentStageCounts(subject, objective, limits.targetCount);
+  const stages = args.promptTargets?.stages ?? agentStageCounts(subject, objective, limits.targetCount);
+  const targetCount = args.promptTargets === undefined ? limits.targetCount : stages.guided + stages.productive + stages.independent;
   const base = buildPoolInput(
     subject,
     topic,
     objective.id,
-    limits.targetCount,
+    targetCount,
     args.material,
     args.instruction,
     args.graderAvailable,
@@ -74,13 +82,19 @@ export function objectiveAgentInput(args: ObjectiveAgentInputArgs): LessonObject
       title: objective.titlePl,
       ...(objective.kind === undefined ? {} : { kind: objective.kind }),
       cards: objective.cards,
-      examplesFromPlan: args.examplesFromPlan,
+      examplesFromPlan: args.examplesFixed,
     },
     otherObjectives: state.objectives
       .filter((other) => other.id !== objective.id)
       .map((other) => ({ title: other.titlePl, ...(other.kind === undefined ? {} : { kind: other.kind }), cards: cardsText(other) })),
     cardSentences: [...new Set(Object.values(examples).flat())],
-    targets: { ...stages, requiredTypes, ...limits },
+    targets: {
+      ...stages,
+      requiredTypes,
+      ...limits,
+      targetCount,
+      ...(args.promptTargets === undefined ? {} : { listenAllowance: args.promptTargets.listenAllowance }),
+    },
     maxSteps: args.maxSteps,
     ...(promptNotes.length === 0 ? {} : { promptNotes: [...promptNotes] }),
   };

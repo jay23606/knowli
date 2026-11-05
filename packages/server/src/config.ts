@@ -2,6 +2,8 @@ import type { Database } from "./db/client";
 import type {
   AnswerGraderProvider,
   ImageProvider,
+  LessonExerciseCheckerProvider,
+  LessonPoolAgentProvider,
   LessonReviewerProvider,
   LlmProvider,
   PronunciationProvider,
@@ -19,11 +21,12 @@ import { CONFIG_DEFAULTS } from "./config-defaults";
 import { createOpenAiCompatibleGrader } from "./providers/openai-compatible/grader";
 import { createOpenAiCompatibleSttProvider } from "./providers/openai-compatible/stt";
 import { createOpenAiCompatibleSessionActivityReviewer } from "./providers/openai-compatible/session-activity";
-import { chatRequestExtrasFromEnv } from "./providers/chat-request-options";
-import { endpointKeyFromEnv } from "./providers/openrouter-key";
+import { chatRequestExtrasFromEnv, openRouterProviderRoutingFromEnv } from "./providers/chat-request-options";
+import { endpointKeyFromEnv, lessonAgentKeyFromEnv } from "./providers/openrouter-key";
 import { createProductionSubjectRegistry } from "./domain/lessons/subjects";
 import type { SubjectRegistry } from "./domain/lessons/registry";
 import type { LessonGenerationPolicy } from "./modules/materials/lessons/lesson-generation-policy";
+import type { LessonAgentPolicy } from "./modules/materials/lessons/lesson-pool-agent-policy";
 
 /** Zegar jako zależność — domena i moduły nie wołają Date.now() bezpośrednio. */
 export interface Clock {
@@ -153,6 +156,23 @@ export interface GenerationDeps {
    * jak `state: "disabled"`; brak lub awaria krytyka nigdy nie kończy przebiegu porażką.
    */
   reviewer?: ReviewerDeps;
+  /**
+   * Agent puli lekcji dla przedmiotów z listy `UMIEM_LESSON_AGENT_SUBJECTS`
+   * (składany tylko w workerze, `providers/lesson-agent-env.ts`). Nieobecny =
+   * wszystkie lekcje generuje potok.
+   */
+  lessonAgent?: LessonAgentDeps;
+}
+
+/** Zależności agenta puli lekcji w workerze (adapter dostawcy za portami). */
+export interface LessonAgentDeps {
+  /** Identyfikatory przedmiotów generowanych agentem. */
+  readonly subjects: ReadonlySet<string>;
+  readonly agent: LessonPoolAgentProvider;
+  readonly checker: LessonExerciseCheckerProvider;
+  readonly policy: Partial<LessonAgentPolicy>;
+  /** Rezerwa na finalizację przed terminem runu (domyślnie `AGENT_FINALIZATION_RESERVE_MS`); nadpisywana w testach. */
+  readonly finalizationReserveMs?: number;
 }
 
 /** Limity krytyka lekcji (`UMIEM_REVIEWER_*`). */
@@ -261,6 +281,11 @@ export interface Services {
   /** Nazwa usługi krytyka lekcji (`host · model`), gdy jest gotowy; nieobecna = krytyk wyłączony. */
   reviewService?: string;
   /**
+   * Opis agenta puli lekcji dla panelu rodzica (przedmioty z listy i etykiety usług, z env
+   * procesu web); nieobecny = wszystkie przedmioty idą potokiem. To opis konfiguracji, nie klient modelu.
+   */
+  lessonAgentPublic?: LessonAgentPublic;
+  /**
    * Recorder kosztów usług AI (spec llm-cost-tracking §4). Nieobecny = brak
    * zapisu kosztów; `flush()` przy zamykaniu procesu i w testach.
    */
@@ -289,6 +314,7 @@ export function createServices(
     sessionActivity?: SessionActivityDeps;
     generationService?: string;
     reviewService?: string;
+    lessonAgentPublic?: LessonAgentPublic;
     usage?: UsageRecorder;
     subjects?: SubjectRegistry;
   },
@@ -307,6 +333,7 @@ export function createServices(
     ...(input.sessionActivity ? { sessionActivity: input.sessionActivity } : {}),
     ...(input.generationService ? { generationService: input.generationService } : {}),
     ...(input.reviewService ? { reviewService: input.reviewService } : {}),
+    ...(input.lessonAgentPublic ? { lessonAgentPublic: input.lessonAgentPublic } : {}),
     ...(input.usage ? { usage: input.usage } : {}),
   };
 }
@@ -594,5 +621,178 @@ export function sessionActivityFromEnv(env: Record<string, string | undefined>, 
     }),
     timeoutMs,
     publicService: `${new URL(baseUrl).host} · ${model}`,
+  };
+}
+
+/** Wysiłki rozumowania akceptowane przez agenta (`none` = bez rozumowania). */
+const AGENT_EFFORTS: ReadonlySet<string> = new Set(["xhigh", "high", "medium", "low", "minimal", "none"]);
+
+/** Ustawienia agenta puli lekcji po walidacji env (bez SDK; adapter składa `providers/lesson-agent-env.ts`). */
+export interface LessonAgentSettings {
+  readonly subjects: ReadonlySet<string>;
+  readonly apiKey: string;
+  readonly model: string;
+  readonly effort: string;
+  readonly provider?: Readonly<Record<string, unknown>>;
+  readonly checkerModel: string;
+  readonly checkerEffort: string;
+  readonly checkerProvider?: Readonly<Record<string, unknown>>;
+  readonly policy: Partial<LessonAgentPolicy>;
+}
+
+type AgentStringName =
+  | "UMIEM_LESSON_AGENT_MODEL"
+  | "UMIEM_LESSON_AGENT_CHECKER_MODEL"
+  | "UMIEM_LESSON_AGENT_REASONING"
+  | "UMIEM_LESSON_AGENT_CHECKER_REASONING";
+
+function agentStringEnv(env: Record<string, string | undefined>, name: AgentStringName): string {
+  const value = env[name]?.trim();
+  return value ? value : CONFIG_DEFAULTS[name];
+}
+
+/** Identyfikatory z listy po przecinku: przycięte, bez pustych i duplikatów. */
+function agentSubjectIds(env: Record<string, string | undefined>): string[] {
+  const ids = (env.UMIEM_LESSON_AGENT_SUBJECTS ?? "").split(",").map((id) => id.trim()).filter((id) => id !== "");
+  return [...new Set(ids)];
+}
+
+function agentEffortEnv(
+  env: Record<string, string | undefined>,
+  name: "UMIEM_LESSON_AGENT_REASONING" | "UMIEM_LESSON_AGENT_CHECKER_REASONING",
+): string {
+  const effort = agentStringEnv(env, name).toLowerCase();
+  if (!AGENT_EFFORTS.has(effort)) throw new Error(`${name} must be one of ${[...AGENT_EFFORTS].join(", ")}`);
+  return effort;
+}
+
+function positiveNumberEnv(name: string, raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${name} must be a positive number`);
+  return value;
+}
+
+/** Routing OpenRouter agenta/checkera: własny z dziedziczeniem `UMIEM_LLM_PROVIDER_*`; `require_parameters` przy wysiłku ≠ `none`. */
+function agentProviderRouting(
+  env: Record<string, string | undefined>,
+  prefix: "UMIEM_LESSON_AGENT" | "UMIEM_LESSON_AGENT_CHECKER",
+  effort: string,
+): Readonly<Record<string, unknown>> | undefined {
+  const routing = openRouterProviderRoutingFromEnv(env, prefix, "UMIEM_LLM");
+  return effort === "none" ? routing : { ...routing, require_parameters: true };
+}
+
+/**
+ * Lista przedmiotów agenta (`UMIEM_LESSON_AGENT_SUBJECTS`) po walidacji: pusta
+ * lista → pusty zbiór; nieznany przedmiot albo przedmiot bez `agentPolicy` to
+ * błąd startu z nazwą zmiennej. Wspólna dla ustawień z kluczem i trybu fake
+ * (`providers/lesson-agent-env.ts`), który klucza nie wymaga.
+ */
+export function lessonAgentSubjectsFromEnv(
+  env: Record<string, string | undefined>,
+  subjects: Pick<SubjectRegistry, "getSubject">,
+): ReadonlySet<string> {
+  const ids = agentSubjectIds(env);
+  for (const id of ids) {
+    const subject = subjects.getSubject(id);
+    if (subject === undefined) throw new Error(`UMIEM_LESSON_AGENT_SUBJECTS: unknown subject „${id}”`);
+    if (subject.agentPolicy === undefined) throw new Error(`UMIEM_LESSON_AGENT_SUBJECTS: subject „${id}” has no agent policy`);
+  }
+  return new Set(ids);
+}
+
+/** Limity agenta z env (`UMIEM_LESSON_AGENT_MAX_STEPS`, współbieżność, terminy, budżet); zła liczba to błąd startu. */
+export function lessonAgentPolicyFromEnv(env: Record<string, string | undefined>): Partial<LessonAgentPolicy> {
+  const int = (name: keyof typeof CONFIG_DEFAULTS & `UMIEM_LESSON_AGENT_${string}`) =>
+    positiveIntEnv(name, env[name], Number(CONFIG_DEFAULTS[name]));
+  const maxSteps = int("UMIEM_LESSON_AGENT_MAX_STEPS");
+  return {
+    maxStepsPerObjective: maxSteps,
+    planMaxSteps: maxSteps,
+    concurrency: int("UMIEM_LESSON_AGENT_CONCURRENCY"),
+    checkerConcurrency: int("UMIEM_LESSON_AGENT_CHECKER_CONCURRENCY"),
+    objectiveTimeoutMs: int("UMIEM_LESSON_AGENT_OBJECTIVE_TIMEOUT_MS"),
+    checkerTimeoutMs: int("UMIEM_LESSON_AGENT_CHECKER_TIMEOUT_MS"),
+    runBudgetUsd: positiveNumberEnv(
+      "UMIEM_LESSON_AGENT_RUN_BUDGET_USD",
+      env.UMIEM_LESSON_AGENT_RUN_BUDGET_USD,
+      Number(CONFIG_DEFAULTS.UMIEM_LESSON_AGENT_RUN_BUDGET_USD),
+    ),
+  };
+}
+
+/**
+ * Agent puli lekcji z env (worker). Pusta lista → `undefined`. Błędna
+ * konfiguracja (nieznany przedmiot albo bez `agentPolicy`, zła liczba,
+ * nieznany wysiłek, generator i checker z tej samej rodziny modeli, zła opcja
+ * routingu) to błąd startu z nazwą zmiennej. Niepusta lista bez klucza
+ * OpenRouter → `undefined` i jedno ostrzeżenie (lekcje generuje potok). Brakujące
+ * wartości biorą {@link CONFIG_DEFAULTS}, więc działa też bez `withConfigDefaults`.
+ * Tryb fake (`UMIEM_FAKE_PROVIDERS=1`) obsługuje `providers/lesson-agent-env.ts`.
+ */
+export function lessonAgentSettingsFromEnv(
+  env: Record<string, string | undefined>,
+  subjects: Pick<SubjectRegistry, "getSubject">,
+): LessonAgentSettings | undefined {
+  const ids = lessonAgentSubjectsFromEnv(env, subjects);
+  if (ids.size === 0) return undefined;
+  const policy = lessonAgentPolicyFromEnv(env);
+
+  const effort = agentEffortEnv(env, "UMIEM_LESSON_AGENT_REASONING");
+  const checkerEffort = agentEffortEnv(env, "UMIEM_LESSON_AGENT_CHECKER_REASONING");
+  const model = agentStringEnv(env, "UMIEM_LESSON_AGENT_MODEL");
+  const checkerModel = agentStringEnv(env, "UMIEM_LESSON_AGENT_CHECKER_MODEL");
+  // Checker z tej samej rodziny co generator rozwiązywałby ćwiczenia „jak ich autor”.
+  if (model.split("/")[0] === checkerModel.split("/")[0]) {
+    throw new Error("UMIEM_LESSON_AGENT_CHECKER_MODEL must come from a different model family than UMIEM_LESSON_AGENT_MODEL");
+  }
+  const provider = agentProviderRouting(env, "UMIEM_LESSON_AGENT", effort);
+  const checkerProvider = agentProviderRouting(env, "UMIEM_LESSON_AGENT_CHECKER", checkerEffort);
+
+  const apiKey = lessonAgentKeyFromEnv(env);
+  if (apiKey === undefined) {
+    console.warn("[config] UMIEM_LESSON_AGENT_SUBJECTS bez klucza OpenRouter — lekcje generuje potok");
+    return undefined;
+  }
+  return {
+    subjects: ids,
+    apiKey,
+    model,
+    effort,
+    ...(provider ? { provider } : {}),
+    checkerModel,
+    checkerEffort,
+    ...(checkerProvider ? { checkerProvider } : {}),
+    policy,
+  };
+}
+
+/** Opis agenta puli dla panelu rodzica: przedmioty z listy i etykiety usług (`host · model`). */
+export interface LessonAgentPublic {
+  readonly subjects: ReadonlySet<string>;
+  readonly generationService: string;
+  readonly checkService: string;
+}
+
+/**
+ * Opis agenta dla panelu rodzica (web): przedmioty z listy i nazwy usług.
+ * Nigdy nie rzuca — nieznane identyfikatory i przedmioty bez polityki pomija,
+ * a obecność zależy od listy, nie od klucza (web może go nie mieć). Tryb fake
+ * pokazuje nazwy fake.
+ */
+export function lessonAgentPublicFromEnv(
+  env: Record<string, string | undefined>,
+  subjects: Pick<SubjectRegistry, "getSubject">,
+): LessonAgentPublic | undefined {
+  const known = agentSubjectIds(env).filter((id) => subjects.getSubject(id)?.agentPolicy !== undefined);
+  if (known.length === 0) return undefined;
+  if (env.UMIEM_FAKE_PROVIDERS === "1") {
+    return { subjects: new Set(known), generationService: "fake-lesson-agent-model", checkService: "fake-lesson-checker-model" };
+  }
+  return {
+    subjects: new Set(known),
+    generationService: `openrouter.ai · ${agentStringEnv(env, "UMIEM_LESSON_AGENT_MODEL")}`,
+    checkService: `openrouter.ai · ${agentStringEnv(env, "UMIEM_LESSON_AGENT_CHECKER_MODEL")}`,
   };
 }

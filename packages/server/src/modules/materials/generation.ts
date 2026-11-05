@@ -21,6 +21,7 @@ import {
   markRun,
   markRunSucceeded,
   markRunWithoutSourceItems,
+  resetLessonAgentBudget,
   supersedeLessonRuns,
 } from "./generation-runs";
 import { deckVersions, decks, generationRuns, mediaAssets } from "../../db/schema";
@@ -342,10 +343,14 @@ export async function retryGeneration(services: Services, runId: string): Promis
           .where(eq(generationRuns.id, runId));
         return { runId };
       }
+      // Run puli: „Ponów” to świadoma decyzja rodzica — punkt kontrolny agenta
+      // zachowuje postęp, ale dostaje świeży budżet (spec etapu 2a §8.4), w każdej
+      // gałęzi wstawiającej run do kolejki, pod blokadą runu powyżej.
       if (current.state === "queued") {
         if (current.nextAttemptAt && current.nextAttemptAt > services.clock.now()) {
           await tx.update(generationRuns).set({ attempts: 0, errorCode: null, nextAttemptAt: null })
             .where(eq(generationRuns.id, runId));
+          await resetLessonAgentBudget(tx, runId);
         }
         return { runId };
       }
@@ -358,6 +363,7 @@ export async function retryGeneration(services: Services, runId: string): Promis
       const isTopUp = (current.input as { regenerate?: unknown } | null)?.regenerate !== undefined;
       await supersedeLessonRuns(tx, version.id, services.clock.now(), runId, { includeStoryRuns: !isTopUp });
       await tx.update(generationRuns).set({ state: "queued", attempts: 0, errorCode: null, finishedAt: null, nextAttemptAt: null, expectedEditNumber: editNumber }).where(eq(generationRuns.id, runId));
+      await resetLessonAgentBudget(tx, runId);
       return { runId };
     }
     if (run.assetId) {

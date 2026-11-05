@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { endpointKeyFromEnv, isSecureOpenRouterEndpoint } from "./openrouter-key";
+import { endpointKeyFromEnv, isSecureOpenRouterEndpoint, lessonAgentKeyFromEnv } from "./openrouter-key";
 
 const OR = "https://openrouter.ai/api/v1";
 const SHARED = { OPENROUTER_API_KEY: "sk-or-v1-shared" };
@@ -50,5 +50,30 @@ describe("endpointKeyFromEnv — wspólny OPENROUTER_API_KEY", () => {
     expect(endpointKeyFromEnv({ UMIEM_GRADER_API_KEY: "sk-or-v1-own" }, "UMIEM_GRADER", OR)).toBe("sk-or-v1-own");
     // inny klucz na własnym endpoincie bez zmian
     expect(endpointKeyFromEnv({ UMIEM_GRADER_API_KEY: "gsk-own" }, "UMIEM_GRADER", "https://grader.example/v1")).toBe("gsk-own");
+  });
+});
+
+describe("lessonAgentKeyFromEnv", () => {
+  it("kolejność: własny klucz agenta, wspólny OPENROUTER_API_KEY, UMIEM_LLM_API_KEY przy https OpenRouter", () => {
+    const all = {
+      UMIEM_LESSON_AGENT_API_KEY: "sk-or-v1-agent", OPENROUTER_API_KEY: "sk-or-v1-shared",
+      UMIEM_LLM_API_KEY: "sk-or-v1-llm", UMIEM_LLM_BASE_URL: OR,
+    };
+    expect(lessonAgentKeyFromEnv(all)).toBe("sk-or-v1-agent");
+    expect(lessonAgentKeyFromEnv({ ...all, UMIEM_LESSON_AGENT_API_KEY: " " })).toBe("sk-or-v1-shared");
+    expect(lessonAgentKeyFromEnv({ ...all, UMIEM_LESSON_AGENT_API_KEY: undefined, OPENROUTER_API_KEY: "" })).toBe("sk-or-v1-llm");
+  });
+
+  it("klucz UMIEM_LLM_API_KEY nie opuszcza https OpenRouter; bez żadnego klucza undefined", () => {
+    expect(lessonAgentKeyFromEnv({ UMIEM_LLM_API_KEY: "sk-or-v1-llm" })).toBeUndefined();
+    expect(lessonAgentKeyFromEnv({ UMIEM_LLM_API_KEY: "key", UMIEM_LLM_BASE_URL: "https://api.openai.com/v1" })).toBeUndefined();
+    expect(lessonAgentKeyFromEnv({})).toBeUndefined();
+  });
+
+  it("klucz w kształcie OpenAI to błąd z nazwą zmiennej, bez wartości klucza", () => {
+    const call = () => lessonAgentKeyFromEnv({ UMIEM_LESSON_AGENT_API_KEY: "sk-proj-secret" });
+    expect(call).toThrow("UMIEM_LESSON_AGENT_API_KEY looks like an OpenAI key");
+    expect(call).not.toThrow(/sk-proj-secret/);
+    expect(() => lessonAgentKeyFromEnv({ OPENROUTER_API_KEY: "sk-proj-secret" })).toThrow("OPENROUTER_API_KEY looks like an OpenAI key");
   });
 });

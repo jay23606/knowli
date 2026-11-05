@@ -1,4 +1,24 @@
-import { generateText, isStepCount, jsonSchema, Output, tool, ToolLoopAgent, type LanguageModel, type ProviderMetadata } from "ai";
+import {
+  AISDKError,
+  APICallError,
+  generateText,
+  InvalidToolInputError,
+  isStepCount,
+  jsonSchema,
+  JSONParseError,
+  NoObjectGeneratedError,
+  NoOutputGeneratedError,
+  Output,
+  RetryError,
+  tool,
+  ToolLoopAgent,
+  TypeValidationError,
+  type JSONValue,
+  type LanguageModel,
+  type LanguageModelUsage,
+  type ProviderMetadata,
+} from "ai";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { z } from "zod";
 import type {
   LessonAgentPlanInput,
@@ -7,27 +27,63 @@ import type {
   LessonObjectiveAgentTools,
   LessonPoolAgentProvider,
   RunCostSink,
-} from "../../packages/server/src/ports/ai";
-import { materializeGeneratedAssignments } from "../../packages/server/src/providers/lesson-assignments";
-import { materializeGeneratedCalculations } from "../../packages/server/src/providers/lesson-calculations";
-import { materializeGeneratedKeywords } from "../../packages/server/src/providers/lesson-keywords";
-import { lessonPoolJsonSchema } from "../../packages/server/src/providers/openai/lesson-pool-schema";
-import { lessonSystemPrompt, lessonUserMaterial } from "../../packages/server/src/providers/openai/llm";
+} from "../../ports/ai";
+import { GenerationProviderError } from "../../ports/generation-error";
+import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
+import { materializeGeneratedAssignments } from "../lesson-assignments";
+import { materializeGeneratedCalculations } from "../lesson-calculations";
+import { materializeGeneratedKeywords } from "../lesson-keywords";
+import {
+  recordHttpError,
+  recordResponse,
+  recordTransportFailure,
+  recordUnreadable,
+  type UsageEventBase,
+} from "../usage/record-http";
+import { lessonPoolJsonSchema } from "./lesson-pool-schema";
+import { lessonSystemPrompt, lessonUserMaterial } from "./llm";
 
 /**
- * TYMCZASOWE adaptery portów agenta puli na AI SDK (etap 1 issue #237, spec §6.1 i §8):
+ * Adaptery portów agenta puli na AI SDK (issue #237; etap 1 spec §6.1 i §8, etap 2a spec §4):
  * `AiSdkLessonPoolAgent` (podagent zagadnienia i planista na `ToolLoopAgent`) oraz
- * `AiSdkExerciseChecker` (ślepe rozwiązanie i sędzia wariantów na `generateText`).
- * Żyją wyłącznie w `tests/probes` (AI SDK nie wchodzi do kodu produkcyjnego, pilnuje
- * `tests/ai-sdk-scope.test.ts`); etap 2 przenosi je do adaptera produkcyjnego.
+ * `AiSdkExerciseChecker` (ślepe rozwiązanie i sędzia wariantów na `generateText`). Jedyny plik
+ * produkcyjny z `ai` i `@openrouter/*` (pilnuje `tests/ai-sdk-scope.test.ts`); osiągalny tylko
+ * przez składanie agenta w workerze.
  *
  * Adaptery nie mają reguł: surowe rekordy materializują jak `generateLessonPool` i oddają
- * narzędziom kierownika, który waliduje wszystko. Koszt KAŻDEGO żądania modelu trafia do
- * `RunCostSink` z `onLanguageModelCallEnd` (po odpowiedzi, przed wykonaniem narzędzi kroku):
- * `providerMetadata.openrouter.usage.cost` albo `null`; żądanie, które rozpoczęło się i nie
- * dało odpowiedzi (wyjątek, przerwanie), zgłasza `null` przed ponownym rzuceniem błędu.
- * `maxRetries: 0` — każde żądanie HTTP jest jednym wpisem kosztu. Adaptery nic nie logują.
+ * narzędziom kierownika, który waliduje wszystko. Mówią wyłącznie z OpenRouter, z kluczem z
+ * opcji (biblioteka nie czyta env). `maxRetries: 0` — jedno wywołanie modelu to jedno żądanie
+ * HTTP, a przejściowy błąd ponawia run, nie SDK.
+ *
+ * Koszty: z `onLanguageModelCallEnd` (po odpowiedzi, przed narzędziami kroku), raz na żądanie,
+ * `RunCostSink` dostaje `providerMetadata.openrouter.usage.cost` albo `null`, a `UsageRecorder`
+ * zdarzenie `ok` z tokenami i kosztem. Żądanie rozpoczęte i bez odpowiedzi zgłasza się przy
+ * błędzie: odpowiedź HTTP z błędem → koszt 0 (OpenRouter nie rozlicza odrzuconych żądań) i
+ * `failed` z `httpStatus`; brak odpowiedzi (sieć, przerwanie) → `null` i porażka transportu.
+ *
+ * Błędy SDK zamienia `toGenerationProviderError` — bez `cause`, bo błędy SDK niosą
+ * `requestBodyValues`/`responseBody` z materiałem. Adaptery nic nie logują.
  */
+
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+/** Nazwa dostawcy w zdarzeniach kosztów (`"openrouter"`), także przy modelu z szwu testowego. */
+const USAGE_PROVIDER = providerFromBaseUrl(OPENROUTER_BASE_URL);
+
+export interface AiSdkLessonAgentOptions {
+  readonly apiKey: string;
+  readonly model: string;
+  /** Wysiłek rozumowania OpenRouter; `"none"` = bez pola `reasoning`. */
+  readonly effort: string;
+  /** Routing i prywatność dostawcy: `providerOptions.openrouter.provider`. */
+  readonly provider?: Readonly<Record<string, unknown>>;
+  readonly usage?: UsageRecorder;
+  /** Szwy testowe: gotowy model (MockLanguageModelV4) albo fetch przekazany do createOpenRouter. */
+  readonly languageModel?: LanguageModel;
+  readonly fetch?: typeof fetch;
+}
+
+type AgentOperation = "agent_plan" | "agent_objective" | "check_solve" | "check_variants";
 
 /** Koszt żądania z metadanych OpenRouter; brak, nie-liczba albo wartość ujemna = nieznany (`null`), żeby nie zaniżyć rejestru. */
 export function openRouterCostOf(meta: ProviderMetadata | undefined): number | null {
@@ -35,32 +91,110 @@ export function openRouterCostOf(meta: ProviderMetadata | undefined): number | n
   return typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null;
 }
 
+/** Ponowienia SDK są wyłączone, ale gdyby błąd przyszedł opakowany, liczy się ostatni. */
+function unwrapRetry(error: unknown): unknown {
+  return RetryError.isInstance(error) ? error.lastError : error;
+}
+
+/** `retry-after` w sekundach albo jako data HTTP; nieczytelny = brak. */
+function retryAfterMsOf(headers: Readonly<Record<string, string>> | undefined): number | undefined {
+  const raw = headers?.["retry-after"];
+  if (raw === undefined) return undefined;
+  const seconds = Number(raw);
+  if (raw.trim() !== "" && Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  const at = Date.parse(raw);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
+}
+
+function apiCallErrorKind(error: APICallError): GenerationProviderError {
+  const status = error.statusCode;
+  const withStatus = status === undefined ? {} : { status };
+  if (status === 401 || status === 402 || status === 403) return new GenerationProviderError("configuration", withStatus);
+  if (status === 429) {
+    const retryAfterMs = retryAfterMsOf(error.responseHeaders);
+    return new GenerationProviderError("rate_limit", { ...withStatus, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) });
+  }
+  // Brak statusu = brak odpowiedzi (sieć); SDK oznacza błędy sieci i 408/409/5xx jako `isRetryable`.
+  if (status === undefined || status === 408 || status >= 500 || error.isRetryable) return new GenerationProviderError("transient", withStatus);
+  return new GenerationProviderError("output", withStatus);
+}
+
 /**
- * Licznik żądań modelu jednego wywołania SDK: `start` przy rozpoczęciu żądania, `end` z kosztem
- * po odpowiedzi, `fail` zgłasza `null` za każde żądanie bez odpowiedzi. Po `fail` albo `close`
- * spóźnione zdarzenia nie są już liczone (żądanie zostało zgłoszone jako nieznane).
+ * Błąd wywołania SDK → `GenerationProviderError` według tabeli spec §4, zawsze bez `cause`.
+ * Przerwanie sygnałem zwraca `signal.reason` bez zmian. Błąd spoza SDK (np. `TypeError` w kodzie
+ * narzędzia kierownika) przechodzi bez zmian. Inny błąd SDK niż w tabeli (np. brak treści,
+ * nieznane narzędzie) to zła odpowiedź modelu: `output`, nigdy surowy błąd z treścią żądania.
  */
-function requestCostTracker(cost: RunCostSink) {
+export function toGenerationProviderError(error: unknown, signal: AbortSignal): unknown {
+  if (signal.aborted) return signal.reason;
+  const cause = unwrapRetry(error);
+  if (APICallError.isInstance(cause)) return apiCallErrorKind(cause);
+  if (
+    NoObjectGeneratedError.isInstance(cause) ||
+    NoOutputGeneratedError.isInstance(cause) ||
+    InvalidToolInputError.isInstance(cause) ||
+    JSONParseError.isInstance(cause) ||
+    TypeValidationError.isInstance(cause)
+  ) {
+    return new GenerationProviderError("output");
+  }
+  if (AISDKError.isInstance(cause)) return new GenerationProviderError("output");
+  return error;
+}
+
+/**
+ * Licznik żądań modelu jednego wywołania SDK (rola flagi `recorded` z `record-http.ts`, ale dla
+ * pętli wielu żądań): `start` przy rozpoczęciu żądania, `end` zapisuje koszt i zdarzenie `ok` po
+ * odpowiedzi, `fail` zapisuje każde żądanie bez odpowiedzi — błędem HTTP, gdy wyjątek go niesie,
+ * inaczej porażką transportu. Po `fail` albo `close` spóźnione zdarzenia nie są już liczone.
+ */
+function requestTracker(cost: RunCostSink, usage: UsageRecorder | undefined, base: UsageEventBase) {
   let pending = 0;
   let closed = false;
   return {
     start(): void {
       if (!closed) pending += 1;
     },
-    end(meta: ProviderMetadata | undefined): void {
+    end(event: { readonly usage?: LanguageModelUsage; readonly providerMetadata?: ProviderMetadata }): void {
       if (closed) return;
       pending = Math.max(0, pending - 1);
-      cost.record(openRouterCostOf(meta));
+      const usd = openRouterCostOf(event.providerMetadata);
+      cost.record(usd);
+      // Ten sam kształt co ciało chat completions: helper czyta tokeny i koszt jak u innych adapterów.
+      recordResponse(usage, base, 200, {
+        usage: { prompt_tokens: event.usage?.inputTokens, completion_tokens: event.usage?.outputTokens, cost: usd ?? undefined },
+      });
     },
-    fail(): void {
+    fail(error: unknown): void {
       if (closed) return;
       closed = true;
-      for (; pending > 0; pending -= 1) cost.record(null);
+      // Żądania idą po kolei, więc wyjątek dotyczy pierwszego otwartego; kolejne (gdyby były) nie mają odpowiedzi.
+      const status = pending > 0 ? httpStatusOf(error) : undefined;
+      for (let index = 0; index < pending; index += 1) {
+        if (index === 0 && status !== undefined && status >= 200 && status < 300) {
+          // Odpowiedź 2xx bez czytelnego ciała: dostawca mógł ją rozliczyć — koszt nieznany.
+          cost.record(null);
+          recordUnreadable(usage, base, status);
+        } else if (index === 0 && status !== undefined) {
+          cost.record(0);
+          recordHttpError(usage, base, status);
+        } else {
+          cost.record(null);
+          recordTransportFailure(usage, base);
+        }
+      }
+      pending = 0;
     },
     close(): void {
       closed = true;
     },
   };
+}
+
+/** Status odpowiedzi HTTP z błędu SDK; brak = żądanie nie dostało odpowiedzi. */
+function httpStatusOf(error: unknown): number | undefined {
+  const cause = unwrapRetry(error);
+  return APICallError.isInstance(cause) ? cause.statusCode : undefined;
 }
 
 /** Obietnica odrzucana z powodem przerwania, gdy sygnał przerwie się wcześniej (zawieszone narzędzie nie blokuje). */
@@ -86,30 +220,78 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): 
   });
 }
 
-/** Wywołanie SDK z kontrolą kosztu i przerwania: wyjątek → `null` za żądania bez odpowiedzi, potem ponowne rzucenie. */
-async function tracked<T>(
-  cost: RunCostSink,
-  signal: AbortSignal,
-  call: (hooks: { onLanguageModelCallStart: () => void; onLanguageModelCallEnd: (event: { providerMetadata?: ProviderMetadata }) => void }) => Promise<T>,
-): Promise<T> {
-  signal.throwIfAborted();
-  const tracker = requestCostTracker(cost);
-  try {
-    const result = await untilAborted(
-      call({ onLanguageModelCallStart: () => tracker.start(), onLanguageModelCallEnd: (event) => tracker.end(event.providerMetadata) }),
-      signal,
-    );
-    signal.throwIfAborted();
-    tracker.close();
-    return result;
-  } catch (error) {
-    tracker.fail();
-    throw error;
-  }
+/**
+ * Błąd kodu narzędzia kierownika: SDK zamienia wyjątek `execute` na wynik `tool-error` i wysłałby
+ * jego komunikat modelowi w następnym kroku. Strażnik zapamiętuje pierwszy błąd narzędzia,
+ * zatrzymuje pętlę po bieżącym kroku (komunikat nie trafia do modelu) i po wywołaniu rzuca go
+ * bez zmian (`rethrow`).
+ */
+function toolFailureGuard() {
+  let failure: { readonly error: unknown } | undefined;
+  return {
+    async run<T>(execute: () => Promise<T>): Promise<T> {
+      try {
+        return await execute();
+      } catch (error) {
+        failure ??= { error };
+        throw error;
+      }
+    },
+    failed: (): boolean => failure !== undefined,
+    rethrow(): void {
+      if (failure !== undefined) throw failure.error;
+    },
+  };
 }
 
-function modelIdOf(model: LanguageModel): string {
-  return typeof model === "string" ? model : model.modelId;
+interface CallHooks {
+  onLanguageModelCallStart(): void;
+  onLanguageModelCallEnd(event: { readonly usage?: LanguageModelUsage; readonly providerMetadata?: ProviderMetadata }): void;
+}
+
+/** Ustawienia wspólne obu adapterów: model, nazwa modelu, opcje dostawcy i zapis kosztów. */
+class AiSdkCaller {
+  readonly model: string;
+  readonly languageModel: LanguageModel;
+  readonly providerOptions: { openrouter: Record<string, JSONValue> };
+  private readonly usage: UsageRecorder | undefined;
+
+  constructor(options: AiSdkLessonAgentOptions) {
+    this.model = options.model;
+    this.languageModel =
+      options.languageModel ??
+      createOpenRouter({ apiKey: options.apiKey, baseURL: OPENROUTER_BASE_URL, ...(options.fetch ? { fetch: options.fetch } : {}) }).chat(options.model, {
+        usage: { include: true },
+      });
+    this.providerOptions = {
+      openrouter: {
+        ...(options.effort !== "none" ? { reasoning: { effort: options.effort } } : {}),
+        ...(options.provider ? { provider: options.provider as Record<string, JSONValue> } : {}),
+      },
+    };
+    this.usage = options.usage;
+  }
+
+  /**
+   * Wywołanie SDK z kontrolą kosztu, przerwania i błędów: wyjątek zapisuje żądania bez
+   * odpowiedzi, a potem rzuca błąd zmapowany przez `toGenerationProviderError`.
+   */
+  async tracked<T>(operation: AgentOperation, cost: RunCostSink, signal: AbortSignal, call: (hooks: CallHooks) => Promise<T>): Promise<T> {
+    signal.throwIfAborted();
+    const tracker = requestTracker(cost, this.usage, { feature: "lesson_generation", operation, provider: USAGE_PROVIDER, model: this.model });
+    try {
+      const result = await untilAborted(
+        call({ onLanguageModelCallStart: () => tracker.start(), onLanguageModelCallEnd: (event) => tracker.end(event) }),
+        signal,
+      );
+      signal.throwIfAborted();
+      tracker.close();
+      return result;
+    } catch (error) {
+      tracker.fail(error);
+      throw toGenerationProviderError(error, signal);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -235,13 +417,11 @@ export function materializeRawExercises(raw: readonly unknown[]): unknown[] {
 export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
   readonly name = "ai-sdk-openrouter";
   readonly model: string;
-  private readonly languageModel: LanguageModel;
-  private readonly effort: string;
+  private readonly caller: AiSdkCaller;
 
-  constructor(options: { model: LanguageModel; effort: string }) {
-    this.languageModel = options.model;
-    this.model = modelIdOf(options.model);
-    this.effort = options.effort;
+  constructor(options: AiSdkLessonAgentOptions) {
+    this.caller = new AiSdkCaller(options);
+    this.model = options.model;
   }
 
   async runObjective(
@@ -253,37 +433,44 @@ export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
     signal.throwIfAborted();
     // `shouldStop()` przed pierwszym krokiem: zamknięte zagadnienie nie kosztuje żądania.
     if (tools.shouldStop()) return { steps: 0, stopReason: "stopped" };
+    const guard = toolFailureGuard();
     const submit = tool({
       description:
         "Submit a batch of exercises for your objective. Each is checked; accepted ones enter the pool. Returns per-exercise results and what the objective still misses.",
       inputSchema: submitSchema(input),
-      execute: (raw, options) => {
-        const payload = raw as { exercises?: unknown; examples?: unknown };
-        const exercises = Array.isArray(payload.exercises) ? materializeRawExercises(payload.exercises) : payload.exercises;
-        return untilAborted(
-          tools.submit({
-            exercises: exercises as unknown[],
-            ...(Array.isArray(payload.examples) ? { examples: payload.examples as unknown[] } : {}),
-          }),
-          options.abortSignal,
-        );
-      },
+      execute: (raw, options) =>
+        guard.run(() => {
+          const payload = raw as { exercises?: unknown; examples?: unknown };
+          const exercises = Array.isArray(payload.exercises) ? materializeRawExercises(payload.exercises) : payload.exercises;
+          return untilAborted(
+            tools.submit({
+              exercises: exercises as unknown[],
+              ...(Array.isArray(payload.examples) ? { examples: payload.examples as unknown[] } : {}),
+            }),
+            options.abortSignal,
+          );
+        }),
     });
     const remove = tool({
       description: "Remove one of your accepted exercises by id.",
       inputSchema: jsonSchema<{ id: string }>({ type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } }),
-      execute: ({ id }, options) => untilAborted(tools.remove(id), options.abortSignal),
+      execute: ({ id }, options) => guard.run(() => untilAborted(tools.remove(id), options.abortSignal)),
     });
-    const result = await tracked(cost, signal, (hooks) =>
+    const result = await this.caller.tracked("agent_objective", cost, signal, (hooks) =>
       new ToolLoopAgent({
-        model: this.languageModel,
+        model: this.caller.languageModel,
         instructions: objectiveInstructions(input),
         tools: { submit_exercises: submit, remove_exercise: remove },
-        stopWhen: [isStepCount(input.maxSteps), () => tools.shouldStop()],
+        stopWhen: [isStepCount(input.maxSteps), () => tools.shouldStop(), guard.failed],
         maxRetries: 0,
-        providerOptions: { openrouter: { reasoning: { effort: this.effort } } },
+        providerOptions: this.caller.providerOptions,
         ...hooks,
-      }).generate({ prompt: objectiveUserPrompt(input), abortSignal: signal }),
+      })
+        .generate({ prompt: objectiveUserPrompt(input), abortSignal: signal })
+        .then((value) => {
+          guard.rethrow();
+          return value;
+        }),
     );
     const steps = result.steps.length;
     const stopReason = tools.shouldStop() ? "stopped" : steps >= input.maxSteps ? "max_steps" : "model_finished";
@@ -298,23 +485,27 @@ export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
   ): Promise<{ readonly steps: number }> {
     signal.throwIfAborted();
     if (tools.shouldStop()) return { steps: 0 };
+    const guard = toolFailureGuard();
     const propose = tool({
       description: "Propose the lesson objectives with cards and card examples. Rejected (with reasons) when the plan breaks a rule.",
       inputSchema: planSchema(input),
-      execute: (raw, options) => untilAborted(tools.propose(raw), options.abortSignal),
+      execute: (raw, options) => guard.run(() => untilAborted(tools.propose(raw), options.abortSignal)),
     });
-    const result = await tracked(cost, signal, (hooks) =>
+    const result = await this.caller.tracked("agent_plan", cost, signal, (hooks) =>
       new ToolLoopAgent({
-        model: this.languageModel,
+        model: this.caller.languageModel,
         instructions: plannerInstructions(input),
         tools: { propose_objectives: propose },
-        stopWhen: [isStepCount(input.maxSteps), () => tools.shouldStop()],
+        stopWhen: [isStepCount(input.maxSteps), () => tools.shouldStop(), guard.failed],
         maxRetries: 0,
-        providerOptions: { openrouter: { reasoning: { effort: this.effort } } },
+        providerOptions: this.caller.providerOptions,
         ...hooks,
       }).generate({
         prompt: `Plan the lesson "${input.topicTitle}" from this material.\n\n${lessonUserMaterial({ material: input.material, ...(input.instruction === undefined ? {} : { instruction: input.instruction }) })}`,
         abortSignal: signal,
+      }).then((value) => {
+        guard.rethrow();
+        return value;
       }),
     );
     return { steps: result.steps.length };
@@ -351,13 +542,11 @@ function atPosition<T>(values: readonly unknown[] | undefined, index: number, va
 export class AiSdkExerciseChecker implements LessonExerciseCheckerProvider {
   readonly name = "ai-sdk-openrouter";
   readonly model: string;
-  private readonly languageModel: LanguageModel;
-  private readonly effort: string;
+  private readonly caller: AiSdkCaller;
 
-  constructor(options: { model: LanguageModel; effort: string }) {
-    this.languageModel = options.model;
-    this.model = modelIdOf(options.model);
-    this.effort = options.effort;
+  constructor(options: AiSdkLessonAgentOptions) {
+    this.caller = new AiSdkCaller(options);
+    this.model = options.model;
   }
 
   async solve(
@@ -375,11 +564,11 @@ export class AiSdkExerciseChecker implements LessonExerciseCheckerProvider {
       ...materialBlock(input.material),
       ...input.items.flatMap((item, index) => ["", `### Exercise ${index + 1} (answers: ${item.expectedAnswers})`, item.view]),
     ].join("\n");
-    const result = await tracked(cost, signal, (hooks) =>
+    const result = await this.caller.tracked("check_solve", cost, signal, (hooks) =>
       generateText({
-        model: this.languageModel,
+        model: this.caller.languageModel,
         maxRetries: 0,
-        providerOptions: { openrouter: { reasoning: { effort: this.effort } } },
+        providerOptions: this.caller.providerOptions,
         output: Output.object({ schema: z.object({ answers: z.array(tolerant(z.array(z.string()))) }) }),
         prompt,
         abortSignal: signal,
@@ -410,11 +599,11 @@ export class AiSdkExerciseChecker implements LessonExerciseCheckerProvider {
         `Candidates: ${item.variants.map((variant) => JSON.stringify(variant)).join(" | ")}`,
       ]),
     ].join("\n");
-    const result = await tracked(cost, signal, (hooks) =>
+    const result = await this.caller.tracked("check_variants", cost, signal, (hooks) =>
       generateText({
-        model: this.languageModel,
+        model: this.caller.languageModel,
         maxRetries: 0,
-        providerOptions: { openrouter: { reasoning: { effort: this.effort } } },
+        providerOptions: this.caller.providerOptions,
         output: Output.object({ schema: z.object({ equivalent: z.array(tolerant(z.array(z.boolean()))) }) }),
         prompt,
         abortSignal: signal,

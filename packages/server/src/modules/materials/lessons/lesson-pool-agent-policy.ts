@@ -1,4 +1,6 @@
 import type { RunCostSink } from "../../../ports/ai";
+import { GenerationProviderError } from "../../../ports/generation-error";
+import { classifyLessonGenerationFailure } from "./lesson-generation-errors";
 import { DEFAULT_LESSON_GENERATION_POLICY } from "./lesson-generation-policy";
 
 /**
@@ -34,6 +36,29 @@ export const DEFAULT_LESSON_AGENT_POLICY: LessonAgentPolicy = {
   runBudgetUsd: 1,
   unknownCallEstimateUsd: 0.02,
 };
+
+/** Powody przerwania terminem runu i zagadnienia (`deadlineSignal`). */
+export const RUN_TIMEOUT_REASON = "run_timeout";
+export const OBJECTIVE_TIMEOUT_REASON = "objective_timeout";
+
+/** Porażka planu albo zagadnienia: kod i ponawialność z klasyfikacji potoku. */
+export interface AgentFailure {
+  readonly errorCode: string;
+  readonly retryable: boolean;
+  readonly retryAfterMs?: number;
+}
+
+/**
+ * Klasyfikacja porażki agenta przez `classifyLessonGenerationFailure`; przerwanie terminem runu albo
+ * zagadnienia (powód z `deadlineSignal`, nie wyjątek dostawcy) to `provider_timeout` bez ponowienia.
+ */
+export function agentFailureOf(error: unknown): AgentFailure {
+  if (error === RUN_TIMEOUT_REASON || error === OBJECTIVE_TIMEOUT_REASON) {
+    return { errorCode: classifyLessonGenerationFailure(new GenerationProviderError("timeout")).errorCode, retryable: false };
+  }
+  const { errorCode, retryable, retryAfterMs } = classifyLessonGenerationFailure(error);
+  return { errorCode, retryable, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
+}
 
 /** Licznik kosztu z odczytem wyczerpania budżetu (narzędzia podagenta zgłaszają koszt checkera i sprawdzają budżet). */
 export interface RunBudgetSink extends RunCostSink {

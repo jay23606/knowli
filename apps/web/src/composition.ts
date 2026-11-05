@@ -3,6 +3,7 @@ import {
   createDatabase,
   createDrizzleUsageRecorder,
   createLocalMediaStore,
+  createProductionSubjectRegistry,
   createServices,
   fakeGraderDeps,
   FakeAnswerGrader,
@@ -14,6 +15,7 @@ import {
   reviewerPublicServiceFromEnv,
   graderFromEnv,
   imageProviderFromEnv,
+  lessonAgentPublicFromEnv,
   lessonSpeechFromEnv,
   mediaSettingsFromEnv,
   pricesFromEnv,
@@ -77,9 +79,13 @@ function initialize(): ServerServices {
   const generationService = generationPublicServiceFromEnv(env);
   // jak wyżej: opis krytyka (env procesu web), gdy jest gotowy; bez informacji, gdy wyłączony
   const reviewService = reviewerPublicServiceFromEnv(env);
+  // opis agenta puli (przedmioty z listy i etykiety usług) wyłącznie z env i rejestru: web nie importuje adaptera agenta
+  const subjects = createProductionSubjectRegistry();
+  const lessonAgentPublic = lessonAgentPublicFromEnv(env, subjects);
   return {
     services: createServices({
       db,
+      subjects,
       clock: systemClock,
       media: mediaSettingsFromEnv(env),
       ...(imageProvider ? { imageProvider } : {}),
@@ -93,6 +99,7 @@ function initialize(): ServerServices {
       // web nie ma LLM (generuje worker): opisuje konfigurację wspólną z workerem
       ...(generationService ? { generationService } : {}),
       ...(reviewService ? { reviewService } : {}),
+      ...(lessonAgentPublic ? { lessonAgentPublic } : {}),
       ...(usage ? { usage } : {}),
     }),
     pool,

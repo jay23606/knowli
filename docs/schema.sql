@@ -228,6 +228,11 @@ CREATE TABLE generation_runs (
   -- (spec 2026-11-02-llm-cost-tracking §3.2, migracja 0036); tylko informacyjne, NULL
   -- dla runów deck/lesson, głosu UI i runów sprzed migracji
   origin_deck_id uuid REFERENCES decks(id) ON DELETE SET NULL,
+  -- punkt kontrolny agenta puli lekcji (spec 2026-11-04-lesson-pool-agent-stage2a §8,
+  -- migracja 0037): postęp próby (zagadnienia, ćwiczenia, przykłady, wydatek budżetu,
+  -- histogram kodów odrzuceń) albo podsumowanie bez treści po zapisie do szkicu;
+  -- wspólny materiał lekcji, bez danych dziecka; NULL — run bez agenta albo anulowany
+  agent_checkpoint jsonb,
   CHECK ((lease_token IS NULL) = (lease_until IS NULL)),
   CHECK ((kind = 'deck' AND deck_version_id IS NOT NULL AND expected_edit_number IS NOT NULL AND asset_id IS NULL)
     OR (kind IN ('tts','illustration') AND asset_id IS NOT NULL AND deck_version_id IS NULL AND expected_edit_number IS NULL)),

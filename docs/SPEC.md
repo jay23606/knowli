@@ -830,6 +830,15 @@ Po wygenerowaniu ćwiczeń system może poprosić drugi model („krytyka”) o 
 - **Poza PR 2.** Przycisk „Sprawdź ponownie”, przegląd ćwiczeń zapisanych przez rodzica (propozycje bez zmiany treści), zestaw oznaczony do próby i włączenie krytyka domyślnie — kolejne etapy (PR 3), po płatnej próbie na prawdziwym modelu.
 - Szczegóły i koszt: `docs/architecture.md` §19.16, design `docs/superpowers/specs/2026-11-02-lesson-review-stage-design.md`.
 
+### 29a.10. Generowanie puli agentem (2026-11-05, #237, etap 2a)
+
+Właściciel instancji może włączyć dla wybranych przedmiotów generowanie puli ćwiczeń agentem (`UMIEM_LESSON_AGENT_SUBJECTS`; **domyślnie wyłączone** — wszystkie lekcje generuje dotychczasowy potok). Agent pisze ćwiczenia zagadnienie po zagadnieniu, kod sprawdza każde przy zapisie (reguły puli, ujawnienia rozwiązań), a drugi model rozwiązuje je na próbę i ocenia warianty odpowiedzi. Rodzic nadal widzi gotowy szkic i zatwierdza materiał; dziecko nie dostaje niczego bez publikacji, niezależnie od ścieżki generowania.
+
+- **Niepełna pula.** Gdy agent nie zdążył albo wyczerpał budżet lub próby, zapisuje to, co przyjął (zero przyjętych ćwiczeń to porażka generowania). Edytor szkicu pokazuje wtedy jeden alert „Generowanie zakończyło się częściowo: {n} zagadnienia do uzupełnienia” (z odmianą liczby: „zagadnienie”, „zagadnienia”, „zagadnień”) i znacznik przy zagadnieniu („Niepełne po generowaniu”, „Nie udało się wygenerować”); „Dogeneruj” prosi o dodanie N ćwiczeń i zapisuje „Dodano k z N”, gdy agent dał mniej. Lista luk dotyczy szkicu, nie wersji opublikowanej.
+- **Usługi.** Formularz nowej lekcji i strona źródła podają, do których usług trafia materiał (model generujący, w szkole także usługa etapu zagadnień, a w przedmiocie z historyjką — gramatyce — usługa, która ją pisze) i do którego drugiego modelu trafiają gotowe ćwiczenia; w szkole do drugiego modelu trafia też materiał lekcji. Nigdy imię, wiek ani odpowiedzi dziecka.
+- **Zakres.** Etap 2a nie dodaje kontroli modelem w szkole (sędzia podpowiedzi, sprawdzenie otwartych odpowiedzi graderem) — to etap 2b. Raport rodzinny (MCP, `learning-overview`) i skill bez zmian.
+- Szczegóły: `docs/architecture.md` §19.17 i §23, `docs/provider-config.md`, design `docs/superpowers/specs/2026-11-04-lesson-pool-agent-stage2a-design.md`.
+
 ## 30. Poza zakresem MVP
 
 Nie implementujemy:

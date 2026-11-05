@@ -926,3 +926,46 @@ test("opublikowana lekcja bez szkicu nie pokazuje banera kontroli jakości", asy
   await expect(page.getByTestId("lesson-review-banner")).toHaveCount(0);
   await expect(page.locator('[data-testid^="exercise-review-"]')).toHaveCount(0);
 });
+
+/**
+ * Niepełna pula po generowaniu agentem puli (spec etapu 2a §11): jeden alert z liczbą zagadnień
+ * i znacznik przy każdym zagadnieniu z luką, obok plakietek pokrycia; wersja opublikowana bez nich.
+ */
+const gappedLesson = {
+  ...lesson,
+  published: null,
+  draft: {
+    ...version(draftId, "draft", 2),
+    generationGaps: [
+      { objectiveId: OBJ_A, reason: "incomplete" },
+      { objectiveId: OBJ_B, reason: "add_short", added: 3, requested: 8 },
+    ],
+  },
+} as unknown as typeof lesson;
+
+for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+  test(`niepełna pula w ${viewport.width}×${viewport.height}: alert z liczbą zagadnień i znacznik przy zagadnieniu`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await openLesson(page, { data: gappedLesson });
+    const alert = page.getByTestId("lesson-generation-gaps");
+    await expect(alert).toBeVisible();
+    await expect(alert).toContainText(messages.lessons.generationGapsAlert.few.replace("{n}", "2"));
+    await expect(alert).not.toHaveAttribute("role", "alert");
+
+    const incomplete = page.getByTestId(`objective-gap-${OBJ_A}`);
+    await expect(incomplete).toHaveText(messages.lessons.generationGapIncomplete);
+    await expect(incomplete).toHaveAttribute("data-reason", "incomplete");
+    const short = page.getByTestId(`objective-gap-${OBJ_B}`);
+    await expect(short).toHaveText(messages.lessons.generationGapAddShort.replace("{added}", "3").replace("{requested}", "8"));
+    // znacznik stoi obok plakietki pokrycia w nagłówku zagadnienia
+    await expect(page.getByTestId(`objective-group-${OBJ_A}`)).toContainText(messages.lessons.coverageFull);
+    await expectNoHorizontalOverflow(page);
+  });
+}
+
+test("bez luk generowania nie ma alertu ani znaczników", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openLesson(page);
+  await expect(page.getByTestId("lesson-generation-gaps")).toHaveCount(0);
+  await expect(page.locator('[data-testid^="objective-gap-"]')).toHaveCount(0);
+});

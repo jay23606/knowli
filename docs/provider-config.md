@@ -96,6 +96,74 @@ Timeouty lekcji dotyczą jednego requestu (domyślnie 90 s) oraz całego runu ze
 
 Worker wykonuje jeden przelot naraz. `WORKER_POLL_MS` (domyślnie 2000 ms) jest przerwą po zakończeniu przelotu, nie interwałem równoległych uruchomień. `WORKER_HEALTH_STALE_MS` (domyślnie 900000 ms) ustala wiek, po którym `/health` zwraca 503.
 
+## Agent puli lekcji (worker, od 2026-11-05, #237)
+
+Agent generuje pulę ćwiczeń lekcji zagadnienie po zagadnieniu (`docs/architecture.md`
+§19.17, design `docs/superpowers/specs/2026-11-04-lesson-pool-agent-stage2a-design.md`).
+Działa WYŁĄCZNIE w procesie worker i jest **domyślnie wyłączony**: web go nie
+składa (dostaje z env tylko listę przedmiotów i etykiety usług dla panelu
+rodzica), a przedmioty spoza listy generuje dotychczasowy potok. Adapter (AI SDK)
+mówi wyłącznie z OpenRouter (`https://openrouter.ai/api/v1`): generator i
+checker (drugi model, który rozwiązuje ćwiczenia na próbę i ocenia warianty
+odpowiedzi) to osobne wywołania z własnym modelem i wysiłkiem rozumowania.
+
+| Zmienna | Domyślnie (`config-defaults.ts`) | Znaczenie |
+| --- | --- | --- |
+| `UMIEM_LESSON_AGENT_SUBJECTS` | puste | Identyfikatory przedmiotów po przecinku (dziś `english_chapter`, `english_grammar`, `school`); puste = wszystkie lekcje generuje potok |
+| `UMIEM_LESSON_AGENT_MODEL` | `google/gemini-3.8-flash` | Model generatora (podagenci zagadnień i planista) |
+| `UMIEM_LESSON_AGENT_REASONING` | `low` | Wysiłek rozumowania generatora: `xhigh`, `high`, `medium`, `low`, `minimal` albo `none` (bez pola `reasoning`) |
+| `UMIEM_LESSON_AGENT_CHECKER_MODEL` | `deepseek/deepseek-v4.1-flash-1017` | Model checkera |
+| `UMIEM_LESSON_AGENT_CHECKER_REASONING` | `low` | Wysiłek rozumowania checkera (te same wartości) |
+| `UMIEM_LESSON_AGENT_MAX_STEPS` | `8` | Maksimum kroków pętli narzędzi na zagadnienie i dla planisty |
+| `UMIEM_LESSON_AGENT_CONCURRENCY` | `4` | Zagadnienia równolegle |
+| `UMIEM_LESSON_AGENT_CHECKER_CONCURRENCY` | `4` | Równoległe wywołania checkera |
+| `UMIEM_LESSON_AGENT_OBJECTIVE_TIMEOUT_MS` | `300000` | Termin jednego zagadnienia |
+| `UMIEM_LESSON_AGENT_CHECKER_TIMEOUT_MS` | `90000` | Termin jednego wywołania checkera |
+| `UMIEM_LESSON_AGENT_RUN_BUDGET_USD` | `1.00` | Budżet runu we wszystkich automatycznych próbach (wydatek z `usage.cost` OpenRouter; „Ponów” rodzica przyznaje świeży budżet) |
+| `UMIEM_LESSON_AGENT_API_KEY` | — | Własny klucz agenta (nie jest w domyślnych) |
+| `UMIEM_LESSON_AGENT[_CHECKER]_PROVIDER_ORDER`, `_QUANTIZATIONS`, `_ALLOW_FALLBACKS`, `_DATA_COLLECTION` | — | Routing dostawców OpenRouter osobno dla generatora i checkera |
+
+Zasady:
+
+- **Klucz.** Kolejność: `UMIEM_LESSON_AGENT_API_KEY` → `OPENROUTER_API_KEY` →
+  `UMIEM_LLM_API_KEY` (tylko gdy `UMIEM_LLM_BASE_URL` to https OpenRouter).
+  Pierwszy niepusty wygrywa; klucz w kształcie OpenAI (`sk-…`, nie `sk-or-…`)
+  to błąd startu workera (nie trafia do OpenRouter), a komunikat podaje nazwę
+  zmiennej, nigdy wartość. Niepusta lista przedmiotów bez żadnego klucza daje
+  jedno ostrzeżenie `[config]` i generowanie potokiem.
+- **Routing i prywatność dostawcy.** Każda opcja `UMIEM_LESSON_AGENT[_CHECKER]_PROVIDER_*`
+  nieustawiona dziedziczy osobno odpowiednią `UMIEM_LLM_PROVIDER_*`, więc
+  `UMIEM_LLM_PROVIDER_DATA_COLLECTION=deny` chroni też agenta. Przy wysiłku
+  rozumowania innym niż `none` routing dostaje `require_parameters: true`
+  (dostawcy muszą obsługiwać wysyłane parametry). Sprawdź, że wybrany model ma
+  endpoint spełniający `deny`.
+- **Różne rodziny modeli.** Generator i checker muszą pochodzić z różnych rodzin
+  (pierwszy człon `rodzina/model`, np. `google` i `deepseek`); ta sama rodzina
+  to błąd startu workera — checker z rodziny autora rozwiązywałby ćwiczenia
+  „jak ich autor”.
+- **Walidacja przy starcie workera.** Nieznany przedmiot, przedmiot bez polityki
+  agenta, niedodatnia liczba w limitach, nieznany wysiłek rozumowania, zła opcja
+  routingu — błąd z nazwą zmiennej. Zmiana którejkolwiek zmiennej wymaga
+  odtworzenia workera (i webu, żeby panel pokazywał właściwe usługi); wybór
+  ścieżki zapada przy każdej próbie runu, więc run w toku przechodzi na nową
+  konfigurację przy kolejnej próbie, a postęp agenta zostaje w punkcie
+  kontrolnym. Web i worker wdraża się z tego samego commitu; migracja `0037`
+  (kolumna punktu kontrolnego) idzie przed workerem.
+- **Tryb fake.** `UMIEM_FAKE_PROVIDERS=1` z niepustą listą przedmiotów składa
+  fake agenta i fake checkera (bez sieci, bez klucza, bez zapisu kosztów); sprawdza
+  tylko listę przedmiotów, nie modele, wysiłki ani routing.
+- **Koszty.** Każde żądanie agenta i checkera trafia do dziennika kosztów
+  (`feature = lesson_generation`, `provider = openrouter`, operacje `agent_plan`,
+  `agent_objective`, `check_solve`, `check_variants`; `docs/architecture.md` §23).
+  Przebieg kontrolny 2026-11-04 na domyślnych modelach: 103 s, 0,142 USD,
+  74 z 94 ćwiczeń przyjętych.
+- **Prywatność.** Do generatora trafia to samo co w potoku (materiał, polecenie
+  rodzica, karty, tematy zdań), do checkera widok ćwiczenia, a w szkole także
+  materiał; nigdy imię, rok urodzenia, identyfikatory ani odpowiedzi dziecka.
+  Adapter nie loguje treści ani body błędów dostawcy; klucz tylko w adapterze.
+  Panel rodzica informuje, do których usług trafia lekcja (formularz lekcji i
+  strona źródła).
+
 ## Ocena odpowiedzi lekcji (web)
 
 Model oceniający otwarte odpowiedzi lekcji (gramatyka itp.) jest zgodny z

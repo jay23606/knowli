@@ -23,7 +23,7 @@ import {
 import { DEFAULT_LESSON_AGENT_POLICY } from "../../packages/server/src/modules/materials/lessons/lesson-pool-agent-policy";
 import type { LessonExerciseCheckerProvider, LessonPoolAgentProvider, RunCostSink } from "../../packages/server/src/ports/ai";
 import { endpointKeyFromEnv, isSecureOpenRouterEndpoint } from "../../packages/server/src/providers/openrouter-key";
-import { AiSdkExerciseChecker, AiSdkLessonPoolAgent } from "./ai-sdk-lesson-agent";
+import { AiSdkExerciseChecker, AiSdkLessonPoolAgent, OPENROUTER_BASE_URL } from "../../packages/server/src/providers/openai/lesson-pool-agent";
 import {
   appendProvisionalCostEntry,
   assertWithinCostCap,
@@ -41,7 +41,7 @@ import { loadDotEnv, resolveOutsideRepoPath } from "./probe-helpers";
  * Próba agenta puli lekcji na PRAWDZIWYCH modelach (`pnpm probe:agent`; etap 1 issue #237,
  * spec §8 i §9.5). Zastępuje `agent-generation-v2` z PoC i NIE MA własnych reguł: woła
  * `runLessonPoolAgent` (kierownik, rdzeń domenowy i polityka przedmiotu), a z modelami łączy
- * go tymczasowa implementacja portów na AI SDK (`ai-sdk-lesson-agent.ts`). Bez bazy.
+ * go produkcyjny adapter portów na AI SDK (`providers/openai/lesson-pool-agent.ts`). Bez bazy.
  *
  * KOSZTY: każde uruchomienie to płatne wywołania OpenRouter (podagenci zagadnień, planista,
  * checker). Przed płatnym przebiegiem wymagana zgoda właściciela. Run ma budżet
@@ -95,7 +95,6 @@ const materialEnv = process.env.UMIEM_PROBE_AGENT_MATERIAL?.trim() || undefined;
 const objectivesDumpEnv = process.env.UMIEM_PROBE_AGENT_OBJECTIVES_DUMP?.trim() || undefined;
 const enabled = apiKey !== undefined && (materialEnv !== undefined || objectivesDumpEnv !== undefined);
 
-const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 const DEFAULT_SOLVER_FOR_GOOGLE = "deepseek/deepseek-v4.1-flash-1017";
 const DEFAULT_SOLVER = "google/gemini-3.8-flash";
@@ -264,8 +263,8 @@ describe.skipIf(!enabled)("próba agenta puli lekcji na prawdziwych modelach", (
 
     const openrouter = createOpenRouter({ apiKey, baseURL: OPENROUTER_BASE_URL });
     const meter = new ProbeMeter();
-    const agent = meteredAgent(new AiSdkLessonPoolAgent({ model: openrouter.chat(modelId, { usage: { include: true } }), effort }), meter);
-    const checker = meteredChecker(new AiSdkExerciseChecker({ model: openrouter.chat(solverId, { usage: { include: true } }), effort: "low" }), meter);
+    const agent = meteredAgent(new AiSdkLessonPoolAgent({ apiKey: "", model: modelId, effort, languageModel: openrouter.chat(modelId, { usage: { include: true } }) }), meter);
+    const checker = meteredChecker(new AiSdkExerciseChecker({ apiKey: "", model: solverId, effort: "low", languageModel: openrouter.chat(solverId, { usage: { include: true } }) }), meter);
 
     line("");
     line(`=== Próba agenta puli [${subjectKind}, zagadnienia=${objectiveSource.source}] ===`);

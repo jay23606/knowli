@@ -22,6 +22,7 @@ import type { EditorLeaveState } from "../useParentLeaveGuard";
 import { orpc } from "../query-client";
 import LessonSupervisionPanel from "./LessonSupervisionPanel";
 import LessonReviewBanner from "./LessonReviewBanner";
+import { GenerationGapBadge, LessonGenerationGapsAlert } from "./LessonGenerationGaps";
 import LessonExerciseCard, { leakNoticeFor, reviewNoticeFor, type CalculationControls, type ExerciseReviewNotice, type LeakNotice } from "./LessonExerciseCard";
 import ArchiveLessonDialog from "./ArchiveLessonDialog";
 import LessonSourceNote from "./LessonSourceNote";
@@ -1047,6 +1048,7 @@ export default function LessonEditor({
                     </span>
                   )}
                   {objectiveBadge(group.objectiveId, all)}
+                  <GenerationGapBadge objectiveId={group.objectiveId} gaps={draft?.generationGaps} />
                 </Group>
               </Accordion.Control>
               {editable && (compact ? (
@@ -1372,6 +1374,7 @@ export default function LessonEditor({
             </ul>
           </div>
         )}
+        {draft?.generationGaps && <LessonGenerationGapsAlert gaps={draft.generationGaps} />}
         {active?.review && <LessonReviewBanner review={active.review} />}
         {error && !showActionBar && errorAlert}
 

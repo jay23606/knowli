@@ -217,7 +217,7 @@ export interface LessonObjectiveAgentInput {
     readonly title: string;
     readonly kind?: "words" | "frame";
     readonly cards: readonly { readonly title: string; readonly body: string }[];
-    /** `false` = model dostarcza przykłady zagadnienia przez `submit`. */
+    /** `false` = model dostarcza przykłady zagadnienia przez `submit`; `true` = przykłady ustalone (plan albo wznowienie). */
     readonly examplesFromPlan: boolean;
   };
   readonly otherObjectives: readonly {

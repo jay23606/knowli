@@ -7,8 +7,7 @@ import type { DynamicTopicData, RawPlanObjective } from "../../../domain/lessons
 import type { LessonAgentPlanInput, LessonPoolAgentProvider, RunCostSink } from "../../../ports/ai";
 import { buildDynamicTopicData, withSubjectObjectiveKinds } from "./lesson-drafts";
 import { untilAborted } from "./lesson-agent-timers";
-import { classifyLessonGenerationFailure } from "./lesson-generation-errors";
-import type { RunBudgetSink } from "./lesson-pool-agent-policy";
+import { agentFailureOf, type AgentFailure, type RunBudgetSink } from "./lesson-pool-agent-policy";
 
 /**
  * Plan zagadnień kierownika agenta puli (spec etapu 1 §7.1 pkt 2): planista
@@ -38,13 +37,13 @@ export type PlanOutcome =
       readonly examples: Readonly<Record<string, readonly string[]>>;
       readonly steps: number;
     }
-  | { readonly status: "plan_failed"; readonly failure: { readonly errorCode: string }; readonly steps: number };
+  | { readonly status: "plan_failed"; readonly failure: AgentFailure; readonly steps: number };
 
 /** Górna granica przykładów zagadnienia (pilnuje jej `validateAgentPlan`); tu tylko w tekście dla modelu. */
 const MAX_PLAN_EXAMPLES = 3;
 
 /** Brak przyjętej propozycji po wszystkich krokach: ten sam kod co niepoprawne zagadnienia w potoku. */
-const NOT_ACCEPTED_CODE = classifyLessonGenerationFailure(new AppError("validation")).errorCode;
+const NOT_ACCEPTED_FAILURE = agentFailureOf(new AppError("validation"));
 
 /** Linie przykładów planu: przycięte, niepuste, najwyżej `MAX_TEXT_LENGTH` znaków (jak w potoku). */
 function planExampleLines(objective: RawPlanObjective): string[] {
@@ -125,12 +124,11 @@ export async function planAgentObjectives(args: PlanArgs): Promise<PlanOutcome> 
       )
     ).steps;
   } catch (error) {
-    // Przyjęty plan przed wyjątkiem (np. termin po ostatnim kroku) nadal obowiązuje.
-    if (accepted === undefined) {
-      return { status: "plan_failed", failure: { errorCode: classifyLessonGenerationFailure(error).errorCode }, steps: requests };
-    }
+    // Przyjęty plan przed wyjątkiem (np. termin po ostatnim kroku) nadal obowiązuje. Przerwanie terminem
+    // (powód `deadlineSignal`) to `provider_timeout` bez ponowienia (`agentFailureOf`).
+    if (accepted === undefined) return { status: "plan_failed", failure: agentFailureOf(error), steps: requests };
     steps = requests;
   }
-  if (accepted === undefined) return { status: "plan_failed", failure: { errorCode: NOT_ACCEPTED_CODE }, steps };
+  if (accepted === undefined) return { status: "plan_failed", failure: NOT_ACCEPTED_FAILURE, steps };
   return { status: "accepted", dynamicTopic: accepted.dynamicTopic, examples: accepted.examples, steps };
 }

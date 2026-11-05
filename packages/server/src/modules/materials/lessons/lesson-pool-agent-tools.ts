@@ -12,7 +12,7 @@ import {
 } from "../../../domain/lessons/agent/admission";
 import { expectedAnswerCount, solverView } from "../../../domain/lessons/agent/solver";
 import type { LessonAgentState } from "../../../domain/lessons/agent/state";
-import { objectiveStatus } from "../../../domain/lessons/agent/status";
+import { objectiveStatusFor } from "../../../domain/lessons/agent/status";
 import type { LessonExerciseDraft, LessonTopic } from "../../../domain/lessons/types";
 import type { LessonAgentToolOutcome, LessonExerciseCheckerProvider, LessonObjectiveAgentTools } from "../../../ports/ai";
 import { deadlineSignal, untilAborted, type Semaphore } from "./lesson-agent-timers";
@@ -65,8 +65,13 @@ export interface ObjectiveToolsArgs {
   readonly objectiveSignal: AbortSignal;
   readonly policy: LessonAgentPolicy;
   readonly familyScope: string | null;
-  /** `true` = przykłady kart ustalił plan; przykłady z `submit` są ignorowane. */
-  readonly examplesFromPlan: boolean;
+  /** `true` = przykłady kart są ustalone (plan albo wznowienie); przykłady z `submit` są ignorowane. */
+  readonly examplesFixed: boolean;
+  /**
+   * Tryb „dodaj N” (spec etapu 2a §6.4): status dla modelu i `shouldStop` z `addModeStatus` — komplet po
+   * `remaining` nowych ćwiczeniach bez braków etapów. Brak = tryb puli.
+   */
+  readonly addMode?: { readonly remaining: number };
   onRejection(entry: RejectionLogEntry): void;
   /** Opcjonalnie: odmowa całego wywołania (statystyka `refused` kierownika). */
   onRefusal?(code: ToolRefusalCode): void;
@@ -137,7 +142,7 @@ export function createObjectiveTools(args: ObjectiveToolsArgs): { tools: LessonO
   const isClosed = () => closed || args.objectiveSignal.aborted;
 
   const statusOf = (state: LessonAgentState) => {
-    const status = objectiveStatus(state, objectiveId, ctx);
+    const status = objectiveStatusFor(state, objectiveId, ctx, args.addMode);
     return { counts: status.counts, missing: status.missing, complete: status.complete };
   };
 
@@ -295,7 +300,7 @@ export function createObjectiveTools(args: ObjectiveToolsArgs): { tools: LessonO
     });
 
     // 3–4. Przykłady i precheck na roboczej kopii bieżącego stanu.
-    const ownExamples = !args.examplesFromPlan && examples !== undefined;
+    const ownExamples = !args.examplesFixed && examples !== undefined;
     const base = args.getState();
     const working = ownExamples ? submitExamples(base, objectiveId, examples, ctx).state : base;
     const prechecked = precheckBatch(working, objectiveId, drafts, ctx);
@@ -361,7 +366,7 @@ export function createObjectiveTools(args: ObjectiveToolsArgs): { tools: LessonO
   const tools: LessonObjectiveAgentTools = {
     submit: (raw) => exclusive(() => submit(raw)),
     remove: (id) => exclusive(() => remove(id)),
-    shouldStop: () => isClosed() || args.cost.exhausted() || objectiveStatus(args.getState(), objectiveId, ctx).complete,
+    shouldStop: () => isClosed() || args.cost.exhausted() || objectiveStatusFor(args.getState(), objectiveId, ctx, args.addMode).complete,
   };
 
   return {

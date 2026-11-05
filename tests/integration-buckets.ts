@@ -103,6 +103,7 @@ export const INTEGRATION_BUCKETS: readonly (readonly string[])[] = [
     decks-management.test.ts
     history-policy-scope.test.ts
     learning-algorithm.test.ts
+    lesson-agent-generation.test.ts
     lesson-card-audio.test.ts
     lesson-chapter.test.ts
     lesson-grader-school.test.ts

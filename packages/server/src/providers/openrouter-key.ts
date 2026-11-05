@@ -53,6 +53,27 @@ export function endpointKeyFromEnv(
   return shared;
 }
 
+/**
+ * Klucz agenta puli lekcji (adapter mówi wyłącznie z OpenRouter, więc bez
+ * adresu): `UMIEM_LESSON_AGENT_API_KEY` → wspólny `OPENROUTER_API_KEY` →
+ * `UMIEM_LLM_API_KEY`, gdy `UMIEM_LLM_BASE_URL` to bezpieczny endpoint
+ * OpenRouter. Klucz w kształcie OpenAI to błąd startu (nie trafia do
+ * OpenRouter); komunikat podaje nazwę zmiennej, nigdy wartość.
+ */
+export function lessonAgentKeyFromEnv(env: Record<string, string | undefined>): string | undefined {
+  const candidates: readonly (readonly [string, string | undefined])[] = [
+    ["UMIEM_LESSON_AGENT_API_KEY", nonEmpty(env.UMIEM_LESSON_AGENT_API_KEY)],
+    ["OPENROUTER_API_KEY", nonEmpty(env.OPENROUTER_API_KEY)],
+    ["UMIEM_LLM_API_KEY", isSecureOpenRouterEndpoint(env.UMIEM_LLM_BASE_URL) ? nonEmpty(env.UMIEM_LLM_API_KEY) : undefined],
+  ];
+  for (const [name, key] of candidates) {
+    if (key === undefined) continue;
+    if (looksLikeOpenAiKey(key)) throw new Error(`${name} looks like an OpenAI key but the lesson agent talks only to OpenRouter`);
+    return key;
+  }
+  return undefined;
+}
+
 function nonEmpty(value: string | undefined): string | undefined {
   return value === undefined || value.trim() === "" ? undefined : value;
 }

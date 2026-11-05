@@ -3,7 +3,7 @@ import { A, B, open, subject as fixtureSubject, topic } from "../../../domain/le
 import { withAgentPolicy } from "../../../domain/lessons/testing/agent-test-subject";
 import type { LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { FakeExerciseChecker, FakeLessonPoolAgent, type FakeAgentStep, type FakeLessonPoolAgentOptions } from "../../../providers/fake-lesson-agent";
-import { runLessonPoolAgent, type LessonPoolAgentRunInput } from "./lesson-pool-agent";
+import { runLessonPoolAgent, type LessonPoolAgentRunInput, type SettledObjective } from "./lesson-pool-agent";
 import type { LessonAgentPolicy } from "./lesson-pool-agent-policy";
 
 /**
@@ -137,6 +137,53 @@ describe("runLessonPoolAgent — budżet runu", () => {
     const result = await runLessonPoolAgent(deps, runInput({ initialSpentUsd: 0.99 }), never);
     expect(result.objectives[0]!.steps).toBe(1);
     expect(result.spentUsd).toBeCloseTo(1.01, 10);
+  });
+
+  it("wyczerpany budżet (katalog): zagadnienia nie startują, status incomplete", async () => {
+    const { agent, checker, deps } = setup({
+      agent: { stepCostUsd: 0.02, objectives: { [SLUG_A]: submits(A, 2), [SLUG_B]: submits(B, 2) } },
+      policy: { runBudgetUsd: 0.5 },
+    });
+    const settled: SettledObjective[] = [];
+    const result = await runLessonPoolAgent(
+      deps,
+      runInput({
+        skipObjectives: [],
+        initialSpentUsd: 0.5,
+        onObjectiveSettled: async (objective) => {
+          settled.push(objective);
+        },
+      }),
+      never,
+    );
+    expect(agent.calls).toEqual([]);
+    expect(checker.solveCalls).toEqual([]);
+    expect(result.objectives.map((objective) => [objective.objectiveId, objective.status, objective.steps])).toEqual([
+      [A, "incomplete", 0],
+      [B, "incomplete", 0],
+    ]);
+    for (const objective of result.objectives) expect(objective.failure).toBeUndefined();
+    // Rozliczone jak po terminie: hak zapisu dostaje oba zagadnienia.
+    expect(settled.map((objective) => objective.objectiveId).sort()).toEqual([A, B].sort());
+    expect(result.spentUsd).toBe(0.5);
+  });
+
+  it("spentUsd bez podwójnego liczenia initialSpentUsd", async () => {
+    const { deps } = setup({ agent: { stepCostUsd: 0.1, objectives: { [SLUG_A]: submits(A, 1) } } });
+    const settled: SettledObjective[] = [];
+    const result = await runLessonPoolAgent(
+      deps,
+      runInput({
+        initialSpentUsd: 0.3,
+        onObjectiveSettled: async (objective) => {
+          settled.push(objective);
+        },
+      }),
+      never,
+    );
+    expect(result.objectives[0]!.spentUsd).toBeCloseTo(0.4, 10);
+    expect(settled[0]!.spentUsd).toBeCloseTo(0.4, 10);
+    expect(result.spentUsd).toBeCloseTo(0.4, 10);
   });
 
   it("granica przekroczenia: dwa równoległe zagadnienia nie przekraczają budżetu o więcej niż jedno wywołanie na zagadnienie", async () => {

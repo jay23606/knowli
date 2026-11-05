@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { schoolSubject } from "../subjects/school/module";
-import { A, B, choice, contextFor, gap, keywords, listen, naChecks, open, stateWith, topic } from "../testing/agent-admission-fixtures";
+import { A, B, choice, contextFor, gap, keywords, listen, naChecks, objectives, open, stateWith, subject, topic } from "../testing/agent-admission-fixtures";
 import { withAgentPolicy } from "../testing/agent-test-subject";
 import type { AgentObjective, LessonExerciseDraft, LessonExerciseType } from "../types";
 import { admitBatch, precheckBatch } from "./admission";
 import { agentObjectivesOf } from "./capable";
 import { orderedLesson, poolOf, withPool, type AgentPoolEntry, type LessonAgentState } from "./state";
-import { lessonInvariantCheck, objectiveAgentLimits, objectiveStatus } from "./status";
+import {
+  addedStageExercises,
+  addModeStatus,
+  completeObjectivesOnLesson,
+  finalLessonCheck,
+  lessonInvariantCheck,
+  objectiveAgentLimits,
+  objectiveStatus,
+  objectiveStatusFor,
+  stageGapOf,
+  type ObjectiveStatus,
+} from "./status";
 
 /** Szkoła (minima 3/2/2, rezerwa samodzielnych 1 → wymagane 3/2/3); fixture'y służą tylko do pokrycia. */
 const school = withAgentPolicy(schoolSubject);
@@ -39,9 +50,41 @@ describe("objectiveStatus — pokrycie etapów", () => {
     state = pooled(state, A, [...guidedThree, ...productiveTwo, ...independentThree]);
     expect(objectiveStatus(state, A, schoolCtx)).toEqual({
       counts: { guided: 3, productive: 2, independent: 3, outsideStages: 0, total: 8 },
+      stageGaps: { guided: 0, productive: 0, independent: 0 },
       missing: [],
       complete: true,
     });
+  });
+
+  it("stageGaps zgodne z missing etapów", () => {
+    const partial = objectiveStatus(pooled(stateWith(), A, [choice(A, 1)]), A, schoolCtx);
+    expect(partial.missing).toEqual(expect.arrayContaining(["guided: 1 of 3", "productive: 0 of 2", "independent: 0 of 3"]));
+    expect(partial.stageGaps).toEqual({ guided: 2, productive: 2, independent: 3 });
+    expect(stageGapOf(partial)).toBe(7);
+
+    // Ujawnione ćwiczenie nie liczy się do etapu — tak samo w missing i w stageGaps.
+    let leaked = stateWith({ examples: { [A]: ["Gniezno"] } });
+    leaked = pooled(leaked, A, [...guidedThree, ...productiveTwo, ...independentThree]);
+    const status = objectiveStatus(leaked, A, schoolCtx);
+    expect(status.missing).toContain("independent: 2 of 3");
+    expect(status.stageGaps).toEqual({ guided: 0, productive: 0, independent: 1 });
+    expect(stageGapOf(status)).toBe(1);
+  });
+
+  it("reguła różnych odpowiedzi otwartych nie jest brakiem etapu w stageGaps", () => {
+    const calculation = (n: number): LessonExerciseDraft => ({
+      exerciseType: "lesson_calculation",
+      objectiveId: A,
+      prompt: `Oblicz ${n} + ${n}.`,
+      answer: String(2 * n),
+      acceptedAnswers: [],
+      focus: [],
+    });
+    let state = stateWith({ examples: { [A]: ["Stolica."] } });
+    state = pooled(state, A, [...guidedThree, ...productiveTwo, open(A, "Pytanie 1?", "Gniezno"), calculation(21), calculation(34)]);
+    const status = objectiveStatus(state, A, schoolCtx);
+    expect(status.missing).toContain("distinct open answers: 1 of 2");
+    expect(status.stageGaps).toEqual({ guided: 0, productive: 0, independent: 0 });
   });
 
   it("pula 3/2/2 → braki w etapie samodzielnym (rezerwa), bez innych etapów", () => {
@@ -175,6 +218,55 @@ describe("objectiveStatus — wymagane typy i braki przedmiotu", () => {
   });
 });
 
+describe("tryb „dodaj N” — addModeStatus", () => {
+  const full = (): LessonAgentState =>
+    pooled(stateWith({ examples: { [A]: ["Stolica."] } }), A, [...guidedThree, ...productiveTwo, ...independentThree]);
+
+  it("addModeStatus: komplet tylko przy remaining nowych i bez braków etapów", () => {
+    const complete = objectiveStatus(full(), A, schoolCtx);
+    expect(addModeStatus(complete, 1, 2).complete).toBe(false);
+    expect(addModeStatus(complete, 2, 2).complete).toBe(true);
+    expect(addModeStatus(complete, 3, 2).complete).toBe(true);
+
+    // Brak etapu blokuje komplet mimo `remaining` nowych.
+    const short = objectiveStatus(pooled(stateWith({ examples: { [A]: ["Stolica."] } }), A, [...guidedThree, ...productiveTwo]), A, schoolCtx);
+    expect(stageGapOf(short)).toBe(3);
+    expect(addModeStatus(short, 5, 2).complete).toBe(false);
+
+    // Pozostałe braki (liczba ćwiczeń, przykłady kart, braki przedmiotu) są tylko wskazówkami.
+    const hints: ObjectiveStatus = { ...complete, missing: ["exercises: 8 of 10", "card examples: 0 of 1-3", "subject gap"], complete: false };
+    expect(addModeStatus(hints, 2, 2)).toEqual({ missing: ["new exercises: 2 of 2", ...hints.missing], complete: true });
+  });
+
+  it("addModeStatus: missing zaczyna się od new exercises", () => {
+    const short = objectiveStatus(pooled(stateWith(), A, [choice(A, 1)]), A, schoolCtx);
+    const status = addModeStatus(short, 1, 2);
+    expect(status.missing[0]).toBe("new exercises: 1 of 2");
+    expect(status.missing.slice(1)).toEqual(short.missing);
+    // Także przy komplecie: model widzi postęp nowych ćwiczeń.
+    expect(addModeStatus(objectiveStatus(full(), A, schoolCtx), 2, 2).missing).toEqual(["new exercises: 2 of 2"]);
+  });
+
+  it("addedStageExercises liczy tylko pulę na ścieżce etapów (bez fixed, słuchowych i słów kluczowych)", () => {
+    let state = stateWith({ fixed: [gap(A, "Fixed ___.", "966")] });
+    state = pooled(state, A, [choice(A, 1), listen(A, 1), keywords(A, "f1", 1), open(A, "Pytanie?", "Gniezno", "f1")]);
+    state = pooled(state, B, [choice(B, 9)]);
+    expect(addedStageExercises(state, A)).toBe(2);
+  });
+
+  it("objectiveStatusFor: bez trybu add = objectiveStatus; z trybem add — missing i complete z addModeStatus", () => {
+    const state = pooled(full(), A, [gap(A, "Nowe ___.", "1038")]);
+    const base = objectiveStatus(state, A, schoolCtx);
+    expect(objectiveStatusFor(state, A, schoolCtx)).toEqual(base);
+    expect(objectiveStatusFor(state, A, schoolCtx, { remaining: 2 })).toEqual({
+      ...base,
+      ...addModeStatus(base, addedStageExercises(state, A), 2),
+    });
+    expect(objectiveStatusFor(state, A, schoolCtx, { remaining: 2 }).complete).toBe(true);
+    expect(objectiveStatusFor(state, A, schoolCtx, { remaining: 10 }).complete).toBe(false);
+  });
+});
+
 describe("lessonInvariantCheck", () => {
   const ctx = contextFor();
 
@@ -215,5 +307,86 @@ describe("lessonInvariantCheck", () => {
   it("nigdy nie zwraca ćwiczeń fixed, także gdy same są wadliwe", () => {
     const state = stateWith({ fixed: [choice(A, 1), choice(A, 1)] });
     expect(lessonInvariantCheck(state, ctx)).toEqual([]);
+  });
+});
+
+describe("finalLessonCheck", () => {
+  const ctx = contextFor();
+  const check = (overrides: Partial<Parameters<typeof finalLessonCheck>[0]>) =>
+    finalLessonCheck({ subject, topic, objectives, material: "", fixed: [], accepted: [], examples: {}, limits: ctx.limits, ...overrides });
+
+  it("bez naruszeń zachowuje wszystkie przyjęte w kolejności wejścia", () => {
+    const accepted = [choice(A, 1), gap(A, "Rok ___.", "966"), choice(B, 2)].map((draft) => ({ objectiveId: draft.objectiveId, draft }));
+    expect(check({ accepted })).toEqual({ kept: accepted.map((entry) => entry.draft), removed: 0 });
+  });
+
+  it("ujawnienie między zagadnieniami z różnych prób usuwa ofiarę z accepted", () => {
+    // Próba 1 zapisała pytanie otwarte A, próba 2 — lukę B, której rozwiązane zdanie podaje odpowiedź A.
+    const victim = open(A, "Rok chrztu?", "966");
+    const source = gap(B, "Chrzest Polski w roku ___.", "966");
+    const result = check({ accepted: [{ objectiveId: A, draft: victim }, { objectiveId: B, draft: source }] });
+    expect(result).toEqual({ kept: [source], removed: 1 });
+  });
+
+  it("duplikat między próbami usuwa późniejszy", () => {
+    const earlier = choice(A, 1);
+    const later = choice(A, 1);
+    const result = check({ accepted: [{ objectiveId: A, draft: earlier }, { objectiveId: A, draft: choice(A, 2) }, { objectiveId: A, draft: later }] });
+    expect(result.removed).toBe(1);
+    expect(result.kept).toHaveLength(2);
+    expect(result.kept[0]).toBe(earlier);
+    expect(result.kept).not.toContain(later);
+  });
+
+  it("fixed nigdy nie usuwany: duplikat fixed usuwa przyjęte, ofiara fixed usuwa przyjęte źródło", () => {
+    const fixed = [choice(A, 1), open(A, "Rok chrztu?", "966")];
+    const duplicate = choice(A, 1);
+    const source = gap(A, "Chrzest Polski w roku ___.", "966");
+    const result = check({ fixed, accepted: [{ objectiveId: A, draft: duplicate }, { objectiveId: A, draft: source }] });
+    expect(result).toEqual({ kept: [], removed: 2 });
+  });
+
+  it("usunięcie pytania otwartego usuwa też osierocone słowa kluczowe jego rodziny", () => {
+    const victim = open(A, "Rok chrztu?", "966", "f1");
+    const family = keywords(A, "f1", 1);
+    const result = check({ examples: { [A]: ["966"] }, accepted: [{ objectiveId: A, draft: victim }, { objectiveId: A, draft: family }] });
+    expect(result).toEqual({ kept: [], removed: 2 });
+  });
+});
+
+describe("completeObjectivesOnLesson", () => {
+  const full = [...guidedThree, ...productiveTwo, ...independentThree];
+  const complete = (overrides: Partial<Parameters<typeof completeObjectivesOnLesson>[0]>) =>
+    completeObjectivesOnLesson({
+      subject: school,
+      topic,
+      objectives,
+      material: "",
+      fixed: [],
+      written: full,
+      examples: { [A]: ["Stolica Piastów."] },
+      fixedSources: {},
+      limits: schoolCtx.limits,
+      ...overrides,
+    });
+
+  it("zapisana pula spełniająca minima: komplet; zagadnienie bez ćwiczeń — nie", () => {
+    expect(complete({})).toEqual(new Set([A]));
+  });
+
+  it("nadmiarowe ćwiczenie odrzucone przy zapisie nie psuje kompletu", () => {
+    expect(complete({ written: [...full.slice(0, 3), choice(A, 4), ...full.slice(3)].filter((draft) => draft !== full[0]) })).toEqual(new Set([A]));
+  });
+
+  it("brak ćwiczenia potrzebnego do minimum etapu: bez kompletu", () => {
+    expect(complete({ written: full.slice(0, -1) })).toEqual(new Set());
+  });
+
+  it("przykłady kart liczą się z własnych przykładów zagadnienia, nie z pozostałych źródeł ujawnień", () => {
+    expect(complete({ examples: {}, fixedSources: { [A]: ["Stolica Piastów."] } })).toEqual(new Set());
+  });
+
+  it("fixed liczy się do zagadnienia jak w kierowniku", () => {
+    expect(complete({ fixed: independentThree, written: [...guidedThree, ...productiveTwo] })).toEqual(new Set([A]));
   });
 });

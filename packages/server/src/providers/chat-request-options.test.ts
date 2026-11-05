@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatRequestExtrasFromEnv, withChatRequestExtras } from "./chat-request-options";
+import { chatRequestExtrasFromEnv, openRouterProviderRoutingFromEnv, withChatRequestExtras } from "./chat-request-options";
 
 const LLM_OR = { UMIEM_LLM_BASE_URL: "https://openrouter.ai/api/v1" };
 const GRADER_OR = { UMIEM_GRADER_BASE_URL: "https://openrouter.ai/api/v1" };
@@ -69,5 +69,37 @@ describe("withChatRequestExtras", () => {
     const body = withChatRequestExtras({ model: "other", reasoning: { enabled: false } }, { model: "deepseek", messages: [] });
     expect(body).toEqual({ reasoning: { enabled: false }, model: "deepseek", messages: [] });
     expect(withChatRequestExtras(undefined, { model: "m" })).toEqual({ model: "m" });
+  });
+});
+
+describe("openRouterProviderRoutingFromEnv", () => {
+  it("czyta przyrostki _PROVIDER_* bez wymogu BASE_URL i bez require_parameters", () => {
+    expect(openRouterProviderRoutingFromEnv({
+      UMIEM_LESSON_AGENT_PROVIDER_ORDER: "deepinfra/turbo, Nebius",
+      UMIEM_LESSON_AGENT_PROVIDER_QUANTIZATIONS: "FP8",
+      UMIEM_LESSON_AGENT_PROVIDER_ALLOW_FALLBACKS: "false",
+      UMIEM_LESSON_AGENT_PROVIDER_DATA_COLLECTION: "deny",
+    }, "UMIEM_LESSON_AGENT")).toEqual({
+      order: ["deepinfra/turbo", "Nebius"], quantizations: ["fp8"], allow_fallbacks: false, data_collection: "deny",
+    });
+  });
+
+  it("bez ustawień (także pustych) zwraca undefined", () => {
+    expect(openRouterProviderRoutingFromEnv({}, "UMIEM_LESSON_AGENT", "UMIEM_LLM")).toBeUndefined();
+    expect(openRouterProviderRoutingFromEnv({ UMIEM_LESSON_AGENT_PROVIDER_ORDER: " " }, "UMIEM_LESSON_AGENT")).toBeUndefined();
+  });
+
+  it("każdy nieustawiony przyrostek dziedziczy wartość prefiksu bazowego osobno", () => {
+    const env = { UMIEM_LLM_PROVIDER_DATA_COLLECTION: "deny", UMIEM_LLM_PROVIDER_ORDER: "Nebius", UMIEM_LESSON_AGENT_PROVIDER_ORDER: "Together" };
+    expect(openRouterProviderRoutingFromEnv(env, "UMIEM_LESSON_AGENT", "UMIEM_LLM"))
+      .toEqual({ order: ["Together"], data_collection: "deny" });
+    expect(openRouterProviderRoutingFromEnv(env, "UMIEM_LESSON_AGENT")).toEqual({ order: ["Together"] });
+  });
+
+  it("zła wartość podaje nazwę zmiennej, z której pochodzi (także odziedziczonej)", () => {
+    expect(() => openRouterProviderRoutingFromEnv({ UMIEM_LESSON_AGENT_PROVIDER_DATA_COLLECTION: "maybe" }, "UMIEM_LESSON_AGENT"))
+      .toThrow(/UMIEM_LESSON_AGENT_PROVIDER_DATA_COLLECTION/);
+    expect(() => openRouterProviderRoutingFromEnv({ UMIEM_LLM_PROVIDER_ALLOW_FALLBACKS: "no" }, "UMIEM_LESSON_AGENT", "UMIEM_LLM"))
+      .toThrow(/UMIEM_LLM_PROVIDER_ALLOW_FALLBACKS/);
   });
 });
