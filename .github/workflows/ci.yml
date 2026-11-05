@@ -4,7 +4,7 @@
 # Testy są samowystarczalne: integration i e2e stawiają własne kontenery
 # postgres:17-alpine w global-setup, e2e działa na fake providerach (bez kluczy).
 # E2e biegnie w 7 równoległych jobach (osobne runnery, każdy z własnym światem):
-# projekt mocked w 3 shardach Playwrighta, a real w koszach czasowych REAL_BUCKETS
+# projekt mocked w 4 shardach Playwrighta, a real w koszach czasowych REAL_BUCKETS
 # (spec-projects.ts); `e2e (mocked)` to bramka pod nazwą wymaganego checka.
 # Integracja biegnie w koszach czasowych INTEGRATION_BUCKETS
 # (tests/integration-buckets.ts) jako równoległe joby z własnym kontenerem,
@@ -147,24 +147,30 @@ jobs:
       # main: nowy kosz trzeba tam dopisać, a usunięty usunąć, inaczej PR-y utkną.
       # Projekt mocked (bezstanowy) dzielą shardy Playwrighta: jako jeden job na
       # 4 workerach trwał 5,5 min (4,8 min testów) i wyznaczał czas całego runu
-      # (joby real 2,6–3,2 min). Liczbę shardów zmienia sam matrix — wymagany check
+      # (joby real 2,6–3,2 min); przy 3 shardach (171–185 s) znów był jednym
+      # z najdłuższych jobów, stąd 4. Liczbę shardów zmienia sam matrix — wymagany check
       # raportuje bramka `e2e-mocked`. Shardy dzielą jeden cache Next.js (`cache`).
       matrix:
         include:
           - name: mocked-1
             project: mocked
             bucket: ""
-            shard: "1/3"
+            shard: "1/4"
             cache: mocked
           - name: mocked-2
             project: mocked
             bucket: ""
-            shard: "2/3"
+            shard: "2/4"
             cache: mocked
           - name: mocked-3
             project: mocked
             bucket: ""
-            shard: "3/3"
+            shard: "3/4"
+            cache: mocked
+          - name: mocked-4
+            project: mocked
+            bucket: ""
+            shard: "4/4"
             cache: mocked
           - name: real-1
             project: real
@@ -249,7 +255,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # Liczba shardów mocked w matrixie joba e2e (zgodność pilnuje
           # spec-projects.test.ts): brakujący shard na liście też jest porażką.
-          MOCKED_SHARDS: 3
+          MOCKED_SHARDS: 4
         run: |
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
             --jq '.jobs[] | select(.name | startswith("e2e (mocked-")) | "\(.name)=\(.conclusion)"' > shards.txt

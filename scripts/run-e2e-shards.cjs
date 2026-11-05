@@ -3,7 +3,7 @@
  * Lokalny równoległy przebieg E2E (te same kosze `real` co w CI):
  * jeden build produkcyjny, potem równolegle:
  *  - projekt `mocked` na wielu workerach w jednym świecie (CI dzieli go na shardy
- *    Playwrighta; pojedynczy shard lokalnie: `pnpm exec playwright test --project=mocked --shard=1/3`),
+ *    Playwrighta; pojedynczy shard lokalnie: `pnpm exec playwright test --project=mocked --shard=1/4`),
  *  - projekt `real` podzielony na kosze czasowe (REAL_BUCKETS), każdy z własnym światem
  *    (osobny Postgres, `next start` i worker przez UMIEM_TEST_RUN_ID).
  *
