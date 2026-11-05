@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { openNewMaterial } from "./helpers/parent-new-material";
 import { randomUUID } from "node:crypto";
 import { LessonDeckDtoSchema } from "@learning/contracts";
+import { FAKE_SLOW_MARKER } from "@learning/server";
 import { lessonWorld } from "../fixtures/lesson-world";
 import { closeWorldDatabase, worldPool } from "./helpers/world-database";
 import { loginParent } from "./helpers/parent-session";
@@ -109,7 +110,8 @@ test("browser Back from a newly created lesson returns to the list, not to the e
 
 test("parent can safely restart a running lesson generation", async ({ page }) => {
   await enterParent(page);
-  await createLesson(page, `Restart ${randomUUID().slice(0, 8)}`, false);
+  // Znacznik w materiale: fake LLM generuje pulę 3 s, więc przycisk restartu trwającej generacji jest osiągalny.
+  await createLesson(page, `Restart ${randomUUID().slice(0, 8)} ${FAKE_SLOW_MARKER}`, false);
   const retry = page.getByTestId("retry-stalled-generation");
   await expect(retry).toBeVisible();
   await retry.click();

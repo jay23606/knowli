@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { lessonExerciseIdentity, lessonExerciseStimulusRecord } from "../domain/lessons/exercise-identity";
 import { explanationTextErrors } from "../domain/lessons/exercise-explanation";
 import { poolCoverage, validatePool } from "../domain/lessons/pool-validation";
@@ -14,7 +14,7 @@ import { schoolSubject } from "../domain/lessons/subjects/school/module";
 import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../domain/lessons/types";
 import { objectiveBatchCounts, poolStageCounts, toExerciseDraft } from "../modules/materials/lessons/lesson-drafts";
 import { isMaterialVocabularyTarget, materialPhraseIndex } from "../domain/lessons/subjects/english/material-phrase";
-import { DEFAULT_FAKE_DECK_ITEMS, FakeLessonReviewer, FakeLlmProvider, FakeTtsProvider } from "./fake";
+import { DEFAULT_FAKE_DECK_ITEMS, FAKE_SLOW_DELAY_MS, FAKE_SLOW_MARKER, FakeLessonReviewer, FakeLlmProvider, FakeTtsProvider } from "./fake";
 
 describe("FakeLlmProvider lesson pool", () => {
   it("produces a publishable 3/4/2 grammar pool after functional-stimulus deduplication", async () => {
@@ -100,6 +100,25 @@ describe("FakeLlmProvider — wybór ze słuchu (listenChoicePerObjective)", () 
     expect(result.valid.filter((draft) => draft.exerciseType === "lesson_listen_choice")).toHaveLength(2);
     // Dodatek leży poza podziałem etapów: reszta puli ma dotychczasową liczbę ćwiczeń.
     expect(drafts).toHaveLength(9 + 2);
+  });
+
+  it("znacznik wolnej lekcji w materiale opóźnia pulę mimo zerowego lessonDelayMs", async () => {
+    vi.useFakeTimers();
+    try {
+      const input = grammarInput(presentSimpleV1, "third_person_s");
+      const llm = new FakeLlmProvider();
+      await expect(llm.generateLessonPool(input)).resolves.toBeDefined();
+      let settled = false;
+      const slow = llm.generateLessonPool({ ...input, material: `${input.material} ${FAKE_SLOW_MARKER}` })
+        .then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(FAKE_SLOW_DELAY_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await slow;
+      expect(settled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("bez pola (albo z zerem) nie dokłada ćwiczeń słuchowych", async () => {
