@@ -3,9 +3,8 @@
   "compilerOptions": {
     "types": ["node"],
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["apps/web/src/*"]
+      "@/*": ["./apps/web/src/*"]
     }
   },
   "include": ["tests/**/*.ts", "deploy/**/*.ts", "vitest.*.config.ts", "playwright.config.ts"]
