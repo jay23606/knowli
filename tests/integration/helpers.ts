@@ -18,6 +18,7 @@ import {
 import { createOpenApiHandler } from "@/orpc/handler";
 import { kidRouter } from "@/orpc/kid-router";
 import { parentORpcRouter } from "@/orpc/parent-router";
+import { currentPoolId, workerDatabaseUrl } from "../integration-worker-databases";
 
 type Pool = ReturnType<typeof createDatabase>["pool"];
 
@@ -136,13 +137,18 @@ export async function capturePoolQueries<T>(
   }
 }
 
+/**
+ * URL bazy bieżącego workera Vitesta (`knowli_w<VITEST_POOL_ID>`): pliki biegną
+ * równolegle, każdy worker na własnej kopii zmigrowanej bazy z global-setup.
+ */
 export function testDatabaseUrl(): string {
   // klucze provide() z global-setup nie są statycznie typowane w Vitest 3
   const url = (inject as (key: string) => unknown)("DATABASE_URL");
-  if (typeof url !== "string" || !url) {
-    throw new Error("Brak DATABASE_URL z global-setup");
+  const workers = (inject as (key: string) => unknown)("INTEGRATION_WORKERS");
+  if (typeof url !== "string" || !url || typeof workers !== "number") {
+    throw new Error("Brak DATABASE_URL albo INTEGRATION_WORKERS z global-setup");
   }
-  return url;
+  return workerDatabaseUrl(url, currentPoolId(process.env, workers));
 }
 
 /**

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { readCiJobBuckets, readCiJobName, readCiJobText } from "./ci-matrix";
@@ -19,13 +19,6 @@ describe("kosze testów integracyjnych (integration-buckets)", () => {
     for (const bucket of INTEGRATION_BUCKETS) {
       expect(bucket.length).toBeGreaterThan(0);
     }
-  });
-
-  it("liczba koszy w lokalnym runnerze zgadza się z INTEGRATION_BUCKETS", () => {
-    const runner = readFileSync(join(process.cwd(), "scripts/run-integration-shards.cjs"), "utf8");
-    const match = /const INTEGRATION_BUCKETS = (\d+)/.exec(runner);
-    expect(match, "brak INTEGRATION_BUCKETS w scripts/run-integration-shards.cjs").not.toBeNull();
-    expect(Number(match![1])).toBe(INTEGRATION_BUCKETS.length);
   });
 
   it("matrix CI obejmuje dokładnie kosze INTEGRATION_BUCKETS", () => {

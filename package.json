@@ -14,7 +14,6 @@
     "contracts:export-learning-overview": "node apps/worker/node_modules/tsx/dist/cli.mjs scripts/export-learning-overview-schema.ts",
     "test:mcp": "uv sync --locked --project integrations/umiem-mcp --group hermes-test && uv run --locked --project integrations/umiem-mcp --group hermes-test python -m unittest discover -s integrations/umiem-mcp/tests -p test_*.py",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:integration:shards": "node scripts/run-integration-shards.cjs",
     "probe:chapter": "vitest run --config vitest.probe.config.ts tests/probes/chapter-generation.probe.test.ts",
     "probe:review": "vitest run --config vitest.probe.config.ts tests/probes/lesson-review.probe.test.ts",
     "probe:agent": "vitest run --config vitest.probe.config.ts tests/probes/agent-generation.probe.test.ts",

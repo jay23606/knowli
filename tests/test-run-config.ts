@@ -13,6 +13,8 @@ export interface TestRunConfig {
   e2eWorkers: number;
   e2eBucket: number | null;
   integrationBucket: number | null;
+  /** Liczba workerów Vitesta integracji (każdy z własną bazą); null = domyślna z liczby rdzeni. */
+  integrationWorkers: number | null;
 }
 
 // Kosz czasowy wybierany zmienną `<name>` (REAL_BUCKETS dla E2E,
@@ -76,6 +78,15 @@ export function readTestRunConfig(env: Record<string, string | undefined>): Test
   const e2eBucket = parseBucket(env.UMIEM_E2E_BUCKET, "UMIEM_E2E_BUCKET");
   const integrationBucket = parseBucket(env.UMIEM_INTEGRATION_BUCKET, "UMIEM_INTEGRATION_BUCKET");
 
+  const rawIntegrationWorkers = env.UMIEM_INTEGRATION_WORKERS;
+  if (rawIntegrationWorkers !== undefined && rawIntegrationWorkers !== "" && !/^\d+$/.test(rawIntegrationWorkers)) {
+    throw new Error("UMIEM_INTEGRATION_WORKERS must be an integer from 1 to 16");
+  }
+  const integrationWorkers = rawIntegrationWorkers === undefined || rawIntegrationWorkers === "" ? null : Number(rawIntegrationWorkers);
+  if (integrationWorkers !== null && (integrationWorkers < 1 || integrationWorkers > 16)) {
+    throw new Error("UMIEM_INTEGRATION_WORKERS must be an integer from 1 to 16");
+  }
+
   return {
     integrationContainerPrefix: runId ? `${INTEGRATION_CONTAINER_PREFIX}${runId}-` : INTEGRATION_CONTAINER_PREFIX,
     e2eContainer: runId ? `knowli-e2e-${runId}` : "knowli-e2e",
@@ -90,5 +101,6 @@ export function readTestRunConfig(env: Record<string, string | undefined>): Test
     e2eWorkers,
     e2eBucket,
     integrationBucket,
+    integrationWorkers,
   };
 }

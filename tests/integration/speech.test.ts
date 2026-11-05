@@ -694,7 +694,9 @@ describe("ocena mowy bez trwałego audio (integracja)", () => {
 
     const firstKey = randomUUID();
     const first = submitSpeechAttempt(services, { taskId: task.taskId, clientAttemptId: firstKey }, wavInput(1));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Pierwsza próba stoi w STT (fakes.gate) — czekamy na to zamiast stałych 50 ms,
+    // które nie wystarczały przy obciążonym procesorze.
+    await expect.poll(() => fakes.calls.stt, { timeout: 10_000 }).toBe(1);
 
     const sameKey = randomUUID();
     const retry = await submitSpeechAttempt(services, { taskId: task.taskId, clientAttemptId: sameKey }, wavInput(1));

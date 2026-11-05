@@ -1,28 +1,30 @@
 /**
  * Kosze czasowe testów integracyjnych (tests/integration).
  *
- * Pliki integracyjne biegną sekwencyjnie na jednym wspólnym kontenerze
- * Postgresa (`fileParallelism: false` w vitest.integration.config.ts —
- * każdy plik czyści tabele w beforeEach, więc równoległe pliki kasowałyby
- * sobie nawzajem dane). Równoległość daje dopiero podział na kosze
- * o zbliżonej sumie czasów plików, odpalane jako osobne procesy/joby
- * z własnym kontenerem (global-setup działa per proces) — ten sam wzorzec,
- * co REAL_BUCKETS dla E2E (tests/e2e/spec-projects.ts).
+ * Kosze dzielą pliki między równoległe joby CI `integration (N)`, każdy
+ * z własnym kontenerem Postgresa (global-setup działa per proces) — ten sam
+ * wzorzec, co REAL_BUCKETS dla E2E (tests/e2e/spec-projects.ts). W obrębie
+ * przebiegu pliki biegną dodatkowo równolegle na workerach Vitesta, każdy
+ * z własną bazą (tests/integration-worker-databases.ts). Lokalnie kosze nie
+ * są potrzebne: `pnpm test:integration` uruchamia cały zestaw szybciej niż
+ * dawne lokalne kosze.
  *
- * Kosze są ułożone zachłannie (LPT) wg czasów plików (`endTime - startTime`
- * z `--reporter=json`) z pełnego lokalnego przebiegu 2026-11-04 (baza testów
- * w tmpfs bez fsync, przebieg sekwencyjny): suma plików ~326 s, kosze po
+ * Kosze ułożono zachłannie (LPT) wg czasów plików (`endTime - startTime`
+ * z `--reporter=json`) z pełnego lokalnego przebiegu sekwencyjnego sprzed baz
+ * workerów, 2026-11-04 (baza testów w tmpfs bez fsync): suma plików ~326 s, kosze po
  * ~109 s sumy czasów plików (czas zegarowy kosza ze startem kontenera
  * i importem modułów to ok. 145 s przy trzech koszach naraz). Najdłuższe pliki:
  * `lesson-review.test.ts` (~34 s) i `learning-algorithm.test.ts` (~30 s).
  * Gdy czasy plików mocno urosną, przelicz pomiar i ułóż kosze od nowa.
  * Wybór kosza daje `UMIEM_INTEGRATION_BUCKET` (1..N)
- * w vitest.integration.config.ts; bez niego biegnie cały zestaw. Lokalnie
- * wszystkie kosze naraz uruchamia `pnpm test:integration:shards`.
+ * w vitest.integration.config.ts; bez niego biegnie cały zestaw.
  *
  * Nowy plik integracyjny trzeba dopisać do jednego z koszy (preferuj
  * najlżejszy) — kompletności podziału i zgodności z matrixem CI pilnuje
- * `tests/integration-buckets.test.ts` (suite jednostkowa).
+ * `tests/integration-buckets.test.ts` (suite jednostkowa). Taki plik biegnie
+ * równolegle z innymi: z bazą łączy się tylko przez `testDatabaseUrl()` /
+ * `testDatabase()` z `tests/integration/helpers.ts` (zasady: AGENTS.md,
+ * „Running and verifying”).
  *
  * Nazwy plików są zapisane jako bloki tekstowe (jedna nazwa w linii),
  * a nie jako tablica literałów: detekcja duplikacji Sonara (CPD) abstrahuje

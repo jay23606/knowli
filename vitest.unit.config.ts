@@ -17,7 +17,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["packages/*/src/**/*.test.ts", "packages/*/src/**/*.test.tsx", "apps/*/src/**/*.test.ts", "apps/*/src/**/*.test.tsx", "tests/test-run-config.test.ts", "tests/test-containers.test.ts", "tests/local-ports.test.ts", "tests/integration-buckets.test.ts", "tests/kid-tokens.test.ts", "tests/kid-no-mantine.test.ts", "tests/parent-mantine-scope.test.ts", "tests/kid-design-tokens.test.ts", "tests/e2e/spec-projects.test.ts", "tests/ai-sdk-scope.test.ts", "tests/probes/probe-costs.test.ts", "tests/probes/probe-helpers.test.ts"],
+    include: ["packages/*/src/**/*.test.ts", "packages/*/src/**/*.test.tsx", "apps/*/src/**/*.test.ts", "apps/*/src/**/*.test.tsx", "tests/test-run-config.test.ts", "tests/test-containers.test.ts", "tests/local-ports.test.ts", "tests/integration-buckets.test.ts", "tests/integration-worker-databases.test.ts", "tests/kid-tokens.test.ts", "tests/kid-no-mantine.test.ts", "tests/parent-mantine-scope.test.ts", "tests/kid-design-tokens.test.ts", "tests/e2e/spec-projects.test.ts", "tests/ai-sdk-scope.test.ts", "tests/probes/probe-costs.test.ts", "tests/probes/probe-helpers.test.ts"],
     passWithNoTests: true,
     environment: "node",
     // Wątki zamiast procesów (`forks`): ok. 1/4 krócej, głównie na imporcie modułów.
