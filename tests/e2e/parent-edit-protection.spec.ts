@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { openNewMaterial } from "./helpers/parent-new-material";
+import { holdFakeGeneration, releaseFakeGeneration } from "./helpers/fake-hold";
 
 async function enterParent(page: Page): Promise<void> {
   const request = page.request;
@@ -11,6 +12,9 @@ async function enterParent(page: Page): Promise<void> {
   await expect(page.getByTestId("tab-decks")).toBeVisible();
   await page.getByTestId("tab-decks").click();
 }
+
+// Bramka fake'ów nie może zostać zamknięta po porażce w środku testu.
+test.afterEach(releaseFakeGeneration);
 
 test("polling conflict sends the form's base edit number and keeps local correction", async ({ page }, testInfo) => {
   const targetValue = `cat-${randomUUID()}`;
@@ -46,6 +50,9 @@ test("polling conflict sends the form's base edit number and keeps local correct
   await page.getByTestId("item-target-0").fill(targetValue);
   await page.getByTestId("item-visual-0").selectOption("none");
   const saved = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().includes("/api/v1/parent/drafts/"));
+  // Odpytywanie zestawu trwa tylko, gdy media czekają: bramka trzyma TTS aż do
+  // zamknięcia porównania (fake'i nie mają w E2E opóźnienia).
+  await holdFakeGeneration();
   await page.getByTestId("save-items").click();
   expect((await saved).status()).toBe(200);
   await expect(page.getByTestId("item-audio-state-0")).toContainText("generowanie");
@@ -136,6 +143,7 @@ test("polling conflict sends the form's base edit number and keeps local correct
   await expect(page.getByTestId("deck-conflict-panel")).toHaveCount(0);
   // po zamknięciu porównania baza formularza wraca do odczytów serwera: media
   // dochodzą do „gotowe”, a odpytywanie ustaje (nie wisi na starej wersji z porównania)
+  await releaseFakeGeneration();
   await expect(page.getByTestId("item-audio-state-0")).toContainText("gotowe", { timeout: 30_000 });
   let pollsAfterReady = 0;
   page.on("request", (request) => {

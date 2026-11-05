@@ -7,6 +7,8 @@ export interface TestRunConfig {
   e2ePort: number;
   workerHealthPort: number;
   worldFile: string;
+  /** Bramka fake providerów świata E2E (`UMIEM_FAKE_HOLD_FILE`, tests/e2e/helpers/fake-hold.ts). */
+  fakeHoldFile: string;
   outputDir: string;
   e2eWebMode: "start" | "dev";
   e2eSkipBuild: boolean;
@@ -93,6 +95,7 @@ export function readTestRunConfig(env: Record<string, string | undefined>): Test
     e2ePort,
     workerHealthPort,
     worldFile: `tests/e2e/${runId ? `.world-${runId}.json` : ".world.json"}`,
+    fakeHoldFile: `tests/e2e/${runId ? `.fake-hold-${runId}` : ".fake-hold"}`,
     // Równoległe procesy Playwright czyszczą wspólny outputDir na starcie
     // i kasują sobie nawzajem artefakty; run z własnym ID ma własny katalog.
     outputDir: runId ? `test-results/${runId}` : "test-results",

@@ -14,7 +14,45 @@ import { schoolSubject } from "../domain/lessons/subjects/school/module";
 import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../domain/lessons/types";
 import { objectiveBatchCounts, poolStageCounts, toExerciseDraft } from "../modules/materials/lessons/lesson-drafts";
 import { isMaterialVocabularyTarget, materialPhraseIndex } from "../domain/lessons/subjects/english/material-phrase";
-import { DEFAULT_FAKE_DECK_ITEMS, FAKE_SLOW_DELAY_MS, FAKE_SLOW_MARKER, FakeLessonReviewer, FakeLlmProvider, FakeTtsProvider } from "./fake";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DEFAULT_FAKE_DECK_ITEMS, FAKE_HOLD_MAX_AGE_MS, FAKE_SLOW_DELAY_MS, FAKE_SLOW_MARKER, FakeImageProvider, FakeLessonReviewer, FakeLlmProvider, FakeTtsProvider, waitWhileFakeHeld } from "./fake";
+
+describe("bramka fake providerów E2E (holdFile)", () => {
+  it("zestaw, TTS i obraz czekają, dopóki plik bramki istnieje", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "knowli-fake-hold-"));
+    const holdFile = join(dir, "hold");
+    try {
+      writeFileSync(holdFile, "");
+      const settled: string[] = [];
+      const calls = [
+        new FakeLlmProvider({ holdFile }).generateDeck({ prompt: "dni tygodnia", count: 2, vocabularyFormat: "standard" } as never).then(() => settled.push("deck")),
+        new FakeTtsProvider({ holdFile }).synthesize({ text: "monday" } as never).then(() => settled.push("tts")),
+        new FakeImageProvider({ holdFile }).generate({ prompt: "monday", model: "m", size: "s", quality: "q", format: "png" }).then(() => settled.push("image")),
+      ];
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(settled).toEqual([]);
+      rmSync(holdFile);
+      await Promise.all(calls);
+      expect(settled.sort()).toEqual(["deck", "image", "tts"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignoruje plik bramki starszy niż FAKE_HOLD_MAX_AGE_MS (awaria testu bez zwolnienia)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "knowli-fake-hold-"));
+    const holdFile = join(dir, "hold");
+    try {
+      writeFileSync(holdFile, "");
+      // Świeży plik wstrzymałby wywołanie bez końca; stary kończy czekanie od razu.
+      await expect(waitWhileFakeHeld(holdFile, () => Date.now() + FAKE_HOLD_MAX_AGE_MS + 1_000)).resolves.toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("FakeLlmProvider lesson pool", () => {
   it("produces a publishable 3/4/2 grammar pool after functional-stimulus deduplication", async () => {

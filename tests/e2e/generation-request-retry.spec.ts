@@ -21,9 +21,9 @@ async function pool(): Promise<WorldPool> {
 }
 
 /**
- * Edytor zaakceptowanego generowania: baner „Generuję zestaw…” (queued/running) albo, gdy fake
- * (`UMIEM_FAKE_DELAY_MS`, ok. 750 ms) skończył przed tym odczytem, gotowe słówka. Sam baner bywał
- * już zniknięty na wolnym CI (2026-11-01: „lost 202…”, „a failed list refresh…”).
+ * Edytor zaakceptowanego generowania: baner „Generuję zestaw…” (queued/running) albo gotowe
+ * słówka — fake'i nie mają w E2E opóźnienia, więc zwykle już gotowe. Ten spec sprawdza ponowienie
+ * żądania, nie stan przejściowy; baner świadomie bez bramki fake'ów (helpers/fake-hold.ts).
  */
 async function expectGenerationEditor(page: Page): Promise<void> {
   await expect(page.getByTestId("generation-banner").or(page.getByTestId("item-card-0")).first()).toBeVisible();

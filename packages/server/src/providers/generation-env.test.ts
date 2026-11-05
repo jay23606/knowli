@@ -1,7 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withConfigDefaults } from "../config-defaults";
 import { createGenerationDepsFromEnv, generationPublicServiceFromEnv, imageProviderFromEnv } from "./generation-env";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { FakeLessonReviewer } from "./fake";
+
+describe("UMIEM_FAKE_HOLD_FILE (bramka fake'ów E2E)", () => {
+  it("trafia do fake TTS: synteza czeka, dopóki plik bramki istnieje", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "knowli-hold-env-"));
+    const holdFile = join(dir, "hold");
+    try {
+      writeFileSync(holdFile, "");
+      const deps = createGenerationDepsFromEnv({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_FAKE_HOLD_FILE: holdFile, MEDIA_ROOT: join(dir, "media") })!;
+      let settled = false;
+      const call = deps.tts.synthesize({ text: "monday", locale: "en-GB", voice: "v", format: "mp3" } as never).then(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(settled).toBe(false);
+      rmSync(holdFile);
+      await call;
+      expect(settled).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 import { createTestRecorder } from "./usage/test-recorder";
 
 /**

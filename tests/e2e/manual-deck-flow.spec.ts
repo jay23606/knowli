@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openNewMaterial } from "./helpers/parent-new-material";
+import { holdFakeGeneration, releaseFakeGeneration } from "./helpers/fake-hold";
 import { randomUUID } from "node:crypto";
 import { DeckDtoSchema } from "@learning/contracts";
 
@@ -10,6 +11,9 @@ async function enterParent(page: Page): Promise<void> {
   await expect(page.getByTestId("tab-decks")).toBeVisible();
   await page.getByTestId("tab-decks").click();
 }
+
+// Bramka fake'ów nie może zostać zamknięta po porażce w środku testu.
+test.afterEach(releaseFakeGeneration);
 
 test("creates, reopens and reloads an empty manual deck", async ({ page }) => {
   await enterParent(page);
@@ -204,6 +208,9 @@ test("preserves edits made while an asset-polling read is in flight", async ({ p
   await page.getByTestId("item-source-0").fill("kot");
   await page.getByTestId("item-target-0").fill(targetValue);
   await page.getByTestId("item-visual-0").selectOption("none");
+  // Odpytywanie mediów trwa tylko, gdy TTS czeka: bramka trzyma je do
+  // przechwycenia odczytu (fake'i nie mają w E2E opóźnienia).
+  await holdFakeGeneration();
   await page.getByTestId("save-items").click();
   await expect(page.getByTestId("item-audio-state-0")).toContainText("generowanie");
   holdNextRead = true;
@@ -213,6 +220,7 @@ test("preserves edits made while an asset-polling read is in flight", async ({ p
   // Wait for this exact response to finish, then assert the rendered edit is
   // still present. A dirty editor intentionally drops the stale GET payload.
   await readFulfilled;
+  await releaseFakeGeneration();
   await expect(page.getByTestId("item-source-0")).toHaveValue("kotek");
   const save = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().includes("/drafts/"));
   await page.getByTestId("save-items").click();

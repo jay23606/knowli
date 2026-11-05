@@ -161,6 +161,8 @@ export function createGenerationDepsFromEnv(
       ...fakeGenerationDeps(mediaStore, {
         delayMs: Number.isFinite(delayMs) ? delayMs : 0,
         lessonDelayMs: Number.isFinite(lessonDelayMs) ? lessonDelayMs : 0,
+        // bramka E2E: plik wstrzymuje fake'owe generowanie zestawu i mediów (fake.ts)
+        ...(env.UMIEM_FAKE_HOLD_FILE ? { holdFile: env.UMIEM_FAKE_HOLD_FILE } : {}),
       }),
       lessonExecution,
       // tryb fake nie wymaga konfiguracji gradera (web bierze wtedy fake gradera)

@@ -27,6 +27,10 @@
  * Nowy spec trzeba dopisać do jednej z list (real: do wybranego kosza) —
  * pilnuje tego `spec-projects.test.ts`. Spec mieszany (część testów
  * mockowana, część realna) należy do `real`.
+ *
+ * Fake providerzy świata nie mają sztucznego opóźnienia: spec `real`, który
+ * sprawdza przejściowy stan „generowanie”, wstrzymuje je bramką
+ * `holdFakeGeneration` (helpers/fake-hold.ts), nie stałym opóźnieniem.
  */
 export const MOCKED_SPECS: readonly string[] = [
   "kid-activity-lifecycle.spec.ts",
