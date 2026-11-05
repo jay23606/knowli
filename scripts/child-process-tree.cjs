@@ -1,7 +1,7 @@
 "use strict";
 /**
  * Wspólne operacje na procesach potomnych runnerów równoległych przebiegów
- * (run-e2e-shards.cjs, run-integration-shards.cjs).
+ * (run-e2e-shards.cjs, parallel-tasks.cjs).
  */
 
 const { execFile } = require("node:child_process");

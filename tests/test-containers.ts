@@ -263,10 +263,15 @@ export interface StartedContainer {
 // tracimy tylko odporność na awarię serwera, której testy nie sprawdzają.
 // tmpfs nie ma limitu rozmiaru (pamięć maszyny Dockera), więc max_wal_size
 // ogranicza WAL między checkpointami — naraz działa do 7 takich kontenerów.
+// Kopie bazy dla workerów integracji są małe (pomiar 2026-11-05: 6 kopii
+// i szablon razem ok. 81 MB danych).
 // Ścieżka danych obowiązuje do postgres:17; obraz 18 trzyma dane
 // w /var/lib/postgresql/18/docker i przy podbiciu POSTGRES_IMAGE trzeba ją zmienić.
 const POSTGRES_DATA_DIR = "/var/lib/postgresql/data";
-const POSTGRES_NON_DURABLE_SETTINGS = ["fsync=off", "synchronous_commit=off", "full_page_writes=off", "max_wal_size=256MB"];
+// max_connections: każdy worker integracji ma pulę `pg` (do 10 połączeń) plus
+// pule pomocnicze testów restartu, a domyślne 100 wyczerpałoby się przy kilku
+// workerach; 300 wystarcza do 16 (górny limit UMIEM_INTEGRATION_WORKERS).
+const POSTGRES_NON_DURABLE_SETTINGS = ["fsync=off", "synchronous_commit=off", "full_page_writes=off", "max_wal_size=256MB", "max_connections=300"];
 
 function postgresRunArgs(name: string): string[] {
   return [

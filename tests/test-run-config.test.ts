@@ -31,6 +31,7 @@ describe("readTestRunConfig", () => {
       e2eWorkers: 4,
       e2eBucket: null,
       integrationBucket: null,
+      integrationWorkers: null,
     });
   });
 
@@ -96,5 +97,16 @@ describe("readTestRunConfig", () => {
 
   it.each(["0", "10", "-1", "a", "1.5"])("rejects invalid integration bucket %j", (value) => {
     expect(() => readTestRunConfig({ UMIEM_INTEGRATION_BUCKET: value })).toThrow(/UMIEM_INTEGRATION_BUCKET/);
+  });
+
+  it("parses integration workers; unset and empty mean the CPU-based default", () => {
+    expect(readTestRunConfig({}).integrationWorkers).toBeNull();
+    expect(readTestRunConfig({ UMIEM_INTEGRATION_WORKERS: "" }).integrationWorkers).toBeNull();
+    expect(readTestRunConfig({ UMIEM_INTEGRATION_WORKERS: "1" }).integrationWorkers).toBe(1);
+    expect(readTestRunConfig({ UMIEM_INTEGRATION_WORKERS: "16" }).integrationWorkers).toBe(16);
+  });
+
+  it.each(["0", "17", "-1", "a", "1.5"])("rejects invalid integration workers %j", (value) => {
+    expect(() => readTestRunConfig({ UMIEM_INTEGRATION_WORKERS: value })).toThrow(/UMIEM_INTEGRATION_WORKERS/);
   });
 });

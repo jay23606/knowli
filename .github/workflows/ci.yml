@@ -73,10 +73,10 @@ jobs:
     strategy:
       # Pierwszy failure nie zabiera pozostałych koszy — pełny obraz runu.
       fail-fast: false
-      # Każdy job stawia własny kontener Postgresa (global-setup per proces),
-      # bo pliki integracyjne biegną sekwencyjnie na wspólnej bazie przebiegu
-      # i czyszczą tabele w beforeEach. Kosze INTEGRATION_BUCKETS równoważą
-      # czasy plików; zmiana liczby koszy: zaktualizuj INTEGRATION_BUCKETS
+      # Każdy job stawia własny kontener Postgresa (global-setup per proces);
+      # w jobie pliki biegną na workerach Vitesta (UMIEM_INTEGRATION_WORKERS,
+      # domyślnie 2 na runnerze z 4 vCPU), każdy z własną bazą. Kosze
+      # INTEGRATION_BUCKETS dzielą czas między runnery; zmiana liczby koszy: zaktualizuj INTEGRATION_BUCKETS
       # i ten matrix — zgodności pilnuje test jednostkowy integration-buckets.
       matrix:
         include:

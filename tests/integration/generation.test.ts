@@ -447,7 +447,10 @@ describe("trwałe generowanie zestawu (integracja)", () => {
     let passFinished = false;
     const pass = runDueGenerationWork(services).then((result) => { passFinished = true; return result; });
     await deckEntered;
-    await expect.poll(async () => (await readGeneration(services, lesson.runId)).state, { timeout: 1_000 }).toBe("succeeded");
+    // Zestaw czeka na releaseDeck() bez limitu, więc dłuższy limit nie przepuści
+    // blokującej implementacji; 1 s nie wystarczało przy równoległych workerach
+    // integracji na w pełni obciążonym procesorze.
+    await expect.poll(async () => (await readGeneration(services, lesson.runId)).state, { timeout: 15_000 }).toBe("succeeded");
     expect(passFinished).toBe(false);
     releaseDeck();
     await pass;

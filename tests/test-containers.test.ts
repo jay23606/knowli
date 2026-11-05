@@ -278,7 +278,7 @@ describe("startPostgresContainer", () => {
     const imageIndex = args.indexOf(POSTGRES_IMAGE);
     expect(imageIndex).toBeGreaterThan(args.indexOf("--tmpfs"));
     expect(args.slice(imageIndex + 1)).toEqual([
-      "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_wal_size=256MB",
+      "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_wal_size=256MB", "-c", "max_connections=300",
     ]);
   });
 

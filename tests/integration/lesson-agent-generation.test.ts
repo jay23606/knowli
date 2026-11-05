@@ -1009,11 +1009,12 @@ describe("agent puli lekcji (integracja)", () => {
       });
 
       it("termin runu → succeeded z częścią", async () => {
-        // Termin kierownika = 3000 − 1000 ms rezerwy; B nie kończy się sam, A jest gotowe wcześniej.
+        // Termin kierownika = 6000 − 1000 ms rezerwy; B nie kończy się sam, A jest gotowe wcześniej.
+        // A ma 5 s z zapisem do bazy (wcześniej 2 s — za mało przy obciążonym procesorze).
         const { services } = await agentWorld(
           ["english_grammar"],
           { objectives: { negative: [never()] } },
-          { finalizationReserveMs: 1000, execution: { requestTimeoutMs: 3000, runTimeoutMs: 3000 } },
+          { finalizationReserveMs: 1000, execution: { requestTimeoutMs: 6000, runTimeoutMs: 6000 } },
         );
         const { runId } = await createLesson(services, command({ objectiveIds: [OBJECTIVE, NEGATIVE] }));
 

@@ -145,8 +145,13 @@ async function reviewEndedSession(services: Services, sessionId: string, report:
   return reviewSessionActivity(services, sessionId, report);
 }
 
+/** Limit recenzenta w teście „odpowiedź przed oceną modelu” (wyścig czeka połowę). */
+const REVIEWER_TIMEOUT_MS = 20_000;
+
 async function waitForActivityResult(services: Services, sessionId: string) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  // Limit zegarowy z zapasem: przy równoległych workerach integracji 20 × 10 ms nie wystarczało.
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     const result = await readSessionActivityResult(services, sessionId);
     if (result !== null && result.status !== "already_started") return result;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
@@ -282,7 +287,7 @@ describe("session activity review", () => {
       db: base.services.db,
       clock: base.clock,
       sessionActivity: {
-        timeoutMs: 20_000,
+        timeoutMs: REVIEWER_TIMEOUT_MS,
         provider: {
           name: "pending-reviewer",
           model: "pending-reviewer-v1",
@@ -307,9 +312,12 @@ describe("session activity review", () => {
     try {
       const summaryReturnedBeforeReviewer = await Promise.race([
         ending.then(() => true),
-        // Pozostaw margines dla wolniejszego PostgreSQL CI; reviewerGate pozostaje
-        // zamknięty, więc poprawna odpowiedź musi nadal wrócić przed oceną modelu.
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2_000)),
+        // Pozostaw margines dla wolniejszego PostgreSQL CI i równoległych workerów
+        // integracji; reviewerGate pozostaje zamknięty, więc poprawna odpowiedź
+        // musi nadal wrócić przed oceną modelu. Limit wyścigu musi być krótszy
+        // od limitu recenzenta — inaczej czekająca implementacja wróciłaby po
+        // przerwaniu recenzji i przeszła.
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), REVIEWER_TIMEOUT_MS / 2)),
       ]);
 
       expect(summaryReturnedBeforeReviewer).toBe(true);

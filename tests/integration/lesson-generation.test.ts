@@ -981,7 +981,9 @@ describe("generowanie puli lekcji (integracja)", () => {
 
   it("edycja rodzica przerywa request w toku i nie zapisuje spóźnionego wyniku", async () => {
     const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
-    fakes.deps.lessonExecution = { requestTimeoutMs: 2_000, runTimeoutMs: 5_000, cancelPollMs: 10 };
+    // Limity z zapasem na obciążony procesor: przerwanie przychodzi z edycji/shutdownu,
+    // a request przed nim nie może sam wygasnąć (wcześniej 2 s).
+    fakes.deps.lessonExecution = { requestTimeoutMs: 10_000, runTimeoutMs: 15_000, cancelPollMs: 10 };
     const services = lessonServices(fakes);
     let enter!: () => void;
     const entered = new Promise<void>((resolve) => { enter = resolve; });
@@ -1004,7 +1006,9 @@ describe("generowanie puli lekcji (integracja)", () => {
 
   it("shutdown oddaje aktualny run do kolejki bez cofania wykorzystanej próby", async () => {
     const fakes = await fakeGeneration(); disposers.push(fakes.dispose);
-    fakes.deps.lessonExecution = { requestTimeoutMs: 2_000, runTimeoutMs: 5_000, cancelPollMs: 10 };
+    // Limity z zapasem na obciążony procesor: przerwanie przychodzi z edycji/shutdownu,
+    // a request przed nim nie może sam wygasnąć (wcześniej 2 s).
+    fakes.deps.lessonExecution = { requestTimeoutMs: 10_000, runTimeoutMs: 15_000, cancelPollMs: 10 };
     const services = lessonServices(fakes);
     let enter!: () => void;
     const entered = new Promise<void>((resolve) => { enter = resolve; });
