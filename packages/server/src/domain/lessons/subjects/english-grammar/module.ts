@@ -1,5 +1,6 @@
 import type { LessonExerciseType, SubjectModule } from "../../types";
 import { englishNormalizer } from "../english/normalizer";
+import { grammarAgentPolicy } from "./agent-policy";
 import { ENGLISH_GRAMMAR_ERROR_CATEGORIES } from "./error-categories";
 import { englishGrammarPrompts } from "./prompts";
 import { validateEnglishGrammarExercise } from "./validators";
@@ -46,4 +47,6 @@ export const englishGrammarSubject: SubjectModule = {
   exerciseExplanations: true,
   // Sesja kończy się krótką historyjką z pytaniami o treść (reguły w `prompts.storyRules`).
   lessonStory: true,
+  // Polityka agenta puli: typy ślepe i teksty odrzuceń, bez bramek i planu.
+  agentPolicy: grammarAgentPolicy,
 };

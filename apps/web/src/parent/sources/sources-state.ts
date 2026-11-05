@@ -37,6 +37,11 @@ export function sourceLessonKinds(catalog: SubjectCatalogDto | undefined): Sourc
     catalog.subjects.some((subject) => subject.id === SUBJECT_OF_KIND[kind] && subject.creation === "material"));
 }
 
+/** Wpis katalogu przedmiotu, który otwiera przycisk tworzenia lekcji danego rodzaju (informacje o usługach). */
+export function sourceLessonSubject(catalog: SubjectCatalogDto | undefined, kind: SourceLessonKind): SubjectCatalogDto["subjects"][number] | undefined {
+  return catalog?.subjects.find((subject) => subject.id === SUBJECT_OF_KIND[kind]);
+}
+
 export interface SourceFormValues {
   title: string;
   body: string;

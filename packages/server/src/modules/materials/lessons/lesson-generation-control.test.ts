@@ -76,6 +76,56 @@ describe("withLessonGenerationControl", () => {
     await supersededAssertion;
   });
 
+  describe("run", () => {
+    it("run nie ma limitu pojedynczego żądania", async () => {
+      vi.useFakeTimers();
+      const run = withLessonGenerationControl({ requestTimeoutMs: 25, runTimeoutMs: 500, cancelPollMs: 1000, assertCurrent: async () => true },
+        (control) => control.run(() => new Promise<string>((resolve) => setTimeout(() => resolve("wynik"), 100))));
+      await vi.advanceTimersByTimeAsync(101);
+      await expect(run).resolves.toBe("wynik");
+    });
+
+    it("run mapuje przerwanie: superseded, shutdown, timeout", async () => {
+      vi.useFakeTimers();
+      const hang = (signal: AbortSignal) => new Promise<never>(() => { void signal; });
+      const rethrowReason = (signal: AbortSignal) => new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+
+      for (const work of [hang, rethrowReason]) {
+        const controller = new AbortController();
+        const shutdown = withLessonGenerationControl({ requestTimeoutMs: 25, runTimeoutMs: 500, cancelPollMs: 1000, signal: controller.signal, assertCurrent: async () => true },
+          (control) => control.run(work));
+        const shutdownAssertion = expect(shutdown).rejects.toMatchObject({ reason: "shutdown" });
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(1);
+        await shutdownAssertion;
+
+        let calls = 0;
+        const superseded = withLessonGenerationControl({ requestTimeoutMs: 25, runTimeoutMs: 500, cancelPollMs: 10, assertCurrent: async () => ++calls < 2 },
+          (control) => control.run(work));
+        const supersededAssertion = expect(superseded).rejects.toMatchObject({ reason: "superseded" });
+        await vi.advanceTimersByTimeAsync(11);
+        await supersededAssertion;
+
+        const timeout = withLessonGenerationControl({ requestTimeoutMs: 25, runTimeoutMs: 200, cancelPollMs: 1000, assertCurrent: async () => true },
+          (control) => control.run(work));
+        const timeoutAssertion = expect(timeout).rejects.toMatchObject({ kind: "timeout" });
+        await vi.advanceTimersByTimeAsync(201);
+        await timeoutAssertion;
+      }
+    });
+
+    it("deadlineAtMs = start + runTimeoutMs", async () => {
+      const clock = 1_000;
+      const deadline = await withLessonGenerationControl(
+        { requestTimeoutMs: 25, runTimeoutMs: 500, cancelPollMs: 1000, assertCurrent: async () => true, now: () => clock },
+        async (control) => control.deadlineAtMs,
+      );
+      expect(deadline).toBe(1_500);
+    });
+  });
+
   it("anuluje wszystkie requesty po zmianie tożsamości runu", async () => {
     vi.useFakeTimers();
     let calls = 0;

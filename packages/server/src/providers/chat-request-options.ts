@@ -62,21 +62,7 @@ export function chatRequestExtrasFromEnv(
     else throw new Error(`${prefix}_REASONING must be off, minimal, low, medium or high`);
   }
 
-  const provider: Record<string, unknown> = {};
-  const order = list(`${prefix}_PROVIDER_ORDER`, env[`${prefix}_PROVIDER_ORDER`], PROVIDER_ENDPOINT_SLUG);
-  if (order) provider.order = order;
-  const quantizations = list(`${prefix}_PROVIDER_QUANTIZATIONS`, env[`${prefix}_PROVIDER_QUANTIZATIONS`]);
-  if (quantizations) provider.quantizations = quantizations.map((q) => q.toLowerCase());
-  const fallbacks = env[`${prefix}_PROVIDER_ALLOW_FALLBACKS`]?.trim().toLowerCase();
-  if (fallbacks !== undefined && fallbacks !== "") {
-    if (fallbacks !== "true" && fallbacks !== "false") throw new Error(`${prefix}_PROVIDER_ALLOW_FALLBACKS must be true or false`);
-    provider.allow_fallbacks = fallbacks === "true";
-  }
-  const dataCollection = env[`${prefix}_PROVIDER_DATA_COLLECTION`]?.trim().toLowerCase();
-  if (dataCollection !== undefined && dataCollection !== "") {
-    if (dataCollection !== "deny" && dataCollection !== "allow") throw new Error(`${prefix}_PROVIDER_DATA_COLLECTION must be deny or allow`);
-    provider.data_collection = dataCollection;
-  }
+  const provider = providerRoutingFields((suffix) => ({ name: `${prefix}_PROVIDER_${suffix}`, value: env[`${prefix}_PROVIDER_${suffix}`] }));
   // A configured reasoning level must be honoured too, so it also requires
   // providers that support every sent parameter (it may then fail loudly).
   if (Object.keys(provider).length > 0 || extras.reasoning !== undefined) {
@@ -89,6 +75,62 @@ export function chatRequestExtrasFromEnv(
     extras.provider = provider;
   }
   return extras;
+}
+
+type ProviderRoutingSuffix = "ORDER" | "QUANTIZATIONS" | "ALLOW_FALLBACKS" | "DATA_COLLECTION";
+
+/**
+ * Pola routingu dostawcy (`order`, `quantizations`, `allow_fallbacks`,
+ * `data_collection`) z jednej listy przyrostków `_PROVIDER_*`. `read` zwraca
+ * nazwę zmiennej (do komunikatu błędu) i jej wartość — dzięki temu ten sam kod
+ * obsługuje prefiks jawny i dziedziczony.
+ */
+function providerRoutingFields(
+  read: (suffix: ProviderRoutingSuffix) => { name: string; value: string | undefined },
+): Record<string, unknown> {
+  const provider: Record<string, unknown> = {};
+  const order = read("ORDER");
+  const orderList = list(order.name, order.value, PROVIDER_ENDPOINT_SLUG);
+  if (orderList) provider.order = orderList;
+  const quantizations = read("QUANTIZATIONS");
+  const quantizationList = list(quantizations.name, quantizations.value);
+  if (quantizationList) provider.quantizations = quantizationList.map((q) => q.toLowerCase());
+  const fallbacks = read("ALLOW_FALLBACKS");
+  const fallbacksValue = fallbacks.value?.trim().toLowerCase();
+  if (fallbacksValue !== undefined && fallbacksValue !== "") {
+    if (fallbacksValue !== "true" && fallbacksValue !== "false") throw new Error(`${fallbacks.name} must be true or false`);
+    provider.allow_fallbacks = fallbacksValue === "true";
+  }
+  const dataCollection = read("DATA_COLLECTION");
+  const dataCollectionValue = dataCollection.value?.trim().toLowerCase();
+  if (dataCollectionValue !== undefined && dataCollectionValue !== "") {
+    if (dataCollectionValue !== "deny" && dataCollectionValue !== "allow") throw new Error(`${dataCollection.name} must be deny or allow`);
+    provider.data_collection = dataCollectionValue;
+  }
+  return provider;
+}
+
+/**
+ * Routing dostawcy OpenRouter z `<prefix>_PROVIDER_*` bez wymogu `BASE_URL`
+ * (adapter agenta mówi wyłącznie z OpenRouter). Nieustawiony przyrostek
+ * dziedziczy `<inheritFrom>_PROVIDER_*` osobno — operator z
+ * `UMIEM_LLM_PROVIDER_DATA_COLLECTION=deny` nie traci ochrony po przełączeniu
+ * przedmiotu na agenta. Bez `require_parameters` (dokłada wywołujący, gdy ustawił
+ * wysiłek rozumowania); pusty wynik → `undefined`.
+ */
+export function openRouterProviderRoutingFromEnv(
+  env: Record<string, string | undefined>,
+  prefix: string,
+  inheritFrom?: string,
+): Readonly<Record<string, unknown>> | undefined {
+  const provider = providerRoutingFields((suffix) => {
+    const own = env[`${prefix}_PROVIDER_${suffix}`];
+    if (own !== undefined && own.trim() !== "") return { name: `${prefix}_PROVIDER_${suffix}`, value: own };
+    return inheritFrom === undefined
+      ? { name: `${prefix}_PROVIDER_${suffix}`, value: undefined }
+      : { name: `${inheritFrom}_PROVIDER_${suffix}`, value: env[`${inheritFrom}_PROVIDER_${suffix}`] };
+  });
+  return Object.keys(provider).length > 0 ? provider : undefined;
 }
 
 /** Pola z env najpierw, pola adaptera (model, wiadomości, format) zawsze wygrywają. */

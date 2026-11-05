@@ -108,6 +108,16 @@ export const SubjectCatalogDtoSchema = z.object({
     acceptsInterests: z.boolean().optional(),
     /** Czy generacja dodaje do puli ćwiczenia „Posłuchaj i wybierz” (dopisek przy polu puli w formularzu rodzica). */
     offersListenChoice: z.boolean().optional(),
+    /**
+     * Etykiety usług (host · model), do których trafia materiał przy generowaniu tego przedmiotu
+     * (agent puli, a w szkole także usługa etapu zagadnień); brak = przedmiot bez nadpisania,
+     * obowiązuje katalogowe `generationService`.
+     */
+    generationServices: z.array(z.string().min(1)).min(1).optional(),
+    /** Etykieta drugiego modelu, który rozwiązuje gotowe ćwiczenia na próbę (agent puli); brak = bez kontroli rozwiązywaniem. */
+    checkService: z.string().min(1).optional(),
+    /** Czy do drugiego modelu trafia też materiał lekcji (polityka checkera przedmiotu); ma sens przy `checkService`. */
+    checkServiceIncludesMaterial: z.boolean().optional(),
     topics: z.array(z.object({
       id: z.string().min(1),
       version: z.number().int().positive(),
@@ -562,6 +572,19 @@ export const LessonReviewDtoSchema = z.object({
 export type LessonReviewDto = z.infer<typeof LessonReviewDtoSchema>;
 
 /**
+ * Luka po generowaniu agentem puli (spec etapu 2a §11): zagadnienie, które agent zostawił
+ * niepełne (`incomplete`) albo nieudane (`failed`), lub niepełne dogenerowanie (`add_short`:
+ * dodano `added` z `requested`). Bez treści ćwiczeń.
+ */
+export const LessonGenerationGapDtoSchema = z.object({
+  objectiveId: z.string().min(1),
+  reason: z.enum(["incomplete", "failed", "add_short"]),
+  added: z.number().int().nonnegative().optional(),
+  requested: z.number().int().positive().optional(),
+}).strict();
+export type LessonGenerationGapDto = z.infer<typeof LessonGenerationGapDtoSchema>;
+
+/**
  * Widok szkicu lekcji dla panelu rodzica (design „Data Models → Kontrakty”).
  * `examples` to przykłady z lekcji per cel; `exercises` to zedytowane payloady
  * z `revisionId`; `coverage` wskazuje braki etapów do publikacji.
@@ -617,6 +640,11 @@ export const LessonDraftDtoSchema = z.object({
    * albo kontrola wyłączona dla wszystkich zagadnień.
    */
   review: LessonReviewDtoSchema.optional(),
+  /**
+   * Zagadnienia do uzupełnienia po częściowym generowaniu agentem puli; brak pola = pula pełna,
+   * generowanie potokiem albo wersja opublikowana.
+   */
+  generationGaps: z.array(LessonGenerationGapDtoSchema).min(1).optional(),
 });
 export type LessonDraftDto = z.infer<typeof LessonDraftDtoSchema>;
 

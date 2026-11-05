@@ -4,10 +4,13 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./lesson-agent": "./src/providers/lesson-agent-env.ts"
   },
   "dependencies": {
     "@learning/contracts": "workspace:*",
+    "@openrouter/ai-sdk-provider": "3.1.0",
+    "ai": "7.0.162",
     "drizzle-orm": "^0.45.4",
     "pg": "^8.16.0",
     "sharp": "0.35.5",

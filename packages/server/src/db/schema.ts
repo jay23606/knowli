@@ -490,6 +490,11 @@ export const generationRuns = app.table(
     // informacyjna dla raportu kosztów — NULL dla runów deck/lesson, głosu UI
     // i runów zleconych przed migracją 0036. Nie wpływa na dedupe ani lease.
     originDeckId: uuid("origin_deck_id").references((): AnyPgColumn => decks.id, { onDelete: "set null" }),
+    // Punkt kontrolny agenta puli lekcji (spec 2026-11-04 §8, migracja 0037):
+    // postęp próby albo podsumowanie po zapisie do szkicu; kształt waliduje
+    // `lessons/lesson-agent-checkpoint.ts` przy odczycie. NULL — run bez agenta
+    // albo anulowany (`supersedeLessonRuns`, `markLessonRun(…, "superseded")`).
+    agentCheckpoint: jsonb("agent_checkpoint").$type<Record<string, unknown>>(),
   },
   (t) => [
     check("generation_runs_kind_allowed", sql`${t.kind} in ('deck', 'lesson', 'tts', 'illustration')`),

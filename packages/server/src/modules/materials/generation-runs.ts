@@ -168,7 +168,8 @@ export function lessonPoolRunFilter(): SQL {
  * they can publish their result. Domyślnie anuluje tylko runy puli ćwiczeń:
  * run historyjki nie zależy od numeru edycji i przeżywa zwykłą edycję oraz
  * dogenerowanie celu. `includeStoryRuns` (nowy pełny run lekcji, patch
- * historyjki) anuluje także runy historyjki.
+ * historyjki) anuluje także runy historyjki. Punkt kontrolny agenta
+ * anulowanego runu znika (spec etapu 2a §8.1): run anulowany nie wraca.
  */
 export async function supersedeLessonRuns(
   db: Executor,
@@ -178,7 +179,7 @@ export async function supersedeLessonRuns(
   options: { includeStoryRuns?: boolean } = {},
 ): Promise<void> {
   await db.update(generationRuns)
-    .set({ state: "superseded", errorCode: null, finishedAt })
+    .set({ state: "superseded", errorCode: null, finishedAt, agentCheckpoint: null })
     .where(and(
       eq(generationRuns.kind, "lesson"),
       eq(generationRuns.deckVersionId, deckVersionId),
@@ -186,6 +187,19 @@ export async function supersedeLessonRuns(
       exceptRunId ? ne(generationRuns.id, exceptRunId) : undefined,
       options.includeStoryRuns === true ? undefined : lessonPoolRunFilter(),
     ));
+}
+
+/**
+ * „Ponów” rodzica dla runu puli lekcji (spec etapu 2a §8.4): świeży budżet
+ * agenta (`budgetSpentUsd = 0`) przy zachowanym postępie i `totalSpentUsd`.
+ * Czysty SQL na kolumnie — bez odczytu przez moduł punktu kontrolnego, żeby
+ * ścieżka słówek nie zależała od modułu lekcji. Podsumowanie i brak punktu
+ * kontrolnego zostają bez zmian. Wołać pod blokadą runu (`FOR UPDATE`).
+ */
+export async function resetLessonAgentBudget(tx: Executor, runId: string): Promise<void> {
+  await tx.update(generationRuns)
+    .set({ agentCheckpoint: sql`jsonb_set(${generationRuns.agentCheckpoint}, '{budgetSpentUsd}', '0')` })
+    .where(and(eq(generationRuns.id, runId), sql`${generationRuns.agentCheckpoint}->>'kind' = 'progress'`));
 }
 
 /**

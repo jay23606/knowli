@@ -12,6 +12,7 @@ import type { ParentRoute } from "../parent-routes";
 import { httpStatusOf, orpc } from "../query-client";
 import { runOnce } from "../run-once";
 import type { EditorLeaveState } from "../useParentLeaveGuard";
+import { subjectServiceInfo } from "../lessons/lesson-service-info";
 import SourceFields from "./SourceFields";
 import {
   deckCountLabel,
@@ -20,6 +21,7 @@ import {
   newLessonFromSource,
   newVocabularyFromSource,
   sourceLessonKinds,
+  sourceLessonSubject,
   sourcePatch,
   sourceValuesValid,
   type SourceFormValues,
@@ -303,6 +305,12 @@ export default function SourcePage({
   // pokaże własny komunikat z ponowieniem.
   const lessonKinds = sourceLessonKinds(catalogQuery.data);
   const lessonButtons = LESSON_BUTTONS.filter((button) => lessonKinds === null || lessonKinds.includes(button.kind));
+  // przedmiot z agentem puli (`checkService`) ma własne usługi i drugi model; krytyk lekcji go nie przegląda,
+  // więc jego komunikat zostaje tylko wtedy, gdy któryś przycisk prowadzi do przedmiotu potoku
+  const buttonServices = lessonButtons
+    .map((button) => ({ kind: button.kind, info: subjectServiceInfo(sourceLessonSubject(catalogQuery.data, button.kind)) }))
+    .filter(({ info }) => info.check !== null);
+  const showReviewService = lessonButtons.length > buttonServices.length;
 
   return (
     <Stack gap="lg" className="pp-editor pp-source-page" data-testid="source-page">
@@ -334,7 +342,16 @@ export default function SourcePage({
       {lessonButtons.length === 0 && (
         <Text size="sm" className="pp-editor-muted" data-testid="source-no-lesson-subjects">{messages.sources.noLessonSubjects}</Text>
       )}
-      {lessonButtons.length > 0 && catalogQuery.data?.reviewService && (
+      {buttonServices.map(({ kind, info }, index) => (
+        <Stack key={kind} gap={4}>
+          {/* ten sam komunikat o generowaniu (te same usługi) pokazujemy raz, gdy oba przyciski prowadzą do agenta */}
+          {info.generation && !buttonServices.slice(0, index).some((earlier) => earlier.info.generation === info.generation) && (
+            <Text size="sm" className="pp-editor-muted" data-testid={`source-generation-service-${kind}`}>{info.generation}</Text>
+          )}
+          {info.check && <Text size="sm" className="pp-editor-muted" data-testid={`source-check-service-${kind}`}>{info.check}</Text>}
+        </Stack>
+      ))}
+      {showReviewService && catalogQuery.data?.reviewService && (
         <Text size="sm" className="pp-editor-muted" data-testid="source-review-service">
           {messages.lessons.reviewServiceInfo.replace("{service}", () => catalogQuery.data!.reviewService!)}
         </Text>

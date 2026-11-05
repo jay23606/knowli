@@ -77,6 +77,23 @@ export const CONFIG_DEFAULTS = {
   UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS: "600000",
   UMIEM_LESSON_GENERATION_CANCEL_POLL_MS: "1000",
 
+  // ── Agent puli lekcji (worker; etap 2 #237) ──
+  // Lista przedmiotów generowanych agentem (identyfikatory po przecinku); pusta =
+  // wszystkie lekcje generuje potok. Adapter mówi wyłącznie z OpenRouter; routing
+  // dostawcy `UMIEM_LESSON_AGENT[_CHECKER]_PROVIDER_*` dziedziczy `UMIEM_LLM_PROVIDER_*`.
+  // Klucz: UMIEM_LESSON_AGENT_API_KEY → OPENROUTER_API_KEY → UMIEM_LLM_API_KEY (nie tutaj).
+  UMIEM_LESSON_AGENT_SUBJECTS: "",
+  UMIEM_LESSON_AGENT_MODEL: "google/gemini-3.8-flash",
+  UMIEM_LESSON_AGENT_REASONING: "low",
+  UMIEM_LESSON_AGENT_CHECKER_MODEL: "deepseek/deepseek-v4.1-flash-1017",
+  UMIEM_LESSON_AGENT_CHECKER_REASONING: "low",
+  UMIEM_LESSON_AGENT_MAX_STEPS: "8",
+  UMIEM_LESSON_AGENT_CONCURRENCY: "4",
+  UMIEM_LESSON_AGENT_CHECKER_CONCURRENCY: "4",
+  UMIEM_LESSON_AGENT_OBJECTIVE_TIMEOUT_MS: "300000",
+  UMIEM_LESSON_AGENT_CHECKER_TIMEOUT_MS: "90000",
+  UMIEM_LESSON_AGENT_RUN_BUDGET_USD: "1.00",
+
   // ── Worker ──
   WORKER_POLL_MS: "2000",
   WORKER_HEALTH_STALE_MS: "900000",

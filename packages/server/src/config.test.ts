@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_LESSON_STT_MODEL, defaultMediaSettings, graderFromEnv, lessonSpeechFromEnv, mediaSettingsFromEnv, reviewerFromEnv, reviewerPublicServiceFromEnv, sessionActivityFromEnv, speechFromEnv, ttsInstructionsFor, ttsVoiceFor } from "./config";
+import { DEFAULT_LESSON_STT_MODEL, defaultMediaSettings, graderFromEnv, lessonAgentPublicFromEnv, lessonAgentSettingsFromEnv, lessonSpeechFromEnv, mediaSettingsFromEnv, reviewerFromEnv, reviewerPublicServiceFromEnv, sessionActivityFromEnv, speechFromEnv, ttsInstructionsFor, ttsVoiceFor } from "./config";
 import { withConfigDefaults } from "./config-defaults";
+import { createProductionSubjectRegistry } from "./domain/lessons/subjects";
 import { createTestRecorder } from "./providers/usage/test-recorder";
 
 describe("mediaSettingsFromEnv", () => {
@@ -401,5 +402,148 @@ describe("reviewerPublicServiceFromEnv", () => {
   it("tryb fake z ENABLED=true pokazuje fake, bez ENABLED nic", () => {
     expect(reviewerPublicServiceFromEnv({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_ENABLED: "true" })).toBe("fake-reviewer-1");
     expect(reviewerPublicServiceFromEnv({ UMIEM_FAKE_PROVIDERS: "1" })).toBeUndefined();
+  });
+});
+
+describe("lessonAgentSettingsFromEnv", () => {
+  const subjects = createProductionSubjectRegistry();
+  const KEY = { OPENROUTER_API_KEY: "sk-or-v1-shared" };
+  const agentSubject = () => subjects.listSubjects().find((s) => s.agentPolicy !== undefined)!;
+  const base = (extra: Record<string, string | undefined> = {}) =>
+    withConfigDefaults({ UMIEM_LESSON_AGENT_SUBJECTS: agentSubject().id, ...KEY, ...extra });
+  const withoutPolicy = {
+    getSubject: (id: string) => (id === "plain" ? { ...agentSubject(), id: "plain", agentPolicy: undefined } : subjects.getSubject(id)),
+  };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("pusta lista → undefined, bez ostrzeżenia i bez czytania reszty", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect(lessonAgentSettingsFromEnv(withConfigDefaults(KEY), subjects)).toBeUndefined();
+    expect(lessonAgentSettingsFromEnv({ UMIEM_LESSON_AGENT_SUBJECTS: " , ", UMIEM_LESSON_AGENT_MAX_STEPS: "abc" }, subjects)).toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("lista bez klucza → undefined i jedno ostrzeżenie", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const env = withConfigDefaults({ UMIEM_LESSON_AGENT_SUBJECTS: agentSubject().id });
+    expect(lessonAgentSettingsFromEnv(env, subjects)).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("[config] UMIEM_LESSON_AGENT_SUBJECTS bez klucza OpenRouter — lekcje generuje potok");
+  });
+
+  it("wartości domyślne, lista bez duplikatów i polityka z env", () => {
+    const id = agentSubject().id;
+    const settings = lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_SUBJECTS: ` ${id}, ${id},` }), subjects)!;
+    expect(settings.subjects).toEqual(new Set([id]));
+    expect(settings).toMatchObject({
+      apiKey: "sk-or-v1-shared", model: "google/gemini-3.8-flash", effort: "low",
+      checkerModel: "deepseek/deepseek-v4.1-flash-1017", checkerEffort: "low",
+      provider: { require_parameters: true }, checkerProvider: { require_parameters: true },
+    });
+    expect(settings.policy).toEqual({
+      maxStepsPerObjective: 8, planMaxSteps: 8, concurrency: 4, checkerConcurrency: 4,
+      objectiveTimeoutMs: 300_000, checkerTimeoutMs: 90_000, runBudgetUsd: 1,
+    });
+    const tuned = lessonAgentSettingsFromEnv(base({
+      UMIEM_LESSON_AGENT_MAX_STEPS: "5", UMIEM_LESSON_AGENT_CONCURRENCY: "2", UMIEM_LESSON_AGENT_RUN_BUDGET_USD: "0.25",
+    }), subjects)!;
+    expect(tuned.policy).toMatchObject({ maxStepsPerObjective: 5, planMaxSteps: 5, concurrency: 2, runBudgetUsd: 0.25 });
+  });
+
+  it("działa na surowym env, bez withConfigDefaults", () => {
+    const id = agentSubject().id;
+    expect(lessonAgentSettingsFromEnv({ UMIEM_LESSON_AGENT_SUBJECTS: id, ...KEY }, subjects)?.model).toBe("google/gemini-3.8-flash");
+  });
+
+  it("klucz: własny klucz agenta wygrywa nad wspólnym", () => {
+    expect(lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_API_KEY: "sk-or-v1-agent" }), subjects)?.apiKey).toBe("sk-or-v1-agent");
+  });
+
+  it("nieznany przedmiot i przedmiot bez polityki to błąd startu z nazwą zmiennej", () => {
+    expect(() => lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_SUBJECTS: `${agentSubject().id},nie_ma_takiego` }), subjects))
+      .toThrow(/UMIEM_LESSON_AGENT_SUBJECTS.*nie_ma_takiego/);
+    expect(() => lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_SUBJECTS: "plain" }), withoutPolicy))
+      .toThrow(/UMIEM_LESSON_AGENT_SUBJECTS.*plain.*no agent policy/);
+  });
+
+  it("błędna liczba, wysiłek albo budżet to błąd z nazwą zmiennej", () => {
+    expect(() => lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_MAX_STEPS: "abc" }), subjects)).toThrow(/UMIEM_LESSON_AGENT_MAX_STEPS/);
+    expect(() => lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_CONCURRENCY: "0" }), subjects)).toThrow(/UMIEM_LESSON_AGENT_CONCURRENCY/);
+    expect(() => lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_RUN_BUDGET_USD: "-1" }), subjects)).toThrow(/UMIEM_LESSON_AGENT_RUN_BUDGET_USD/);
+    expect(() => lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_REASONING: "turbo" }), subjects)).toThrow(/UMIEM_LESSON_AGENT_REASONING/);
+    expect(() => lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_CHECKER_REASONING: "max" }), subjects))
+      .toThrow(/UMIEM_LESSON_AGENT_CHECKER_REASONING/);
+  });
+
+  it("generator i checker z tej samej rodziny to błąd z nazwą zmiennej checkera", () => {
+    expect(() => lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_CHECKER_MODEL: "google/gemini-3.8-pro" }), subjects))
+      .toThrow(/UMIEM_LESSON_AGENT_CHECKER_MODEL/);
+  });
+
+  it("błędna wartość jest odrzucana także bez klucza (walidacja przed kluczem)", () => {
+    const env = withConfigDefaults({ UMIEM_LESSON_AGENT_SUBJECTS: agentSubject().id, UMIEM_LESSON_AGENT_MAX_STEPS: "abc" });
+    expect(() => lessonAgentSettingsFromEnv(env, subjects)).toThrow(/UMIEM_LESSON_AGENT_MAX_STEPS/);
+  });
+
+  it("routing: własne ORDER, odziedziczone DATA_COLLECTION, require_parameters przy wysiłku ≠ none", () => {
+    const settings = lessonAgentSettingsFromEnv(base({
+      UMIEM_LESSON_AGENT_PROVIDER_ORDER: "Together",
+      UMIEM_LLM_PROVIDER_DATA_COLLECTION: "deny",
+      UMIEM_LLM_PROVIDER_ORDER: "Nebius",
+    }), subjects)!;
+    expect(settings.provider).toEqual({ order: ["Together"], data_collection: "deny", require_parameters: true });
+    expect(settings.checkerProvider).toEqual({ order: ["Nebius"], data_collection: "deny", require_parameters: true });
+  });
+
+  it("routing: wysiłek none nie dokłada require_parameters, a bez routingu provider znika", () => {
+    const none = lessonAgentSettingsFromEnv(base({
+      UMIEM_LESSON_AGENT_REASONING: "none", UMIEM_LESSON_AGENT_CHECKER_REASONING: "none", UMIEM_LLM_PROVIDER_DATA_COLLECTION: "deny",
+    }), subjects)!;
+    expect(none.provider).toEqual({ data_collection: "deny" });
+    const bare = lessonAgentSettingsFromEnv(base({ UMIEM_LESSON_AGENT_REASONING: "none", UMIEM_LESSON_AGENT_CHECKER_REASONING: "none" }), subjects)!;
+    expect(bare).not.toHaveProperty("provider");
+    expect(bare).not.toHaveProperty("checkerProvider");
+  });
+
+  it("brak UMIEM_LESSON_AGENT_BASE_URL (i UMIEM_LLM_BASE_URL na innym hoście) nie rzuca", () => {
+    expect(() => lessonAgentSettingsFromEnv(base({ UMIEM_LLM_BASE_URL: "https://api.openai.com/v1", UMIEM_LLM_PROVIDER_ORDER: "Nebius" }), subjects))
+      .not.toThrow();
+  });
+});
+
+describe("lessonAgentPublicFromEnv", () => {
+  const subjects = createProductionSubjectRegistry();
+  const id = subjects.listSubjects().find((s) => s.agentPolicy !== undefined)!.id;
+
+  it("nazwy usług bez klucza (obecność zależy od listy)", () => {
+    expect(lessonAgentPublicFromEnv(withConfigDefaults({ UMIEM_LESSON_AGENT_SUBJECTS: id }), subjects)).toEqual({
+      subjects: new Set([id]),
+      generationService: "openrouter.ai · google/gemini-3.8-flash",
+      checkService: "openrouter.ai · deepseek/deepseek-v4.1-flash-1017",
+    });
+    expect(lessonAgentPublicFromEnv({ UMIEM_LESSON_AGENT_SUBJECTS: id, UMIEM_LESSON_AGENT_MODEL: "x/y" }, subjects)?.generationService)
+      .toBe("openrouter.ai · x/y");
+  });
+
+  it("pusta lista → undefined; nieznane i bez polityki pomijane bez wyjątku", () => {
+    expect(lessonAgentPublicFromEnv(withConfigDefaults({}), subjects)).toBeUndefined();
+    expect(lessonAgentPublicFromEnv({ UMIEM_LESSON_AGENT_SUBJECTS: "nie_ma_takiego" }, subjects)).toBeUndefined();
+    const plain = {
+      getSubject: (x: string) => (x === "plain" ? { ...subjects.getSubject(id)!, id: "plain", agentPolicy: undefined } : subjects.getSubject(x)),
+    };
+    expect(lessonAgentPublicFromEnv({ UMIEM_LESSON_AGENT_SUBJECTS: `plain,nie_ma_takiego,${id}` }, plain)?.subjects).toEqual(new Set([id]));
+  });
+
+  it("nie rzuca na błędnych liczbach i wysiłkach", () => {
+    const env = withConfigDefaults({ UMIEM_LESSON_AGENT_SUBJECTS: id, UMIEM_LESSON_AGENT_MAX_STEPS: "abc", UMIEM_LESSON_AGENT_REASONING: "turbo" });
+    expect(() => lessonAgentPublicFromEnv(env, subjects)).not.toThrow();
+  });
+
+  it("tryb fake pokazuje nazwy fake", () => {
+    expect(lessonAgentPublicFromEnv({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_LESSON_AGENT_SUBJECTS: id }, subjects)).toMatchObject({
+      generationService: "fake-lesson-agent-model", checkService: "fake-lesson-checker-model",
+    });
+    expect(lessonAgentPublicFromEnv({ UMIEM_FAKE_PROVIDERS: "1" }, subjects)).toBeUndefined();
   });
 });

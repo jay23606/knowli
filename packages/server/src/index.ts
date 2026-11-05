@@ -247,6 +247,7 @@ export {
 export { authorizeFeedbackAudio } from "./modules/learning";
 export {
   deterministicBytes,
+  FAKE_SLOW_MARKER,
   fakeGenerationDeps,
   fakeMediaSettings,
   fakeSpeechDeps,

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { SubjectCatalogDtoSchema } from "@learning/contracts";
+import { LessonDraftDtoSchema, SubjectCatalogDtoSchema } from "@learning/contracts";
 import { createServices } from "../../../config";
 import { createSubjectRegistry, type SubjectRegistry } from "../../../domain/lessons/registry";
 import { englishChapterSubject } from "../../../domain/lessons/subjects/english-chapter/module";
-import { lessonCatalog } from "./lesson-api";
+import { generationGapsDto, lessonCatalog, readLessonContext } from "./lesson-api";
 import { createLessonFromMaterial, createMaterialLesson } from "./lesson-drafts";
 
 describe("lessonCatalog (sposób tworzenia zestawu per przedmiot)", () => {
@@ -51,6 +51,87 @@ describe("lessonCatalog (sposób tworzenia zestawu per przedmiot)", () => {
       creation: "material",
       subjectTitleRequired: false,
       topics: [],
+    });
+  });
+
+  describe("usługi generowania i kontroli per przedmiot (agent puli)", () => {
+    const agent = (subjects: string[]) => ({
+      subjects: new Set(subjects),
+      generationService: "openrouter.ai · agent-model",
+      checkService: "openrouter.ai · checker-model",
+    });
+    const withAgent = (subjects: string[], extra: { generationService?: string } = {}) =>
+      lessonCatalog(createServices({ db: {} as never, lessonAgentPublic: agent(subjects), ...extra }));
+
+    it("przedmiot z agentem: usługi per przedmiot", () => {
+      const catalog = withAgent(["english_grammar", "english_chapter"], { generationService: "openrouter.ai · llm" });
+      const grammar = catalog.subjects.find((s) => s.id === "english_grammar")!;
+      // tematy katalogowe bez etapu zagadnień, ale run historyjki (`lessonStory`) idzie do usługi UMIEM_LLM
+      expect(grammar.generationServices).toEqual(["openrouter.ai · agent-model", "openrouter.ai · llm"]);
+      expect(grammar.checkService).toBe("openrouter.ai · checker-model");
+      expect(grammar.checkServiceIncludesMaterial).toBe(false);
+      // rozdział: planer z polityki zastępuje etap zagadnień — usługa UMIEM_LLM nie dostaje materiału
+      const chapter = catalog.subjects.find((s) => s.id === "english_chapter")!;
+      expect(chapter.generationServices).toEqual(["openrouter.ai · agent-model"]);
+      expect(chapter.checkServiceIncludesMaterial).toBe(false);
+      expect(SubjectCatalogDtoSchema.safeParse(catalog).success).toBe(true);
+    });
+
+    it("szkoła: dwie usługi i wariant z materiałem", () => {
+      const catalog = withAgent(["school"], { generationService: "openrouter.ai · llm" });
+      const school = catalog.subjects.find((s) => s.id === "school")!;
+      expect(school.generationServices).toEqual(["openrouter.ai · agent-model", "openrouter.ai · llm"]);
+      expect(school.checkService).toBe("openrouter.ai · checker-model");
+      expect(school.checkServiceIncludesMaterial).toBe(true);
+      expect(SubjectCatalogDtoSchema.safeParse(catalog).success).toBe(true);
+    });
+
+    it("szkoła: ta sama usługa etapu zagadnień i agenta nie dubluje się, brak usługi etapu — sam agent", () => {
+      const same = withAgent(["school"], { generationService: "openrouter.ai · agent-model" });
+      expect(same.subjects.find((s) => s.id === "school")!.generationServices).toEqual(["openrouter.ai · agent-model"]);
+      const none = withAgent(["school"]);
+      expect(none.subjects.find((s) => s.id === "school")!.generationServices).toEqual(["openrouter.ai · agent-model"]);
+    });
+
+    it("przedmiot poza listą: bez pól", () => {
+      const catalog = withAgent(["school"], { generationService: "openrouter.ai · llm" });
+      for (const id of ["english_grammar", "english_chapter"]) {
+        const subject = catalog.subjects.find((s) => s.id === id)!;
+        expect(subject).not.toHaveProperty("generationServices");
+        expect(subject).not.toHaveProperty("checkService");
+        expect(subject).not.toHaveProperty("checkServiceIncludesMaterial");
+      }
+      // bez agenta w usługach nikt nie dostaje pól
+      for (const subject of lessonCatalog(createServices({ db: {} as never, generationService: "openrouter.ai · llm" })).subjects) {
+        expect(subject).not.toHaveProperty("checkService");
+      }
+    });
+  });
+
+  describe("luki generowania w DTO szkicu", () => {
+    const gaps = [
+      { objectiveId: "o1", reason: "incomplete" as const },
+      { objectiveId: "o2", reason: "add_short" as const, added: 2, requested: 5 },
+    ];
+
+    it("szkic: generationGaps w DTO", () => {
+      const context = readLessonContext({ subjectId: "school", objectiveIds: ["o1", "o2"], generationGaps: gaps });
+      const dto = generationGapsDto(context, false);
+      expect(dto).toEqual(gaps);
+      expect(dto).not.toBe(context.generationGaps);
+      expect(LessonDraftDtoSchema.shape.generationGaps.safeParse(dto).success).toBe(true);
+    });
+
+    it("luka usuniętego zagadnienia (poza objectiveIds) znika z DTO; bez pozostałych — bez pola", () => {
+      expect(generationGapsDto(readLessonContext({ objectiveIds: ["o2"], generationGaps: gaps }), false)).toEqual([gaps[1]]);
+      expect(generationGapsDto(readLessonContext({ objectiveIds: ["o3"], generationGaps: gaps }), false)).toBeUndefined();
+    });
+
+    it("brak luk, pusta lista albo wersja opublikowana: bez pola", () => {
+      expect(generationGapsDto(readLessonContext({}), false)).toBeUndefined();
+      expect(generationGapsDto(readLessonContext({ generationGaps: [] }), false)).toBeUndefined();
+      expect(readLessonContext({ generationGaps: [] })).not.toHaveProperty("generationGaps");
+      expect(generationGapsDto(readLessonContext({ objectiveIds: ["o1", "o2"], generationGaps: gaps }), true)).toBeUndefined();
     });
   });
 

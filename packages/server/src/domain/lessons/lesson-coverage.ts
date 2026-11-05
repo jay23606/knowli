@@ -81,13 +81,21 @@ function mergeGaps(base: readonly CoverageGap[], extra: readonly CoverageGap[]):
   return merged;
 }
 
+/** Braki pokrycia z podziałem na źródła (przed scaleniem w `lessonCoverageGaps`). */
+export interface LessonCoverageGapSources {
+  /** `poolCoverage` bez ujawnionych ćwiczeń samodzielnych. */
+  readonly stages: CoverageGap[];
+  /** Reguła różnych odpowiedzi otwartych (szkoła), też bez ujawnionych; `required` = 2. */
+  readonly distinctOpenAnswers: CoverageGap[];
+  /** Zagadnienie → liczba wykluczonych ujawnionych ćwiczeń. */
+  readonly excludedByObjective: ReadonlyMap<string, number>;
+}
+
 /**
- * Braki pokrycia: `poolCoverage` bez ujawnionych ćwiczeń samodzielnych (tryb
- * `coverage`) oraz reguła różnych odpowiedzi otwartych (też bez ujawnionych).
- * `excluded` = liczba wykluczonych ujawnionych ćwiczeń zagadnienia w etapie
- * samodzielnym — tylko gdy > 0.
+ * Braki obu źródeł osobno — dla komunikatu, który ma nazwać właściwą przyczynę
+ * (np. agent: „distinct open answers” zamiast zaniżonego etapu samodzielnego).
  */
-export function lessonCoverageGaps(input: LessonCoverageInput): (CoverageGap & { readonly excluded?: number })[] {
+export function lessonCoverageGapSources(input: LessonCoverageInput): LessonCoverageGapSources {
   const { subject, exercises, examples, objectiveIds } = input;
   const leaks = input.ignoreExposure === true
     ? []
@@ -99,10 +107,23 @@ export function lessonCoverageGaps(input: LessonCoverageInput): (CoverageGap & {
     excludedByObjective.set(objectiveId, (excludedByObjective.get(objectiveId) ?? 0) + 1);
   }
   const counted = exercises.filter((_, index) => !leakedIndexes.has(index));
-  const gaps = mergeGaps(
-    poolCoverage(counted, objectiveIds, lessonPoolMinimums(subject)),
-    distinctOpenAnswerGaps(subject, counted, objectiveIds),
-  );
+  return {
+    stages: poolCoverage(counted, objectiveIds, lessonPoolMinimums(subject)),
+    distinctOpenAnswers: distinctOpenAnswerGaps(subject, counted, objectiveIds),
+    excludedByObjective,
+  };
+}
+
+/**
+ * Braki pokrycia: `poolCoverage` bez ujawnionych ćwiczeń samodzielnych (tryb
+ * `coverage`) oraz reguła różnych odpowiedzi otwartych (też bez ujawnionych).
+ * `excluded` = liczba wykluczonych ujawnionych ćwiczeń zagadnienia w etapie
+ * samodzielnym — tylko gdy > 0.
+ */
+export function lessonCoverageGaps(input: LessonCoverageInput): (CoverageGap & { readonly excluded?: number })[] {
+  const sources = lessonCoverageGapSources(input);
+  const excludedByObjective = sources.excludedByObjective;
+  const gaps = mergeGaps(sources.stages, sources.distinctOpenAnswers);
   return gaps.map((gap) => {
     const excluded = gap.stage === "independent" ? (excludedByObjective.get(gap.objectiveId) ?? 0) : 0;
     return excluded > 0 ? { ...gap, excluded } : gap;

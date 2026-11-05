@@ -15,6 +15,7 @@ import { plainClick } from "../plain-click";
 import { httpStatusOf, orpc } from "../query-client";
 import { classifyCreateFailure, isFreshSourceRefresh, type SourceRefreshOutcome } from "../sources/source-refresh";
 import type { EditorLeaveState } from "../useParentLeaveGuard";
+import { subjectServiceInfo } from "./lesson-service-info";
 import "./lesson-panels.css";
 import "../sources/sources-panel.css";
 
@@ -457,11 +458,15 @@ export default function NewLessonForm({
     setInterestNotice(interests.some((entry) => !kept.has(normalizeChildInterest(entry).toLowerCase())) ? "limit" : null);
     form.setFieldValue("interests", merged);
   };
-  const generationService = catalog?.generationService;
-  const themesService = generationService
-    ? messages.lessons.themesService.replace("{service}", () => generationService)
+  // przedmiot z agentem puli ma własne usługi generowania (zamiast katalogowej) i drugi model sprawdzający
+  const serviceInfo = subjectServiceInfo(subject);
+  // tematy zdań trafiają tylko do generatora ćwiczeń (u agenta — do jego modelu, nie do usługi historyjki)
+  const themesTarget = serviceInfo.themesService ?? catalog?.generationService;
+  const themesService = themesTarget
+    ? messages.lessons.themesService.replace("{service}", () => themesTarget)
     : messages.lessons.themesServiceUnknown;
-  const reviewService = catalog?.reviewService;
+  // krytyk lekcji nie przegląda puli agenta, więc jego komunikat znika przy przedmiocie z `checkService`
+  const reviewService = serviceInfo.check === null ? catalog?.reviewService : undefined;
 
   const submitError = form.errors.submit;
   const counterTemplate = fromMaterial ? messages.lessons.schoolMaterialCounter : messages.lessons.materialCounter;
@@ -667,6 +672,12 @@ export default function NewLessonForm({
             />
             {showListenChoiceNote && (
               <Text size="sm" className="pp-editor-muted" data-testid="lesson-listen-choice-note">{messages.lessons.listenChoiceCreateNote}</Text>
+            )}
+            {serviceInfo.generation && (
+              <Text size="sm" className="pp-editor-muted" data-testid="lesson-generation-service">{serviceInfo.generation}</Text>
+            )}
+            {serviceInfo.check && (
+              <Text size="sm" className="pp-editor-muted" data-testid="lesson-check-service">{serviceInfo.check}</Text>
             )}
             {reviewService && (
               <Text size="sm" className="pp-editor-muted" data-testid="lesson-review-service">

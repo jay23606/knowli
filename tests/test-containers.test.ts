@@ -16,6 +16,7 @@ import {
   parseDockerTimestamp,
   parseHostPort,
   parseInspectOutput,
+  POSTGRES_IMAGE,
   selectStaleContainers,
   startPostgresContainer,
   type TestContainer,
@@ -203,9 +204,11 @@ class FakeRuntime implements ContainerRuntime {
   readonly containers = new Map<string, TestContainer>();
   runScript: Array<"ok" | "error" | "created-then-error"> = [];
   removeFailures = 0;
+  lastRunArgs: readonly string[] = [];
   private nextId = 1;
 
   run(args: readonly string[]): Promise<string> {
+    this.lastRunArgs = args;
     const name = args[args.indexOf("--name") + 1]!;
     const labels: Record<string, string> = {};
     args.forEach((arg, index) => {
@@ -264,6 +267,19 @@ describe("startPostgresContainer", () => {
     expect(started.url).toBe("postgres://postgres:test@127.0.0.1:55001/postgres");
     expect([...runtime.containers.keys()]).toEqual([started.id]);
     expect(isOwnedByThisProcess(runtime.containers.get(started.id)!)).toBe(true);
+  });
+
+  it("keeps the disposable database in tmpfs without durable writes", async () => {
+    const runtime = new FakeRuntime();
+    await startPostgresContainer({ name: "knowli-it-1", label: "it", runtime, prepare: failingPrepare(0) });
+    const args = runtime.lastRunArgs;
+    expect(args[args.indexOf("--tmpfs") + 1]).toBe("/var/lib/postgresql/data");
+    // Opcje serwera po nazwie obrazu, nie opcje `docker run`.
+    const imageIndex = args.indexOf(POSTGRES_IMAGE);
+    expect(imageIndex).toBeGreaterThan(args.indexOf("--tmpfs"));
+    expect(args.slice(imageIndex + 1)).toEqual([
+      "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_wal_size=256MB",
+    ]);
   });
 
   it("removes its failed container by ID before retrying", async () => {

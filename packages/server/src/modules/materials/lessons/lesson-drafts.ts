@@ -24,6 +24,7 @@ import {
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
 import { avoidSentencesFor } from "../../../domain/lessons/avoid-sentences";
+import { cardExposureSources } from "../../../domain/lessons/card-exposure-sources";
 import { explanationTextErrors } from "../../../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
 import { resolveGenerationLeaks } from "../../../domain/lessons/exposure-leaks";
@@ -36,6 +37,7 @@ import {
 } from "../../../domain/lessons/lesson-policy";
 import { materialCreationMode } from "../../../domain/lessons/material-creation";
 import { keywordsAnswer, MAX_TEXT_LENGTH, validatePool } from "../../../domain/lessons/pool-validation";
+import { withoutOrphanKeywords } from "../../../domain/lessons/keyword-families";
 import { outsideStagePath, stageOf } from "../../../domain/lessons/stages";
 import {
   lessonExerciseIdentity,
@@ -53,7 +55,7 @@ import type {
   SubjectModule,
 } from "../../../domain/lessons/types";
 import { solvedSentencesOf, storyCollisions, type LessonStory } from "../../../domain/lessons/story";
-import type { LessonPoolInput, LlmLessonStageCounts } from "../../../ports/ai";
+import type { LessonPoolInput, LlmLessonStageCounts, LlmProvider } from "../../../ports/ai";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
 import {
   claimQueuedRun,
@@ -65,7 +67,14 @@ import {
 } from "../generation-runs";
 import { MAX_AUTOMATIC_ATTEMPTS, requireGeneration } from "../generation-runtime";
 import { classifyLessonGenerationFailure, lessonRetryDelayMs } from "./lesson-generation-errors";
-import { assertLessonGenerationFinalizationAllowed, LessonGenerationCancelledError, withLessonGenerationControl } from "./lesson-generation-control";
+import {
+  assertLessonGenerationFinalizationAllowed,
+  LessonGenerationCancelledError,
+  withLessonGenerationControl,
+  type LessonGenerationControl,
+} from "./lesson-generation-control";
+import { executeLessonAgentGeneration } from "./lesson-agent-generation";
+import { lessonGeneratorFor } from "./lesson-agent-outcome";
 import { DEFAULT_LESSON_GENERATION_POLICY, type LessonGenerationPolicy } from "./lesson-generation-policy";
 import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { committedRetryAfterSourceChange, lockSourceMaterialForCopy } from "../source-materials";
@@ -110,7 +119,20 @@ export interface LessonContext {
   story?: LessonStory;
   /** Raport automatycznej kontroli jakości (krytyk) z przebiegów generowania tej wersji; nie przechodzi do nowej wersji. */
   review?: LessonReviewReport;
+  /** Zagadnienia do uzupełnienia po częściowym generowaniu agentem (panel rodzica); bez treści. */
+  generationGaps?: LessonGenerationGap[];
 }
+
+/**
+ * Luka generowania agentem (spec etapu 2a §11): zagadnienie `incomplete`/`failed` po pełnej generacji
+ * albo niepełne dogenerowanie (`add_short`: dodano `added` z `requested`).
+ */
+export type LessonGenerationGap = {
+  objectiveId: string;
+  reason: "incomplete" | "failed" | "add_short";
+  added?: number;
+  requested?: number;
+};
 
 /** Wejście runu `lesson` zapisane w `generation_runs.input`. */
 export interface LessonRunInput {
@@ -651,23 +673,8 @@ export function trimToStageDeficits(
   return { kept, rejected };
 }
 
-/**
- * Świeże ćwiczenia `lesson_keywords`, których rodzina (zagadnienie + `familyId`) nie ma już żadnego
- * pytania otwartego wśród ćwiczeń szkicu i zachowanych świeżych — odpadają (reguła twarda, kolizje
- * z historyjką albo przycięcie mogły usunąć całą rodzinę; walidator szkoły zablokowałby wtedy
- * publikację: „brak rodziny pytań otwartych”). Słowa kluczowe bez `familyId` zostają, jak w walidatorze.
- */
-export function withoutOrphanKeywords(
-  existing: readonly LessonExerciseDraft[],
-  fresh: readonly LessonExerciseDraft[],
-): { kept: LessonExerciseDraft[]; dropped: number } {
-  const familyKey = (exercise: LessonExerciseDraft) => JSON.stringify([exercise.objectiveId, exercise.familyId]);
-  const openFamilies = new Set(
-    [...existing, ...fresh].filter((exercise) => exercise.exerciseType === "lesson_open_answer" && exercise.familyId).map(familyKey),
-  );
-  const kept = fresh.filter((exercise) => exercise.exerciseType !== "lesson_keywords" || !exercise.familyId || openFamilies.has(familyKey(exercise)));
-  return { kept, dropped: fresh.length - kept.length };
-}
+/** Czysta reguła rodzin słów kluczowych żyje w domenie (używa jej też agent puli); reeksport dla obecnych wywołujących. */
+export { withoutOrphanKeywords };
 
 /** Licznik powodu dla `rejectedReasons` (pusty, gdy nic nie odpadło). */
 function reasonCount(reason: string, count: number): Record<string, number> {
@@ -675,7 +682,7 @@ function reasonCount(reason: string, count: number): Record<string, number> {
 }
 
 /** Przykłady kart ze szkicu i z bieżącego przebiegu, razem (per zagadnienie: najpierw szkic). */
-function mergeExamples(
+export function mergeExamples(
   draft: Readonly<Record<string, readonly string[]>>,
   fresh: Readonly<Record<string, readonly string[]>>,
 ): Record<string, string[]> {
@@ -1229,7 +1236,7 @@ export function toExerciseDraft(raw: unknown): LessonExerciseDraft {
 export function buildObjectiveCriteria(
   ex: LessonExerciseDraft,
   subject: SubjectModule,
-  topicVersion: number,
+  topicVersion: number | undefined,
 ): { criteria: Record<string, unknown>; criteriaHash: string } {
   const acceptedAnswersHash = createHash("sha256")
     .update(JSON.stringify([...ex.acceptedAnswers].sort()))
@@ -1286,7 +1293,7 @@ export async function applyLessonExercises(
   tx: Tx,
   version: { id: string; deckId: string },
   subject: SubjectModule,
-  topicVersion: number,
+  topicVersion: number | undefined,
   exercises: readonly LessonExerciseDraft[],
 ): Promise<string[]> {
   let position = await nextPosition(tx, version.id);
@@ -1338,12 +1345,16 @@ async function existingAnswersOf(tx: Tx, versionId: string): Promise<string[]> {
     .filter((a): a is string => typeof a === "string");
 }
 
-/** Ćwiczenia już zapisane w wersji szkicu (kontekst walidacji dogenerowania, np. krzyżowa reguła ćwiczeń słuchowych). */
-async function existingDraftsOf(tx: Executor, versionId: string): Promise<LessonExerciseDraft[]> {
-  const rows = await tx
+/**
+ * Ćwiczenia już zapisane w wersji szkicu, w kolejności lekcji (pozycja, potem id — jak sesja lekcji);
+ * kontekst walidacji dogenerowania (np. krzyżowa reguła ćwiczeń słuchowych) i stan stały ścieżki agenta.
+ */
+export async function orderedDraftExercises(db: Executor, deckVersionId: string): Promise<LessonExerciseDraft[]> {
+  const rows = await db
     .select({ payload: itemRevisions.payload })
     .from(itemRevisions)
-    .where(eq(itemRevisions.deckVersionId, versionId));
+    .where(eq(itemRevisions.deckVersionId, deckVersionId))
+    .orderBy(asc(itemRevisions.position), asc(itemRevisions.id));
   return rows.flatMap(({ payload }) => {
     if (!payload || typeof payload !== "object") return [];
     const value = payload as Record<string, unknown>;
@@ -1387,6 +1398,11 @@ interface StageTopUpContext {
   readonly kept: readonly LessonExerciseDraft[];
   /** Końcowe przykłady kart (szkic z zachowanymi nowymi); runda ich nie zmienia. */
   readonly examples: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Zdania z kart rozdziału (`cardExposureSources`): stałe źródła reguły twardej i podpowiedź
+   * `avoidSentences` rundy; nie są przykładami kart, więc nie wpływają na pokrycie ani zapis.
+   */
+  readonly cardSources: Readonly<Record<string, readonly string[]>>;
   /** Bodźce i odpowiedzi surowych ćwiczeń partii głównej (advisory „nie powtarzaj”, numeracja fake'a). */
   readonly runStimuli: readonly LessonExerciseStimulus[];
   readonly runAnswers: readonly string[];
@@ -1467,7 +1483,7 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
           byExercise ? [] : [...new Set([...existing.map((exercise) => exercise.answer), ...runAnswers])],
           byExercise ? uniqueStimuli([...existing.map((exercise) => lessonExerciseStimulusRecord(exercise, identityOptions)), ...runStimuli]) : [],
           input.interests,
-          { avoidSentences: avoidSentencesFor({ examples: ctx.examples, exercises: existing, subject }), purpose: "stage_top_up" },
+          { avoidSentences: avoidSentencesFor({ examples: mergeExamples(ctx.examples, ctx.cardSources), exercises: existing, subject }), purpose: "stage_top_up" },
         );
         const poolInput: LessonPoolInput = { ...base, countPerObjective: count, stageCounts: { ...deficits } };
         // callSoft sam sprawdza aktualność runu przed żądaniem i po nim.
@@ -1497,6 +1513,7 @@ async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
           fresh: reviewed.exercises,
           existingExamples: ctx.examples,
           newExamples: {},
+          fixedSources: ctx.cardSources,
           objectiveOrder: ctx.objectiveOrder,
           subject,
         });
@@ -1537,6 +1554,330 @@ function stageCountsOf(exercises: readonly LessonExerciseDraft[]): { guided: num
   return counts;
 }
 
+/** Bieżąca próba runu puli: straż zapisu (stan `running`, ta sama próba i ten sam numer edycji szkicu). */
+export interface LessonRunIdentity {
+  readonly runId: string;
+  readonly attempts: number;
+  readonly expectedEditNumber: number;
+  readonly deckVersionId: string;
+}
+
+/** Wynik próby zapisywany do `lesson_context` szkicu (liczniki tej próby; zapis sumuje je z poprzednim kontekstem). */
+export interface LessonPoolWriteContext {
+  readonly dynamicTopic?: DynamicTopicData;
+  readonly newExamples: Record<string, string[]>;
+  /** Odrzucenia tej próby; sumowane z licznikiem poprzedniego kontekstu (wspólny zapis dolicza kolizje z historyjką i słowa kluczowe). */
+  readonly rejectedCount: number;
+  readonly rejectedReasons: Record<string, number>;
+  readonly droppedObjectiveCount: number;
+}
+
+/**
+ * Dodatkowe pola kontekstu szkicu (ścieżka agenta), w transakcji zapisu: `written` = ćwiczenia zapisane do
+ * szkicu po odrzuceniach samego zapisu (kolizje z historyjką, słowa kluczowe bez rodziny); puste przy porażce.
+ */
+type LessonContextExtension = (next: LessonContext, written: readonly LessonExerciseDraft[]) => LessonContext;
+
+/** Raport kontroli jakości przebiegu scalony z raportem szkicu (wołany w transakcji zapisu, po zapisie ćwiczeń). */
+type LessonPoolReview = (
+  tx: Tx,
+  versionId: string,
+  previous: LessonReviewReport | undefined,
+  saved: readonly { readonly draft: LessonExerciseDraft; readonly exerciseId: string }[],
+) => Promise<LessonReviewReport>;
+
+type LessonPoolWriteOutcome = "succeeded" | "failed_validation" | "superseded" | "gone";
+
+/**
+ * Przejście bieżącej próby runu puli (straż: `running`, ta sama próba, ten sam numer edycji).
+ * Zegar jawnie, jak w `markRun` — `finishedAt` z zegara usług (testy sterują czasem).
+ * `superseded` zeruje punkt kontrolny agenta (run anulowany nie wraca); porażka go
+ * zostawia do „Ponów” (spec etapu 2a §8.1).
+ */
+export async function markLessonRun(
+  db: Executor,
+  clock: Clock,
+  run: LessonRunIdentity,
+  state: "failed" | "succeeded" | "superseded" | "queued",
+  errorCode: string | null,
+  nextAttemptAt: Date | null = null,
+): Promise<void> {
+  const result = await db.update(generationRuns).set({
+    state,
+    errorCode,
+    nextAttemptAt,
+    finishedAt: state === "queued" ? null : clock.now(),
+    ...(state === "superseded" ? { agentCheckpoint: null } : {}),
+  })
+    .where(and(eq(generationRuns.id, run.runId), eq(generationRuns.state, "running"), eq(generationRuns.attempts, run.attempts), eq(generationRuns.expectedEditNumber, run.expectedEditNumber)));
+  // Logujemy tylko realne przejście (WHERE może dopasować 0 wierszy, np. gdy
+  // równoległy retry rodzica podbił expectedEditNumber).
+  if ((result as { rowCount?: number }).rowCount !== 0) {
+    console.log(
+      `[lesson] run=${run.runId} ${state === "queued" ? "ponowienie" : "zakończony"}: state=${state} kod=${errorCode ?? "-"} próba=${run.attempts}`,
+    );
+  }
+}
+
+/**
+ * Kontekst szkicu po porażce walidacji: liczniki próby (plus odrzucenia samego zapisu) zsumowane
+ * z poprzednimi i raport kontroli jakości — bez `review` raport w kontekście zostaje bez zmian.
+ */
+async function failedValidationContext(
+  tx: Tx,
+  versionId: string,
+  prevContext: LessonContext,
+  context: LessonPoolWriteContext,
+  writeRejected: number,
+  rejectedReasons: Record<string, number>,
+  review: LessonPoolReview | undefined,
+  extendContext: LessonContextExtension | undefined,
+): Promise<LessonContext> {
+  const next: LessonContext = {
+    ...prevContext,
+    rejectedCount: (prevContext.rejectedCount ?? 0) + context.rejectedCount + writeRejected,
+    ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
+    droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + context.droppedObjectiveCount,
+    ...(review === undefined ? {} : { review: await review(tx, versionId, prevContext.review, []) }),
+  };
+  return extendContext === undefined ? next : extendContext(next, []);
+}
+
+/**
+ * Porażka walidacji (0 nowych ćwiczeń): nawet wtedy rodzic widzi skalę odrzuceń i usunięcia kontroli
+ * jakości — zapisujemy liczniki i raport do kontekstu (ta sama straż wersji co przy finalizacji).
+ * `onTransaction` (ścieżka agenta) działa w tej samej transakcji, przed zmianą stanu runu.
+ */
+export async function failLessonPoolValidation(
+  services: Services,
+  args: {
+    run: LessonRunIdentity;
+    context: LessonPoolWriteContext;
+    review?: LessonPoolReview;
+    extendContext?: LessonContextExtension;
+    onTransaction?: (tx: Tx) => Promise<void>;
+  },
+): Promise<void> {
+  const { run } = args;
+  await services.db.transaction(async (tx) => {
+    const version = (
+      await tx.select().from(deckVersions).where(eq(deckVersions.id, run.deckVersionId)).for("update")
+    )[0];
+    if (version && version.state !== "published" && version.editNumber === run.expectedEditNumber) {
+      const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
+      const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, args.context.rejectedReasons);
+      const nextContext = await failedValidationContext(tx, version.id, prevContext, args.context, 0, rejectedReasons, args.review, args.extendContext);
+      await tx
+        .update(deckVersions)
+        .set({ lessonContext: nextContext as unknown as Record<string, unknown> })
+        .where(eq(deckVersions.id, version.id));
+    }
+    await args.onTransaction?.(tx);
+    await markLessonRun(tx, services.clock, run, "failed", "validation");
+  });
+}
+
+/**
+ * Wspólny zapis puli do szkicu (potok i ścieżka agenta): jedna transakcja pod blokadami wersja → run.
+ * Straże (bieżąca próba, termin finalizacji, wersja szkicu), odrzucenie kolizji z historyjką i słów
+ * kluczowych bez rodziny, zapis ćwiczeń, `lesson_context` z licznikami zsumowanymi z poprzednimi,
+ * uzgodnienie mediów, podbicie numeru edycji, anulowanie innych runów, kolejka historyjki, stan
+ * `review` i sukces runu. `onSuccessTransaction` tylko w gałęzi sukcesu, przed podbiciem numeru edycji
+ * (bez niego — potok — sukces zeruje `agent_checkpoint`);
+ * `onFailedValidationTransaction` tylko w gałęzi porażki walidacji (zapis odrzucił wszystko), przed zmianą
+ * stanu runu.
+ * „superseded” zwraca też, gdy run nie jest już bieżącą próbą (wtedy bez zmiany stanu runu).
+ */
+export async function finalizeLessonPoolWrite(
+  services: Services,
+  args: {
+    run: LessonRunIdentity;
+    subject: SubjectModule;
+    topicVersion: number | undefined;
+    regenerate: boolean;
+    existingDrafts: readonly LessonExerciseDraft[];
+    accepted: readonly LessonExerciseDraft[];
+    context: LessonPoolWriteContext;
+    /** Brak = raport krytyka w kontekście zostaje bez zmian (ścieżka agenta). */
+    review?: LessonPoolReview;
+    /** Ścieżka agenta: dodatkowe pola kontekstu i zapisy w tej samej transakcji (sukces albo porażka walidacji). */
+    extendContext?: LessonContextExtension;
+    onSuccessTransaction?: (tx: Tx) => Promise<void>;
+    onFailedValidationTransaction?: (tx: Tx) => Promise<void>;
+    finalizationDeadlineAtMs: number;
+    signal?: AbortSignal;
+  },
+): Promise<LessonPoolWriteOutcome> {
+  const { run, subject, context } = args;
+  return services.db.transaction(async (tx): Promise<LessonPoolWriteOutcome> => {
+    const version = (
+      await tx.select().from(deckVersions).where(eq(deckVersions.id, run.deckVersionId)).for("update")
+    )[0];
+    const current = (await tx.select().from(generationRuns).where(eq(generationRuns.id, run.runId)).for("update"))[0];
+    if (!current || current.state !== "running" || current.attempts !== run.attempts || current.expectedEditNumber !== run.expectedEditNumber) {
+      return "superseded";
+    }
+    assertLessonGenerationFinalizationAllowed(args.finalizationDeadlineAtMs, args.signal);
+    if (!version) {
+      await markLessonRun(tx, services.clock, run, "failed", "deck_version_gone");
+      return "gone";
+    }
+    if (version.state === "published" || version.editNumber !== run.expectedEditNumber) {
+      await markLessonRun(tx, services.clock, run, "superseded", null);
+      return "superseded";
+    }
+    const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
+    // Pula zapisywana do lekcji z historyjką (dogenerowanie, ale też pełny run):
+    // ćwiczenie, którego rozwiązanie powtarza zdanie historyjki, ujawniłoby
+    // odpowiedź (bariera ekspozycji, spec historyjki §5). Historyjka z tej
+    // transakcji — rodzic mógł ją zmienić.
+    const story = prevContext.story;
+    const withoutStoryCollisions = story
+      ? args.accepted.filter((ex) => storyCollisions(story.sentences, solvedSentencesOf([ex]), subject.normalizer).length === 0)
+      : args.accepted;
+    const storyRejected = args.accepted.length - withoutStoryCollisions.length;
+    if (storyRejected > 0) {
+      console.log(`[lesson] run=${run.runId} kolizje z historyjką: odrzucone=${storyRejected}`);
+    }
+    // Kolizja mogła usunąć całą rodzinę pytań otwartych — jej słowa kluczowe odpadają razem z nią.
+    const writeOrphans = withoutOrphanKeywords(args.existingDrafts, withoutStoryCollisions);
+    const accepted = writeOrphans.kept;
+    const writeRejected = storyRejected + writeOrphans.dropped;
+    const rejectedReasons = sumRejectedReasons(
+      sumRejectedReasons(prevContext.rejectedReasons, context.rejectedReasons),
+      reasonCount(ORPHAN_KEYWORDS_REASON, writeOrphans.dropped),
+    );
+    if (accepted.length === 0) {
+      const failedContext = await failedValidationContext(
+        tx, version.id, prevContext, context, writeRejected, rejectedReasons, args.review, args.extendContext,
+      );
+      await tx
+        .update(deckVersions)
+        .set({ lessonContext: failedContext as unknown as Record<string, unknown> })
+        .where(eq(deckVersions.id, version.id));
+      await args.onFailedValidationTransaction?.(tx);
+      await markLessonRun(tx, services.clock, run, "failed", "validation");
+      return "failed_validation";
+    }
+    const itemIds = await applyLessonExercises(
+      tx,
+      { id: version.id, deckId: version.deckId },
+      subject,
+      args.topicVersion,
+      accepted,
+    );
+    // Raport kontroli jakości: wpisy przebiegu scalone z poprzednimi; listy ćwiczeń tylko dla żywych elementów wersji.
+    const review = args.review === undefined
+      ? undefined
+      : await args.review(tx, version.id, prevContext.review, accepted.map((draft, index) => ({ draft, exerciseId: itemIds[index]! })));
+    // Uzupełnienie lesson_context: przykłady i licznik odrzuconych (sumujemy przy
+    // dogenerowaniu). lesson_context jest niezmienny dopiero po publikacji.
+    // Pełna generacja zastępuje pulę: luki poprzedniego generowania agentem są nieaktualne (ścieżka
+    // agenta dopisuje bieżące w `extendContext`); dogenerowanie zostawia luki innych zagadnień.
+    const { generationGaps: _staleGaps, ...prevWithoutGaps } = prevContext;
+    const baseContext: LessonContext = {
+      ...(args.regenerate ? prevContext : prevWithoutGaps),
+      ...(context.dynamicTopic ? { dynamicTopic: context.dynamicTopic, objectiveIds: context.dynamicTopic.objectives.map((o) => o.id) } : {}),
+      examples: { ...prevContext.examples, ...context.newExamples },
+      rejectedCount: (prevContext.rejectedCount ?? 0) + context.rejectedCount + writeRejected,
+      ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
+      droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + context.droppedObjectiveCount,
+      ...(review === undefined ? {} : { review }),
+    };
+    const nextContext = args.extendContext === undefined ? baseContext : args.extendContext(baseContext, accepted);
+    await tx
+      .update(deckVersions)
+      .set({ lessonContext: nextContext as unknown as Record<string, unknown> })
+      .where(eq(deckVersions.id, version.id));
+    await reconcileDraftAssetsTx(tx, services, version);
+    // Zapis ścieżki agenta w tej samej transakcji (wiersz runu zablokowany wyżej). Potok czyści punkt
+    // kontrolny: postęp agenta z wcześniejszej próby (przedmiot zdjęty z listy agenta) to treść ćwiczeń,
+    // która po sukcesie nie ma już zastosowania.
+    if (args.onSuccessTransaction !== undefined) {
+      await args.onSuccessTransaction(tx);
+    } else {
+      await tx.update(generationRuns).set({ agentCheckpoint: null }).where(eq(generationRuns.id, run.runId));
+    }
+    const nextEditNumber = version.editNumber + 1;
+    await tx.update(deckVersions).set({ editNumber: nextEditNumber }).where(eq(deckVersions.id, version.id));
+    if (args.regenerate) {
+      // Dogenerowanie celu nie anuluje runu historyjki (spec §6.2).
+      await supersedeLessonRuns(tx, version.id, services.clock.now(), run.runId);
+    } else {
+      // Nowa pula: stara historyjka w toku jest nieaktualna; zlecamy nową
+      // (tylko przedmiot z `lessonStory` i tylko gdy wersja nie ma historyjki).
+      await supersedeLessonRuns(tx, version.id, services.clock.now(), run.runId, { includeStoryRuns: true });
+      if (nextContext.story === undefined) {
+        await queueLessonStoryRunTx(
+          tx,
+          services,
+          { ...version, editNumber: nextEditNumber, lessonContext: nextContext as unknown as Record<string, unknown> },
+          `lesson-story:${run.runId}`,
+        );
+      }
+    }
+    if (version.state !== "review") {
+      await tx.update(deckVersions).set({ state: "review" }).where(eq(deckVersions.id, version.id));
+    }
+    await markLessonRun(tx, services.clock, run, "succeeded", null);
+    return "succeeded";
+  });
+}
+
+/**
+ * Tożsamość runu w bazie (partie, runda pod etap, kierownik agenta): edycja rodzica, retry albo
+ * publikacja ją zmieniają — run nadal `running` w tej próbie, a wersja szkicu ma ten numer edycji.
+ */
+export async function lessonRunIsCurrent(db: Executor, run: LessonRunIdentity): Promise<boolean> {
+  const [current] = await db.select({ state: generationRuns.state, attempts: generationRuns.attempts, expectedEditNumber: generationRuns.expectedEditNumber })
+    .from(generationRuns).where(eq(generationRuns.id, run.runId));
+  const [version] = await db.select({ editNumber: deckVersions.editNumber, state: deckVersions.state })
+    .from(deckVersions).where(eq(deckVersions.id, run.deckVersionId));
+  return current?.state === "running" && current.attempts === run.attempts &&
+    current.expectedEditNumber === run.expectedEditNumber && version?.state !== "published" &&
+    version?.editNumber === run.expectedEditNumber;
+}
+
+/**
+ * Etap zagadnień przedmiotu dynamicznego bez planera (szkoła; potok i ścieżka agenta): jedno żądanie
+ * `generateLessonObjectives`, budowa i walidacja tematu jak przy zapisie. `droppedObjectiveCount` —
+ * zagadnienia odrzucone przy budowie (panel rodzica).
+ */
+export async function generateDynamicObjectives(
+  llm: LlmProvider,
+  control: LessonGenerationControl,
+  subject: SubjectModule,
+  input: LessonRunInput,
+): Promise<{ data: DynamicTopicData; droppedObjectiveCount: number }> {
+  await control.assertCurrent();
+  const objectivesResult = await control.call((signal) =>
+    llm.generateLessonObjectives(
+      {
+        subjectTitle: input.subjectTitlePl ?? subject.titlePl,
+        topicTitle: input.topicTitlePl ?? "",
+        material: input.material,
+        ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
+        generationRole: subject.prompts.generationRole,
+        voiceTones: subject.ttsForPrompts === true,
+        ...(subject.prompts.objectivesRules === undefined ? {} : { objectivesRules: subject.prompts.objectivesRules }),
+      },
+      signal,
+    ),
+  );
+  await control.assertCurrent();
+  const topicTitle = input.topicTitlePl ?? "";
+  const built = buildDynamicTopicData(objectivesResult.objectives, subject.id, input.deckId, topicTitle, (objective) =>
+    validateDynamicTopicData(subject, { titlePl: topicTitle, objectives: [objective] }), subject.ttsForPrompts === true);
+  if (!built.data) {
+    throw new AppError("validation", { message: `dynamic objectives invalid: ${built.errors.join("; ")}` });
+  }
+  const topicErrors = validateDynamicTopicData(subject, built.data);
+  if (topicErrors.length > 0) {
+    throw new AppError("validation", { message: `dynamic topic invalid: ${topicErrors.join("; ")}` });
+  }
+  return { data: withSubjectObjectiveKinds(subject, built.data), droppedObjectiveCount: built.errors.length };
+}
+
 export async function executeLessonGeneration(services: Services, runId: string, options: { signal?: AbortSignal } = {}): Promise<void> {
   const deps = requireGeneration(services);
   const run = (await services.db.select().from(generationRuns).where(eq(generationRuns.id, runId)))[0];
@@ -1558,17 +1899,28 @@ export async function executeLessonGeneration(services: Services, runId: string,
     return;
   }
   const runStartedAtMs = Date.now();
-  const markCurrentRun = async (db: Executor, state: "failed" | "succeeded" | "superseded" | "queued", errorCode: string | null, nextAttemptAt: Date | null = null) => {
-    const result = await db.update(generationRuns).set({ state, errorCode, nextAttemptAt, finishedAt: state === "queued" ? null : services.clock.now() })
-      .where(and(eq(generationRuns.id, runId), eq(generationRuns.state, "running"), eq(generationRuns.attempts, attempts), eq(generationRuns.expectedEditNumber, run.expectedEditNumber!)));
-    // Logujemy tylko realne przejście (WHERE może dopasować 0 wierszy, np. gdy
-    // równoległy retry rodzica podbił expectedEditNumber).
-    if ((result as { rowCount?: number }).rowCount !== 0) {
-      console.log(
-        `[lesson] run=${runId} ${state === "queued" ? "ponowienie" : "zakończony"}: state=${state} kod=${errorCode ?? "-"} próba=${attempts}`,
-      );
+  const lessonRun: LessonRunIdentity = { runId, attempts, expectedEditNumber: run.expectedEditNumber!, deckVersionId: run.deckVersionId! };
+  const markCurrentRun = (db: Executor, state: "failed" | "succeeded" | "superseded" | "queued", errorCode: string | null, nextAttemptAt: Date | null = null) =>
+    markLessonRun(db, services.clock, lessonRun, state, errorCode, nextAttemptAt);
+  const input = run.input as unknown as LessonRunInput;
+  const subject = services.subjects.getSubject(input.subjectId);
+  // Wybór ścieżki przy każdej próbie (spec etapu 2a §3), z rejestru bez I/O. Agent sam rozlicza limit
+  // prób (wyczerpane próby z postępem → zapis bez wywołań modelu), więc wybór zapada przed nim.
+  if (subject !== undefined && lessonGeneratorFor(subject, deps.lessonAgent) === "agent") {
+    if (!(await lessonRunIsCurrent(services.db, lessonRun))) {
+      await markCurrentRun(services.db, "superseded", null);
+      return;
     }
-  };
+    await executeLessonAgentGeneration(services, {
+      run,
+      attempts,
+      subject,
+      input,
+      runStartedAtMs,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+    return;
+  }
   if (attempts > MAX_AUTOMATIC_ATTEMPTS) {
     await markCurrentRun(services.db, "failed", "attempts_exhausted");
     return;
@@ -1583,8 +1935,6 @@ export async function executeLessonGeneration(services: Services, runId: string,
     return;
   }
 
-  const input = run.input as unknown as LessonRunInput;
-  const subject = services.subjects.getSubject(input.subjectId);
   // Temat dynamiczny: migawka z kontekstu (dogenerowanie) albo do wygenerowania
   // w etapie zagadnień tego runu (pierwsza generacja zestawu szkolnego).
   let dynamicTopicData: DynamicTopicData | undefined = input.dynamicTopic;
@@ -1616,7 +1966,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
   // z odpowiedzią tekstową wyszedłby dopiero przy publikacji).
   const draftContext = (currentVersion.lessonContext ?? {}) as unknown as Partial<LessonContext>;
   const draftExamples: Record<string, string[]> = draftContext.examples ?? {};
-  const existingDrafts = input.regenerate ? await existingDraftsOf(services.db, input.deckVersionId) : [];
+  const existingDrafts = input.regenerate ? await orderedDraftExercises(services.db, input.deckVersionId) : [];
 
   // Partie per cel: albo dogenerowanie jednego celu, albo pełna pula.
   let batches: { objectiveId: string; count: number; existingAnswers: string[]; existingExercises: LessonExerciseStimulus[] }[] = input.regenerate
@@ -1646,18 +1996,14 @@ export async function executeLessonGeneration(services: Services, runId: string,
   // Limity celów runu (zamówiona liczba i przyznany dodatek słuchowy) — egzekwowane po walidacji.
   const objectiveLimits = new Map<string, ObjectiveGenerationLimits>();
   const examples: Record<string, string[]> = {};
+  // Zdania z kart rozdziału (ustawiane po rozwiązaniu tematu): dziecko widzi je jako gotowe rozwiązania.
+  // Idą tylko do podpowiedzi `avoidSentences` i jako stałe źródła reguły twardej — nie do zapisanych
+  // przykładów ani pokrycia.
+  let cardSources: Record<string, string[]> = {};
   const executionPolicy = deps.lessonExecution ?? DEFAULT_LESSON_GENERATION_POLICY;
   const runDeadlineAtMs = runStartedAtMs + executionPolicy.runTimeoutMs;
   // Tożsamość runu w bazie (partie i runda pod etap): edycja rodzica, retry albo publikacja ją zmieniają.
-  const runIsCurrent = async (): Promise<boolean> => {
-    const [current] = await services.db.select({ state: generationRuns.state, attempts: generationRuns.attempts, expectedEditNumber: generationRuns.expectedEditNumber })
-      .from(generationRuns).where(eq(generationRuns.id, runId));
-    const [version] = await services.db.select({ editNumber: deckVersions.editNumber, state: deckVersions.state })
-      .from(deckVersions).where(eq(deckVersions.id, run.deckVersionId!));
-    return current?.state === "running" && current.attempts === attempts &&
-      current.expectedEditNumber === run.expectedEditNumber && version?.state !== "published" &&
-      version?.editNumber === run.expectedEditNumber;
-  };
+  const runIsCurrent = (): Promise<boolean> => lessonRunIsCurrent(services.db, lessonRun);
   console.log(
     `[lesson] generacja run=${runId} deck=${input.deckId} cele=${batches.length} próba=${attempts} pula=${input.poolSize} model=${deps.llm.model}`,
   );
@@ -1668,38 +2014,13 @@ export async function executeLessonGeneration(services: Services, runId: string,
       assertCurrent: runIsCurrent,
     }, async (control) => {
     if (needsDynamicObjectives) {
-      await control.assertCurrent();
-      const objectivesResult = await control.call((signal) =>
-        deps.llm.generateLessonObjectives(
-          {
-            subjectTitle: input.subjectTitlePl ?? subject.titlePl,
-            topicTitle: input.topicTitlePl ?? "",
-            material: input.material,
-            ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
-            generationRole: subject.prompts.generationRole,
-            voiceTones: subject.ttsForPrompts === true,
-            ...(subject.prompts.objectivesRules === undefined ? {} : { objectivesRules: subject.prompts.objectivesRules }),
-          },
-          signal,
-        ),
-      );
-      await control.assertCurrent();
-      const topicTitle = input.topicTitlePl ?? "";
-      const built = buildDynamicTopicData(objectivesResult.objectives, subject.id, input.deckId, topicTitle, (objective) =>
-        validateDynamicTopicData(subject, { titlePl: topicTitle, objectives: [objective] }), subject.ttsForPrompts === true);
-      if (!built.data) {
-        throw new AppError("validation", { message: `dynamic objectives invalid: ${built.errors.join("; ")}` });
-      }
-      const topicErrors = validateDynamicTopicData(subject, built.data);
-      if (topicErrors.length > 0) {
-        throw new AppError("validation", { message: `dynamic topic invalid: ${topicErrors.join("; ")}` });
-      }
-      const storedData = withSubjectObjectiveKinds(subject, built.data);
+      const objectivesStage = await generateDynamicObjectives(deps.llm, control, subject, input);
+      const storedData = objectivesStage.data;
       dynamicTopicData = storedData;
       topic = subject.buildDynamicTopic!(storedData);
       batches = batchesForObjectives(storedData.objectives.map((objective) => objective.id), input.poolSize, subject, runId);
       console.log(`[lesson] run=${runId} etap zagadnień: cele=${batches.length}`);
-      droppedObjectiveCount = built.errors.length;
+      droppedObjectiveCount = objectivesStage.droppedObjectiveCount;
       if (droppedObjectiveCount > 0) {
         console.log(`[lesson] run=${runId} etap zagadnień: porzucone=${droppedObjectiveCount}`);
       }
@@ -1708,6 +2029,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
     if (!activeTopic) {
       throw new AppError("validation", { message: "lesson topic unresolved" });
     }
+    cardSources = cardExposureSources(subject, activeTopic);
     for (const batch of batches) {
       await control.assertCurrent();
       const batchStartedAtMs = Date.now();
@@ -1730,7 +2052,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
           // Rozwiązania widziane wcześniej (przykłady kart, szkic i wcześniejsze partie): generator ich nie
           // powtarza w ćwiczeniach samodzielnych — podpowiedź, egzekwuje ją reguła twarda po generacji.
           avoidSentences: avoidSentencesFor({
-            examples: mergeExamples(draftExamples, examples),
+            examples: mergeExamples(mergeExamples(draftExamples, examples), cardSources),
             exercises: [...existingDrafts, ...earlierDrafts],
             subject,
           }),
@@ -1864,6 +2186,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
       fresh: mainReview.exercises,
       existingExamples: draftExamples,
       newExamples: examples,
+      fixedSources: cardSources,
       objectiveOrder,
       subject,
     });
@@ -1929,32 +2252,16 @@ export async function executeLessonGeneration(services: Services, runId: string,
       return mergeReviewReport(previous, runReport, liveIds);
     };
 
-    // Porażka walidacji (0 nowych ćwiczeń): nawet wtedy rodzic widzi skalę odrzuceń i usunięcia kontroli
-    // jakości — zapisujemy liczniki i raport do kontekstu (ta sama straż wersji co przy finalizacji).
-    const failValidation = async () => {
-      await services.db.transaction(async (tx) => {
-        const version = (
-          await tx.select().from(deckVersions).where(eq(deckVersions.id, run.deckVersionId!)).for("update")
-        )[0];
-        if (version && version.state !== "published" && version.editNumber === run.expectedEditNumber) {
-          const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
-          const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, runRejectedReasons);
-          await tx
-            .update(deckVersions)
-            .set({
-              lessonContext: {
-                ...prevContext,
-                rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount,
-                ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
-                droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
-                review: await mergedReview(tx, version.id, prevContext.review, []),
-              } as unknown as Record<string, unknown>,
-            })
-            .where(eq(deckVersions.id, version.id));
-        }
-        await markCurrentRun(tx, "failed", "validation");
-      });
-    };
+    // Wynik próby do kontekstu szkicu — liczniki czytane w chwili zapisu (runda pod etap je zwiększa).
+    const writeContext = (): LessonPoolWriteContext => ({
+      ...(dynamicTopicData ? { dynamicTopic: dynamicTopicData } : {}),
+      newExamples: leaks.keptNewExamples,
+      rejectedCount,
+      rejectedReasons: runRejectedReasons,
+      droppedObjectiveCount,
+    });
+    // Porażka walidacji (0 nowych ćwiczeń): liczniki i raport krytyka i tak trafiają do kontekstu.
+    const failValidation = () => failLessonPoolValidation(services, { run: lessonRun, context: writeContext(), review: mergedReview });
 
     // Runda pod brakujący etap (spec etapu przeglądu lekcji): po regule ujawnień, przed zapisem.
     // Pełna generacja bez przyjętych ćwiczeń kończy się porażką bez rundy; ręczne dogenerowanie
@@ -1981,6 +2288,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
         existingDrafts,
         kept: uniqueValid,
         examples: finalExamples,
+        cardSources,
         runStimuli: earlierExercises,
         runAnswers: earlierAnswers,
         review: reviewPhase,
@@ -1998,105 +2306,17 @@ export async function executeLessonGeneration(services: Services, runId: string,
       return;
     }
 
-    await services.db.transaction(async (tx) => {
-      const version = (
-        await tx.select().from(deckVersions).where(eq(deckVersions.id, run.deckVersionId!)).for("update")
-      )[0];
-      const current = (await tx.select().from(generationRuns).where(eq(generationRuns.id, runId)).for("update"))[0];
-      if (!current || current.state !== "running" || current.attempts !== attempts || current.expectedEditNumber !== run.expectedEditNumber) return;
-      assertLessonGenerationFinalizationAllowed(phaseDeadlineAtMs, options.signal);
-      if (!version) {
-        await markCurrentRun(tx, "failed", "deck_version_gone");
-        return;
-      }
-      if (version.state === "published" || version.editNumber !== run.expectedEditNumber) {
-        await markCurrentRun(tx, "superseded", null);
-        return;
-      }
-      const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
-      // Pula zapisywana do lekcji z historyjką (dogenerowanie, ale też pełny run):
-      // ćwiczenie, którego rozwiązanie powtarza zdanie historyjki, ujawniłoby
-      // odpowiedź (bariera ekspozycji, spec historyjki §5). Historyjka z tej
-      // transakcji — rodzic mógł ją zmienić.
-      const story = prevContext.story;
-      const withoutStoryCollisions = story
-        ? uniqueValid.filter((ex) => storyCollisions(story.sentences, solvedSentencesOf([ex]), subject.normalizer).length === 0)
-        : uniqueValid;
-      const storyRejected = uniqueValid.length - withoutStoryCollisions.length;
-      if (storyRejected > 0) {
-        console.log(`[lesson] run=${runId} kolizje z historyjką: odrzucone=${storyRejected}`);
-      }
-      // Kolizja mogła usunąć całą rodzinę pytań otwartych — jej słowa kluczowe odpadają razem z nią.
-      const writeOrphans = withoutOrphanKeywords(existingDrafts, withoutStoryCollisions);
-      const accepted = writeOrphans.kept;
-      const writeRejected = storyRejected + writeOrphans.dropped;
-      const rejectedReasons = sumRejectedReasons(
-        sumRejectedReasons(prevContext.rejectedReasons, runRejectedReasons),
-        reasonCount(ORPHAN_KEYWORDS_REASON, writeOrphans.dropped),
-      );
-      if (accepted.length === 0) {
-        await tx
-          .update(deckVersions)
-          .set({
-            lessonContext: {
-              ...prevContext,
-              rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + writeRejected,
-              ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
-              droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
-              review: await mergedReview(tx, version.id, prevContext.review, []),
-            } as unknown as Record<string, unknown>,
-          })
-          .where(eq(deckVersions.id, version.id));
-        await markCurrentRun(tx, "failed", "validation");
-        return;
-      }
-      const itemIds = await applyLessonExercises(
-        tx,
-        { id: version.id, deckId: version.deckId },
-        subject,
-        input.topicVersion,
-        accepted,
-      );
-      // Raport kontroli jakości: wpisy przebiegu scalone z poprzednimi; listy ćwiczeń tylko dla żywych elementów wersji.
-      const review = await mergedReview(tx, version.id, prevContext.review, accepted.map((draft, index) => ({ draft, exerciseId: itemIds[index]! })));
-      // Uzupełnienie lesson_context: przykłady i licznik odrzuconych (sumujemy przy
-      // dogenerowaniu). lesson_context jest niezmienny dopiero po publikacji.
-      const nextContext: LessonContext = {
-        ...prevContext,
-        ...(dynamicTopicData ? { dynamicTopic: dynamicTopicData, objectiveIds: dynamicTopicData.objectives.map((o) => o.id) } : {}),
-        examples: { ...prevContext.examples, ...leaks.keptNewExamples },
-        rejectedCount: (prevContext.rejectedCount ?? 0) + rejectedCount + writeRejected,
-        ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
-        droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + droppedObjectiveCount,
-        review,
-      };
-      await tx
-        .update(deckVersions)
-        .set({ lessonContext: nextContext as unknown as Record<string, unknown> })
-        .where(eq(deckVersions.id, version.id));
-      await reconcileDraftAssetsTx(tx, services, version);
-      const nextEditNumber = version.editNumber + 1;
-      await tx.update(deckVersions).set({ editNumber: nextEditNumber }).where(eq(deckVersions.id, version.id));
-      if (input.regenerate) {
-        // Dogenerowanie celu nie anuluje runu historyjki (spec §6.2).
-        await supersedeLessonRuns(tx, version.id, services.clock.now(), runId);
-      } else {
-        // Nowa pula: stara historyjka w toku jest nieaktualna; zlecamy nową
-        // (tylko przedmiot z `lessonStory` i tylko gdy wersja nie ma historyjki).
-        await supersedeLessonRuns(tx, version.id, services.clock.now(), runId, { includeStoryRuns: true });
-        if (nextContext.story === undefined) {
-          await queueLessonStoryRunTx(
-            tx,
-            services,
-            { ...version, editNumber: nextEditNumber, lessonContext: nextContext as unknown as Record<string, unknown> },
-            `lesson-story:${runId}`,
-          );
-        }
-      }
-      if (version.state !== "review") {
-        await tx.update(deckVersions).set({ state: "review" }).where(eq(deckVersions.id, version.id));
-      }
-      await markCurrentRun(tx, "succeeded", null);
+    await finalizeLessonPoolWrite(services, {
+      run: lessonRun,
+      subject,
+      topicVersion: input.topicVersion,
+      regenerate: Boolean(input.regenerate),
+      existingDrafts,
+      accepted: uniqueValid,
+      context: writeContext(),
+      review: mergedReview,
+      finalizationDeadlineAtMs: phaseDeadlineAtMs,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
     console.log(`[lesson] run=${runId} zakończony durationMs=${Date.now() - runStartedAtMs}`);
   } catch (error) {

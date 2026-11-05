@@ -112,6 +112,15 @@ function fakeSourceDeckItems(input: { material: string; maxItems: number; vocabu
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Materiał lekcji z tym znacznikiem wydłuża generację puli fake LLM do co
+ * najmniej FAKE_SLOW_DELAY_MS niezależnie od `lessonDelayMs`: E2E generuje
+ * lekcje bez sztucznego opóźnienia, a test restartu trwającej generacji
+ * nadal ją widzi.
+ */
+export const FAKE_SLOW_MARKER = "[fake-slow]";
+export const FAKE_SLOW_DELAY_MS = 3_000;
+
 export type LlmBehavior =
   | { items: Array<Record<string, unknown>> }
   | { error: string; retryable: boolean };
@@ -638,8 +647,11 @@ export class FakeLlmProvider implements LlmProvider {
     input: LessonPoolInput,
   ): Promise<{ exercises: unknown[]; examples: Record<string, string[]> }> {
     this.lessonRequests.push(input);
-    if (this.#lessonDelayMs > 0) {
-      await sleep(this.#lessonDelayMs);
+    const delayMs = input.material.includes(FAKE_SLOW_MARKER)
+      ? Math.max(this.#lessonDelayMs, FAKE_SLOW_DELAY_MS)
+      : this.#lessonDelayMs;
+    if (delayMs > 0) {
+      await sleep(delayMs);
     }
     const queue = input.purpose === "stage_top_up" ? this.#lessonTopUpBehaviors : this.#lessonBehaviors;
     const behavior = queue.length > 1 ? queue.shift()! : queue[0] ?? null;

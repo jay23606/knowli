@@ -172,6 +172,8 @@ describe("generowanie puli lekcji (integracja)", () => {
     // Profil promptu przedmiotu niesie reguły pól (semantyka hint) do adaptera LLM.
     const llmInput = fakes.llm.lessonRequests[0]!;
     expect(llmInput.promptProfile.fieldRules).toContain("BASE FORM");
+    // Gramatyka nie ma haka zdań kart (#237): pierwsza partia pełnej generacji nie dostaje zdań do unikania.
+    expect(llmInput).not.toHaveProperty("avoidSentences");
 
     const versionId = run.deckVersionId!;
     const [version] = await query<{ state: string; lesson_context: { examples: Record<string, string[]> } }>(

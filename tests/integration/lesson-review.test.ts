@@ -798,7 +798,10 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
   });
 
   it("DTO po usunięciu zagadnienia: zagadnienia i usunięcia tylko bieżącego tematu, status liczony od nowa", async () => {
-    const { services, reviewer } = await world({ execution: MAIN_BATCH_ONLY });
+    // Wywołania 1 i 2 przy concurrency > 1 biegną równolegle i kolejność ich startu
+    // zależy od czasu odpowiedzi bazy; numer wywołania wskazuje zagadnienie tylko
+    // przy przeglądzie po kolei.
+    const { services, reviewer } = await world({ execution: MAIN_BATCH_ONLY, policy: { concurrency: 1 } });
     reviewer.behavior = (input) => {
       const call = reviewer.inputs.indexOf(input);
       if (call === 1) {
@@ -910,14 +913,24 @@ describe("faza przeglądu krytyka w generowaniu lekcji (integracja)", () => {
       expect(report.dropped).toHaveLength(200);
     });
 
-    it("„Utwórz nową wersję” → kopia kontekstu bez raportu przeglądu", async () => {
+    it("„Utwórz nową wersję” → kopia kontekstu bez raportu przeglądu i bez luk generowania agentem", async () => {
       const { services, deckId, draft } = await fixedDraft();
+      // Luki z generowania agentem tamtej wersji (pole kontekstu; zapis bezpośrednio w bazie).
+      await pool.query(
+        "update learning_app.deck_versions set lesson_context = jsonb_set(lesson_context, '{generationGaps}', $1::jsonb) where id = $2",
+        [JSON.stringify([{ objectiveId: draft.objectiveIds[0], reason: "incomplete" }]), draft.id],
+      );
       await publishLessonDraft(services, draft.id, draft.editNumber);
       const copy = await createLessonDraftFromPublished(services, deckId);
       expect(copy.id).not.toBe(draft.id);
       expect(await reportOf(copy.id)).toBeUndefined();
       expect(await reportOf(draft.id)).toBeDefined();
       expect(copy.examples).toEqual(draft.examples);
+      expect(copy).not.toHaveProperty("generationGaps");
+      const [row] = await query<{ gaps: unknown }>(
+        "select lesson_context->'generationGaps' as gaps from learning_app.deck_versions where id = $1", [copy.id],
+      );
+      expect(row?.gaps).toBeNull();
     });
   });
 

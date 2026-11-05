@@ -14,7 +14,8 @@ type DeepWritable<T> = T extends (...args: never[]) => unknown
       ? { -readonly [K in keyof T]: DeepWritable<T[K]> }
       : T;
 
-type WritableSubject = DeepWritable<SubjectModule>;
+/** Polityka agenta zostaje niezmienna (nie jest psuta w tych testach), reszta przedmiotu jest mutowalna. */
+type WritableSubject = DeepWritable<Omit<SubjectModule, "agentPolicy">> & Pick<SubjectModule, "agentPolicy">;
 
 /** Głęboko klonuje dane JSON (temat, cele) jako mutowalne. */
 function cloneData<T>(value: T): DeepWritable<T> {

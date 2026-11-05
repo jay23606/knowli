@@ -260,6 +260,13 @@
       "when": 1794090000000,
       "tag": "0036_provider_usage_events",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794190000000,
+      "tag": "0037_generation_run_agent_checkpoint",
+      "breakpoints": true
     }
   ]
 }

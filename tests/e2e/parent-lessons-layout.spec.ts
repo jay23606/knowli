@@ -43,13 +43,15 @@ const children = [
 
 interface Api { creates: Array<{ path: string; body: Record<string, unknown> }> }
 
-async function openNewLesson(page: Page, createStatus: () => number = () => 202, hold: Promise<void> = Promise.resolve(), childList: unknown[] = []): Promise<Api> {
+async function openNewLesson(
+  page: Page, createStatus: () => number = () => 202, hold: Promise<void> = Promise.resolve(), childList: unknown[] = [], catalogData: unknown = catalog,
+): Promise<Api> {
   const api: Api = { creates: [] };
   await page.route("**/api/v1/parent/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path.endsWith("/login")) return route.fulfill({ json: { authenticated: true, setupRequired: false } });
-    if (path.endsWith("/lesson-catalog")) return route.fulfill({ json: catalog });
+    if (path.endsWith("/lesson-catalog")) return route.fulfill({ json: catalogData });
     if (path.endsWith("/children")) return route.fulfill({ json: childList });
     if (request.method() === "POST" && /\/lessons(\/school|\/material)?$/.test(path)) {
       const body = request.postDataJSON() as Record<string, unknown>;
@@ -284,4 +286,39 @@ test("tryb ciemny obejmuje formularz nowej lekcji", async ({ page }) => {
   const counter = await page.getByTestId("lesson-material-counter").evaluate((element) => getComputedStyle(element).color);
   const [cr, cg, cb] = counter.match(/\d+/g)!.map(Number);
   expect(cr! + cg! + cb!).toBeGreaterThan(3 * 140);
+});
+
+/**
+ * Przedmioty generowane agentem puli (spec etapu 2a §11): usługi generowania z katalogu przedmiotu,
+ * drugi model rozwiązujący ćwiczenia (wariant z materiałem wg polityki checkera), bez komunikatu krytyka.
+ */
+const GEN = ["openrouter.ai · google/gemini-3.8-flash", "openrouter.ai · google/gemini-3.8-pro"];
+const CHECK = "openrouter.ai · deepseek/deepseek-v4.1-flash-1017";
+const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
+const agentCatalog = {
+  ...catalog,
+  reviewService: REVIEW,
+  subjects: catalog.subjects.map((subject) => subject.id === "english_chapter"
+    ? subject
+    : { ...subject, generationServices: GEN, checkService: CHECK, ...(subject.id === "school" ? { checkServiceIncludesMaterial: true } : {}) }),
+};
+
+test("przedmiot z agentem puli: usługi generowania i drugi model, bez komunikatu krytyka, bez przewijania w poziomie", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openNewLesson(page, () => 202, Promise.resolve(), children, agentCatalog);
+  await expect(page.getByTestId("lesson-themes")).toContainText(messages.lessons.themesService.replace("{service}", GEN[0]!));
+  await expect(page.getByTestId("lesson-generation-service")).toHaveText(messages.lessons.generationServicesInfo.replace("{service}", GEN.join(", ")));
+  await expect(page.getByTestId("lesson-check-service")).toHaveText(messages.lessons.checkServiceInfo.replace("{service}", CHECK));
+  await expect(page.getByTestId("lesson-review-service")).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+
+  // szkoła: wariant z materiałem
+  await page.getByTestId("lesson-subject").selectOption("school");
+  await expect(page.getByTestId("lesson-check-service")).toHaveText(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
+  await expectNoHorizontalOverflow(page);
+
+  // rozdział (potok): komunikat krytyka zamiast komunikatów agenta
+  await page.getByTestId("lesson-subject").selectOption("english_chapter");
+  await expect(page.getByTestId("lesson-check-service")).toHaveCount(0);
+  await expect(page.getByTestId("lesson-review-service")).toHaveText(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
 });

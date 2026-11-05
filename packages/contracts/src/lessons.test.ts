@@ -887,3 +887,56 @@ describe("raport automatycznej kontroli jakości (review, reviewService)", () =>
     expect(LessonDeckDtoSchema.safeParse({ ...deck, reviewService: "" }).success).toBe(false);
   });
 });
+
+describe("usługi generowania per przedmiot i luki generowania (agent puli, etap 2a)", () => {
+  const subject = { id: "school", titlePl: "Szkoła", creation: "material", subjectTitleRequired: true, topics: [] };
+  const draft = {
+    id: UUID, deckId: UUID2, editNumber: 1, status: "draft", title: "Present Simple",
+    subjectId: "english_grammar", topicId: "present_simple", topicVersion: 1,
+    objectiveIds: ["o1"], examples: {}, exercises: [], assets: [], rejectedCount: 0, coverage: [],
+  };
+
+  it("pola usług przedmiotu są opcjonalne, a stare ładunki przechodzą", () => {
+    const parsed = SubjectCatalogDtoSchema.parse({ subjects: [subject] }).subjects[0]!;
+    expect(parsed).not.toHaveProperty("generationServices");
+    expect(parsed).not.toHaveProperty("checkService");
+    expect(parsed).not.toHaveProperty("checkServiceIncludesMaterial");
+    const withServices = SubjectCatalogDtoSchema.parse({
+      subjects: [{ ...subject, generationServices: ["openrouter.ai · a", "openrouter.ai · b"], checkService: "openrouter.ai · c", checkServiceIncludesMaterial: true }],
+    }).subjects[0]!;
+    expect(withServices.generationServices).toEqual(["openrouter.ai · a", "openrouter.ai · b"]);
+    expect(withServices.checkService).toBe("openrouter.ai · c");
+    expect(withServices.checkServiceIncludesMaterial).toBe(true);
+  });
+
+  it("pola usług odrzucają puste wartości i złe typy", () => {
+    for (const bad of [
+      { generationServices: [] },
+      { generationServices: [""] },
+      { generationServices: "openrouter.ai" },
+      { checkService: "" },
+      { checkServiceIncludesMaterial: "tak" },
+    ]) {
+      expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, ...bad }] }).success).toBe(false);
+    }
+  });
+
+  it("generationGaps w szkicu: opcjonalne, ścisłe, bez pustej listy", () => {
+    expect(LessonDraftDtoSchema.parse(draft)).not.toHaveProperty("generationGaps");
+    const gaps = [
+      { objectiveId: "o1", reason: "incomplete" },
+      { objectiveId: "o2", reason: "failed" },
+      { objectiveId: "o3", reason: "add_short", added: 2, requested: 5 },
+    ];
+    expect(LessonDraftDtoSchema.parse({ ...draft, generationGaps: gaps }).generationGaps).toEqual(gaps);
+    for (const bad of [
+      [],
+      [{ objectiveId: "", reason: "failed" }],
+      [{ objectiveId: "o1", reason: "other" }],
+      [{ objectiveId: "o1", reason: "add_short", added: -1, requested: 5 }],
+      [{ objectiveId: "o1", reason: "failed", detail: "tekst" }],
+    ]) {
+      expect(LessonDraftDtoSchema.safeParse({ ...draft, generationGaps: bad }).success).toBe(false);
+    }
+  });
+});
