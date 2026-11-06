@@ -21,6 +21,7 @@ import {
 } from "../../db/schema";
 import { estimateLearningTime } from "../../domain/learning-time";
 import { selectPracticeItems, type PracticeHistoryRecord } from "../../domain/practice-items";
+import { addDays, localDay } from "../../domain/local-date";
 import { buildReportPeriod } from "../../domain/report-period";
 import { CURRENT_POLICY_ID, loadPolicy } from "../../policies/registry";
 import { readSkillHistories, skillHistoryKey, type HistoryScope } from "../learning";
@@ -49,18 +50,6 @@ type ActivityDay = {
   submittedAttempts: number; pendingAttempts: number; decks: Map<string, ActivityDeck>; mockTests: LearningOverviewDto["children"][number]["dailyActivity"][number]["mockTests"];
 };
 type PublishedAssignment = { childId: string; deckId: string; deckVersionId: string; deckTitle: string; deckVersionNumber: number; totalItems: number; skills: LearningOverviewDto["children"][number]["currentProgress"][number]["skills"]; practiceItems: LearningOverviewDto["children"][number]["currentProgress"][number]["practiceItems"]; practiceItemsTruncated: boolean };
-
-function dateAt(instant: Date | string, timezone: string): string {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
-  });
-  return formatter.format(new Date(instant));
-}
-
-function addCalendarDays(day: string, amount: number): string {
-  const base = Date.parse(`${day}T00:00:00.000Z`);
-  return new Date(base + amount * 86_400_000).toISOString().slice(0, 10);
-}
 
 function instant(value: Date | string): string {
   return new Date(value).toISOString();
@@ -146,7 +135,7 @@ export async function getLearningOverview(
     const period = buildReportPeriod(generatedAt, timezone, query.days);
     const today = period.to;
     const plannedFrom = today;
-    const plannedTo = addCalendarDays(today, query.upcomingTestDays - 1);
+    const plannedTo = addDays(today, query.upcomingTestDays - 1);
     const childRows = (await tx.select({ id: childProfiles.id, displayName: childProfiles.displayName, policyId: childProfiles.policyId })
       .from(childProfiles).orderBy(childProfiles.id)) as ChildRow[];
     const children = query.childId ? childRows.filter(({ id }) => id === query.childId) : childRows;
@@ -208,7 +197,7 @@ export async function getLearningOverview(
       : [];
 
     for (const row of [...attemptRows, ...eventRows]) {
-      const date = dateAt(row.at, timezone);
+      const date = localDay(row.at, timezone);
       const day = daily.get(activityKey(row.childId, date));
       if (!day) continue;
       day.hasRecordedActivity = true;
@@ -237,7 +226,7 @@ export async function getLearningOverview(
         `)).rows
       : [];
     for (const row of assessmentRows) {
-      const day = daily.get(activityKey(row.childId, dateAt(row.at, timezone)));
+      const day = daily.get(activityKey(row.childId, localDay(row.at, timezone)));
       if (!day) continue;
       const deck = ensureActivityDeck(day, row);
       const count = deck.assessmentCounts.get(row.skill) ?? { independentCorrect: 0, correctNotIndependent: 0, incorrect: 0, unassessed: 0 };
@@ -272,7 +261,7 @@ export async function getLearningOverview(
     const activityDates = new Map<string, Set<string>>();
     for (const row of [...attemptRows, ...eventRows]) {
       const dates = activityDates.get(row.childId) ?? new Set<string>();
-      dates.add(dateAt(row.at, timezone));
+      dates.add(localDay(row.at, timezone));
       activityDates.set(row.childId, dates);
     }
 
@@ -288,7 +277,7 @@ export async function getLearningOverview(
       const parsed = MockTestReportDtoSchema.safeParse(row.context.mockTestReport);
       if (!parsed.success) continue;
       const report = parsed.data;
-      const date = dateAt(report.endedAt, timezone);
+      const date = localDay(report.endedAt, timezone);
       const day = daily.get(activityKey(row.childId, date));
       if (!day) continue;
       day.mockTests.push({

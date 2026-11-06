@@ -1,3 +1,4 @@
+import { localDay } from "./local-date";
 import type { AttemptQualification, EvaluationContext, IndependenceReason, Policy } from "./types";
 
 /**
@@ -46,21 +47,4 @@ export function crossBreakEligible(
   const elapsedMs = Date.parse(receivedAt) - Date.parse(previousSessionContactAt);
   if (elapsedMs < policy.confirmationMinHours * 3_600_000) return false;
   return localDay(receivedAt, timezone) !== localDay(previousSessionContactAt, timezone);
-}
-
-const dayFormatters = new Map<string, Intl.DateTimeFormat>();
-
-/** Dzień lokalny (YYYY-MM-DD) w strefie czasowej rodziny. */
-export function localDay(iso: string, timeZone: string): string {
-  let formatter = dayFormatters.get(timeZone);
-  if (formatter === undefined) {
-    formatter = new Intl.DateTimeFormat("en-CA", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-    dayFormatters.set(timeZone, formatter);
-  }
-  return formatter.format(new Date(iso));
 }

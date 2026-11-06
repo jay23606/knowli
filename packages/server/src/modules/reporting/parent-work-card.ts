@@ -1,7 +1,8 @@
 import { and, asc, eq, gte, inArray, isNull, lt, lte, or } from "drizzle-orm";
 import { ParentWorkCardDtoSchema, ParentWorkCardQuerySchema, SessionActivityReviewRecordSchema, taskActiveMs, type ParentSessionActivityDto, type ParentWorkCardDto } from "@learning/contracts";
 import type { Services } from "../../config";
-import { localDateAt, validRewardTimezone } from "../../domain/reward-activity";
+import { localDay } from "../../domain/local-date";
+import { validRewardTimezone } from "../../domain/reward-activity";
 import { assignmentText } from "../../domain/lessons/evaluate";
 import { isNonAssessedLessonTaskType } from "../../domain/lessons/session-task-types";
 import { AppError } from "../../errors";
@@ -50,7 +51,7 @@ export function responseOutcome(modality: string, rows: readonly StoredAssessmen
 export async function readParentWorkCard(services: Services, input: unknown): Promise<ParentWorkCardDto> {
   const parsed = ParentWorkCardQuerySchema.parse(input);
   const [family] = await services.db.select({ timezone: familySettings.timezone }).from(familySettings).limit(1);
-  const query = { ...parsed, date: parsed.date ?? localDateAt(services.clock.now(), validRewardTimezone(family?.timezone)) };
+  const query = { ...parsed, date: parsed.date ?? localDay(services.clock.now(), validRewardTimezone(family?.timezone)) };
   const child = await services.db.select({ id: childProfiles.id }).from(childProfiles).where(eq(childProfiles.id, query.childId)).limit(1);
   if (!child.length) throw new AppError("not_found");
 
@@ -63,7 +64,7 @@ export async function readParentWorkCard(services: Services, input: unknown): Pr
   for (const session of reviewCandidates) await resolveInterruptedSessionActivity(services, session.id);
 
   // Okno UTC z buforem pokrywa żądany dzień lokalny w każdej strefie z kontekstu sesji;
-  // dokładny dzień nadal rozstrzygają poniższe filtry localDateAt w JS.
+  // dokładny dzień nadal rozstrzygają poniższe filtry localDay w JS.
   const dayUtcMs = new Date(`${query.date}T00:00:00.000Z`).getTime();
   const windowStart = new Date(dayUtcMs - 172_800_000);
   const windowEnd = new Date(dayUtcMs + 259_200_000);
@@ -82,7 +83,7 @@ export async function readParentWorkCard(services: Services, input: unknown): Pr
   // Nagroda należy do lokalnej daty KOŃCA sesji (design §9) — nie rozbijamy
   // zatwierdzonego czasu na dni i nie odtwarzamy starych podziałów.
   const endedThatDay = sessions.filter((session) => session.endedAt !== null
-    && localDateAt(session.endedAt, timezoneOf(session.context)) === query.date);
+    && localDay(session.endedAt, timezoneOf(session.context)) === query.date);
 
   const daySessionIds = new Set<string>(endedThatDay.map((session) => session.id));
   const allAttempts = await services.db.select({ attempt: attempts, sessionId: sessionTasks.sessionId, taskId: sessionTasks.id,
@@ -93,7 +94,7 @@ export async function readParentWorkCard(services: Services, input: unknown): Pr
   const attemptsByTask = new Map<string, typeof allAttempts>();
   for (const row of allAttempts) {
     const timezone = timezoneOf(row.context);
-    if (localDateAt(row.attempt.receivedAt, timezone) !== query.date) continue;
+    if (localDay(row.attempt.receivedAt, timezone) !== query.date) continue;
     const list = attemptsByTask.get(row.taskId) ?? [];
     list.push(row);
     attemptsByTask.set(row.taskId, list);
@@ -105,7 +106,7 @@ export async function readParentWorkCard(services: Services, input: unknown): Pr
   for (const task of issuedTasks) {
     const session = sessionById.get(task.sessionId);
     if (!session) continue;
-    if (localDateAt(task.issuedAt, timezoneOf(session.context)) === query.date) daySessionIds.add(task.sessionId);
+    if (localDay(task.issuedAt, timezoneOf(session.context)) === query.date) daySessionIds.add(task.sessionId);
   }
   // Sesja spoza okna mogłaby wejść tu tylko przez anomalną próbę po endedAt; pomiń ją zamiast błędu.
   const sessionIds = [...daySessionIds].filter((sessionId) => sessionById.has(sessionId));
@@ -184,7 +185,7 @@ export async function readParentWorkCard(services: Services, input: unknown): Pr
     const session = sessionById.get(sessionId)!;
     const zone = timezoneOf(session.context);
     const sessionTasksForDay = tasks.filter(task => task.sessionId === sessionId
-      && (localDateAt(task.issuedAt, zone) === query.date || (attemptsByTask.get(task.id) ?? []).length > 0));
+      && (localDay(task.issuedAt, zone) === query.date || (attemptsByTask.get(task.id) ?? []).length > 0));
     const steps = sessionTasksForDay.map(task => {
       const relevant = (attemptsByTask.get(task.id) ?? []).sort((a, b) => a.attempt.receivedAt.getTime() - b.attempt.receivedAt.getTime());
       const responses = relevant.map(({ attempt }) => {
