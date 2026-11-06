@@ -413,7 +413,7 @@ describe("submit — checker", () => {
   });
 
   it("null na pozycji: ta pozycja unchecked; rozjazd odrzuca jako blind", async () => {
-    const tools = setup({ checker: { solveBatch: () => [["odpowiedź 1"], null, ["coś innego"]] } });
+    const tools = setup({ checker: { solveBatch: () => [["odpowiedź 1"], null, ["coś innego"]], judge: () => false } });
     const outcome = await tools.tools.submit({ exercises: [choice(A, 1), choice(A, 2), choice(A, 3)] });
     expect(bare(outcome.results)[0]).toEqual({ index: 0, accepted: "ex1" });
     expect(bare(outcome.results)[1]).toEqual({ index: 1, accepted: "ex2", notes: [UNCHECKED] });
@@ -440,6 +440,36 @@ describe("submit — checker", () => {
     });
     expect(tools.rejections).toEqual([]);
     expect(poolOf(tools.state(), A)[0]!.draft.acceptedAnswers).toEqual([]);
+  });
+
+  it("rozjazd rozwiązującego uznany przez sędziego za równoważny: wariant dopisany zamiast blind_mismatch, jedno dodatkowe judgeVariants", async () => {
+    const tools = setup({ checker: { solve: () => ["w 966"], judge: () => true } });
+    const outcome = await tools.tools.submit({ exercises: [gap(A, "Chrzest w roku ___.", "966")] });
+    expect(bare(outcome.results)[0]).toEqual({
+      index: 0,
+      accepted: "ex1",
+      notes: [`[check.variants] acceptedAnswers[0]: variant "w 966" added: the independent solver answered it and the variant check judged it equivalent to the answer "966"; the child's answer is accepted in this wording too`],
+    });
+    expect(poolOf(tools.state(), A)[0]!.draft.acceptedAnswers).toEqual(["w 966"]);
+    expect(tools.checker.judgeCalls).toHaveLength(1);
+    expect(tools.checker.judgeCalls[0]!.items).toMatchObject([{ answer: "966", variants: ["w 966"] }]);
+    expect(tools.rejections).toEqual([]);
+  });
+
+  it("rozjazd rozwiązującego nierównoważny według sędziego: nadal blind_mismatch; zgodna odpowiedź nie woła sędziego", async () => {
+    const rejected = setup({ checker: { solve: () => ["w 966"], judge: () => false } });
+    await rejected.tools.submit({ exercises: [gap(A, "Chrzest w roku ___.", "966")] });
+    expect(rejected.rejections.map((entry) => entry.code)).toEqual(["blind_mismatch"]);
+    expect(poolOf(rejected.state(), A)).toHaveLength(0);
+    const matching = setup({ checker: { solve: () => ["966"] } });
+    await matching.tools.submit({ exercises: [gap(A, "Chrzest w roku ___.", "966")] });
+    expect(matching.checker.judgeCalls).toHaveLength(0);
+  });
+
+  it("sędzia wariantów niedostępny przy rozjeździe: blind_mismatch jak dotąd", async () => {
+    const tools = setup({ checker: { solve: () => ["w 966"], judgeBatch: () => "throw" } });
+    await tools.tools.submit({ exercises: [gap(A, "Chrzest w roku ___.", "966")] });
+    expect(tools.rejections.map((entry) => entry.code)).toEqual(["blind_mismatch"]);
   });
 
   it("termin checkera (fake timers): po checkerTimeoutMs pozycje unchecked, zegary zdjęte", async () => {

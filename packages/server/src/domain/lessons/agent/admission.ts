@@ -12,7 +12,7 @@ import { clip, issueFrom, type LessonRuleIssue, type RuleId } from "../rules/cat
 import { LESSON_RULES } from "../rules/lesson-rules";
 import { formatRuleReason, formatVictimReason, type RuleReason } from "../rules/rule-reason";
 import type { AgentObjective, LessonExerciseDraft, SubjectModule } from "../types";
-import { blindMatches, blindMismatchFound } from "./solver";
+import { blindMatches, blindMismatchFound, blindVariantCandidate } from "./solver";
 import {
   allExamples,
   orderedEntries,
@@ -78,6 +78,11 @@ export interface OpenCheckOutcome {
 export interface CandidateChecks {
   readonly solve: CheckResult<readonly string[]>;
   readonly variants: CheckResult<readonly boolean[]>;
+  /**
+   * Czy sędzia wariantów uznał odpowiedź rozwiązującego (różną od klucza) za równoważną kluczowi;
+   * brak pola = kontrola nie dotyczy. Dotyczy typów z `variantCheckTypes`.
+   */
+  readonly solverVariant?: CheckResult<boolean>;
   readonly hint: CheckResult<AgentHintVerdict>;
   readonly open: CheckResult<OpenCheckOutcome>;
 }
@@ -518,6 +523,31 @@ function variantNote(removed: RemovedVariant, draft: LessonExerciseDraft): Lesso
   });
 }
 
+function variantAddedNote(text: string, index: number, draft: LessonExerciseDraft): LessonRuleIssue {
+  return lessonIssue("check.variants", {
+    field: `acceptedAnswers[${index}]`,
+    pl: "acceptedAnswers: wariant z odpowiedzi niezależnego rozwiązującego został dopisany",
+    found: `variant ${clip(text)} added: the independent solver answered it and the variant check judged it equivalent to the answer ${clip(draft.answer)}; the child's answer is accepted in this wording too`,
+  });
+}
+
+/**
+ * Odpowiedź rozwiązującego do dopisania jako wariant: różna od klucza, uznana przez sędziego wariantów
+ * za równoważną i niebędąca usuniętym wariantem (ten sędzia już odrzucił).
+ */
+function solverVariantOf(
+  draft: LessonExerciseDraft,
+  removed: readonly RemovedVariant[],
+  checks: CandidateChecks,
+  ctx: AgentCheckContext,
+): string | undefined {
+  const { solve, solverVariant } = checks;
+  if (solve.kind !== "done" || solverVariant?.kind !== "done" || !solverVariant.value) return undefined;
+  const normalizer = ctx.subject.normalizer;
+  const candidate = blindVariantCandidate(draft, solve.value, normalizer);
+  return candidate === undefined || removed.some((variant) => answersEquivalent(candidate, variant.text, normalizer)) ? undefined : candidate;
+}
+
 /**
  * Kroki checkera (spec katalogu reguł §5.3) na oczyszczonym szkicu (`draft`, bez wariantów
  * `removed`): `na` przechodzi, `unavailable` przechodzi z `unchecked`, `done` może odrzucić.
@@ -572,11 +602,13 @@ function checkerSteps(
  * Przyjmuje kandydatów `pass` po kolei na bieżącym stanie, potem kroki checkera z `checks` (ten
  * sam indeks co `prechecked`). Kolejność jak w `precheckBatch`; wyniki w indeksach wejścia.
  *
- * Bez usuniętych wariantów kroki 1–4 idą przed checkerem (między `precheck` a `admit` inne
+ * Bez zmian wariantów kroki 1–4 idą przed checkerem (między `precheck` a `admit` inne
  * zagadnienie mogło dodać ćwiczenie). Z wariantami odrzuconymi przez checker (spec katalogu reguł
  * §5.3): oczyszczony szkic bez nich, ślepe rozwiązanie, sędzia i kontrola otwarta na oczyszczonym
  * szkicu, potem kroki 1–4 powtórzone na nim (odrzucenie z kodem kroku), a do puli trafia oczyszczony
- * szkic z notą `check.variants`.
+ * szkic z notą `check.variants`. Z odpowiedzią rozwiązującego uznaną przez sędziego za równoważną
+ * (`solverVariant`) ta odpowiedź jest dopisana do wariantów zamiast rozjazdu `blind_mismatch`, a
+ * kroki 1–4 liczą się na szkicu z nią; gdy jej nie przepuszczą, ćwiczenie jest odrzucane jak bez niej.
  */
 export function admitBatch(
   state: LessonAgentState,
@@ -602,15 +634,17 @@ export function admitBatch(
     }
     const check = checks[index]!;
     const removed = removedVariantsOf(entry.draft, check.variants);
-    const draft = removed.length === 0
+    const cleaned = removed.length === 0
       ? entry.draft
       : { ...entry.draft, acceptedAnswers: entry.draft.acceptedAnswers.filter((_variant, position) => !removed.some((item) => item.index === position)) };
+    const added = solverVariantOf(cleaned, removed, check, ctx);
+    const draft = added === undefined ? cleaned : { ...cleaned, acceptedAnswers: [...cleaned.acceptedAnswers, added] };
     const rejectWith = (rejection: Rejection) => {
       const family = openFamilyOf(draft);
       if (family !== undefined) rejectedFamilies.add(family);
       results[index] = { rejected: rejection };
     };
-    let outcome = removed.length === 0 ? deterministicSteps(current, objectiveId, draft, before, ctx, rejectedFamilies) : undefined;
+    let outcome = removed.length === 0 && added === undefined ? deterministicSteps(current, objectiveId, draft, before, ctx, rejectedFamilies) : undefined;
     if (outcome !== undefined && !outcome.ok) {
       rejectWith(outcome.rejection);
       continue;
@@ -622,7 +656,9 @@ export function admitBatch(
     }
     outcome ??= deterministicSteps(current, objectiveId, draft, before, ctx, rejectedFamilies);
     if (!outcome.ok) {
-      rejectWith(outcome.rejection);
+      // Dopisany wariant nie przeszedł walidacji (duplikat, limit, ujawnienie): rozjazd liczy się jak bez niego.
+      const mismatch = added === undefined ? undefined : checkerSteps(cleaned, removed, check, ctx);
+      rejectWith(mismatch !== undefined && !mismatch.ok ? mismatch.rejection : outcome.rejection);
       continue;
     }
     current = outcome.state;
@@ -631,7 +667,11 @@ export function admitBatch(
       accepted: outcome.id,
       sanitized: entry.sanitized,
       unchecked: checked.unchecked,
-      notes: [...entry.notes, ...removed.map((variant) => variantNote(variant, entry.draft))],
+      notes: [
+        ...entry.notes,
+        ...removed.map((variant) => variantNote(variant, entry.draft)),
+        ...(added === undefined ? [] : [variantAddedNote(added, draft.acceptedAnswers.length - 1, draft)]),
+      ],
       removedVariants: removed.map((variant) => variant.text),
       quotesSnapped: entry.quotesSnapped,
     };

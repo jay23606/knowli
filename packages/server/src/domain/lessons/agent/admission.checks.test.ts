@@ -150,6 +150,54 @@ describe("admitBatch — warianty odrzucone przez checker (spec katalogu reguł 
     expect(poolOf(result.state, A)).toHaveLength(0);
   });
 
+  describe("odpowiedź rozwiązującego jako wariant (solverVariant)", () => {
+    const draft = open(A, "Kiedy?", "w 966 roku");
+    const solved = (value: string, solverVariant: CandidateChecks["solverVariant"]): CandidateChecks => ({
+      ...NA_CHECKS,
+      solve: { kind: "done", value: [value] },
+      ...(solverVariant === undefined ? {} : { solverVariant }),
+    });
+
+    it("sędzia: równoważne → wariant dopisany, nota check.variants, stan z wariantem", () => {
+      const result = submitWith(stateWith(), A, [draft], [solved("966 rok", { kind: "done", value: true })]);
+      const entry = acceptedOf(result.results[0]);
+      expect(entry).toMatchObject({ accepted: "ex1", unchecked: false, removedVariants: [] });
+      expect(entry.notes.map(formatRuleReason)).toEqual([
+        '[check.variants] acceptedAnswers[0]: variant "966 rok" added: the independent solver answered it and the variant check judged it equivalent to the answer "w 966 roku"; ' +
+          "the child's answer is accepted in this wording too",
+      ]);
+      expect(poolOf(result.state, A)[0]!.draft.acceptedAnswers).toEqual(["966 rok"]);
+    });
+
+    it("sędzia: nierównoważne, niedostępny albo brak kontroli → blind_mismatch", () => {
+      for (const verdict of [{ kind: "done", value: false }, { kind: "unavailable" }, undefined] as const) {
+        const result = submitWith(stateWith(), A, [draft], [solved("1000", verdict)]);
+        expect(rejectedOf(result.results[0])).toMatchObject({ kind: "blind", code: "blind_mismatch" });
+      }
+    });
+
+    it("wariant dopisany po istniejących; usunięty wariant nie wraca, nawet gdy rozwiązujący go podał", () => {
+      const withVariants = { ...draft, acceptedAnswers: ["966", "w X wieku"] };
+      const added = submitWith(stateWith(), A, [withVariants], [{ ...solved("rok 966", { kind: "done", value: true }), variants: { kind: "done", value: [true, true] } }]);
+      expect(poolOf(added.state, A)[0]!.draft.acceptedAnswers).toEqual(["966", "w X wieku", "rok 966"]);
+      expect(acceptedOf(added.results[0]).notes.map((note) => note.field)).toEqual(["acceptedAnswers[2]"]);
+      const viaRemoved = submitWith(stateWith(), A, [withVariants], [{ ...solved("w X wieku", { kind: "done", value: true }), variants: { kind: "done", value: [true, false] } }]);
+      expect(rejectedOf(viaRemoved.results[0])).toMatchObject({ code: "blind_mismatch" });
+    });
+
+    it("wariant ujawniający rozwiązanie innego ćwiczenia: rozjazd jak bez wariantu (stan bez zmian)", () => {
+      const state = acceptAll(stateWith(), A, [gap(A, "Mieszko przyjął chrzest ___.", "966 rok")]);
+      const result = submitWith(state, A, [draft], [solved("966 rok", { kind: "done", value: true })]);
+      expect(rejectedOf(result.results[0])).toMatchObject({ kind: "blind", code: "blind_mismatch" });
+      expect(poolOf(result.state, A)).toHaveLength(1);
+    });
+
+    it("typy z kluczem pozycyjnym i odpowiedzi wielokrotne nie dopisują wariantów", () => {
+      const result = submitWith(stateWith(), A, [draft], [{ ...NA_CHECKS, solve: { kind: "done", value: ["a", "b"] }, solverVariant: { kind: "done", value: true } }]);
+      expect(rejectedOf(result.results[0])).toMatchObject({ code: "blind_mismatch" });
+    });
+  });
+
   it("odrzucenie podpowiedzi albo oceny wygrywa z usunięciem wariantu; stan bez zmian", () => {
     const draft = { ...open(A, "Kiedy?", "w 966 roku"), acceptedAnswers: ["w X wieku"] };
     const state = stateWith();

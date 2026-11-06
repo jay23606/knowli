@@ -133,6 +133,10 @@ registerRuleCases([
   // Kontrole modelami (fikcyjne wyniki).
   { rule: "check.blind_solve", violation: admitted(choice(A, 1), { solve: { kind: "done", value: ["dystraktor 1"] } }) },
   { rule: "check.variants", violation: admitted(withVariant, { variants: { kind: "done", value: [false] } }) },
+  {
+    rule: "check.variants",
+    violation: admitted(openOf(A, "Kiedy?", "w 966 roku"), { solve: { kind: "done", value: ["966 rok"] }, solverVariant: { kind: "done", value: true } }),
+  },
   { rule: "check.hint_judge", violation: admitted(withVariant, { hint: { kind: "done", value: { verdict: "unsupported", reason: "no such fact" } } }) },
   {
     rule: "check.open_answer",

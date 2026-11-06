@@ -187,6 +187,16 @@ export function blindMatches(draft: LessonExerciseDraft, answers: readonly strin
 }
 
 /**
+ * Odpowiedź rozwiązującego, która mogłaby zostać wariantem klucza: jedna odpowiedź tekstowa różna od
+ * klucza (typy z kluczem pozycyjnym — cloze, pary, grupy — nie dopisują wariantów).
+ */
+export function blindVariantCandidate(draft: LessonExerciseDraft, answers: readonly string[], normalizer: AnswerNormalizer): string | undefined {
+  if (positionalKey(draft) !== null || answers.length !== 1) return undefined;
+  const answer = (answers[0] ?? "").trim();
+  return answer === "" || blindMatches(draft, answers, normalizer) ? undefined : answer;
+}
+
+/**
  * Klucz porównywany pozycja po pozycji: luki cloze, prawe strony par w kolejności lewych, etykiety
  * grup elementów w kolejności widoku. Pozostałe typy mają jedną odpowiedź (`null`).
  */

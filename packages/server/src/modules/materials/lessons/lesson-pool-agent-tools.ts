@@ -14,7 +14,7 @@ import {
   type PrecheckEntry,
   type Rejection,
 } from "../../../domain/lessons/agent/admission";
-import { expectedAnswerCount, solverView } from "../../../domain/lessons/agent/solver";
+import { blindVariantCandidate, expectedAnswerCount, solverView } from "../../../domain/lessons/agent/solver";
 import type { LessonAgentState } from "../../../domain/lessons/agent/state";
 import { objectiveStatusFor } from "../../../domain/lessons/agent/status";
 import { validateSchoolVerdict, type SchoolVerdict } from "../../../domain/lessons/evaluate";
@@ -570,6 +570,25 @@ export function createObjectiveTools(args: ObjectiveToolsArgs): { tools: LessonO
           }, isList),
     ]);
 
+    // Rozjazd ślepego rozwiązania w typie z sędzią wariantów: ta sama odpowiedź może być innym poprawnym
+    // wariantem klucza (np. inny szyk zdania). Jedno dodatkowe wywołanie `judgeVariants` na paczkę, tylko
+    // dla rozjazdów; wynik `unavailable` zostawia rozjazd (odrzucenie jak dotąd).
+    const variantIndexes: number[] = [];
+    const variantItems: { view: string; answer: string; variants: string[] }[] = [];
+    for (const index of solveIndexes) {
+      const draft = draftAt(index);
+      const result = checkAt(solveIndexes, solved, index, isStringList);
+      if (result.kind !== "done" || !agentPolicy.variantCheckTypes.includes(draft.exerciseType)) continue;
+      const candidate = blindVariantCandidate(draft, result.value, ctx.subject.normalizer);
+      if (candidate === undefined) continue;
+      variantIndexes.push(index);
+      variantItems.push({ view: solverView(draft, topic), answer: draft.answer, variants: [candidate] });
+    }
+    const solverJudged =
+      variantItems.length === 0
+        ? null
+        : await callChecker(async (signal) => (await args.checker.judgeVariants({ items: variantItems, ...material }, args.cost, signal)).equivalent, isList);
+
     // Etap 2: grader dla pozycji z parą odpowiedzi; pozycja bez pary jest niesprawdzona.
     const openResults = new Map<number, CheckResult<OpenCheckOutcome>>();
     const pairs: { item: OpenItem; pair: readonly [string, string] }[] = [];
@@ -604,11 +623,16 @@ export function createObjectiveTools(args: ObjectiveToolsArgs): { tools: LessonO
       if (remembered !== undefined) return { kind: "done", value: remembered };
       return results.get(index) ?? { kind: "na" };
     };
+    const solverVariantAt = (index: number): CheckResult<boolean> => {
+      const result = checkAt(variantIndexes, solverJudged, index, (value): value is readonly boolean[] => isVerdictList(value, 1));
+      return result.kind === "done" ? { kind: "done", value: result.value[0]! } : result;
+    };
     const checks = prechecked.map((entry, index) => ({
       solve: checkAt(solveIndexes, solved, index, isStringList),
       variants: checkAt(judgeIndexes, judged, index, (value): value is readonly boolean[] =>
         entry.pass && isVerdictList(value, entry.draft.acceptedAnswers.length),
       ),
+      solverVariant: solverVariantAt(index),
       hint: memoOr(hintMemoHits, hintResults, index),
       open: memoOr(openMemoHits, openResults, index),
     }));

@@ -99,7 +99,9 @@ export const LESSON_RULES = {
       "Another model checks every acceptedAnswers variant; a variant not equivalent to the answer is removed (the " +
       "exercise stays) and the result notes the removal. A removed variant is gone for the child: never add it again; if " +
       "the removed wording is a correct answer, make the prompt more specific so only the key fits, or remove_exercise " +
-      "and write a different one.",
+      "and write a different one. When the independent solver answers with a different wording that the same model judges " +
+      "equivalent to the answer (for example another word order), that wording is added to acceptedAnswers (the exercise " +
+      "stays) and the result notes the addition.",
   },
   "check.hint_judge": {
     field: "hint",
