@@ -120,6 +120,18 @@ describe("evaluateChoice / evaluateSequence (typy zamknięte)", () => {
     expect(evaluateSequence(["a", "b", "c", "d"], key)).toBe(false); // nadmiarowy
   });
 
+  it("sequence: klocki o tym samym tekście są zamienne (#298)", () => {
+    const key = writtenKey({
+      exerciseType: "lesson_order",
+      itemIds: ["t1", "c", "s", "t2", "d"],
+      itemValues: { t1: "the", c: "cat", s: "saw", t2: "the", d: "dog" },
+    });
+    expect(evaluateSequence(["t2", "c", "s", "t1", "d"], key)).toBe(true); // zamienione identyczne klocki
+    expect(evaluateSequence(["t1", "d", "s", "t2", "c"], key)).toBe(false); // inna kolejność słów
+    expect(evaluateSequence(["t1", "c", "s", "t1", "d"], key)).toBe(false); // ten sam klocek dwa razy
+    expect(evaluateSequence(["t1", "c", "s", "x", "d"], key)).toBe(false); // obcy klocek
+  });
+
   it("keywords: poprawne tylko gdy każde wybrane pojęcie jest kluczowe, zakres wyborów nieoceniany", () => {
     const key = writtenKey({ exerciseType: "lesson_keywords", correctOptionIds: ["k1", "k2", "k3"], minSelected: 2, maxSelected: 3 });
     expect(evaluateKeywordSelection(["k2", "k1"], key)).toBe(true); // 2 z 3 kluczowych, kolejność bez znaczenia
