@@ -1,6 +1,7 @@
 import type { Grade } from "./types";
 import type { FeedbackDto } from "@learning/contracts";
 import { computeTargetKey } from "./target-key";
+import { normalizeSpokenAnswerText } from "./spoken-answer";
 import type { SpellingComparison, SpellingDiffSegment } from "./spelling-diff";
 
 /**
@@ -107,10 +108,6 @@ export function feedbackExposureKeys(feedback: FeedbackDto, canonicalTargetKey: 
     (text): text is string => Boolean(text),
   );
   const keys = feedback.kind === "not_assessed" ? [] : [canonicalTargetKey];
-  for (const text of texts) keys.push(computeTargetKey(normalizeFeedbackText(text), targetLocale));
+  for (const text of texts) keys.push(computeTargetKey(normalizeSpokenAnswerText(text), targetLocale));
   return [...new Set(keys)];
-}
-
-function normalizeFeedbackText(text: string): string {
-  return text.normalize("NFC").trim().replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu, "").trim();
 }
