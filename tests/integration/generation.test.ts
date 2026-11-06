@@ -342,7 +342,8 @@ describe("trwałe generowanie zestawu (integracja)", () => {
   it("maksymalnie trzy automatyczne próby; ręczne ponowienie przywraca zadanie", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
-    const services = generationServices(fakes);
+    const clock = new ManualClock();
+    const services = generationServices(fakes, clock);
 
     fakes.llm.queue({ error: "llm timeout", retryable: true });
     const { runId } = await enqueueDeckGeneration(services, { ...COMMAND, idempotencyKey: "flaky-key-1" });
@@ -352,6 +353,10 @@ describe("trwałe generowanie zestawu (integracja)", () => {
       const dto = await readGeneration(services, runId);
       expect(dto.state).toBe("queued");
       expect(dto.attempts).toBe(attempt);
+      // ponowienie czeka na odstęp (#300): próba przed `next_attempt_at` nie startuje
+      await executeGeneration(services, runId);
+      expect((await readGeneration(services, runId)).attempts).toBe(attempt);
+      clock.advanceMs(60_000);
     }
 
     // trzecia, ostatnia automatyczna próba wyczerpuje budżet

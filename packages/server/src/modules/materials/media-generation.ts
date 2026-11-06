@@ -7,7 +7,7 @@ import { AppError } from "../../errors";
 import { isUiAudioAssetMetadata } from "../../domain/ui-audio-catalog";
 import { mp3DurationMs } from "../../providers/audio/mp3-duration";
 import { wavDurationMs } from "../../providers/audio/wav";
-import { errorCodeOf, MAX_AUTOMATIC_ATTEMPTS, requireGeneration } from "./generation-runtime";
+import { errorCodeOf, MAX_AUTOMATIC_ATTEMPTS, requireGeneration, retryAt } from "./generation-runtime";
 import type { AssetRole } from "./media-reconciliation";
 
 /** Lease zasobu mediów; deck nie ma lease (CHECK generation_runs_deck_without_lease). */
@@ -281,7 +281,7 @@ export async function executeMediaAsset(services: Services, assetId: string, sig
       .where(and(eq(mediaAssets.id, assetId), eq(mediaAssets.leaseToken, leaseToken)));
     await services.db
       .update(generationRuns)
-      .set({ state: "queued", errorCode: errorCodeOf(error), finishedAt: null })
+      .set({ state: "queued", errorCode: errorCodeOf(error), finishedAt: null, nextAttemptAt: retryAt(services, attempts ?? 1, error) })
       .where(and(eq(generationRuns.assetId, assetId), eq(generationRuns.state, "running")));
   }
 }

@@ -79,13 +79,14 @@ export async function markRun(
   runId: string,
   state: "succeeded" | "failed" | "superseded" | "queued",
   errorCode: string | null,
+  nextAttemptAt: Date | null = null,
 ): Promise<void> {
   await db
     .update(generationRuns)
     .set({
       state,
       errorCode,
-      nextAttemptAt: null,
+      nextAttemptAt,
       finishedAt: state === "queued" ? null : clock.now(),
     })
     .where(eq(generationRuns.id, runId));

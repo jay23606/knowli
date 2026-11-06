@@ -39,7 +39,7 @@ import {
 import { normalizeTargetText } from "../../domain/target-key";
 import { reconcileDraftAssetsTx } from "./media-reconciliation";
 import { executeMediaAsset } from "./media-generation";
-import { errorCodeOf, MAX_AUTOMATIC_ATTEMPTS, requireGeneration } from "./generation-runtime";
+import { errorCodeOf, MAX_AUTOMATIC_ATTEMPTS, requireGeneration, retryAt } from "./generation-runtime";
 
 const GeneratedItemSchema = z.object({
   source: z.string().min(1).max(120),
@@ -381,7 +381,7 @@ export async function retryGeneration(services: Services, runId: string): Promis
     // liczba odrzuceń należy do zakończonej próby (porażka `no_source_items`); nowa próba zapisze własną
     await tx
       .update(generationRuns)
-      .set({ state: "queued", attempts: 0, errorCode: null, finishedAt: null, rejectedCount: null })
+      .set({ state: "queued", attempts: 0, errorCode: null, finishedAt: null, nextAttemptAt: null, rejectedCount: null })
       .where(eq(generationRuns.id, runId));
     return { runId };
   });
@@ -407,7 +407,7 @@ export async function executeGeneration(services: Services, runId: string, signa
   }
   if (signal?.aborted) return;
 
-  const attempts = await claimQueuedRun(services.db, runId);
+  const attempts = await claimQueuedRun(services.db, runId, undefined, services.clock.now());
   if (attempts === null) {
     return;
   }
@@ -454,7 +454,7 @@ export async function executeGeneration(services: Services, runId: string, signa
     } else if (attempts >= MAX_AUTOMATIC_ATTEMPTS) {
       await markRun(services.db, services.clock, runId, "failed", "attempts_exhausted");
     } else {
-      await markRun(services.db, services.clock, runId, "queued", null);
+      await markRun(services.db, services.clock, runId, "queued", null, retryAt(services, attempts, error));
     }
     return;
   }

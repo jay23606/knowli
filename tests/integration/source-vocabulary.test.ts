@@ -449,6 +449,7 @@ describe("słówka ze źródła — tworzenie zestawu (integracja)", () => {
 describe("słówka ze źródła — generowanie wyłącznie z tekstu (integracja)", () => {
   let fakes: FakeGeneration;
   let services: Services;
+  let clock: ManualClock;
 
   beforeEach(async () => {
     await pool.query(
@@ -459,7 +460,8 @@ describe("słówka ze źródła — generowanie wyłącznie z tekstu (integracja
     );
     fakes = await fakeGeneration();
     const { db } = testDatabase();
-    services = createServices({ db, clock: new ManualClock("2026-10-31T10:00:00.000Z"), media: fakes.settings, generation: fakes.deps });
+    clock = new ManualClock("2026-10-31T10:00:00.000Z");
+    services = createServices({ db, clock, media: fakes.settings, generation: fakes.deps });
   });
 
   afterEach(async () => {
@@ -646,6 +648,7 @@ describe("słówka ze źródła — generowanie wyłącznie z tekstu (integracja
     expect(await draftVersion(deckId)).toEqual({ state: "draft", edit_number: 1 });
     expect(await draftItems(deckId)).toEqual([]);
 
+    clock.advanceMs(60_000); // po odstępie ponowienia (#300)
     await executeGeneration(services, runId);
     expect(await readGeneration(services, runId)).toMatchObject({ state: "succeeded", attempts: 2, rejectedCount: 0 });
     expect(fakes.llm.requests).toHaveLength(2);

@@ -83,10 +83,12 @@ async function assetRow(assetId: string): Promise<AssetRow> {
   )[0]!;
 }
 
-async function runOfAsset(assetId: string): Promise<{ id: string; state: string; attempts: number; error_code: string | null }> {
+type AssetRun = { id: string; state: string; attempts: number; error_code: string | null; next_attempt_at: Date | null };
+
+async function runOfAsset(assetId: string): Promise<AssetRun> {
   return (
-    await query<{ id: string; state: string; attempts: number; error_code: string | null }>(
-      `select id, state, attempts, error_code from learning_app.generation_runs where asset_id = $1`,
+    await query<AssetRun>(
+      `select id, state, attempts, error_code, next_attempt_at from learning_app.generation_runs where asset_id = $1`,
       [assetId],
     )
   )[0]!;
@@ -267,7 +269,8 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
   it("nieudana ilustracja nie niszczy szkicu; publikacja czeka na decyzję rodzica", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
-    const services = mediaServices(fakes);
+    const clock = new ManualClock();
+    const services = mediaServices(fakes, clock);
 
     const dto = await createDraft(services, {
       title: "Dni",
@@ -278,7 +281,16 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
     const illLink = await assetLink(dto.id, 0, "illustration");
 
     fakes.image.failuresLeft = 3;
-    for (let pass = 0; pass < 3; pass += 1) {
+    // ponowienie czeka na odstęp (#300): kolejny przebieg przed `next_attempt_at` nie woła providera
+    await runDueGenerationWork(services);
+    expect(fakes.image.requests).toHaveLength(1);
+    const deferred = await runOfAsset(illLink.asset_id!);
+    expect(deferred.state).toBe("queued");
+    expect(new Date(deferred.next_attempt_at!).getTime()).toBeGreaterThan(clock.now().getTime());
+    await runDueGenerationWork(services);
+    expect(fakes.image.requests).toHaveLength(1);
+    for (let pass = 0; pass < 2; pass += 1) {
+      clock.advanceMs(60_000);
       await runDueGenerationWork(services);
     }
 
