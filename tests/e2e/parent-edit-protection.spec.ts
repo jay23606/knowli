@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { openNewMaterial } from "./helpers/parent-new-material";
 import { holdFakeGeneration, releaseFakeGeneration } from "./helpers/fake-hold";
+import { E2E_SETUP_TOKEN } from "./helpers/parent-session";
 
 async function enterParent(page: Page): Promise<void> {
   const request = page.request;
-  await request.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await request.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   const login = await request.post("/api/v1/parent/login", { data: { secret: "1234" } });
   expect(login.status()).toBe(200);
   await page.goto("/parent");

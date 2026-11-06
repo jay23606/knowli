@@ -29,7 +29,7 @@ export function questionReadText(source: QuestionReadSource): string | null {
       parts = [instruction, clean(source.stem)];
       break;
     case "lesson_gap":
-      // Luka jak w Kid UI (`splitGap`): ciąg 2+ podkreśleń, nie tylko `GAP_MARKER`.
+      // Luka jak w Kid UI (`splitLessonGap`): ciąg 2+ podkreśleń, nie tylko `GAP_MARKER`.
       parts = [instruction, clean(source.stem?.replace(/_{2,}/g, SPOKEN_GAP))];
       break;
     case "lesson_open_answer":

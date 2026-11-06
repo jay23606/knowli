@@ -10,6 +10,7 @@ import {
   MIN_NOTICE_SENTENCES,
   MIN_OPTIONS,
   MIN_ORDER_ITEMS,
+  answersEquivalent,
   findDuplicateAnswers,
   poolCoverage,
   validateLessonExercise,
@@ -420,6 +421,14 @@ describe("validateLessonExercise — lesson_gap", () => {
     expect(errors.some((e) => e.includes("luk"))).toBe(true);
   });
 
+  it("dłuższy ciąg podkreśleń to jedna luka, jak na ekranie dziecka (#322)", () => {
+    expect(validateLessonExercise(draft({ stem: "She ______ tennis." }), englishGrammarSubject, englishTopic)).toEqual([]);
+    expect(
+      validateLessonExercise(draft({ stem: `She ${GAP_MARKER} tennis __.` }), englishGrammarSubject, englishTopic)
+        .some((e) => e.includes("luk")),
+    ).toBe(true);
+  });
+
   it("odrzuca odpowiedź luki dłuższą niż 3 tokeny", () => {
     const errors = validateLessonExercise(
       draft({
@@ -547,6 +556,11 @@ describe("validateLessonExercise — długości i acceptedAnswers", () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 
+  it("odrzuca wariant pusty po normalizacji (sama interpunkcja)", () => {
+    const errors = validateLessonExercise(draft({ acceptedAnswers: ["?"] }), englishGrammarSubject, englishTopic);
+    expect(errors).toContain("acceptedAnswers: pusty wariant");
+  });
+
   it("odrzuca wariant duplikujący odpowiedź kanoniczną po normalizacji", () => {
     const errors = validateLessonExercise(
       draft({ acceptedAnswers: ["Plays"] }),
@@ -554,6 +568,23 @@ describe("validateLessonExercise — długości i acceptedAnswers", () => {
       englishTopic,
     );
     expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe("answersEquivalent", () => {
+  const normalizer = englishGrammarSubject.normalizer;
+
+  it.each([
+    ["...", "?"],
+    ["", ""],
+    ["   ", "!"],
+  ])("teksty puste po normalizacji nie są równoważne: %j vs %j", (a, b) => {
+    // Jak `matchLessonAnswer`: pusta sekwencja nigdy nie zalicza odpowiedzi.
+    expect(answersEquivalent(a, b, normalizer)).toBe(false);
+  });
+
+  it("nadal dopasowuje równoważne niepuste odpowiedzi", () => {
+    expect(answersEquivalent("Plays.", "plays", normalizer)).toBe(true);
   });
 });
 

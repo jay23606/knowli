@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, ne, or, sql } from "drizzle-orm";
 import {
   LessonMockTestReportDtoSchema,
   LessonMockTestSummaryDtoSchema,
@@ -14,7 +14,7 @@ import {
 } from "@learning/contracts";
 import type { Services } from "../../../config";
 import type { Tx } from "../../../db/client";
-import { attempts, deckVersions, eventExposures, itemRevisions, learningEvents, learningSessions, sessionTasks } from "../../../db/schema";
+import { attempts, deckVersions, eventExposures, learningEvents, learningSessions, sessionTasks } from "../../../db/schema";
 import { AppError } from "../../../errors";
 import { fillCloze } from "../../../domain/lessons/cloze";
 import { assignmentText } from "../../../domain/lessons/evaluate";
@@ -23,6 +23,8 @@ import { planLessonMockTest, toLessonMockPoolEntry, type LessonMockPoolEntry } f
 import { mockPrecisionHint, objectivesWorthReviewing, schoolMockAggregate, type MockAnswerDetails, type MockPrecisionHint } from "../../../domain/lessons/mock-test-precision";
 import type { LessonExerciseType } from "../../../domain/lessons/types";
 import { writeSealedEvent } from "../events";
+import { mockTestTimedOut } from "../mock-tests";
+import { sessionTimeLimitMs } from "../../../domain/session-limits";
 import { lessonContextOf, loadExercises, requireTopic } from "./lesson-sessions";
 import { materializeExercise } from "./lesson-materialize";
 import type { LessonMockSlot, LessonMockTestPlanSnapshot } from "../../../domain/mock-test-types";
@@ -34,7 +36,7 @@ export type { LessonMockSlot, LessonMockTestPlanSnapshot } from "../../../domain
  * requirements 9.1–9.4). Współdzieli mechanikę słówek przez te same punkty
  * wejścia w `sessions.ts`/`attempts.ts`: plan zamrożony w `mock_test_plan`
  * (dyskryminowany `kind:"lesson"`), jedna odpowiedź na slot kończy zadanie,
- * brak feedbacku w trakcie, limit 10 min, raport per cel utrwalony raz w
+ * brak feedbacku w trakcie, limit czasu `sessionTimeLimitMs` (min. 10 min), raport per cel utrwalony raz w
  * `context.lessonMockTestReport` (trigger czyni go niezmiennym — migracja 0008).
  */
 
@@ -118,60 +120,6 @@ export async function createLessonMockTestPlan(
   });
 
   return { kind: "lesson", version: 1, requestedTaskCount: input.requestedTaskCount, objectiveIds: objectiveOrder, slots };
-}
-
-/**
- * Czy istnieje bezpieczna porcja kartkówki lekcji dla dziecka (scope 6 —
- * `KidDeckDto.mockTestAvailable`). Reużywa planera bez utrwalania.
- */
-export async function hasSafeLessonMockPortion(
-  tx: Tx,
-  services: Services,
-  input: { childId: string; deckVersionId: string; requestedTaskCount: number },
-): Promise<boolean> {
-  const version = (await tx.select().from(deckVersions).where(eq(deckVersions.id, input.deckVersionId)))[0]!;
-  const context = lessonContextOf(version);
-  const { topic } = requireTopic(services, context);
-  const objectiveOrder = topic.objectives.map((objective) => objective.id)
-    .filter((id) => context.objectiveIds.includes(id));
-  const rows = await tx.select({
-    itemRevisionId: itemRevisions.id,
-    itemId: itemRevisions.itemId,
-    objectiveId: sql<string | null>`${itemRevisions.payload}->>'objectiveId'`,
-    exerciseType: sql<string | null>`${itemRevisions.payload}->>'exerciseType'`,
-    targetKey: itemRevisions.targetKey,
-  }).from(itemRevisions)
-    .where(eq(itemRevisions.deckVersionId, input.deckVersionId))
-    .orderBy(asc(itemRevisions.position), asc(itemRevisions.id));
-  const pool: LessonMockPoolEntry[] = rows.flatMap((row) => {
-    if (!row.objectiveId || !row.exerciseType || !row.targetKey) return [];
-    const exerciseType = row.exerciseType as LessonMockPoolEntry["exerciseType"];
-    return [toLessonMockPoolEntry({
-      itemId: row.itemId,
-      itemRevisionId: row.itemRevisionId,
-      objectiveId: row.objectiveId,
-      exerciseType,
-      targetKey: row.targetKey,
-    })];
-  });
-  const targetKeys = [...new Set(pool.map((entry) => entry.targetKey))];
-  const exposedRows = targetKeys.length
-    ? await tx.selectDistinct({ targetKey: eventExposures.targetKey })
-      .from(eventExposures)
-      .innerJoin(learningEvents, eq(learningEvents.id, eventExposures.eventId))
-      .where(and(
-        eq(eventExposures.childId, input.childId),
-        eq(learningEvents.sealed, true),
-        lte(learningEvents.occurredAt, services.clock.now()),
-        inArray(eventExposures.targetKey, targetKeys),
-      ))
-    : [];
-  return planLessonMockTest({
-    pool,
-    objectiveIds: objectiveOrder,
-    requestedCount: input.requestedTaskCount,
-    exposedTargetKeys: exposedRows.map((row) => row.targetKey),
-  }).length > 0;
 }
 
 /**
@@ -374,7 +322,7 @@ export async function closeLessonMockTest(tx: Tx, services: Services, session: t
 async function terminalLessonSession(tx: Tx, services: Services, sessionId: string) {
   const [session] = await tx.select().from(learningSessions).where(eq(learningSessions.id, UuidSchema.parse(sessionId))).for("update");
   if (!session || session.mode !== "mock_test" || !isLessonMockPlan(session.mockTestPlan)) throw new AppError("not_found");
-  if (session.state === "active" && services.clock.now().getTime() - session.startedAt.getTime() <= 600_000) {
+  if (session.state === "active" && services.clock.now().getTime() - session.startedAt.getTime() <= sessionTimeLimitMs(session.taskBudget)) {
     throw new AppError("conflict", { message: "Omówienie jest dostępne po zakończeniu kartkówki." });
   }
   const report = await closeLessonMockTest(tx, services, session);
@@ -590,7 +538,7 @@ export async function listLessonMockTests(services: Services, childId: string, d
         eq(learningSessions.childId, UuidSchema.parse(childId)),
         eq(learningSessions.deckId, UuidSchema.parse(deckId)),
         eq(learningSessions.mode, "mock_test"),
-        or(ne(learningSessions.state, "active"), lt(learningSessions.startedAt, new Date(services.clock.now().getTime() - 600_000))),
+        or(ne(learningSessions.state, "active"), mockTestTimedOut(services.clock.now())),
       ),
     )
     .orderBy(desc(learningSessions.startedAt), desc(learningSessions.id))

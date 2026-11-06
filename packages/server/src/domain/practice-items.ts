@@ -1,3 +1,4 @@
+import { localDay } from "./local-date";
 import type { HistoryEntry, VocabularySkill } from "./types";
 
 export type PracticeHistoryRecord = {
@@ -27,16 +28,13 @@ export function selectPracticeItems(input: {
 }): { items: PracticeItem[]; truncated: boolean } {
   const periodStart = Date.parse(input.periodStart);
   const cutoff = Date.parse(input.generatedAt);
-  const dateFormatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: input.timezone, year: "numeric", month: "2-digit", day: "2-digit",
-  });
   const byItem = new Map<string, { source: string; target: string; skills: Map<VocabularySkill, string> }>();
 
   for (const record of input.records) {
     const eligible = record.history.filter((entry) => entry.policyVersion === input.currentPolicyVersion);
     const difficulties = eligible.filter((entry) => {
       const receivedAt = Date.parse(entry.receivedAt);
-      const date = dateFormatter.format(new Date(receivedAt));
+      const date = localDay(receivedAt, input.timezone);
       return receivedAt >= periodStart && receivedAt <= cutoff && input.dates.includes(date) &&
         (entry.outcome === "incorrect" || entry.reason === "dont_remember");
     });
@@ -46,7 +44,7 @@ export function selectPracticeItems(input: {
       Date.parse(entry.receivedAt) > Date.parse(difficulty.receivedAt));
     if (cleared) continue;
 
-    const date = dateFormatter.format(new Date(difficulty.receivedAt));
+    const date = localDay(difficulty.receivedAt, input.timezone);
     const item = byItem.get(record.itemId) ?? { source: record.source, target: record.target, skills: new Map<VocabularySkill, string>() };
     item.skills.set(record.skill, date);
     byItem.set(record.itemId, item);

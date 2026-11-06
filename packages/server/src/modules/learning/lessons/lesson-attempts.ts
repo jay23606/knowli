@@ -26,6 +26,7 @@ import {
 import { computeCalculationAnswer, evaluateCalculationAnswer } from "../../../domain/lessons/calculation";
 import { AppError } from "../../../errors";
 import type { AssistanceKind, Policy, SkillOutcome } from "../../../domain/types";
+import { sessionTimeLimitMs } from "../../../domain/session-limits";
 import {
   buildAnswerSegments,
   closestApprovedVariant,
@@ -888,8 +889,8 @@ async function startLessonAttempt(
   if (session.state !== "active") {
     return { kind: "conflict", error: new AppError("conflict", { message: "session is closed" }) };
   }
-  // Kartkówka: twardy limit 10 min — po nim żadnej nowej odpowiedzi (jak słówka).
-  if (session.mode === "mock_test" && now.getTime() - session.startedAt.getTime() > 600_000) {
+  // Kartkówka: po skalowanym limicie czasu żadnej nowej odpowiedzi (jak słówka).
+  if (session.mode === "mock_test" && now.getTime() - session.startedAt.getTime() > sessionTimeLimitMs(session.taskBudget)) {
     return { kind: "conflict", error: new AppError("conflict", { message: "Czas kartkówki minął. Przejdź do omówienia." }) };
   }
   // Poza ścieżką leniwej finalizacji kartkówki stan zadania z locka jest

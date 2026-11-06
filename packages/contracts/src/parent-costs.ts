@@ -9,7 +9,6 @@ const MonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
  * Bez `month` serwer bierze bieżący miesiąc rodziny (zegar serwera, nie przeglądarki).
  */
 export const ParentCostsQuerySchema = z.object({ month: MonthSchema.optional() }).strict();
-export type ParentCostsQuery = z.infer<typeof ParentCostsQuerySchema>;
 
 /** Kwota w USD jako ciąg dziesiętny z dokładnością do mikrodolara (np. `"0.003333"`). */
 export const MoneySchema = z.string().regex(/^\d+\.\d{6}$/);

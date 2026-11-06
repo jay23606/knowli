@@ -317,7 +317,6 @@ export const DynamicTopicDtoSchema = z.object({
   titlePl: z.string().min(1).max(200),
   objectives: z.array(DynamicObjectiveDtoSchema).min(1).max(8),
 }).strict();
-export type DynamicTopicDto = z.infer<typeof DynamicTopicDtoSchema>;
 
 /**
  * Patch zagadnień tematu dynamicznego w edycji szkicu: rodzic edytuje tytuły
@@ -327,7 +326,6 @@ export type DynamicTopicDto = z.infer<typeof DynamicTopicDtoSchema>;
 export const LessonDynamicTopicPatchSchema = z.object({
   objectives: z.array(DynamicObjectiveDtoSchema).min(1).max(8),
 }).strict();
-export type LessonDynamicTopicPatch = z.infer<typeof LessonDynamicTopicPatchSchema>;
 
 const ExerciseOptionSchema = z.object({
   id: z.string().min(1),
@@ -369,10 +367,8 @@ export const LessonQuestionTypeSchema = z.enum([
   "fact",
   "process",
 ]);
-export type LessonQuestionTypeDto = z.infer<typeof LessonQuestionTypeSchema>;
 
 export const LessonExpectedFormSchema = z.enum(["short", "one_sentence", "explanation", "list"]);
-export type LessonExpectedFormDto = z.infer<typeof LessonExpectedFormSchema>;
 
 const RequiredElementSchema = z.object({
   id: z.string().min(1).max(MAX_ELEMENT_ID_LENGTH),
@@ -620,7 +616,6 @@ export type LessonDraftDto = z.infer<typeof LessonDraftDtoSchema>;
  * z zestawami słówek ze źródła; ta nazwa zostaje dla dotychczasowych użytkowników.
  */
 export const LessonDeckSourceDtoSchema = DeckSourceDtoSchema;
-export type LessonDeckSourceDto = z.infer<typeof LessonDeckSourceDtoSchema>;
 
 /**
  * Pełny widok zestawu-lekcji dla panelu rodzica (`GET /parent/lessons/:deckId`):
@@ -661,7 +656,6 @@ export type LessonDeckDto = z.infer<typeof LessonDeckDtoSchema>;
 export const LessonCoverageErrorSchema = z.object({
   coverage: z.array(CoverageGapDtoSchema),
 });
-export type LessonCoverageError = z.infer<typeof LessonCoverageErrorSchema>;
 
 /**
  * Szczegóły błędu edycji ćwiczeń (400): dla każdego niepoprawnego ćwiczenia
@@ -694,7 +688,6 @@ export const ConfusionCountSchema = z.object({
   meant: z.string().min(1).max(60),
   count: z.number().int().positive(),
 }).strict();
-export type ConfusionCountDto = z.infer<typeof ConfusionCountSchema>;
 
 export const SchoolProgressSchema = z.object({
   knowledge: z.object({

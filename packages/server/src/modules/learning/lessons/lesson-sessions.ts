@@ -966,56 +966,6 @@ export async function issueNextLessonPlanTask(
   }, counts.assessed, plan);
 }
 
-/**
- * Wartości listy zestawów dziecka dla lekcji (zadanie 13, `modules/kid.ts`):
- * `itemCount` = liczba celów lekcji; `independentlyRecalledCount` = liczba celów
- * `mastered`; `recommended` = selektor ma pracę (bez efektów ubocznych).
- */
-export async function lessonDeckListValues(
-  services: Services,
-  exec: Executor,
-  args: { childId: string; deckVersionId: string; testDate: string | null; timezone: string; now: Date },
-): Promise<{ itemCount: number; independentlyRecalledCount: number; recommended: boolean }> {
-  const version = (await exec.select().from(deckVersions).where(eq(deckVersions.id, args.deckVersionId)))[0]!;
-  const context = lessonContextOf(version);
-  const { topic } = requireTopic(services, context);
-  // Lista zestawów liczy tylko postęp — nagrania pytań są zbędne.
-  const exercises = await loadExercises(exec, args.deckVersionId, { questionAudio: false, feedbackAudio: false, explanationAudio: false });
-  const objectiveOrder = topic.objectives.map((o) => o.id).filter((id) => context.objectiveIds.includes(id));
-
-  // Postęp celów: tylko cele z ćwiczeniami w puli liczą się do rekomendacji
-  // (cel bez ćwiczeń selektor i tak pomija).
-  const objectivesWithExercises = new Set(exercises.map((e) => e.payload.objectiveId));
-  const progressRows = await exec
-    .select({ objectiveId: childObjectiveProgress.objectiveId, status: childObjectiveProgress.status, nextReviewAt: childObjectiveProgress.nextReviewAt })
-    .from(childObjectiveProgress)
-    .where(and(eq(childObjectiveProgress.childId, args.childId), eq(childObjectiveProgress.subjectId, context.subjectId)));
-  const statusByObjective = new Map<string, ProgressStatus>();
-  const dueByObjective = new Map<string, string | null>();
-  let masteredCount = 0;
-  for (const row of progressRows) {
-    const status = mapStatus(row.status);
-    statusByObjective.set(row.objectiveId, status);
-    dueByObjective.set(row.objectiveId, row.nextReviewAt?.toISOString() ?? null);
-    if (status === "mastered" && objectiveOrder.includes(row.objectiveId)) masteredCount += 1;
-  }
-
-  // Rekomendacja (odpowiednik `hasScheduledWork` słówek): istnieje cel lekcji
-  // nie `mastered` (nowy materiał lub w toku) ALBO należne sprawdzenie celu
-  // opanowanego. Dodatkowe utrwalanie nie czyni zestawu rekomendowanym.
-  const nowIso = args.now.toISOString();
-  const recommended = objectiveOrder.some((id) => {
-    if (!objectivesWithExercises.has(id)) return false;
-    const status = statusByObjective.get(id);
-    if (status === undefined || status === "not_assessed") return true; // nowy materiał
-    if (status !== "mastered") return true; // w toku
-    const due = dueByObjective.get(id);
-    return due !== null && due !== undefined && due <= nowIso; // należne sprawdzenie
-  });
-
-  return { itemCount: objectiveOrder.length, independentlyRecalledCount: masteredCount, recommended };
-}
-
 /** Tytuł celu z przypiętego tematu (katalogowego albo dynamicznego). */
 function objectiveTitle(topic: LessonTopic, subjectId: string, objectiveId: string): string {
   const objective = topic.objectives.find((o) => o.id === objectiveId);

@@ -139,12 +139,16 @@ describe("publikacja zleca brakujące media trwale (issue #106)", () => {
 
   it("publikacja nie ponawia nieudanej ilustracji: rodzic decyduje o regeneracji albo pominięciu", async () => {
     const generation = await fakes();
-    const app = services(generation);
+    const clock = new ManualClock();
+    const app = services(generation, { clock });
     const draft = await createDraft(app, { title: "Dni", items: [item({ visualType: "image" })] });
     await reconcileDraftAssets(app, draft.id);
     generation.image.failuresLeft = 3;
-    // trzy przebiegi workera wyczerpują próby ilustracji (jak w media.test.ts)
-    for (let pass = 0; pass < 3; pass += 1) await runDueGenerationWork(app);
+    // trzy przebiegi workera, każdy po odstępie ponowienia (#300), wyczerpują próby ilustracji
+    for (let pass = 0; pass < 3; pass += 1) {
+      await runDueGenerationWork(app);
+      clock.advanceMs(60_000);
+    }
     expect(await count("media_assets", "kind = 'illustration' and state = 'failed'")).toBe(1);
     const imageRuns = await count("generation_runs", "kind = 'illustration'");
 

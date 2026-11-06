@@ -6,7 +6,7 @@ import { FAKE_SLOW_MARKER } from "@learning/server";
 import { lessonWorld } from "../fixtures/lesson-world";
 import { lessonAgentRunSummary } from "./helpers/lesson-agent-run";
 import { closeWorldDatabase, worldPool } from "./helpers/world-database";
-import { loginParent } from "./helpers/parent-session";
+import { fillParentAuth, loginParent } from "./helpers/parent-session";
 
 /**
  * E2E panelu rodzica dla lekcji (fake providerzy, zadanie 12). Pełny przepływ:
@@ -20,7 +20,7 @@ import { loginParent } from "./helpers/parent-session";
 
 async function enterParent(page: Page): Promise<void> {
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("tab-decks")).toBeVisible();
   await page.getByTestId("tab-decks").click();

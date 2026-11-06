@@ -104,7 +104,13 @@ export async function withLessonGenerationControl<T>(
     const pending = Promise.resolve().then(() => request(signal));
     try {
       const result = await Promise.race([pending, aborted]);
-      await verifyCurrent();
+      try {
+        await verifyCurrent();
+      } catch (error) {
+        // Nieudany odczyt bazy po udanej pracy nie wyrzuca wyniku (jak w pollu, #321): zapisy końcowe
+        // i punktu kontrolnego sprawdzają tożsamość runu pod blokadą. Przerwanie rzuca dalej.
+        if (abortReason !== null) throw error;
+      }
       return result;
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {

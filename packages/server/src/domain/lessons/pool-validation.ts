@@ -14,6 +14,7 @@
 import type { z } from "zod";
 import {
   LessonExerciseInputSchema,
+  lessonGapCount,
   MAX_CLOZE_EXTRA,
   MAX_CLOZE_GAPS,
   MAX_GROUP_ITEMS,
@@ -70,6 +71,7 @@ import {
   type LessonExerciseIdentityOptions,
 } from "./exercise-identity";
 import type { PoolMinimums } from "./lesson-policy";
+import { APOSTROPHE_VARIANTS } from "./normalize";
 
 /** Fabryka zgłoszeń reguł rdzenia. */
 const coreIssue = issueFrom(CORE_RULES);
@@ -126,11 +128,14 @@ function sequenceKey(tokens: readonly string[]): string {
   return tokens.join("\u0000");
 }
 
-/** Zbiór kluczy wariantów normalizacji tekstu (dowolny wspólny = równoważność). */
+/**
+ * Zbiór kluczy wariantów normalizacji tekstu (dowolny wspólny = równoważność).
+ * Pomija puste sekwencje — jak `matchLessonAnswer`, gdzie pusta odpowiedź nigdy nie pasuje.
+ */
 function variantKeys(text: string, normalizer: AnswerNormalizer): Set<string> {
   const keys = new Set<string>();
   for (const sequence of normalizer.normalize(text)) {
-    keys.add(sequenceKey(sequence));
+    if (sequence.length > 0) keys.add(sequenceKey(sequence));
   }
   return keys;
 }
@@ -198,13 +203,8 @@ function anyTokens(text: string, normalizer: AnswerNormalizer): readonly string[
   return variants[0] ?? [];
 }
 
-/** Luka `lesson_listen_choice`: ciąg 2+ podkreśleń (jak `feedbackSentenceText` i Kid UI `splitGap`). */
-const LISTEN_GAP_PATTERN = /_{2,}/g;
-
-/** Liczba wystąpień `GAP_MARKER` w tekście. */
-function countGapMarkers(stem: string): number {
-  return stem.split(GAP_MARKER).length - 1;
-}
+/** Opcja zaczynająca się od apostrofu w dowolnym zapisie: `'`, typograficzne warianty i grawis. */
+const LEADING_APOSTROPHE = new RegExp(`^(?:['\\u0060]|${APOSTROPHE_VARIANTS.source})`, "u");
 
 /** Lista identyfikatorów do `found` (wycięta, bez cudzysłowu); pusta lista = „none”. */
 function idList(ids: readonly string[]): string {
@@ -800,7 +800,7 @@ function validateByType(
       validateNoTextAnswers(ex, issues);
       break;
     case "lesson_cloze":
-      validateCloze(ex, issues);
+      validateCloze(ex, normalizer, issues);
       validateNoTextAnswers(ex, issues);
       break;
     default:
@@ -831,7 +831,7 @@ function validateListenChoice(
   issues: LessonRuleIssue[],
 ): void {
   const stem = ex.stem ?? "";
-  const gaps = (stem.match(LISTEN_GAP_PATTERN) ?? []).length;
+  const gaps = lessonGapCount(stem);
   if (gaps !== 1) {
     issues.push(coreIssue("listen.gap_count", {
       pl: `stem: „lesson_listen_choice” wymaga dokładnie jednej luki (ciągu co najmniej dwóch podkreśleń, znaleziono ${gaps})`,
@@ -841,7 +841,7 @@ function validateListenChoice(
   validateOptions(ex, normalizer, issues);
   const options = ex.options ?? [];
   options.forEach((option, index) => {
-    if (/^['’]/u.test(option.text.trim())) {
+    if (LEADING_APOSTROPHE.test(option.text.trim())) {
       issues.push(coreIssue("listen.option_apostrophe", {
         field: `options[${index}]`,
         pl: `options: opcja „${option.text}” zaczyna się od apostrofu (skróty tylko jako całe słowa)`,
@@ -984,14 +984,18 @@ function wordsOfText(text: string): string[] {
  * Pary indeksów `[i, j]` (i < j) tekstów powtórzonych albo zawierających drugi
  * jako ciąg CAŁYCH słów („dostarcza energii” w „dostarcza energii słonecznej”) —
  * nie do odróżnienia dla dziecka. Fragment słowa się nie liczy: „tlen” obok
- * „dwutlenek węgla” jest poprawny.
+ * „dwutlenek węgla” jest poprawny. Z `normalizer` także teksty równoważne po normalizacji.
  */
-function confusableTexts(texts: readonly string[]): [number, number][] {
+function confusableTexts(texts: readonly string[], normalizer?: AnswerNormalizer): [number, number][] {
   const found: [number, number][] = [];
   const words = texts.map(wordsOfText);
   for (let i = 0; i < texts.length; i++) {
     for (let j = i + 1; j < texts.length; j++) {
-      if (isContiguousSubsequence(words[i]!, words[j]!) || isContiguousSubsequence(words[j]!, words[i]!)) {
+      if (
+        isContiguousSubsequence(words[i]!, words[j]!) ||
+        isContiguousSubsequence(words[j]!, words[i]!) ||
+        (normalizer !== undefined && answersEquivalent(texts[i]!, texts[j]!, normalizer))
+      ) {
         found.push([i, j]);
       }
     }
@@ -1170,7 +1174,7 @@ function validateGroup(ex: LessonExerciseDraft, issues: LessonRuleIssue[]): void
  * zawarte jedno w drugim, żadne nie występuje w tekście poza lukami (tekst nie
  * może podpowiadać ani wykluczać słowa z banku).
  */
-function validateCloze(ex: LessonExerciseDraft, issues: LessonRuleIssue[]): void {
+function validateCloze(ex: LessonExerciseDraft, normalizer: AnswerNormalizer, issues: LessonRuleIssue[]): void {
   const text = ex.clozeText;
   const answers = ex.gapAnswers ?? [];
   const extra = ex.extraWords ?? [];
@@ -1234,7 +1238,8 @@ function validateCloze(ex: LessonExerciseDraft, issues: LessonRuleIssue[]): void
       }));
     }
   });
-  for (const [i, j] of confusableTexts(bank)) {
+  // Dziecko wybiera konkretny kafelek: kafelek równoważny odpowiedzi po normalizacji (np. „is not” przy „isn't”) byłby oceniony jako błąd (#316).
+  for (const [i, j] of confusableTexts(bank, normalizer)) {
     issues.push(coreIssue("cloze.bank_confusable", {
       field: bankField(j),
       pl: `gapAnswers: „${bank[j]!}” powiela „${bank[i]!}” albo się w nim zawiera`,
@@ -1315,10 +1320,16 @@ function validateOptions(
       }
     }
   }
-  if (ex.correctOption === undefined || !options.some((option) => option.id === ex.correctOption)) {
+  const correct = options.find((option) => option.id === ex.correctOption);
+  if (ex.correctOption === undefined || correct === undefined) {
     issues.push(coreIssue("options.correct_unknown", {
       pl: "correctOption: poprawna opcja nie jest jedną z opcji",
       found: `correctOption ${ex.correctOption === undefined ? "is missing" : clip(ex.correctOption)}; option ids: ${idList(options.map((option) => option.id))}`,
+    }));
+  } else if (!answersEquivalent(ex.answer, correct.text, normalizer)) {
+    issues.push(coreIssue("answer.correct_option_text", {
+      pl: `answer: odpowiedź „${ex.answer}” nie jest tekstem poprawnej opcji „${correct.text}”`,
+      found: `answer ${clip(ex.answer)}, correct option ${clip(correct.id)} is ${clip(correct.text)}`,
     }));
   }
 }
@@ -1395,6 +1406,11 @@ function validateNotice(
       pl: "correctOption: nie jest równe (po normalizacji) żadnemu segmentowi zdań",
       found: `correctOption ${clip(correctOption)} is not a segment of the sentences`,
     }));
+  } else if (!answersEquivalent(ex.answer, correctOption, normalizer)) {
+    issues.push(coreIssue("answer.correct_option_text", {
+      pl: `answer: odpowiedź „${ex.answer}” nie jest wskazywanym słowem „${correctOption}”`,
+      found: `answer ${clip(ex.answer)}, correctOption is ${clip(correctOption)}`,
+    }));
   }
 }
 
@@ -1403,7 +1419,7 @@ function validateGap(
   normalizer: AnswerNormalizer,
   issues: LessonRuleIssue[],
 ): void {
-  const markers = ex.stem === undefined ? 0 : countGapMarkers(ex.stem);
+  const markers = ex.stem === undefined ? 0 : lessonGapCount(ex.stem);
   if (markers !== 1) {
     issues.push(coreIssue("gap.marker_count", {
       pl: `stem: „lesson_gap” wymaga dokładnie jednego znacznika luki „${GAP_MARKER}” (znaleziono ${markers})`,
@@ -1502,7 +1518,7 @@ function validateAcceptedAnswers(
   }
   ex.acceptedAnswers.forEach((variant, index) => {
     const field = `acceptedAnswers[${index}]`;
-    if (variant.trim() === "") {
+    if (variantKeys(variant, normalizer).size === 0) {
       issues.push(coreIssue("variants.empty", { field, pl: "acceptedAnswers: pusty wariant", found: "blank variant" }));
       return;
     }

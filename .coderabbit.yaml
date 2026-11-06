@@ -33,15 +33,10 @@ reviews:
     # GSD often produces more than five commits in a PR.
     auto_pause_after_reviewed_commits: 0
 
-  # Keep GSD CONTEXT/PLAN/RESEARCH files as review context, but skip
-  # status logs and completed verification notes. Do not exclude product specs.
+  # Do not exclude product specs.
   path_filters:
     - "!pnpm-lock.yaml"
     - "!uv.lock"
-    - "!.planning/STATE.md"
-    - "!.planning/**/*-REVIEW.md"
-    - "!.planning/**/*-SUMMARY.md"
-    - "!.planning/**/*-VERIFICATION.md"
 
   pre_merge_checks:
     docstrings:

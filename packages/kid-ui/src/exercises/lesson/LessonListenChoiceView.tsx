@@ -1,11 +1,10 @@
 import { useEffect, useRef } from "react";
-import { messages } from "@learning/contracts";
+import { messages, splitLessonGap } from "@learning/contracts";
 import { ActionButton } from "../../components/ActionButton";
 import { AnswerGrid } from "../../components/AnswerGrid";
 import { ExerciseFrame } from "../ExerciseFrame";
 import type { ExerciseProps } from "../types";
 import { useChoiceKeyboard } from "../useChoiceKeyboard";
-import { splitGap } from "./gap";
 
 /**
  * „Posłuchaj i wybierz” (`lesson_listen_choice`): lektor czyta zdanie z luką,
@@ -39,7 +38,7 @@ export function LessonListenChoiceView({ task, busy, optionOutcomes, dock, feedb
   }, [task.taskId, task.prompt.kind]);
 
   if (task.prompt.kind !== "lesson_listen_choice") return null;
-  const { before, after, hasGap } = splitGap(task.prompt.stem);
+  const { before, after, hasGap } = splitLessonGap(task.prompt.stem);
 
   return (
     <ExerciseFrame

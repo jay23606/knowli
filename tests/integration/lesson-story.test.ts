@@ -431,6 +431,24 @@ describe("run historyjki lekcji (integracja)", () => {
     expect(calls).toBe(1);
   });
 
+  it("shutdown before claim leaves story run queued without using an attempt (#325)", async () => {
+    const { fakes, services, versionId, storyRunId } = await generatedGrammarLesson();
+    let calls = 0;
+    fakes.llm.generateLessonStory = async () => {
+      calls += 1;
+      throw new GenerationProviderError("transient");
+    };
+    const controller = new AbortController();
+    controller.abort();
+
+    await executeLessonGeneration(services, storyRunId!, { signal: controller.signal });
+
+    const [run] = await storyRuns(versionId);
+    expect(run!.state).toBe("queued");
+    expect(run!.attempts).toBe(0);
+    expect(calls).toBe(0);
+  });
+
   it("transient provider error requeues story run with nextAttemptAt", async () => {
     const { fakes, services, clock, versionId, storyRunId } = await generatedGrammarLesson();
     fakes.llm.generateLessonStory = async () => {

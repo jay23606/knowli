@@ -39,8 +39,6 @@ export interface ActivityClock {
   now(): number;
 }
 
-export const epochClock: ActivityClock = { now: () => Date.now() };
-
 interface TaskState {
   taskId: string;
   exerciseType: string;

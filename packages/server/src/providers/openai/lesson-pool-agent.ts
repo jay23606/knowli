@@ -40,6 +40,7 @@ import {
   type UsageEventBase,
 } from "../usage/record-http";
 import { lessonPoolJsonSchema } from "./lesson-pool-schema";
+import { retryAfterMs } from "./retry-after";
 import { lessonSystemPrompt, lessonUserMaterial } from "./llm";
 
 /**
@@ -97,23 +98,13 @@ function unwrapRetry(error: unknown): unknown {
   return RetryError.isInstance(error) ? error.lastError : error;
 }
 
-/** `retry-after` w sekundach albo jako data HTTP; nieczytelny = brak. */
-function retryAfterMsOf(headers: Readonly<Record<string, string>> | undefined): number | undefined {
-  const raw = headers?.["retry-after"];
-  if (raw === undefined) return undefined;
-  const seconds = Number(raw);
-  if (raw.trim() !== "" && Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
-  const at = Date.parse(raw);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
-}
-
 function apiCallErrorKind(error: APICallError): GenerationProviderError {
   const status = error.statusCode;
   const withStatus = status === undefined ? {} : { status };
   if (status === 401 || status === 402 || status === 403) return new GenerationProviderError("configuration", withStatus);
   if (status === 429) {
-    const retryAfterMs = retryAfterMsOf(error.responseHeaders);
-    return new GenerationProviderError("rate_limit", { ...withStatus, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) });
+    const retryAfter = retryAfterMs(error.responseHeaders?.["retry-after"]);
+    return new GenerationProviderError("rate_limit", { ...withStatus, ...(retryAfter === undefined ? {} : { retryAfterMs: retryAfter }) });
   }
   // Brak statusu = brak odpowiedzi (sieć); SDK oznacza błędy sieci i 408/409/5xx jako `isRetryable`.
   if (status === undefined || status === 408 || status >= 500 || error.isRetryable) return new GenerationProviderError("transient", withStatus);
@@ -508,7 +499,8 @@ export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
       inputSchema: submitSchema(input),
       execute: (raw, options) =>
         guard.run(() => {
-          const payload = raw as { exercises?: unknown; examples?: unknown };
+          // `null` z modelu (bez walidacji `jsonSchema`) to brak ćwiczeń: odrzucenie z informacją dla modelu (#326).
+          const payload = (raw ?? {}) as { exercises?: unknown; examples?: unknown };
           // Surowe rekordy bez zmian: materializację, kształt i reguły robią narzędzia kierownika.
           return untilAborted(
             tools.submit({
@@ -650,7 +642,7 @@ export class AiSdkExerciseChecker implements LessonExerciseCheckerProvider {
         ...hooks,
       }),
     );
-    const answers = result.output.answers;
+    const answers = sameLength(result.output.answers, input.items.length);
     const isAnswers = (value: unknown): value is string[] => Array.isArray(value) && value.every((part) => typeof part === "string");
     return { answers: input.items.map((_item, index) => atPosition(answers, index, isAnswers)) };
   }
@@ -685,7 +677,7 @@ export class AiSdkExerciseChecker implements LessonExerciseCheckerProvider {
         ...hooks,
       }),
     );
-    const verdicts = result.output.equivalent;
+    const verdicts = sameLength(result.output.equivalent, input.items.length);
     return {
       equivalent: input.items.map((item, index) =>
         atPosition(verdicts, index, (value: unknown): value is boolean[] =>
@@ -779,7 +771,7 @@ function jsonForBlock(value: unknown): string {
 }
 
 /**
- * Lista wyników sędziego podpowiedzi i rozwiązującego otwarte: przy innej liczbie pozycji niż w
+ * Lista wyników checkera (każdej metody): przy innej liczbie pozycji niż w
  * żądaniu nie wiadomo, która odpowiedź należy do której pozycji, więc cała paczka jest niesprawdzona
  * (`undefined` → `null` na każdej pozycji) zamiast dopasowania po pozycji.
  */

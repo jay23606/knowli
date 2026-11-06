@@ -83,10 +83,12 @@ async function assetRow(assetId: string): Promise<AssetRow> {
   )[0]!;
 }
 
-async function runOfAsset(assetId: string): Promise<{ id: string; state: string; attempts: number; error_code: string | null }> {
+type AssetRun = { id: string; state: string; attempts: number; error_code: string | null; next_attempt_at: Date | null };
+
+async function runOfAsset(assetId: string): Promise<AssetRun> {
   return (
-    await query<{ id: string; state: string; attempts: number; error_code: string | null }>(
-      `select id, state, attempts, error_code from learning_app.generation_runs where asset_id = $1`,
+    await query<AssetRun>(
+      `select id, state, attempts, error_code, next_attempt_at from learning_app.generation_runs where asset_id = $1`,
       [assetId],
     )
   )[0]!;
@@ -267,7 +269,8 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
   it("nieudana ilustracja nie niszczy szkicu; publikacja czeka na decyzję rodzica", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
-    const services = mediaServices(fakes);
+    const clock = new ManualClock();
+    const services = mediaServices(fakes, clock);
 
     const dto = await createDraft(services, {
       title: "Dni",
@@ -278,7 +281,16 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
     const illLink = await assetLink(dto.id, 0, "illustration");
 
     fakes.image.failuresLeft = 3;
-    for (let pass = 0; pass < 3; pass += 1) {
+    // ponowienie czeka na odstęp (#300): kolejny przebieg przed `next_attempt_at` nie woła providera
+    await runDueGenerationWork(services);
+    expect(fakes.image.requests).toHaveLength(1);
+    const deferred = await runOfAsset(illLink.asset_id!);
+    expect(deferred.state).toBe("queued");
+    expect(new Date(deferred.next_attempt_at!).getTime()).toBeGreaterThan(clock.now().getTime());
+    await runDueGenerationWork(services);
+    expect(fakes.image.requests).toHaveLength(1);
+    for (let pass = 0; pass < 2; pass += 1) {
+      clock.advanceMs(60_000);
       await runDueGenerationWork(services);
     }
 
@@ -440,6 +452,47 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
     await publishDraft(services, deckB.id, 1);
   });
 
+  it("#303: nieudana regeneracja nie przywraca przy edycji obrazu odrzuconego przez rodzica", async () => {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const clock = new ManualClock();
+    const services = mediaServices(fakes, clock);
+
+    const dto = await createDraft(services, { title: "Dni", items: [item({ visualType: "image" })] });
+    await reconcileDraftAssets(services, dto.id);
+    await runDueGenerationWork(services);
+    const rejected = (await assetLink(dto.id, 0, "illustration")).asset_id!;
+    expect((await assetRow(rejected)).state).toBe("ready");
+
+    const regenerated = await regenerateRevisionAsset(services, {
+      draftId: dto.id,
+      itemRevisionId: dto.items[0]!.revisionId,
+      role: "illustration",
+    });
+    fakes.image.failuresLeft = 3;
+    for (let pass = 0; pass < 3; pass += 1) {
+      // automatyczne ponowienie czeka na `next_attempt_at` (#300)
+      if (pass > 0) clock.advanceMs(60_000);
+      await runDueGenerationWork(services);
+    }
+    expect((await assetRow(regenerated.assetId)).state).toBe("failed");
+    const failedDraft = await readDraft(services, dto.id);
+    expect(failedDraft.assets.find((a) => a.role === "illustration")!.state).toBe("failed");
+
+    // zwykła edycja szkicu ponawia generację zamiast wiązać odrzuconą gen 1
+    await editDraft(services, dto.id, { title: "Dni tygodnia", expectedEditNumber: 1 });
+    const link = await assetLink(dto.id, 0, "illustration");
+    expect(link.asset_id).not.toBe(rejected);
+    expect(link.asset_id).not.toBe(regenerated.assetId);
+    expect(link.state).toBe("pending");
+    expect((await assetRow(link.asset_id!)).generation_number).toBe(3);
+    await expect(publishDraft(services, dto.id, 2)).rejects.toMatchObject({ code: "validation" });
+
+    // kolejna edycja przy trwającej gen 3 nie wraca do gen 1
+    await editDraft(services, dto.id, { title: "Dni", expectedEditNumber: 2 });
+    expect((await assetLink(dto.id, 0, "illustration")).asset_id).toBe(link.asset_id);
+  });
+
   it("zmiana tekstu zmienia fingerprint audio: stary zasób zostaje w cache, szkic dostaje nowy", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
@@ -466,6 +519,43 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
       "select state from learning_app.generation_runs where kind = 'tts'",
     );
     expect(runs.map((r) => r.state).sort()).toEqual(["queued", "succeeded"]);
+  });
+
+  it("#304: zasób odłączony od szkicu przed startem workera nie wywołuje providera; współdzielony zostaje", async () => {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const services = mediaServices(fakes);
+    const image = (target: string, imagePrompt: string) =>
+      ({ ...item({ source: "kot", target, visualType: "image" }), visualData: { imagePrompt } });
+
+    // A i B współdzielą zasoby „cta”; A poprawia literówkę, B nadal ich używa
+    const a = await createDraft(services, { title: "A", items: [image("cta", "shared prompt")] });
+    const b = await createDraft(services, { title: "B", items: [image("cta", "shared prompt")] });
+    await reconcileDraftAssets(services, a.id);
+    await reconcileDraftAssets(services, b.id);
+    const sharedIll = (await assetLink(b.id, 0, "illustration")).asset_id!;
+    expect((await assetLink(a.id, 0, "illustration")).asset_id).toBe(sharedIll);
+    await editDraft(services, a.id, { items: [{ ...image("cat", "fixed prompt"), id: a.items[0]!.id }], expectedEditNumber: 1 });
+
+    // C zmienia słowo i opis obrazka, zanim worker wystartował: stare zasoby nikomu niepotrzebne
+    const c = await createDraft(services, { title: "C", items: [image("dgo", "orphan prompt")] });
+    await reconcileDraftAssets(services, c.id);
+    const orphanIll = (await assetLink(c.id, 0, "illustration")).asset_id!;
+    const orphanTts = (await assetLink(c.id, 0, "target_audio")).asset_id!;
+    await editDraft(services, c.id, { items: [{ ...image("dog", "dog prompt"), id: c.items[0]!.id }], expectedEditNumber: 1 });
+
+    for (let i = 0; i < 10; i += 1) await runDueGenerationWork(services);
+
+    expect(fakes.image.requests.map((r) => r.prompt).filter((p) => p.includes("orphan prompt"))).toEqual([]);
+    expect(fakes.tts.callsFor("dgo")).toBe(0);
+    for (const orphan of [orphanIll, orphanTts]) {
+      expect((await assetRow(orphan)).state).toBe("failed");
+      expect(await runOfAsset(orphan)).toMatchObject({ state: "superseded", attempts: 0 });
+    }
+    expect((await assetRow(sharedIll)).state).toBe("ready");
+    for (const draft of [a, c]) {
+      expect((await assetRow((await assetLink(draft.id, 0, "illustration")).asset_id!)).state).toBe("ready");
+    }
   });
 
   it("zmiana samego tytułu nie unieważnia zadań audio", async () => {

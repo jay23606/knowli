@@ -297,11 +297,6 @@ function parseExactAnswer(text: string): { value: Fraction; unit: LengthUnit | n
   return { value: decimalFraction(numberText), unit: unitOf(match[2]) };
 }
 
-export function parseCalculationAnswer(text: string): { value: number; unit: LengthUnit | null } | null {
-  const parsed = parseExactAnswer(text);
-  return parsed ? { value: Number(formatFraction(parsed.value).replace(",", ".")), unit: parsed.unit } : null;
-}
-
 export function evaluateCalculationAnswer(text: string, input: CalculationSpec): "correct" | "incorrect" | "unevaluated" {
   const { spec, result, tolerance } = validatedCalculation(input);
   const parsed = parseExactAnswer(text);

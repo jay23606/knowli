@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { V3_EXERCISE_FIELDS, validateLessonExercise, validatePool } from "../../pool-validation";
+import { V3_EXERCISE_FIELDS, validateLessonExercise, validateLessonExerciseIssues, validatePool } from "../../pool-validation";
 import { clip, messagesOf } from "../../rules/catalog";
 import type { DynamicTopicData, LessonExerciseDraft } from "../../types";
 import { englishChapterSubject } from "./module";
@@ -138,6 +138,19 @@ describe("validateChapterExercise", () => {
       expect(chapterMessages(ex), ex.exerciseType).toEqual([]);
       expect(validateLessonExercise(ex, englishChapterSubject, TOPIC), ex.exerciseType).toEqual([]);
     }
+  });
+
+  it("bank słów cloze bez dystraktora równoważnego odpowiedzi luki po rozwinięciu skrótu (#316)", () => {
+    const ruleIds = (ex: LessonExerciseDraft) => validateLessonExerciseIssues(ex, englishChapterSubject, TOPIC).map((issue) => issue.rule);
+    const contracted = cloze({ instructionPl: "Uzupełnij tekst.", clozeText: "It ___ windy. It's ___ today.", gapAnswers: ["isn't", "sunny"], extraWords: ["is not"] });
+    expect(ruleIds(contracted)).toContain("cloze.bank_confusable");
+    expect(ruleIds({ ...contracted, extraWords: ["raining"] })).not.toContain("cloze.bank_confusable");
+  });
+
+  it("wybór: answer to tekst poprawnej opcji, skrót równoważny przechodzi (#315)", () => {
+    const ruleIds = (ex: LessonExerciseDraft) => validateLessonExerciseIssues(ex, englishChapterSubject, TOPIC).map((issue) => issue.rule);
+    expect(ruleIds(choice({ correctOption: "b" }))).toContain("answer.correct_option_text");
+    expect(ruleIds(choice({ options: [{ id: "a", text: "isn't" }, { id: "b", text: "is" }], stem: "It ___ raining.", answer: "is not" }))).not.toContain("answer.correct_option_text");
   });
 
   it("wymaga dokładnie jednej luki w zdaniu wyboru", () => {

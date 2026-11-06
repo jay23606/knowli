@@ -90,7 +90,6 @@ export const GenerationStateSchema = z.enum([
   "failed",
   "superseded",
 ]);
-export type GenerationState = z.infer<typeof GenerationStateSchema>;
 
 /**
  * Widok runu generacji dla rodzica (polling). Bez treści LLM ani promptu.

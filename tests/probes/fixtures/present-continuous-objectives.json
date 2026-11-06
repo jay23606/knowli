@@ -1,0 +1,45 @@
+{
+  "subjectId": "english_grammar",
+  "topicId": "present_continuous",
+  "topicVersion": 1,
+  "topicTitle": "Present Continuous",
+  "material": "Unit 6 — Our weekend (fragment podręcznika A1, fikcyjny)\n\nWords: play football, read a book, cook dinner, watch TV, jump, sing a song, listen to music, make a cake, write a letter, dance, ride a bike, swim in the lake, run in the park, sit on the sofa, stop at the corner, lie on the grass, tie your shoes.\nNouns: garden, kitchen, bike, lake, park, cake, letter, football, sofa, shoes, grass, song.\n\nDialogue: Look! Tom is riding his bike in the park. Mum is cooking dinner in the kitchen. The children are swimming in the lake.\n\nEvery day: I get up at seven. We play football on Mondays. My dad cooks dinner every day. Anna reads a book in the evening. They usually watch TV after school.",
+  "objectives": [
+    {
+      "id": "english_grammar.present_continuous.affirmative",
+      "title": "Teraz: am/is/are + -ing",
+      "descriptionEn": "The present continuous describes an action happening right now, at this moment: am, is or are matching the subject + the verb with -ing (I am reading, she is playing, the dogs are playing). Affirmative sentences with action verbs only.",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_continuous.now_or_usually",
+      "title": "Teraz czy zwykle? (po Present Simple)",
+      "descriptionEn": "Choosing between the present simple for things that happen usually, regularly or every day (Ola reads every day.) and the present continuous for things happening right now, at this moment (Look! Ola is reading.), in affirmative sentences only. One kind of exercise checks the meaning of a form instead: a lesson_choice with options exactly 'now' and 'usually', whose stimulus is an affirmative present simple or present continuous sentence with no time marker at all (Ola is reading a book.); the key follows from the tense of the sentence (present continuous → now, present simple → usually). In every other exercise, where the child chooses or produces a tense, the context makes the right tense clear: a time marker in the sentence (right now, at the moment, Look!, every day, usually, on Mondays) or a short Polish scene in the instruction. The checked element is the choice of tense, not the verb form. If the child chooses the right tense but makes a form mistake (a missing -s, a wrong -ing spelling, am/is/are without -ing or a missing am/is/are when the context is now, such as She is play now. or She playing now.), return 'almost' with errorCategory: null. If the child uses the wrong tense, return 'incorrect' with continuous_for_habit (present continuous for something that happens usually) or simple_for_now (present simple for something happening right now). A hybrid of am/is/are with a present simple verb for something that happens usually (I'm go to school every day.) is 'incorrect' with be_plus_simple. The end-of-lesson story may mix present simple and present continuous.",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_continuous.negative",
+      "title": "Przeczenie: isn't / aren't + -ing",
+      "descriptionEn": "Present continuous negatives for actions not happening right now: am not, isn't or aren't matching the subject + the verb with -ing (I am not sleeping, he isn't playing, we aren't reading). They never use don't or doesn't.",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_continuous.questions",
+      "title": "Pytania i krótkie odpowiedzi",
+      "descriptionEn": "Present continuous yes/no questions put am, is or are before the subject, followed by the verb with -ing (Is she reading? Are they playing?); they never use do or does. Short answers repeat the same form of 'to be' (Yes, she is. No, they aren't.). The only wh-question is the fixed phrase What + am/is/are + subject + doing? (What are you doing?), answered with a full present continuous sentence (I am reading.).",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_continuous.ing_spelling",
+      "title": "Pisownia -ing",
+      "descriptionEn": "Spelling of the -ing form (British spelling): most verbs just add -ing (play → playing, read → reading, jump → jumping); a final silent -e is dropped (make → making, write → writing); -ie changes to -y (lie → lying, tie → tying); one-syllable verbs ending in one vowel + one consonant double the last consonant (run → running, swim → swimming, sit → sitting), but not after two consonants or after w, x, y (jump → jumping, fix → fixing, snow → snowing, play → playing). Only verbs that follow these rules.",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_continuous.now_or_usually_more",
+      "title": "Teraz czy zwykle? Przeczenia i pytania",
+      "descriptionEn": "Choosing between the present simple and the present continuous in negatives and questions: don't/doesn't + base verb for things that do not happen usually versus am not/isn't/aren't + -ing for things not happening right now (She doesn't watch TV on Mondays. / She isn't watching TV right now.); Do/Does + subject + base verb to ask about habits versus Am/Is/Are + subject + -ing to ask about right now (Do you play football on Saturdays? / Are you playing football right now?). In every exercise the context makes the right tense clear: a time marker in the sentence (right now, at the moment, Look!, every day, usually, on Mondays) or a short Polish scene in the instruction. The checked element is the choice of tense, not the verb form. If the child chooses the right tense but makes a form mistake (doesn't eats, a question without do or does, a wrong -ing spelling, am/is/are without -ing or a missing am/is/are when the context is now, such as She isn't watch TV now. or She playing now.), return 'almost' with errorCategory: null. If the child uses the wrong tense, return 'incorrect' with continuous_for_habit (present continuous for something that happens usually) or simple_for_now (present simple for something happening right now). A hybrid of am/is/are with a present simple verb for something that happens usually (She isn't watch TV on Mondays. / Are you play football on Saturdays?) is 'incorrect' with be_plus_simple. The end-of-lesson story may mix present simple and present continuous.",
+      "cards": []
+    }
+  ]
+}

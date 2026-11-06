@@ -19,6 +19,7 @@ import { endSessionFromHeader } from "./helpers/kid-session";
 import { silentWavBuffer } from "./helpers/kid-ui-fixture";
 import { listenAudioPlays, stubListenAudio } from "./helpers/lesson-audio";
 import { readTestRunConfig } from "../test-run-config";
+import { fillParentAuth } from "./helpers/parent-session";
 
 const CHILD_NAME = `Obieg lekcji ${randomUUID().slice(0, 8)}`;
 const LESSON_TITLE = `Present Simple ${randomUUID().slice(0, 8)}`;
@@ -43,7 +44,7 @@ test.afterAll(async () => {
 
 async function enterParent(page: Page): Promise<void> {
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("tab-decks")).toBeVisible();
 }

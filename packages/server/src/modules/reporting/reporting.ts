@@ -18,6 +18,7 @@ import { AppError } from "../../errors";
 import { readDeckRevisionIds, readPublishedProgress } from "./published-progress";
 import { assertVocabularyDeck, readDeckKind } from "../materials";
 import { sessionTimeLimitMs } from "../../domain/session-limits";
+import { localDay } from "../../domain/local-date";
 import { buildReportPeriod } from "../../domain/report-period";
 
 /**
@@ -73,12 +74,7 @@ const ACTIVITY_WINDOW_DAYS = 7;
 const ACTIVITY_SESSION_GRACE_MS = 60_000;
 
 /** Dni kalendarzowe aktywności liczymy w strefie czasowej rodziny. */
-const ACTIVITY_DAY_FORMAT = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Europe/Warsaw",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
+const ACTIVITY_TIMEZONE = "Europe/Warsaw";
 // MVP: jedna polska rodzina. Docelowo strefa z family_settings.timezone
 // (helper readTimezone w sessions.ts) przy pierwszej rodzinie spoza Polski.
 
@@ -147,7 +143,7 @@ export async function readActivitySummary(services: Services, childId: string): 
 
   const deckTotals = new Map<string, { deckTitle: string; sessions: number }>();
   for (const row of sessions) {
-    const sessionDay = ACTIVITY_DAY_FORMAT.format(new Date(row.startedAt));
+    const sessionDay = localDay(row.startedAt, ACTIVITY_TIMEZONE);
     const duration = Math.min(
       new Date(row.lastActivity).getTime() - new Date(row.startedAt).getTime(),
       sessionTimeLimitMs(row.taskBudget) + ACTIVITY_SESSION_GRACE_MS,

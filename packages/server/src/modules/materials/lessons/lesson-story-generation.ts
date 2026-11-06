@@ -188,6 +188,7 @@ export async function executeLessonStoryGeneration(
   if (run.state !== "queued") {
     return;
   }
+  if (options.signal?.aborted) return;
   const attempts = await claimQueuedRun(services.db, runId, run.expectedEditNumber ?? undefined, services.clock.now());
   if (attempts === null) {
     return;

@@ -2,7 +2,6 @@ import { z } from "zod";
 import { DaySchema, InstantSchema, UuidSchema } from "./common";
 
 export const ParentWorkCardQuerySchema = z.object({ childId: UuidSchema, date: DaySchema.optional() }).strict();
-export type ParentWorkCardQuery = z.infer<typeof ParentWorkCardQuerySchema>;
 
 const NonNegativeInt = z.number().int().nonnegative();
 
@@ -11,7 +10,6 @@ export const ParentActivityExcludedTaskDtoSchema = z.object({
   taskOrdinal: NonNegativeInt,
   reason: z.string().min(1).max(300),
 }).strict();
-export type ParentActivityExcludedTaskDto = z.infer<typeof ParentActivityExcludedTaskDtoSchema>;
 
 const ParentActivityTaskDetailSchema = z.object({
   taskOrdinal: NonNegativeInt,

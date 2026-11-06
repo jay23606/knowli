@@ -1403,6 +1403,7 @@ export async function executeLessonGeneration(services: Services, runId: string,
   if (run.state !== "queued") {
     return;
   }
+  if (options.signal?.aborted) return;
 
   const attempts = await claimQueuedRun(services.db, runId, run.expectedEditNumber!, services.clock.now());
   if (attempts === null) {

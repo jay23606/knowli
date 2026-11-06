@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { createDatabase } from "@learning/server";
 import { readTestRunConfig } from "../test-run-config";
+import { E2E_SETUP_TOKEN } from "./helpers/parent-session";
 
 type WorldPool = ReturnType<typeof createDatabase>["pool"];
 let worldPool: WorldPool | null = null;
@@ -40,7 +41,7 @@ function localTestDate(): string {
 
 async function setupParent(page: import("@playwright/test").Page) {
   const parent = page.request;
-  await parent.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await parent.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   const login = await parent.post("/api/v1/parent/login", { data: { secret: "1234" } });
   expect(login.status()).toBe(200);
   return parent;

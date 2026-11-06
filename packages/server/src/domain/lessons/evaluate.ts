@@ -23,6 +23,8 @@ export interface LessonAnswerKey {
   readonly focus: readonly string[];
   readonly correctOptionId?: string;
   readonly itemIds?: readonly string[];
+  /** Tekst klocków i elementów (`lesson_order`: identyczne klocki są zamienne). */
+  readonly itemValues?: Readonly<Record<string, string>>;
   /** `lesson_keywords`: identyfikatory pojęć kluczowych i dozwolona liczba wyborów. */
   readonly correctOptionIds?: readonly string[];
   readonly minSelected?: number;
@@ -285,7 +287,14 @@ export function evaluateSequence(itemIds: readonly string[], key: LessonAnswerKe
   if (expected === undefined || expected.length !== itemIds.length) {
     return false;
   }
-  return expected.every((id, i) => id === itemIds[i]);
+  const values = key.itemValues;
+  if (values === undefined) {
+    return expected.every((id, i) => id === itemIds[i]);
+  }
+  // Klocki o tym samym tekście są zamienne (#298): permutacja klocków, potem tekst na każdej pozycji.
+  const known = new Set(expected);
+  const isPermutation = new Set(itemIds).size === itemIds.length && itemIds.every((id) => known.has(id));
+  return isPermutation && expected.every((id, i) => values[id] === values[itemIds[i]!]);
 }
 
 /** Schemat werdyktu modelu — nadmiarowe pola odcięte (`.strip` domyślny w zod). */

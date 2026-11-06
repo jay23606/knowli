@@ -38,6 +38,7 @@ export { readParentWorkCard, readParentCosts } from "./modules/reporting";
 export {
   isParentSetupRequired,
   setupParent,
+  setupParentWithToken,
   loginParent,
   requireParent,
   logoutParent,

@@ -5,6 +5,7 @@ import {
   SessionActivityReviewVerdictSchema,
   SessionEndInputSchema,
   sessionActivityAward,
+  sessionApprovedActivityMs,
   taskActiveMs,
   unionDurationMs,
 } from "./reward-activity";
@@ -156,6 +157,14 @@ describe("session activity award arithmetic", () => {
     expect(sessionActivityAward(0, 59_999)).toEqual({ pointsAwarded: 0, remainderMs: 59_999 });
     expect(() => sessionActivityAward(-1, 0)).toThrow();
     expect(() => sessionActivityAward(1_000, 60_000)).toThrow();
+  });
+
+  it("caps the approved client time at the server-measured session duration", () => {
+    const task = (activeIntervals: [number, number][]) => ({ activeIntervals, playbacks: [] });
+    expect(sessionApprovedActivityMs([task([[0, 3_600_000]])], 90_000)).toBe(90_000);
+    expect(sessionApprovedActivityMs([task([[0, 50_000]]), task([[50_000, 100_000]])], 90_000)).toBe(90_000);
+    expect(sessionApprovedActivityMs([task([[0, 40_000]]), task([[40_000, 70_000]])], 90_000)).toBe(70_000);
+    expect(sessionApprovedActivityMs([], 90_000)).toBe(0);
   });
 
   it("computes the union duration without double counting overlaps", () => {

@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { LessonDeckDtoSchema } from "@learning/contracts";
 import { lessonWorld } from "../fixtures/lesson-world";
 import { closeWorldDatabase, worldPool } from "./helpers/world-database";
-import { loginParent } from "./helpers/parent-session";
+import { fillParentAuth, loginParent } from "./helpers/parent-session";
 
 async function enterParent(page: Page): Promise<void> {
   await loginParent(page);
@@ -133,7 +133,7 @@ test("returns to login when the parent session expires during archiving", async 
   await page.getByRole("dialog").getByRole("button", { name: "Usuń z listy", exact: true }).click();
   await expect(page.getByTestId("auth-secret")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(removeButton(page, title)).toBeVisible();
   const dto = LessonDeckDtoSchema.parse(await (await page.request.get(`/api/v1/parent/lessons/${deckId}`)).json());

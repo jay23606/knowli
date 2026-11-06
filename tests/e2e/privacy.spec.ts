@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
+import { E2E_SETUP_TOKEN } from "./helpers/parent-session";
 import {
   ApiErrorSchema,
   AttemptDtoSchema,
@@ -44,7 +45,7 @@ test("kid API prowadzi sesję bez ujawniania kluczy odpowiedzi", async ({ page }
 
   // Setup rodzica przez HTTP (cookie sesji dzieli kontekst strony)
   const parent = page.request;
-  const setup = await parent.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  const setup = await parent.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   expect([201, 409]).toContain(setup.status());
   const login = await parent.post("/api/v1/parent/login", { data: { secret: "1234" } });
   expect(login.status()).toBe(200);

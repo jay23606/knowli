@@ -12,7 +12,8 @@ import { CURRENT_POLICY_ID, loadPolicy } from "../../policies/registry";
 import { readDeckLearningOverview, readProjectedExposedTargetKeys } from "./deck-learning-overview";
 import { SKILL_PROJECTION_VERSION } from "../learning";
 import { payloadToItem } from "../materials";
-import { localDateAt, validRewardTimezone } from "../../domain/reward-activity";
+import { localDay } from "../../domain/local-date";
+import { validRewardTimezone } from "../../domain/reward-activity";
 
 /**
  * Widoki startowe Kid Mode (arch §12): profile dzieci (tylko nazwa i awatar)
@@ -44,7 +45,7 @@ export async function listKidProfiles(services: Services): Promise<KidProfileDto
         if (!session.endedAt) continue;
         const timezone = validRewardTimezone(session.timezone);
         const profileDay = todayByChild.get(session.childId);
-        if (!profileDay || localDateAt(today, timezone) !== localDateAt(session.endedAt, timezone)) continue;
+        if (!profileDay || localDay(today, timezone) !== localDay(session.endedAt, timezone)) continue;
         const approvedSeconds = session.approvedSeconds === null ? NaN : Number(session.approvedSeconds);
         if (session.reviewStatus === "evaluated" && Number.isSafeInteger(approvedSeconds) && approvedSeconds >= 0) {
           profileDay.seconds += approvedSeconds;

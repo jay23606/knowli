@@ -534,6 +534,36 @@ describe("materializeExercise — nagranie zdania feedbacku w prywatnym kluczu",
   });
 });
 
+describe("materializeExercise — luka Present Continuous w kartkówce", () => {
+  it("czasownik zostaje w nawiasie bodźca, a podpowiedzi nie ma", () => {
+    const pcTopic = subject.topics.find((candidate) => candidate.id === "present_continuous")!;
+    const task = materializeExercise(
+      { independentCheck: true, reason: "due_check" },
+      "pc-gap",
+      loaded({
+        exerciseType: "lesson_gap",
+        objectiveId: "english_grammar.present_continuous.affirmative",
+        instructionPl: "Uzupełnij lukę.",
+        stem: "He ___ (play) football now.",
+        hint: "gra w piłkę",
+        answer: "is playing",
+        acceptedAnswers: [],
+        focus: ["is", "playing"],
+        answerLocale: subject.answerLocale,
+        promptLocale: subject.promptLocale,
+      }),
+      pcTopic,
+      subject,
+      { mockTest: true },
+    );
+    expect(task.prompt.kind).toBe("lesson_gap");
+    if (task.prompt.kind !== "lesson_gap") return;
+    expect(task.prompt.stemWithGap).toContain("(play)");
+    expect(task.prompt).not.toHaveProperty("hint");
+    expect(JSON.stringify(task.prompt)).not.toContain("gra w piłkę");
+  });
+});
+
 describe("materializeExercise — wyjaśnienie ćwiczenia w prywatnym kluczu (spec 2026-11-01 §4.1)", () => {
   const explanationAudioId = "55555555-5555-4555-8555-555555555555";
   const explanationPl = "Po she dodajemy -s, więc wybierz plays.";

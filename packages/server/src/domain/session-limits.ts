@@ -9,6 +9,8 @@
 export const RESUME_WINDOW_MS = 30 * 60_000;
 /** Miękki minimalny limit czasu sesji — egzekwowany tylko między zadaniami (arch §9.3). */
 export const SESSION_TIME_LIMIT_MS = 10 * 60_000;
+/** Przyrost limitu na każde zadanie budżetu (zob. `sessionTimeLimitMs`). */
+export const SESSION_TIME_PER_TASK_MS = 45_000;
 /**
  * Efektywny limit czasu sesji: skaluje się z budżetem zadań ocenianych sesji
  * (45 s na zadanie, minimum 10 minut). Budżety ≤ 13 zachowują 10 minut;
@@ -16,5 +18,5 @@ export const SESSION_TIME_LIMIT_MS = 10 * 60_000;
  * wydawania), nie od liczby już wydanych zadań.
  */
 export function sessionTimeLimitMs(taskBudget: number): number {
-  return Math.max(SESSION_TIME_LIMIT_MS, taskBudget * 45_000);
+  return Math.max(SESSION_TIME_LIMIT_MS, taskBudget * SESSION_TIME_PER_TASK_MS);
 }

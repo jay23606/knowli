@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, ne, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ne, or, sql } from "drizzle-orm";
 import { MockTestReportDtoSchema, MockTestSummaryDtoSchema, SkillStatusSchema, UuidSchema,
   type TestGoal, type TaskDto, type MockTestReportDto, type MockTestSummaryDto, type MockTestReportRow } from "@learning/contracts";
 import type { Services } from "../../config";
@@ -12,6 +12,7 @@ import { payloadToItem } from "../materials";
 import { writeSealedEvent } from "./events";
 import { summarizeMockTestRows } from "../../domain/mock-test-report";
 import { AppError } from "../../errors";
+import { SESSION_TIME_LIMIT_MS, SESSION_TIME_PER_TASK_MS, sessionTimeLimitMs } from "../../domain/session-limits";
 import { recordTaskSkillFacts } from "./skill-projections";
 
 export async function closeMockTest(tx: Tx, services: Services, session: typeof learningSessions.$inferSelect, requestedState: "completed" | "ended"): Promise<MockTestReportDto> {
@@ -62,7 +63,7 @@ export async function closeMockTest(tx: Tx, services: Services, session: typeof 
 async function terminalSession(tx: Tx, services: Services, sessionId: string) {
   const [session] = await tx.select().from(learningSessions).where(eq(learningSessions.id, UuidSchema.parse(sessionId))).for("update");
   if (!session || session.mode !== "mock_test") throw new AppError("not_found");
-  if (session.state === "active" && services.clock.now().getTime() - session.startedAt.getTime() <= 600_000) {
+  if (session.state === "active" && services.clock.now().getTime() - session.startedAt.getTime() <= sessionTimeLimitMs(session.taskBudget)) {
     throw new AppError("conflict", { message: "Omówienie jest dostępne po zakończeniu kartkówki." });
   }
   const report = await closeMockTest(tx, services, session, "ended");
@@ -92,10 +93,16 @@ export async function readMockTestSummary(services: Services, sessionId: string)
   });
 }
 
+/** SQL-owy odpowiednik `sessionTimeLimitMs(task_budget)`: kartkówka po swoim limicie czasu. */
+export function mockTestTimedOut(now: Date) {
+  return sql`${learningSessions.startedAt} < ${now.toISOString()}::timestamptz
+    - interval '1 millisecond' * greatest(${SESSION_TIME_LIMIT_MS}, ${learningSessions.taskBudget} * ${SESSION_TIME_PER_TASK_MS})`;
+}
+
 export async function listMockTests(services: Services, childId: string, deckId: string): Promise<MockTestReportDto[]> {
   const rows = await services.db.select({ id: learningSessions.id }).from(learningSessions)
     .where(and(eq(learningSessions.childId, UuidSchema.parse(childId)), eq(learningSessions.deckId, UuidSchema.parse(deckId)),
-      eq(learningSessions.mode, "mock_test"), or(ne(learningSessions.state, "active"), lt(learningSessions.startedAt, new Date(services.clock.now().getTime() - 600_000)))))
+      eq(learningSessions.mode, "mock_test"), or(ne(learningSessions.state, "active"), mockTestTimedOut(services.clock.now()))))
     .orderBy(desc(learningSessions.startedAt), desc(learningSessions.id)).limit(20);
   const result: MockTestReportDto[] = [];
   for (const row of rows) result.push(await getMockTestReport(services, row.id));

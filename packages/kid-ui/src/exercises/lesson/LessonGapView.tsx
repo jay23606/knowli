@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { messages } from "@learning/contracts";
+import { messages, splitLessonGap } from "@learning/contracts";
 import { format } from "../../format";
 import { ListenButton } from "../../components/ListenButton";
 import { ActionButton } from "../../components/ActionButton";
@@ -7,7 +7,6 @@ import { AnswerField } from "../../components/AnswerField";
 import { ExerciseFrame } from "../ExerciseFrame";
 import { useRetryReset } from "../useRetryReset";
 import type { ExerciseProps } from "../types";
-import { splitGap } from "./gap";
 
 /**
  * Luka (`lesson_gap`): zdanie z polem edycji dokładnie w miejscu luki i
@@ -28,7 +27,7 @@ export function LessonGapView({ task, busy, dock, handlers }: ExerciseProps) {
   useRetryReset(dock, () => setText(""), () => inputRef.current?.focus({ preventScroll: true }));
 
   if (task.prompt.kind !== "lesson_gap") return null;
-  const { before, after } = splitGap(task.prompt.stemWithGap);
+  const { before, after } = splitLessonGap(task.prompt.stemWithGap);
   const hint = task.prompt.hint;
   const hasAudio = task.prompt.audioAssetId !== undefined;
   const disabled = busy;

@@ -43,12 +43,9 @@ export const KidDecksQuerySchema = z.object({
   childId: UuidSchema,
   microphoneEnabled: z.stringbool().optional(),
 });
-/** Strona nadawcza (wire): mikrofon jako string "true"/"false" przed dekodą. */
-export type KidDecksQuery = z.input<typeof KidDecksQuerySchema>;
 
 /** Rodzaj ujawnienia: podpowiedź tekstowa albo ponowny odsłuch (arch §12). */
 export const DisclosureKindSchema = z.enum(["hint", "audio"]);
-export type DisclosureKind = z.infer<typeof DisclosureKindSchema>;
 
 /**
  * Ciało complete-presentation bez identyfikatora zadania z parametru ścieżki:
@@ -56,11 +53,9 @@ export type DisclosureKind = z.infer<typeof DisclosureKindSchema>;
  * to `PresentationCompletionInputSchema` (taskId dokleja ścieżka przy scaleniu).
  */
 export const CompletePresentationInputSchema = PresentationCompletionInputSchema.omit({ taskId: true });
-export type CompletePresentationInput = z.infer<typeof CompletePresentationInputSchema>;
 
 /** Parametr ścieżki `{attemptId}`: odczyt próby i autoryzacja odsłuchu feedbacku. */
 export const FeedbackAudioPathSchema = z.object({ attemptId: UuidSchema });
-export type FeedbackAudioPath = z.infer<typeof FeedbackAudioPathSchema>;
 
 /** Nagranie dziecka z multipartu — webowy `File` (globalny też w Node ≥ 20). */
 export interface RecordingFile {
@@ -82,7 +77,6 @@ export const SpeechAttemptMultipartInputSchema = z.object({
   clientAttemptId: UuidSchema,
   audio: z.instanceof(File),
 });
-export type SpeechAttemptMultipartInput = z.infer<typeof SpeechAttemptMultipartInputSchema>;
 
 /**
  * Dyktowanie odpowiedzi lekcji (design szkoły §5.4): multipart z nagraniem,
@@ -92,7 +86,6 @@ export const DictationMultipartInputSchema = z.object({
   taskId: UuidSchema,
   audio: z.instanceof(File),
 });
-export type DictationMultipartInput = z.infer<typeof DictationMultipartInputSchema>;
 
 /** Parametr ścieżki `{sessionId}` dla operacji na konkretnej sesji. */
 const SessionPathInputSchema = z.object({ sessionId: UuidSchema });

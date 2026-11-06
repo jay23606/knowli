@@ -7,6 +7,7 @@ import { endSessionFromHeader } from "./helpers/kid-session";
 import { createDatabase } from "@learning/server";
 import { TaskDtoSchema } from "@learning/contracts";
 import { expectReadableOnDarkContainer } from "./helpers/contrast";
+import { E2E_SETUP_TOKEN } from "./helpers/parent-session";
 
 // Kid-flow obejmuje krótkotrwałe testowe audio; nie zapisujemy trace, HAR ani video.
 test.use({ trace: "off" });
@@ -47,7 +48,7 @@ async function query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
 
 async function parentSession(page: Page): Promise<APIRequestContext> {
   const request = page.request;
-  await request.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await request.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   const login = await request.post("/api/v1/parent/login", { data: { secret: "1234" } });
   expect(login.status()).toBe(200);
   return request;

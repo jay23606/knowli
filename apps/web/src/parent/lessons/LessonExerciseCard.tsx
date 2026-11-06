@@ -433,7 +433,7 @@ function LessonExerciseCard({
             ) : (
               <Field>
                 <TextInput size="md" label={messages.lessons.exerciseAnswerLabel} data-testid={`exercise-answer-${index}`}
-                  value={ex.answer} disabled={disabled || derived} {...described}
+                  value={ex.options ? exercisePreview(ex).answer : ex.answer} disabled={disabled || derived || ex.options !== null} {...described}
                   onChange={(e) => onMutate({ answer: e.currentTarget.value })} />
               </Field>
             )}

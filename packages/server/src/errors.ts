@@ -4,6 +4,8 @@ export type AppErrorCode =
   | "rate_limited"
   | "setup_required"
   | "already_configured"
+  | "setup_disabled"
+  | "invalid_setup_token"
   | "validation"
   | "mock_test_unavailable"
   | "deck_kind_mismatch"
@@ -25,6 +27,8 @@ const CODE_PROFILES: Record<AppErrorCode, CodeProfile> = {
   rate_limited: { status: 429, retryable: true },
   setup_required: { status: 409, retryable: false },
   already_configured: { status: 409, retryable: false },
+  setup_disabled: { status: 403, retryable: false },
+  invalid_setup_token: { status: 403, retryable: false },
   validation: { status: 400, retryable: false },
   mock_test_unavailable: { status: 400, retryable: false },
   deck_kind_mismatch: { status: 400, retryable: false },

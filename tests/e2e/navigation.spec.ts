@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { DeckDtoSchema, DraftDtoSchema } from "@learning/contracts";
+import { E2E_SETUP_TOKEN, fillParentAuth } from "./helpers/parent-session";
 
 test("domyślna nawigacja: strona główna otwiera wybór profilu dziecka, link do rodzica i powrót do nauki", async ({ page }) => {
   // 1. Wejście na stronę główną /
@@ -21,7 +22,7 @@ test("domyślna nawigacja: strona główna otwiera wybór profilu dziecka, link 
 
   // 4. Logowanie rodzica i utworzenie profilu z zestawem
   const request = page.request;
-  const setup = await request.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  const setup = await request.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   expect([201, 409]).toContain(setup.status());
   expect((await request.post("/api/v1/parent/login", { data: { secret: "1234" } })).status()).toBe(200);
 
@@ -92,7 +93,7 @@ test("domyślna nawigacja: strona główna otwiera wybór profilu dziecka, link 
 
 test("panel rodzica: zakładki z ikonami i stanem aktywnym", async ({ page }) => {
   const request = page.request;
-  await request.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await request.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   expect((await request.post("/api/v1/parent/login", { data: { secret: "1234" } })).status()).toBe(200);
 
   await page.goto("/parent");
@@ -113,7 +114,7 @@ test("panel rodzica: zakładki z ikonami i stanem aktywnym", async ({ page }) =>
 
 test("panel rodzica: sekcje mają adresy, odświeżenie i wstecz/dalej zachowują sekcję", async ({ page }) => {
   const request = page.request;
-  await request.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await request.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   expect((await request.post("/api/v1/parent/login", { data: { secret: "1234" } })).status()).toBe(200);
 
   await page.goto("/parent/progress");
@@ -138,7 +139,7 @@ test("panel rodzica: sekcje mają adresy, odświeżenie i wstecz/dalej zachowuj�
 
 test("pierwsze uruchomienie: po nieudanym logowaniu ponowna próba loguje zapisanym PIN-em", async ({ page }) => {
   // Świat ma już PIN 1234 — prawdziwy setup przy ponowieniu odpowie already_configured.
-  await page.request.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await page.request.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   await page.route("**/api/v1/parent/login", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({ json: { authenticated: false, setupRequired: true } });
@@ -161,11 +162,11 @@ test("pierwsze uruchomienie: po nieudanym logowaniu ponowna próba loguje zapisa
   });
 
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("api-error")).toBeVisible();
 
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("tab-decks")).toBeVisible();
   expect(setupCalls).toBe(2);
@@ -173,7 +174,7 @@ test("pierwsze uruchomienie: po nieudanym logowaniu ponowna próba loguje zapisa
 
 test("panel rodzica: otwarty zestaw ma adres — głęboki link, odświeżenie i wstecz", async ({ page }) => {
   const request = page.request;
-  await request.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await request.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   expect((await request.post("/api/v1/parent/login", { data: { secret: "1234" } })).status()).toBe(200);
   const deckId = randomUUID();
   const title = `Adres ${deckId.slice(0, 8)}`;

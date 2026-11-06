@@ -96,12 +96,12 @@ export default function ParentApp() {
   useAuthExpiredHandler(toLogin);
 
   const login = useCallback(
-    async (secret: string, setupFirst: boolean) => {
+    async (secret: string, setupFirst: boolean, setupToken = "") => {
       if (setupFirst) {
         // pierwsze uruchomienie tworzy PIN i od razu nim loguje; po nieudanym
         // logowaniu ponowna próba zastaje PIN już zapisany — wtedy tylko logujemy
         try {
-          await callParent(() => parentClient.auth.setup({ secret }));
+          await callParent(() => parentClient.auth.setup({ secret, setupToken }));
         } catch (cause) {
           if (!(cause instanceof ApiCallError && cause.code === "already_configured")) throw cause;
         }
@@ -143,7 +143,8 @@ export default function ParentApp() {
             key={setup ? "setup" : "login"}
             idPrefix="auth"
             submitLabel={setup ? messages.auth.setupButton : messages.auth.loginButton}
-            submit={(secret) => login(secret, setup)}
+            submit={(secret, setupToken) => login(secret, setup, setupToken)}
+            withSetupToken={setup}
             initialError={auth.isError ? errorMessage(auth.error) : null}
             testIds={{ secret: "auth-secret", submit: "auth-submit", error: "api-error" }}
             extraAction={

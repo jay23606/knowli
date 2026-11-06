@@ -222,7 +222,6 @@ export const LocalesSchema = z.object({
   source: z.string().min(2).max(10),
   target: z.string().min(2).max(10),
 });
-export type Locales = z.infer<typeof LocalesSchema>;
 
 /**
  * Słownik zestawu. `id` opcjonalnie wskazuje istniejący learning_item przy
@@ -271,7 +270,6 @@ export const RevisionAssetDtoSchema = z.object({
   state: z.enum(["pending", "approved", "failed", "omitted"]),
   assetId: UuidSchema.nullable(),
 });
-export type RevisionAssetDto = z.infer<typeof RevisionAssetDtoSchema>;
 
 export const DraftDtoSchema = z.object({
   id: UuidSchema,
@@ -302,7 +300,6 @@ export type DeckState = z.infer<typeof DeckStateSchema>;
  * Te same granice co `MockTestTaskCountSchema` (1–100); domyślnie 20.
  */
 export const SessionTaskBudgetSchema = z.number().int().min(1).max(100);
-export type SessionTaskBudget = z.infer<typeof SessionTaskBudgetSchema>;
 
 /** Aktywne przypisanie dziecka w skrócie listy zestawów (podzbiór AssignmentDto). */
 export const DeckAssignedChildDtoSchema = z.object({
@@ -394,7 +391,6 @@ export type DeckSettingsPatch = z.infer<typeof DeckSettingsPatchSchema>;
 
 /** Polecenie usunięcia współdzielonej okładki zestawu. */
 export const DeckCoverCommandSchema = z.object({ action: z.literal("clear") }).strict();
-export type DeckCoverCommand = z.infer<typeof DeckCoverCommandSchema>;
 
 /** POST /parent/decks — tworzy nowy pusty szkic do ręcznej edycji. */
 export const CreateEmptyDeckCommandSchema = z.object({
@@ -423,15 +419,12 @@ export type AssignmentPut = z.infer<typeof AssignmentPutSchema>;
 export const PublishCommandSchema = z.object({
   expectedEditNumber: z.number().int().positive(),
 });
-export type PublishCommand = z.infer<typeof PublishCommandSchema>;
 
 export const RevisionAssetCommandSchema = z.object({
   itemRevisionId: UuidSchema,
   role: z.enum(["target_audio", "example_audio", "illustration"]),
 });
-export type RevisionAssetCommand = z.infer<typeof RevisionAssetCommandSchema>;
 
 export const OmitIllustrationSchema = z.object({
   itemRevisionId: UuidSchema,
 });
-export type OmitIllustration = z.infer<typeof OmitIllustrationSchema>;

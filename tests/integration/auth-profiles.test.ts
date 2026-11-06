@@ -11,12 +11,15 @@ import {
   listKidProfiles,
   requireParent,
   setupParent,
+  setupParentWithToken,
+  createServices,
   type AppError,
 } from "@learning/server";
 import {
   buildTestServices,
   countRows,
   handleParentApi,
+  ManualClock,
   openRestartedServices,
   testDatabase,
   truncateCoreTables,
@@ -151,6 +154,42 @@ describe("auth i profile dzieci (integracja)", () => {
     expect(await countRows("parent_credentials")).toBe(1);
   });
 
+  it("setup z przeglądarki wymaga kodu konfiguracji z env (#307)", async () => {
+    const { db } = testDatabase();
+    const { services: disabled } = buildTestServices();
+    await expectAppError(setupParentWithToken(disabled, "pin-setup", "cokolwiek"), "setup_disabled");
+
+    const clock = new ManualClock();
+    const services = createServices({ db, clock, parentSetupToken: "kod-konfiguracji-1234" });
+    const wrong = await expectAppError(setupParentWithToken(services, "pin-setup", "zly-kod"), "invalid_setup_token");
+    expect(wrong.status).toBe(403);
+    expect(await isParentSetupRequired(services)).toBe(true);
+
+    await setupParentWithToken(services, "pin-setup", "kod-konfiguracji-1234");
+    expect(await isParentSetupRequired(services)).toBe(false);
+    await expectAppError(setupParentWithToken(services, "inny-pin", "kod-konfiguracji-1234"), "already_configured");
+    // po konfiguracji zgadywanie kodu nie zużywa limitu logowania rodzica
+    for (let i = 0; i < 6; i++) {
+      await expectAppError(setupParentWithToken(services, "inny-pin", `zly-${i}`), "already_configured");
+    }
+    await expect(loginParent(services, "pin-setup")).resolves.toMatchObject({ token: expect.any(String) });
+  });
+
+  it("zgadywanie kodu konfiguracji blokuje limit prób (#307)", async () => {
+    const { db } = testDatabase();
+    const clock = new ManualClock();
+    const services = createServices({ db, clock, parentSetupToken: "kod-konfiguracji-1234" });
+    for (let i = 0; i < 5; i++) {
+      await expectAppError(setupParentWithToken(services, "pin-1", `zly-${i}`), "invalid_setup_token");
+    }
+    await expectAppError(setupParentWithToken(services, "pin-1", "kod-konfiguracji-1234"), "rate_limited");
+    expect(await isParentSetupRequired(services)).toBe(true);
+
+    clock.advanceMs(16 * 60_000);
+    await setupParentWithToken(services, "pin-1", "kod-konfiguracji-1234");
+    expect(await isParentSetupRequired(services)).toBe(false);
+  });
+
   it("wygasła sesja jest odrzucana i leniwie usuwana", async () => {
     const { services, clock } = buildTestServices();
     await setupParent(services, "pin1");
@@ -174,6 +213,44 @@ describe("auth i profile dzieci (integracja)", () => {
     clock.advanceMs(16 * 60_000);
     const fresh = await loginParent(services, "pin1");
     await expect(requireParent(services, fresh.token)).resolves.toBeUndefined();
+  });
+
+  it("równoległe błędne logowania nie omijają limitu (#295)", async () => {
+    const { services } = buildTestServices();
+    await setupParent(services, "pin1");
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, () => loginParent(services, "zle")),
+    );
+    const codes = results.map((r) => (r.status === "rejected" ? (r.reason as AppError).code : "ok"));
+    expect(codes.filter((c) => c === "invalid_credentials")).toHaveLength(5);
+    expect(codes.filter((c) => c === "rate_limited")).toHaveLength(15);
+  });
+
+  it("obce urządzenie nie blokuje logowania na znanym urządzeniu (#306)", async () => {
+    const { services } = buildTestServices();
+    await setupParent(services, "pin1");
+    const { deviceToken } = await loginParent(services, "pin1");
+
+    for (let i = 0; i < 5; i++) {
+      await expectAppError(loginParent(services, "zle"), "invalid_credentials");
+    }
+    await expectAppError(loginParent(services, "pin1"), "rate_limited");
+    // podrobiony identyfikator urządzenia trafia do wspólnego limitu obcych urządzeń
+    const [deviceId] = deviceToken.split(".");
+    await expectAppError(loginParent(services, "pin1", `${deviceId}.podrobiony`), "rate_limited");
+
+    const known = await loginParent(services, "pin1", deviceToken);
+    await expect(requireParent(services, known.token)).resolves.toBeUndefined();
+    expect(known.deviceToken).toBe(deviceToken);
+
+    // znane urządzenie ma własny, równie ścisły limit
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 8 }, () => loginParent(services, "zle", deviceToken)),
+    );
+    const codes = attempts.map((r) => (r.status === "rejected" ? (r.reason as AppError).code : "ok"));
+    expect(codes.filter((c) => c === "invalid_credentials")).toHaveLength(5);
+    await expectAppError(loginParent(services, "pin1", deviceToken), "rate_limited");
   });
 
   it("logout unieważnia sesję", async () => {
@@ -339,20 +416,25 @@ describe("auth i profile dzieci (integracja)", () => {
     it("setup → login → children → create → delete → logout", async () => {
       // cały przepływ idzie przez handleParentApi (router oRPC, bez
       // fallbacku) — dokładna kompozycja catch-all /api/v1/parent/[...path]
-      const { services } = buildTestServices();
+      const services = createServices({ db: testDatabase().db, clock: new ManualClock(), parentSetupToken: "http-kod" });
       const origin = { origin: BASE };
 
       const status0 = await handleParentApi(jsonRequest("/api/v1/parent/login", "GET"), services);
       expect(status0.status).toBe(200);
       expect(await readBody(status0)).toEqual({ authenticated: false, setupRequired: true });
 
+      const wrongToken = await handleParentApi(
+        jsonRequest("/api/v1/parent/setup", "POST", { secret: "http-pin", setupToken: "zly" }, origin),
+        services,
+      );
+      expect(wrongToken.status).toBe(403);
       const setupResponse = await handleParentApi(
-        jsonRequest("/api/v1/parent/setup", "POST", { secret: "http-pin" }, origin),
+        jsonRequest("/api/v1/parent/setup", "POST", { secret: "http-pin", setupToken: "http-kod" }, origin),
         services,
       );
       expect(setupResponse.status).toBe(201);
       const setupAgain = await handleParentApi(
-        jsonRequest("/api/v1/parent/setup", "POST", { secret: "inny" }, origin),
+        jsonRequest("/api/v1/parent/setup", "POST", { secret: "inny", setupToken: "http-kod" }, origin),
         services,
       );
       expect(setupAgain.status).toBe(409);
@@ -374,6 +456,7 @@ describe("auth i profile dzieci (integracja)", () => {
       const setCookie = loginResponse.headers.getSetCookie().join("\n");
       expect(setCookie).toContain("HttpOnly");
       expect(setCookie).toContain("SameSite=Lax");
+      expect(setCookie).toMatch(/^parent_device=[\w-]+\.[\w-]+; Path=\/api\/v1\/parent\/login;/m);
 
       const authHeaders = { cookie, ...origin };
 

@@ -1,8 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createChild, endSession, nextTask, readLessonMockTestSummary, startSession, submitAttempt } from "@learning/server";
-import { lessonDeckListValues } from "../../packages/server/src/modules/learning/lessons/lesson-sessions";
-import { hasSafeLessonMockPortion } from "../../packages/server/src/modules/learning/lessons/lesson-mock-tests";
 import { readLessonDeckOverviews, type LessonDeckOverviewInput } from "../../packages/server/src/modules/learning/lessons/lesson-deck-overview";
 import type { LessonContextShape } from "../../packages/server/src/modules/learning/lessons/lesson-sessions";
 import { lessonWorld } from "../fixtures/lesson-world";
@@ -25,19 +23,7 @@ async function captureSelects<T>(run: () => Promise<T>): Promise<{ value: T; sel
 }
 
 describe("zbiorczy odczyt wartości lekcji", () => {
-  it("dostępność kartkówki omija odczyt mediów i zwraca wynik wspólnego planera", async () => {
-    const { services, clock } = buildTestServices();
-    const child = await createChild(services, { displayName: "Lekcja", avatarKey: "owl" });
-    const lesson = await lessonWorld(pool, { childId: child.id, testDate: "2026-10-20", richPool: true });
-    const { selects } = await captureSelects(() => services.db.transaction((tx) =>
-      hasSafeLessonMockPortion(tx, services, { childId: child.id, deckVersionId: lesson.versionId, requestedTaskCount: 10 }),
-    ));
-
-    expect(selects.length).toBeGreaterThan(0);
-    expect(selects.some((sql) => /media_assets|revision_assets/i.test(sql))).toBe(false);
-  });
-
-  it("zwraca dostępność równą planerowi i nie wybiera niczego bez celu kartkówki", async () => {
+  it("zwraca wartości listy i dostępność kartkówki bez odczytu mediów; bez celu kartkówki nic nie wybiera", async () => {
     const { services } = buildTestServices();
     const child = await createChild(services, { displayName: "Lekcja", avatarKey: "owl" });
     const lesson = await lessonWorld(pool, { childId: child.id, testDate: "2026-10-20", richPool: true });
@@ -52,18 +38,14 @@ describe("zbiorczy odczyt wartości lekcji", () => {
       mockTestTaskCount: 10,
       lessonContext: version.lesson_context,
     };
-    const overview = await readLessonDeckOverviews(services, services.db, {
+    const { value: overview, selects } = await captureSelects(() => readLessonDeckOverviews(services, services.db, {
       childId: child.id, now: services.clock.now(), decks: [input],
-    });
-    const legacyValues = await lessonDeckListValues(services, services.db, {
-      childId: child.id, deckVersionId: lesson.versionId, testDate: input.testDate,
-      timezone: "Europe/Warsaw", now: services.clock.now(),
-    });
-    expect(overview.get(lesson.deckId)).toMatchObject(legacyValues);
-    const available = await services.db.transaction((tx) => hasSafeLessonMockPortion(tx, services, {
-      childId: child.id, deckVersionId: lesson.versionId, requestedTaskCount: input.mockTestTaskCount!,
     }));
-    expect(overview.get(lesson.deckId)?.mockTestAvailable).toBe(available);
+    expect(selects.length).toBeGreaterThan(0);
+    expect(selects.some((sql) => /media_assets|revision_assets/i.test(sql))).toBe(false);
+    expect(overview.get(lesson.deckId)).toEqual({
+      itemCount: 1, independentlyRecalledCount: 0, recommended: true, mockTestAvailable: true,
+    });
 
     const noGoal = await readLessonDeckOverviews(services, services.db, {
       childId: child.id, now: services.clock.now(), decks: [{ ...input, testGoals: null }],

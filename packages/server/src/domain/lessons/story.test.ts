@@ -220,6 +220,13 @@ describe("storyCollisions", () => {
   });
 });
 
+describe("storyCollisions z luką z czasownikiem w nawiasie", () => {
+  it("wykrywa zdanie historyjki równe rozwiązaniu luki „___ (verb)”", () => {
+    const solved = solvedSentencesOf([draft({ stem: "He ___ (play) football now.", answer: "is playing" })]);
+    expect(storyCollisions(["Tom runs.", "He is playing football now.", "x"], solved, englishNormalizer)).toEqual([1]);
+  });
+});
+
 describe("solvedSentencesOf", () => {
   it("fills a gap with the answer", () => {
     expect(solvedSentencesOf([draft({ stem: "She ___ football.", answer: "plays" })])).toEqual(["She plays football."]);

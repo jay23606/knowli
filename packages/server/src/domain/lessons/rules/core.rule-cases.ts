@@ -18,6 +18,7 @@ import { calculationIssues } from "../calculation";
 import { clozeAnswer } from "../cloze";
 import { explanationIssues } from "../exercise-explanation";
 import { groupAnswer, keywordsAnswer, matchAnswer, validateLessonExerciseIssues } from "../pool-validation";
+import { baseNormalizer } from "../normalize";
 import { historyLikeSubject } from "../testing/history-like-subject";
 import { registerRuleCases } from "../testing/rule-cases";
 import type { LearningObjective, LessonExerciseDraft, LessonExerciseType, LessonTopic, SubjectModule } from "../types";
@@ -95,6 +96,17 @@ const plainSubject: SubjectModule = {
 
 /** Przedmiot z payloadem v3, nagraniami pytań i wyjaśnieniami błędu. */
 const richSubject: SubjectModule = { ...plainSubject, usesV3Payload: true, ttsForPrompts: true, exerciseExplanations: true };
+
+/** Przedmiot, którego normalizator zrównuje „H2O” z „wodę” (jak rozwinięcie skrótu). */
+const h2oSubject: SubjectModule = {
+  ...plainSubject,
+  normalizer: {
+    normalize: (text) => {
+      const base = baseNormalizer.normalize(text)[0] ?? [];
+      return base.join(" ") === "h2o" ? [base, ["wodę"]] : [base];
+    },
+  },
+};
 
 const check = (draft: LessonExerciseDraft, subject: SubjectModule = plainSubject) => () =>
   validateLessonExerciseIssues(draft, subject, topic);
@@ -411,12 +423,19 @@ registerRuleCases([
   },
   { rule: "options.duplicate", violation: check(choice({ options: [{ id: "a", text: "plays" }, { id: "b", text: "Plays" }] })) },
   { rule: "options.correct_unknown", violation: check(choice({ correctOption: "z" })) },
+  { rule: "answer.correct_option_text", violation: check(choice({ answer: "play" })) },
+  { rule: "answer.correct_option_text", violation: check(shortAnswer({ answer: "play" })) },
+  { rule: "answer.correct_option_text", violation: check(notice({ answer: "runs" })) },
 
   // Wybór ze słuchu.
   { rule: "listen.instruction_not_allowed", violation: check(listen({ instructionPl: "Wybierz słowo." })) },
   { rule: "listen.hint_not_allowed", violation: check(listen({ hint: "play" })) },
   { rule: "listen.gap_count", violation: check(listen({ stem: "She plays tennis." })) },
-  { rule: "listen.option_apostrophe", violation: check(listen({ options: [{ id: "a", text: "plays" }, { id: "b", text: "'s" }] })) },
+  // Każdy zapis apostrofu spotykany w odpowiedziach modelu (#324).
+  ...["'s", "’s", "‘s", "ʼs", "´s", "`s"].map((text) => ({
+    rule: "listen.option_apostrophe" as const,
+    violation: check(listen({ options: [{ id: "a", text: "plays" }, { id: "b", text }] })),
+  })),
   { rule: "listen.options_equivalent", violation: check(listen({ options: [{ id: "a", text: "plays" }, { id: "b", text: "Plays" }] })) },
   {
     rule: "listen.sentence_length",
@@ -468,6 +487,8 @@ registerRuleCases([
 
   // Typy tekstowe.
   { rule: "gap.marker_count", violation: check(gap({ stem: "She plays tennis." })) },
+  // Krótka luka „__“ też jest luką na ekranie dziecka (#322).
+  { rule: "gap.marker_count", violation: check(gap({ stem: "I ___ like __ it." })) },
   {
     rule: "gap.answer_tokens",
     violation: check(gap({
@@ -596,6 +617,11 @@ registerRuleCases([
     boundary: check(cloze({ extraWords: [Array.from({ length: MAX_CLOZE_WORD_TOKENS }, (_, i) => `dąb${i}`).join(" ")] })),
   },
   { rule: "cloze.bank_confusable", violation: check(cloze({ extraWords: ["wodę morską"] })) },
+  {
+    // Dystraktor równoważny odpowiedzi luki po normalizatorze przedmiotu (jak „is not” przy „isn't”).
+    rule: "cloze.bank_confusable",
+    violation: check(cloze({ extraWords: ["H2O"] }), h2oSubject),
+  },
   { rule: "cloze.bank_outside_gap", violation: check(cloze({ extraWords: ["gleby"] })) },
 
   // Specyfikacja rachunku.

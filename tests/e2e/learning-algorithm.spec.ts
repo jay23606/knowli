@@ -5,6 +5,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import { messages } from "@learning/contracts";
 import { createDatabase } from "@learning/server";
 import { readTestRunConfig } from "../test-run-config";
+import { E2E_SETUP_TOKEN } from "./helpers/parent-session";
 
 let db: ReturnType<typeof createDatabase> | null = null;
 async function query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -97,7 +98,7 @@ for (const sample of [
 test(`letter_completion accepts only missing letters after spelling difficulty: ${sample.target}`, async ({ page }, testInfo) => {
   test.slow();
   const parent = page.request;
-  await parent.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await parent.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   expect((await parent.post("/api/v1/parent/login", { data: { secret: "1234" } })).status()).toBe(200);
   const child = await (await parent.post("/api/v1/parent/children", {
     data: { displayName: `Litery-${randomUUID()}`, avatarKey: "fox", birthYear: 2018 },

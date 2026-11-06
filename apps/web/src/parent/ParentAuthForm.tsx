@@ -17,15 +17,19 @@ export function ParentAuthForm({
   extraAction,
   testIds,
   initialError = null,
+  withSetupToken = false,
 }: {
   submitLabel: string;
-  submit: (secret: string) => Promise<void>;
+  submit: (secret: string, setupToken: string) => Promise<void>;
   idPrefix: string;
   extraAction?: ReactNode;
   testIds: { secret: string; submit: string; error: string };
   initialError?: string | null;
+  /** Pierwsze uruchomienie: dodatkowe pole kodu konfiguracji (#307). */
+  withSetupToken?: boolean;
 }) {
   const [secret, setSecret] = useState("");
+  const [setupToken, setSetupToken] = useState("");
   const [error, setError] = useState<string | null>(initialError);
   const [busy, setBusy] = useState(false);
 
@@ -36,8 +40,11 @@ export function ParentAuthForm({
         if (busy) return;
         setBusy(true);
         setError(null);
-        submit(secret)
-          .then(() => setSecret(""))
+        submit(secret, setupToken)
+          .then(() => {
+            setSecret("");
+            setSetupToken("");
+          })
           .catch((cause: unknown) => setError(errorMessage(cause)))
           .finally(() => setBusy(false));
       }}
@@ -47,13 +54,25 @@ export function ParentAuthForm({
           id={`${idPrefix}-secret`}
           label={messages.auth.pinLabel}
           size="md"
-          autoComplete="current-password"
+          autoComplete={withSetupToken ? "new-password" : "current-password"}
           required
           value={secret}
           onChange={(event) => setSecret(event.currentTarget.value)}
           data-testid={testIds.secret}
           data-autofocus
         />
+        {withSetupToken && (
+          <PasswordInput
+            id={`${idPrefix}-setup-token`}
+            label={messages.auth.setupTokenLabel}
+            size="md"
+            autoComplete="off"
+            required
+            value={setupToken}
+            onChange={(event) => setSetupToken(event.currentTarget.value)}
+            data-testid={`${testIds.secret}-setup-token`}
+          />
+        )}
         {error && (
           <Alert color="red" variant="light" role="alert" data-testid={testIds.error}>
             {error}

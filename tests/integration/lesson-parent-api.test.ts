@@ -531,7 +531,16 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
     // Zmiana odpowiedzi pierwszego ćwiczenia → nowa skill_version.
     const afterInputs = afterCosmetic.exercises.map(stripToInput);
     const changed = afterInputs.map((ex, i) =>
-      i === 0 ? { ...ex, answer: "goes", acceptedAnswers: [], focus: ["goes"] } : ex,
+      // Wybór: odpowiedź to tekst poprawnej opcji (reguła answer.correct_option_text), więc zmienia się też opcja.
+      i === 0
+        ? {
+            ...ex,
+            answer: "goes",
+            acceptedAnswers: [],
+            focus: ["goes"],
+            ...(ex.options ? { options: ex.options.map((o) => (o.id === ex.correctOption ? { ...o, text: "goes" } : o)) } : {}),
+          }
+        : ex,
     );
     const patched2 = await call(services, "PATCH", `lesson-drafts/${draft.id}`, {
       body: { expectedEditNumber: afterCosmetic.editNumber, exercises: changed },

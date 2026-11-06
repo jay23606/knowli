@@ -342,7 +342,8 @@ describe("trwałe generowanie zestawu (integracja)", () => {
   it("maksymalnie trzy automatyczne próby; ręczne ponowienie przywraca zadanie", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
-    const services = generationServices(fakes);
+    const clock = new ManualClock();
+    const services = generationServices(fakes, clock);
 
     fakes.llm.queue({ error: "llm timeout", retryable: true });
     const { runId } = await enqueueDeckGeneration(services, { ...COMMAND, idempotencyKey: "flaky-key-1" });
@@ -352,6 +353,10 @@ describe("trwałe generowanie zestawu (integracja)", () => {
       const dto = await readGeneration(services, runId);
       expect(dto.state).toBe("queued");
       expect(dto.attempts).toBe(attempt);
+      // ponowienie czeka na odstęp (#300): próba przed `next_attempt_at` nie startuje
+      await executeGeneration(services, runId);
+      expect((await readGeneration(services, runId)).attempts).toBe(attempt);
+      clock.advanceMs(60_000);
     }
 
     // trzecia, ostatnia automatyczna próba wyczerpuje budżet
@@ -370,6 +375,38 @@ describe("trwałe generowanie zestawu (integracja)", () => {
     const dto = await readGeneration(services, runId);
     expect(dto.state).toBe("succeeded");
     expect(dto.attempts).toBe(1);
+  });
+
+  it("„Ponów” po edycji szkicu zapisuje opłacony wynik zamiast go wyrzucić (#302)", async () => {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const services = generationServices(fakes);
+
+    fakes.llm.queue({ items: [] });
+    const { runId } = await enqueueDeckGeneration(services, { ...COMMAND, idempotencyKey: "retry-after-edit" });
+    await executeGeneration(services, runId);
+    expect((await readGeneration(services, runId)).state).toBe("failed");
+    const deckVersionId = (await readGeneration(services, runId)).deckVersionId!;
+
+    // rodzic zmienia tytuł po porażce (edycja 1 → 2), potem świadomie ponawia
+    await editDraft(services, deckVersionId, { title: "Nowy tytuł", expectedEditNumber: 1 });
+    await retryGeneration(services, runId);
+    fakes.llm.queue({
+      items: [{ source: "piątek", target: "Friday", acceptedAnswers: [], visualType: "none" }],
+    });
+    await executeGeneration(services, runId);
+
+    expect((await readGeneration(services, runId)).state).toBe("succeeded");
+    const version = (await query<{ state: string; title: string }>(
+      "select state, title from learning_app.deck_versions where id = $1",
+      [deckVersionId],
+    ))[0]!;
+    expect(version).toEqual({ state: "review", title: "Nowy tytuł" });
+    const targets = await query<{ payload: { target: string } }>(
+      "select payload from learning_app.item_revisions where deck_version_id = $1",
+      [deckVersionId],
+    );
+    expect(targets.map((t) => t.payload.target)).toEqual(["Friday"]);
   });
 
   it("restart procesu workera nie gubi zleconych zadań", async () => {

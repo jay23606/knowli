@@ -267,6 +267,13 @@
       "when": 1794190000000,
       "tag": "0037_generation_run_agent_checkpoint",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794290000000,
+      "tag": "0038_school_verdicts_signed_numbers",
+      "breakpoints": true
     }
   ]
 }

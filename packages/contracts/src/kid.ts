@@ -55,7 +55,6 @@ export const EXERCISE_TYPES = [
   "lesson_story",
   "lesson_story_question",
 ] as const;
-export type ExerciseTypeDto = (typeof EXERCISE_TYPES)[number];
 
 /** Typy zadań historyjki: poza budżetem ocenianych zadań sesji lekcji. */
 export const LESSON_STORY_TASK_TYPES = ["lesson_story", "lesson_story_question"] as const;
@@ -123,14 +122,12 @@ export const ClozeSegmentSchema = z.union([
   z.object({ text: z.string().min(1) }).strict(),
   z.object({ gapId: UuidSchema }).strict(),
 ]);
-export type ClozeSegment = z.infer<typeof ClozeSegmentSchema>;
 
 /** Segment zdania `lesson_notice` do wskazania — bez informacji, który jest poprawny. */
 export const LessonSegmentSchema = z.object({
   id: UuidSchema,
   text: z.string().min(1),
 });
-export type LessonSegment = z.infer<typeof LessonSegmentSchema>;
 
 /** Fragment zapisu w porównaniu pisowni; `pill` = fragment do wyróżnienia (issue #9). */
 export const SpellingDiffSegmentSchema = z.object({
@@ -172,7 +169,6 @@ export type DictationDto = z.infer<typeof DictationDtoSchema>;
 
 /** Sposób wprowadzenia odpowiedzi tekstowej; brak = klawiatura. */
 export const InputMethodSchema = z.enum(["keyboard", "speech"]);
-export type InputMethodDto = z.infer<typeof InputMethodSchema>;
 
 /** Publiczna treść zadania — discriminated union po polu kind = typ ćwiczenia. */
 export const TaskPromptSchema = z.discriminatedUnion("kind", [
@@ -661,7 +657,6 @@ export const KidValidationReasonSchema = z.enum([
 ]);
 export type KidValidationReason = z.infer<typeof KidValidationReasonSchema>;
 export const KidValidationDetailsSchema = z.object({ reason: KidValidationReasonSchema }).strict();
-export type KidValidationDetails = z.infer<typeof KidValidationDetailsSchema>;
 
 /**
  * Feedback dla dziecka po próbie — wybór treści pochodzi z reguł domeny
@@ -817,7 +812,6 @@ export const AttemptModalitySchema = z.enum(["choice", "text", "audio", "dont_re
  */
 export const AssignmentSchema = z.object({ itemId: UuidSchema, targetId: UuidSchema }).strict();
 export type Assignment = z.infer<typeof AssignmentSchema>;
-export type AttemptModality = z.infer<typeof AttemptModalitySchema>;
 
 /**
  * Odpowiedź dziecka na zadanie (arch §12). `clientAttemptId` zabezpiecza retry

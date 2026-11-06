@@ -20,7 +20,7 @@ import { buildTestServices, testDatabase, truncateCoreTables } from "./helpers";
 /**
  * Zadanie 17A: próbna kartkówka lekcji po stronie serwera. Start (plan zamrożony,
  * cel `lesson`), wydawanie slotów bez feedbacku, jedna odpowiedź na slot
- * (terminalna), limit 10 min, wznowienie w oknie, ocena modelem w kartkówce,
+ * (terminalna), limit czasu (min. 10 min), wznowienie w oknie, ocena modelem w kartkówce,
  * ekspozycje po kartkówce (ćwiczenie staje się widziane), raport per cel,
  * omówienie dziecka pieczętujące ekspozycje, `mock_test_unavailable`,
  * zamrożona porcja (edycja przypisania po starcie nie zmienia slotów).
@@ -202,6 +202,26 @@ describe("kartkówka lekcji — odpowiedzi i zamknięcie", () => {
     expect(next).toBeNull();
     const state = (await pool.query<{ state: string }>("select state from learning_app.learning_sessions where id = $1", [session.sessionId])).rows[0]!.state;
     expect(state).toBe("ended");
+  });
+
+  it("skalowany limit (#297): budżet 20 przyjmuje odpowiedź w 11. minucie, omówienie i lista nie zamykają, po 15 min koniec", async () => {
+    const { services, clock } = buildTestServices();
+    const child = await createChild(services, { displayName: "L", avatarKey: "owl" });
+    const lesson = await lessonWorld(pool, { childId: child.id, richPool: true, testDate: "2026-10-20" });
+    const session = await startMock(services, child.id, lesson.deckId);
+    // Bogata pula fixture'u daje 7 slotów; limit liczy się z budżetu sesji, więc podnosimy go wprost.
+    await pool.query("update learning_app.learning_sessions set task_budget = 20 where id = $1", [session.sessionId]);
+    const task = await nextTask(services, session.sessionId);
+    clock.advanceMs(11 * 60_000); // ponad podłogę 10 min, pod limitem 20 × 45 s
+    await expectAppError(readLessonMockTestSummary(services, session.sessionId), "conflict");
+    await expectAppError(getLessonMockTestReport(services, session.sessionId), "conflict");
+    expect(await listLessonMockTests(services, child.id, lesson.deckId)).toEqual([]);
+    const attempt = await answerCorrectly(services, task!);
+    expect(attempt.taskState).toBe("answered");
+    const late = await nextTask(services, session.sessionId);
+    clock.advanceMs(4 * 60_001); // łącznie ponad 15 min od startu
+    await expectAppError(answerCorrectly(services, late!), "conflict");
+    expect((await listLessonMockTests(services, child.id, lesson.deckId)).map((r) => r.sessionId)).toEqual([session.sessionId]);
   });
 
   it("wznowienie w oknie zwraca tę samą sesję", async () => {

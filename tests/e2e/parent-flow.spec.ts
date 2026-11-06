@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { openNewMaterial } from "./helpers/parent-new-material";
 import { randomUUID } from "node:crypto";
 import { DeckDtoSchema, messages } from "@learning/contracts";
-import { loginParent } from "./helpers/parent-session";
+import { fillParentAuth, loginParent } from "./helpers/parent-session";
 import { holdFakeGeneration, releaseFakeGeneration } from "./helpers/fake-hold";
 
 /**
@@ -101,7 +101,7 @@ test.afterEach(releaseFakeGeneration);
 test("zakładka Dzieci: karty profili z avatarem, nauką jako główną akcją i kartą dodawania", async ({ page }) => {
   const name = `Karta-${randomUUID().slice(0, 8)}`;
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("tab-children")).toBeVisible();
   const response = await page.request.post("/api/v1/parent/children", {
@@ -307,7 +307,7 @@ test("pełny obieg rodzica: generuj, popraw, publikuj, przypisz", async ({ page,
   // Pierwsze uruchomienie w czystym świecie: setup PIN rodzica; w świecie
   // współdzielonym z innymi specami ten sam formularz loguje istniejącym PIN-em.
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("tab-decks")).toBeVisible();
 
@@ -537,7 +537,7 @@ test("ręczna edycja zestawu: dodaj element, usuń element, zmień tytuł", asyn
 
 test("rodzic edytuje progi wymowy i otwiera listę kalibracyjną", async ({ page }) => {
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("tab-children")).toBeVisible();
   await page.getByTestId("tab-children").click();

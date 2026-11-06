@@ -19,6 +19,7 @@ import {
   type TestContainer,
 } from "../test-containers";
 import { readTestRunConfig } from "../test-run-config";
+import { E2E_SETUP_TOKEN } from "./helpers/parent-session";
 
 const exec = promisify(execFile);
 
@@ -242,6 +243,7 @@ export default async function globalSetup(): Promise<(() => Promise<void>) | voi
       // next.config.ts: przy `next dev` bez wskaźnika deweloperskiego i trwałej pamięci podręcznej Turbopacka
       UMIEM_E2E: "1",
       UMIEM_E2E_READY_TOKEN: readyToken,
+      UMIEM_SETUP_TOKEN: E2E_SETUP_TOKEN,
       UMIEM_FAKE_PROVIDERS: "1",
       // Fake'i bez sztucznego opóźnienia. Specy, które sprawdzają przejściowy
       // stan „generowanie” (zestaw, TTS, obrazy), wstrzymują fake'i bramką

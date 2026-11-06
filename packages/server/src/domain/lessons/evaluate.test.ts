@@ -120,6 +120,18 @@ describe("evaluateChoice / evaluateSequence (typy zamknięte)", () => {
     expect(evaluateSequence(["a", "b", "c", "d"], key)).toBe(false); // nadmiarowy
   });
 
+  it("sequence: klocki o tym samym tekście są zamienne (#298)", () => {
+    const key = writtenKey({
+      exerciseType: "lesson_order",
+      itemIds: ["t1", "c", "s", "t2", "d"],
+      itemValues: { t1: "the", c: "cat", s: "saw", t2: "the", d: "dog" },
+    });
+    expect(evaluateSequence(["t2", "c", "s", "t1", "d"], key)).toBe(true); // zamienione identyczne klocki
+    expect(evaluateSequence(["t1", "d", "s", "t2", "c"], key)).toBe(false); // inna kolejność słów
+    expect(evaluateSequence(["t1", "c", "s", "t1", "d"], key)).toBe(false); // ten sam klocek dwa razy
+    expect(evaluateSequence(["t1", "c", "s", "x", "d"], key)).toBe(false); // obcy klocek
+  });
+
   it("keywords: poprawne tylko gdy każde wybrane pojęcie jest kluczowe, zakres wyborów nieoceniany", () => {
     const key = writtenKey({ exerciseType: "lesson_keywords", correctOptionIds: ["k1", "k2", "k3"], minSelected: 2, maxSelected: 3 });
     expect(evaluateKeywordSelection(["k2", "k1"], key)).toBe(true); // 2 z 3 kluczowych, kolejność bez znaczenia
@@ -567,5 +579,34 @@ describe("assignmentText", () => {
   });
   it("pomija przypisania z nieznanym tekstem", () => {
     expect(assignmentText([{ itemId: "x", targetId: "r1" }], values)).toBe("");
+  });
+});
+
+describe("matchLessonAnswer — Present Continuous (przypięte zachowanie normalizatora)", () => {
+  const pcKey = (answer: string, focus: readonly string[]) => writtenKey({ answer, focus });
+
+  it("klucz „He is playing now.” zalicza skrót, małe litery i wersaliki bez kropki", () => {
+    const key = pcKey("He is playing now.", ["is", "playing"]);
+    for (const answer of ["He's playing now.", "he is playing now", "HE IS PLAYING NOW"]) {
+      expect(matchLessonAnswer(answer, key, englishNormalizer).kind, answer).toBe("exact");
+    }
+  });
+
+  it("klucz „isn't watching” zalicza „is not watching” i „isnt watching”, ale nie samo „watching”", () => {
+    const key = pcKey("isn't watching", ["isn't", "watching"]);
+    expect(matchLessonAnswer("is not watching", key, englishNormalizer).kind).toBe("exact");
+    expect(matchLessonAnswer("isnt watching", key, englishNormalizer).kind).toBe("exact");
+    expect(matchLessonAnswer("watching", key, englishNormalizer).kind).toBe("no_match");
+  });
+
+  it("klucz „is playing” nie zalicza samego „playing”", () => {
+    expect(matchLessonAnswer("playing", pcKey("is playing", ["is", "playing"]), englishNormalizer).kind).toBe("no_match");
+  });
+
+  it("skrót po rzeczowniku „Mum's” nie dopasowuje się deterministycznie", () => {
+    // Normalizator nie rozwija „Mum's” (rzeczownik), więc taka odpowiedź trafia do
+    // modelu oceniającego, gdy jest skonfigurowany (spec Present Continuous §6.3).
+    const key = pcKey("Mum is cooking now.", ["is", "cooking"]);
+    expect(matchLessonAnswer("Mum's cooking now.", key, englishNormalizer).kind).toBe("no_match");
   });
 });

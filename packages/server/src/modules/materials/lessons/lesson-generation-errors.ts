@@ -29,6 +29,10 @@ export function classifyLessonGenerationFailure(error: unknown): LessonGeneratio
       ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
     };
   }
+  // Błąd w kodzie (np. narzędzie agenta na nietypowym wyjściu modelu) jest deterministyczny: ponowienie płaci za to samo (#320).
+  if (error instanceof TypeError || error instanceof RangeError || error instanceof AppError) {
+    return { errorCode: "internal", retryable: false };
+  }
   const legacyRetryable = (error as { retryable?: unknown } | null)?.retryable;
   return { errorCode: "provider", retryable: legacyRetryable !== false };
 }

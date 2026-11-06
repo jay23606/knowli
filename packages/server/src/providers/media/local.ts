@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { link, mkdir, open, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { MediaStore, StoredBlob } from "../../ports/media";
 
 const EXT_BY_MIME: Record<string, string> = {
@@ -23,14 +23,42 @@ const MIME_BY_EXT: Record<string, string> = {
 // storageKey ma zawsze postać "xx/hash.ext" — odrzucamy wszystko inne.
 const KEY_PATTERN = /^[0-9a-f]{2}\/[0-9a-f]{64}\.(mp3|wav|png|jpg|webp)$/;
 
+// Plik tymczasowy starszy niż to został po awarii procesu (żywy zapis trwa sekundy).
+const STALE_TMP_MS = 60 * 60 * 1000;
+
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+/** Usuwa porzucone pliki tymczasowe tego blobu; best effort, błędy pomija. */
+async function removeStaleTemps(dir: string, blobName: string): Promise<void> {
+  const names = await readdir(dir).catch(() => [] as string[]);
+  const now = Date.now();
+  for (const name of names) {
+    if (!name.startsWith(`.${blobName}.`) || !name.endsWith(".tmp")) continue;
+    const path = join(dir, name);
+    const info = await stat(path).catch(() => null);
+    if (info && now - info.mtimeMs > STALE_TMP_MS) await unlink(path).catch(() => undefined);
+  }
+}
+
+/** Utrwala wpis katalogu (nowy link). Windows nie pozwala otworzyć katalogu do fsync. */
+async function syncDir(dir: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const handle = await open(dir, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
- * Prywatny wolumen: klucz adresowany treścią, zapis atomowy bez nadpisywania
- * (flaga "wx"). Istniejący blob o tym samym hashu jest weryfikowany i użyty
- * ponownie; sprzeczna zawartość to błąd, nigdy cicha podmiana.
+ * Prywatny wolumen: klucz adresowany treścią. Bajty trafiają najpierw do
+ * pliku tymczasowego w tym samym katalogu (z fsync), a nazwa docelowa
+ * powstaje atomowo przez `link`, który nie nadpisuje — pod kluczem nigdy nie
+ * ma częściowej treści. Istniejący blob o tym samym hashu jest weryfikowany i
+ * użyty ponownie; sprzeczna zawartość to błąd, nigdy cicha podmiana.
  */
 export function createLocalMediaStore(rootDir: string): MediaStore {
   const pathOf = (storageKey: string) => join(rootDir, storageKey);
@@ -44,9 +72,14 @@ export function createLocalMediaStore(rootDir: string): MediaStore {
       const contentSha256 = sha256(bytes);
       const storageKey = `${contentSha256.slice(0, 2)}/${contentSha256}.${ext}`;
       const target = pathOf(storageKey);
-      await mkdir(dirname(target), { recursive: true });
+      const dir = dirname(target);
+      await mkdir(dir, { recursive: true });
+      await removeStaleTemps(dir, basename(target));
+      const temp = join(dir, `.${basename(target)}.${randomUUID()}.tmp`);
       try {
-        await writeFile(target, bytes, { flag: "wx" });
+        await writeFile(temp, bytes, { flag: "wx", flush: true });
+        await link(temp, target);
+        await syncDir(dir);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
           throw error;
@@ -55,6 +88,8 @@ export function createLocalMediaStore(rootDir: string): MediaStore {
         if (sha256(Uint8Array.from(existing)) !== contentSha256) {
           throw new Error(`blob collision at ${storageKey}: content mismatch`);
         }
+      } finally {
+        await unlink(temp).catch(() => undefined);
       }
       return { storageKey, contentSha256, byteCount: bytes.byteLength };
     },
