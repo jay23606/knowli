@@ -16,6 +16,8 @@ if (!MODE || !BASE) {
 }
 
 const SMOKE_PIN = "2468-smoke";
+// = UMIEM_SETUP_TOKEN web w deploy/compose.smoke.yaml (#307)
+const SMOKE_SETUP_TOKEN = "smoke-setup-token";
 const DECK_TITLE = "Smoke — dni tygodnia";
 
 /** Odpowiedzi z momentami (…At) są nietrwałe między odczytami — porównujemy bez nich. */
@@ -69,7 +71,7 @@ function cookieOf(response) {
 async function login(pin) {
   const status = await (await call("GET", "/api/v1/parent/login")).json();
   if (status.setupRequired) {
-    await call("POST", "/api/v1/parent/setup", { body: { secret: pin } });
+    await call("POST", "/api/v1/parent/setup", { body: { secret: pin, setupToken: SMOKE_SETUP_TOKEN } });
   }
   return cookieOf(await call("POST", "/api/v1/parent/login", { body: { secret: pin } }));
 }

@@ -273,6 +273,11 @@ export interface Services {
    */
   usage?: UsageRecorder;
   /**
+   * Kod konfiguracji pierwszego PIN-u z `UMIEM_SETUP_TOKEN` (#307). Nieobecny =
+   * setup z przeglądarki wyłączony. Sekret: nie trafia do DTO ani logów.
+   */
+  parentSetupToken?: string;
+  /**
    * Rejestr przedmiotów lekcji (zadanie 9). Wstrzykiwany jako wartość, nie
    * importowany globalnie w modułach — `createServices` nadaje mu produkcyjną
    * domyślkę `createProductionSubjectRegistry()`, więc żaden wywołujący nie
@@ -298,6 +303,7 @@ export function createServices(
     lessonAgentPublic?: LessonAgentPublic;
     usage?: UsageRecorder;
     subjects?: SubjectRegistry;
+    parentSetupToken?: string;
   },
 ): Services {
   return {
@@ -315,6 +321,7 @@ export function createServices(
     ...(input.generationService ? { generationService: input.generationService } : {}),
     ...(input.lessonAgentPublic ? { lessonAgentPublic: input.lessonAgentPublic } : {}),
     ...(input.usage ? { usage: input.usage } : {}),
+    ...(input.parentSetupToken ? { parentSetupToken: input.parentSetupToken } : {}),
   };
 }
 

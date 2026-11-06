@@ -143,6 +143,7 @@ export async function isParentSetupRequired(services: Services): Promise<boolean
 /**
  * Jednorazowy setup poświadczeń rodzica. Pojedynczy wiersz id = 1 rozstrzyga
  * próbę równoczesnej konfiguracji: wygrywa pierwsza, pozostałe dostają błąd.
+ * Operacja zaufana (testy, skrypty); żądanie HTTP przechodzi przez `setupParentWithToken`.
  */
 export async function setupParent(services: Services, secret: string): Promise<void> {
   assertSecretShape(secret);
@@ -155,6 +156,35 @@ export async function setupParent(services: Services, secret: string): Promise<v
   if (inserted.length === 0) {
     throw new AppError("already_configured");
   }
+}
+
+/**
+ * Setup z przeglądarki (POST /setup, #307): wymaga kodu konfiguracji równego
+ * `UMIEM_SETUP_TOKEN` z env serwera, żeby świeżej instancji nie przejął pierwszy
+ * odwiedzający. Bez skonfigurowanego kodu setup jest wyłączony. Błędny kod
+ * liczy się do wspólnego limitu prób logowania (ochrona przed zgadywaniem).
+ */
+export async function setupParentWithToken(
+  services: Services,
+  secret: string,
+  setupToken: string,
+): Promise<void> {
+  const expected = services.parentSetupToken;
+  if (!expected) {
+    throw new AppError("setup_disabled");
+  }
+  // po konfiguracji błędne kody nie mogą blokować logowania rodzica (wspólny limiter)
+  if (!(await isParentSetupRequired(services))) {
+    throw new AppError("already_configured");
+  }
+  const limiter = limiterFor(services);
+  limiter.assertNotLocked(services.clock.now());
+  // skróty sha256 mają stałą długość, więc porównanie nie zdradza długości kodu
+  if (!timingSafeEqual(Buffer.from(hashToken(setupToken.trim()), "hex"), Buffer.from(hashToken(expected), "hex"))) {
+    limiter.recordFailure(services.clock.now());
+    throw new AppError("invalid_setup_token");
+  }
+  await setupParent(services, secret);
 }
 
 export async function loginParent(

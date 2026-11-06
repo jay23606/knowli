@@ -54,7 +54,7 @@ import {
   requireParent,
   retryGeneration,
   setDeckCover,
-  setupParent,
+  setupParentWithToken,
   updateChild,
   updateDeckSettings,
   updatePronunciationBands,
@@ -559,11 +559,11 @@ const authLogout = parentAuthOs.auth.logout
     return { status: 204 as const, headers: { "set-cookie": clearingSessionCookie(request) } };
   });
 
-/** Setup pierwszego uruchomienia (POST /setup): tylko utworzenie PIN-u, bez logowania. */
+/** Setup pierwszego uruchomienia (POST /setup): kod konfiguracji + utworzenie PIN-u, bez logowania. */
 const authSetup = parentAuthOs.auth.setup
   .use(sameOriginMiddleware)
   .handler(async ({ context, input }) => {
-    await setupParent(context.services, input.secret);
+    await setupParentWithToken(context.services, input.secret, input.setupToken);
     return { ok: true as const };
   });
 

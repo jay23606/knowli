@@ -3,11 +3,12 @@ import { installKidUiFixture } from "./helpers/kid-ui-fixture";
 import { pictureVocabularyFixture } from "./helpers/picture-fixtures";
 import { randomUUID } from "node:crypto";
 import { openNewMaterial } from "./helpers/parent-new-material";
+import { fillParentAuth } from "./helpers/parent-session";
 
 test("rodzic podgląda propozycję, może ją odrzucić i dopiero po akceptacji zapisuje okładkę", async ({ page }) => {
   test.slow();
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await page.getByTestId("tab-decks").click();
   await openNewMaterial(page, "generate");

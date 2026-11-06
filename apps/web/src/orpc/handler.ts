@@ -26,6 +26,8 @@ const APP_ERROR_STATUS: Record<AppErrorCode, number> = {
   rate_limited: 429,
   setup_required: 409,
   already_configured: 409,
+  setup_disabled: 403,
+  invalid_setup_token: 403,
   validation: 400,
   mock_test_unavailable: 400,
   deck_kind_mismatch: 400,

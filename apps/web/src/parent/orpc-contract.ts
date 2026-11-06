@@ -231,8 +231,11 @@ const AssignmentPutInputSchema = AssignmentPutSchema.extend({
   deckId: UuidSchema,
 });
 
-/** Wejście POST /login i POST /setup: sekret PIN/hasła rodzica. */
+/** Wejście POST /login: sekret PIN/hasła rodzica. */
 const SecretInputSchema = z.object({ secret: z.string().min(1) }).strict();
+
+/** Wejście POST /setup: sekret i kod konfiguracji z `UMIEM_SETUP_TOKEN` (#307). */
+const SetupInputSchema = z.object({ secret: z.string().min(1), setupToken: z.string().min(1).max(200) }).strict();
 
 /** Stan ekranu logowania (GET /login): czy pokazać setup pierwszego uruchomienia. */
 const AuthStateOutputSchema = z.object({
@@ -615,7 +618,7 @@ export const parentApiContract = {
       .meta(openapi({ method: "POST", path: "/logout", outputStructure: "detailed" })),
 
     setup: oc
-      .input(SecretInputSchema)
+      .input(SetupInputSchema)
       .output(z.object({ ok: z.literal(true) }))
       .meta(openapi({ method: "POST", path: "/setup", successStatus: 201 })),
   },

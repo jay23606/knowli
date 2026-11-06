@@ -16,6 +16,8 @@ services:
       # klucza (worker składa fake-agenta), a mowa, grader i ocena aktywności
       # są deterministycznymi fake'ami — nic nie wychodzi do sieci.
       UMIEM_FAKE_PROVIDERS: "1"
+      # kod pierwszej konfiguracji PIN-u (#307), ten sam w deploy/smoke.mjs
+      UMIEM_SETUP_TOKEN: smoke-setup-token
       UMIEM_TTS_PROVIDER: fake-tts
       UMIEM_TTS_MODEL: fake-tts-1
       UMIEM_TTS_VOICE: fake-voice

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openNewMaterial } from "./helpers/parent-new-material";
 import { randomUUID } from "node:crypto";
+import { fillParentAuth } from "./helpers/parent-session";
 
 /**
  * E2E nadzoru rodzica nad lekcją (zadanie 16). Rodzic tworzy i publikuje realną
@@ -15,7 +16,7 @@ import { randomUUID } from "node:crypto";
 
 async function enterParent(page: Page): Promise<void> {
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("tab-decks")).toBeVisible();
 }

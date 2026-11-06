@@ -80,6 +80,8 @@ function initialize(): ServerServices {
   // adaptera agenta, a zły klucz agenta albo błędne limity zatrzymują worker, nie web
   const subjects = createProductionSubjectRegistry();
   const lessonAgentPublic = lessonAgentPublicFromEnv(env);
+  // kod pierwszej konfiguracji PIN-u (#307); celowo bez wartości domyślnej
+  const parentSetupToken = env.UMIEM_SETUP_TOKEN?.trim() || undefined;
   return {
     services: createServices({
       db,
@@ -98,6 +100,7 @@ function initialize(): ServerServices {
       ...(generationService ? { generationService } : {}),
       ...(lessonAgentPublic ? { lessonAgentPublic } : {}),
       ...(usage ? { usage } : {}),
+      ...(parentSetupToken ? { parentSetupToken } : {}),
     }),
     pool,
     ...(usage ? { usage } : {}),

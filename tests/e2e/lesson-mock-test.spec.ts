@@ -4,6 +4,7 @@ import type {
   AttemptDto, KidDeckDto, KidProfileDto, LessonMockTestReportDto, LessonMockTestSummaryDto, SessionDto, SessionSummaryDto, TaskDto,
 } from "@learning/contracts";
 import { installKidUiFixture } from "./helpers/kid-ui-fixture";
+import { fillParentAuth } from "./helpers/parent-session";
 
 /**
  * E2E próbnej kartkówki lekcji (zadanie 17B): rodzic ustawia kartkówkę lekcji →
@@ -150,7 +151,7 @@ test("child solves a lesson mock test with no feedback, then reviews per-task an
 
 async function enterParent(page: Page): Promise<void> {
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("tab-decks")).toBeVisible();
 }

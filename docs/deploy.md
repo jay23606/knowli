@@ -35,6 +35,10 @@ każdym deploju.
    - `OPENAI_API_KEY` trafia wyłącznie do `https://api.openai.com`, a wspólny
      klucz wyłącznie po https na openrouter.ai; klucz w złym miejscu kończy start
      błędem z nazwą zmiennej (szczegóły: `docs/provider-config.md`),
+   - `UMIEM_SETUP_TOKEN` — wymagane do pierwszego ustawienia PIN-u rodzica
+     (#307, decyzja właściciela z 2026-11-06): długi losowy kod, np.
+     `openssl rand -hex 16`. Bez niego ekran „Pierwsze uruchomienie” odrzuca
+     ustawienie PIN-u, więc świeżej instancji nie przejmie pierwszy odwiedzający,
    - opcjonalnie `WEB_PORT`.
 2. Zbuduj i uruchom stack:
 
@@ -42,8 +46,12 @@ każdym deploju.
    docker compose --env-file .env -f deploy/compose.yaml up -d --build
    ```
 
-3. Otwórz `http://<host>:8080` i zakończ pierwsze uruchomienie: ustawienie PIN-u
-   rodzica (jednorazowy setup znika po zapisaniu).
+3. Otwórz `http://<host>:8080/parent` i zakończ pierwsze uruchomienie: wpisz
+   nowy PIN rodzica i jako „Kod konfiguracji” wartość `UMIEM_SETUP_TOKEN`
+   (jednorazowy setup znika po zapisaniu). Potem możesz usunąć zmienną z `.env`
+   — zmiana PIN-u i tak wymaga zalogowania. Zapomniany PIN: usuń wiersz
+   `learning_app.parent_credentials` w bazie, ustaw `UMIEM_SETUP_TOKEN`
+   i uruchom web ponownie.
 
 Aktualizacja aplikacji: `git pull` + ponownie `up -d --build` — migracje
 odpalają się automatycznie przed startem web/worker.
@@ -108,7 +116,10 @@ Stack uruchamiaj jako zasób typu **Docker Compose** — Coolify buduje obrazy z
 repozytorium (`deploy/compose.yaml`; `build.context` wskazuje korzeń repo).
 
 - **Środowisko**: te same zmienne co w `.env` (sekcja Compose w
-  `.env.example`); Coolify wstrzykuje je do kontenerów.
+  `.env.example`); Coolify wstrzykuje je do kontenerów. Ustaw
+  `UMIEM_SETUP_TOKEN` (jako sekret, przy usłudze `web`) **przed** pierwszym
+  deployem — Coolify wystawia web pod adresem z domeną od razu, a bez kodu
+  ustawienie PIN-u jest wyłączone.
 - **Trwałe dane**: wolumeny `knowli-db` i `knowli-media` mapuj na persistent
   storage Coolify — to jedyne dwa miejsca z danymi rodziny.
 - **HTTPS**: Coolify wystawia web przez własny reverse proxy z certyfikatem;
@@ -121,6 +132,10 @@ repozytorium (`deploy/compose.yaml`; `build.context` wskazuje korzeń repo).
 ## Bezpieczeństwo wdrożenia
 
 - Tylko `web` ma port hosta; `db` i `worker` są w prywatnej sieci compose.
+- Pierwsze ustawienie PIN-u rodzica wymaga kodu `UMIEM_SETUP_TOKEN` (bez
+  wartości domyślnej; brak = setup wyłączony). Błędne kody liczą się do limitu
+  prób logowania (5 w 15 min). Kod nie zastępuje bramy dostępu: Kid API
+  pozostaje zaufanym API sieci domowej.
 - Sekrety (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, ewentualne `UMIEM_*_API_KEY`, `AZURE_SPEECH_*`, `POSTGRES_PASSWORD`) żyją
   wyłącznie w środowisku kontenerów (Coolify secrets / `.env` poza repo);
   web i worker dostają je z jednego pliku, żeby ustawienia medialne

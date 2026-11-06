@@ -3,10 +3,11 @@ import { openNewMaterial } from "./helpers/parent-new-material";
 import { holdFakeGeneration, releaseFakeGeneration } from "./helpers/fake-hold";
 import { randomUUID } from "node:crypto";
 import { DeckDtoSchema } from "@learning/contracts";
+import { fillParentAuth } from "./helpers/parent-session";
 
 async function enterParent(page: Page): Promise<void> {
   await page.goto("/parent");
-  await page.getByTestId("auth-secret").fill("1234");
+  await fillParentAuth(page);
   await page.getByTestId("auth-submit").click();
   await expect(page.getByTestId("tab-decks")).toBeVisible();
   await page.getByTestId("tab-decks").click();

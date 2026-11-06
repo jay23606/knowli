@@ -53,7 +53,7 @@ import {
   requireParent,
   retryGeneration,
   setDeckCover,
-  setupParent,
+  setupParentWithToken,
   updateChild,
   updateDeckSettings,
   updatePronunciationBands,
@@ -75,7 +75,7 @@ vi.mock("@learning/server", async (importActual) => {
     isParentSetupRequired: vi.fn(),
     loginParent: vi.fn(),
     logoutParent: vi.fn(),
-    setupParent: vi.fn(),
+    setupParentWithToken: vi.fn(),
     listChildren: vi.fn(),
     createChild: vi.fn(),
     updateChild: vi.fn(),
@@ -581,25 +581,42 @@ describe("parent oRPC router — auth bootstrap (login/logout/setup)", () => {
   });
 
   it("POST /setup pierwsze uruchomienie → 201 {ok:true} bez cookie i bez sesji", async () => {
-    vi.mocked(setupParent).mockResolvedValueOnce(undefined);
+    vi.mocked(setupParentWithToken).mockResolvedValueOnce(undefined);
 
-    const response = await call("/setup", authInit(secret));
+    const response = await call("/setup", authInit({ ...secret, setupToken: "kod-setup" }));
 
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({ ok: true });
     // setup nie loguje — cookie wystawia dopiero POST /login (paritet legacy)
     expect(response.headers.get("set-cookie")).toBeNull();
-    expect(setupParent).toHaveBeenCalledWith(services, "1234");
+    expect(setupParentWithToken).toHaveBeenCalledWith(services, "1234", "kod-setup");
   });
 
   it("POST /setup po konfiguracji → 409 already_configured", async () => {
-    vi.mocked(setupParent).mockRejectedValueOnce(new AppError("already_configured"));
+    vi.mocked(setupParentWithToken).mockRejectedValueOnce(new AppError("already_configured"));
 
-    const response = await call("/setup", authInit({ secret: "inny-pin" }));
+    const response = await call("/setup", authInit({ secret: "inny-pin", setupToken: "kod-setup" }));
 
     expect(response.status).toBe(409);
     const body = ApiErrorSchema.parse(await response.json());
     expect(body.code).toBe("already_configured");
+  });
+
+  it("POST /setup bez kodu konfiguracji → 400 bez wywołania przypadku użycia (#307)", async () => {
+    const response = await call("/setup", authInit(secret));
+
+    expect(response.status).toBe(400);
+    expect(setupParentWithToken).not.toHaveBeenCalled();
+  });
+
+  it.each(["setup_disabled", "invalid_setup_token"] as const)("POST /setup → 403 %s", async (code) => {
+    vi.mocked(setupParentWithToken).mockRejectedValueOnce(new AppError(code));
+
+    const response = await call("/setup", authInit({ ...secret, setupToken: "zly-kod" }));
+
+    expect(response.status).toBe(403);
+    const body = ApiErrorSchema.parse(await response.json());
+    expect(body.code).toBe(code);
   });
 });
 
@@ -1639,7 +1656,7 @@ describe("parent oRPC router — CSRF (Origin)", () => {
     const cases: Array<[string, RequestInit, Mock]> = [
       ["/login", authInit({ secret: "1234" }, evil), vi.mocked(loginParent)],
       ["/logout", { method: "POST", headers: { ...sessionCookie, ...evil } }, vi.mocked(logoutParent)],
-      ["/setup", authInit({ secret: "1234" }, evil), vi.mocked(setupParent)],
+      ["/setup", authInit({ secret: "1234", setupToken: "kod-setup" }, evil), vi.mocked(setupParentWithToken)],
       ["/children", jsonInit({ displayName: "Ola", avatarKey: "fox", canRead: true }, evil), vi.mocked(createChild)],
       [
         `/children/${childId}`,

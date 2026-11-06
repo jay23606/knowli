@@ -6,6 +6,7 @@ import { createDatabase } from "@learning/server";
 import { readTestRunConfig } from "../test-run-config";
 import { installKidUiFixture } from "./helpers/kid-ui-fixture";
 import { pictureVocabularyFixture } from "./helpers/picture-fixtures";
+import { E2E_SETUP_TOKEN } from "./helpers/parent-session";
 
 test.use({ trace: "off", viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
@@ -103,7 +104,7 @@ async function taskSettled(page: Page): Promise<void> {
  */
 async function openPictureSpeechSession(page: Page, name: string): Promise<void> {
   const parent = page.request;
-  await parent.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await parent.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   expect((await parent.post("/api/v1/parent/login", { data: { secret: "1234" } })).status()).toBe(200);
   const child = await (await parent.post("/api/v1/parent/children", {
     data: { displayName: name, avatarKey: "fox", canRead: false },
@@ -275,7 +276,7 @@ async function setMicLevel(page: Page, level: number): Promise<void> {
 
 async function createLearningTask(page: Page, name: string, recordingMode: "hold" | "toggle" = "hold"): Promise<void> {
   const parent: APIRequestContext = page.request;
-  await parent.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await parent.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   expect((await parent.post("/api/v1/parent/login", { data: { secret: "1234" } })).status()).toBe(200);
   const child = await (await parent.post("/api/v1/parent/children", { data: { displayName: name, avatarKey: "fox" } })).json() as { id: string };
   if (recordingMode === "toggle") {

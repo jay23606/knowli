@@ -1,9 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { seedMockTest } from "./mock-test-helpers";
+import { E2E_SETUP_TOKEN } from "./helpers/parent-session";
 
 test("parent configures count and sees partial pinned coverage", async ({ page }) => {
   const { childId, childName, deckId, title } = await seedMockTest(3);
-  await page.request.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await page.request.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   expect((await page.request.post("/api/v1/parent/login", { data: { secret: "1234" } })).status()).toBe(200);
   const child = await (await page.request.post("/api/v1/parent/children", { data: { displayName: "Inny profil", avatarKey: "fox" } })).json();
   await page.request.put(`/api/v1/parent/assignments/${child.id}/${deckId}`, { data: { testDate: "2026-10-17", testGoals: ["listening"], mockTestTaskCount: 13 } });
@@ -58,7 +59,7 @@ test("parent configures count and sees partial pinned coverage", async ({ page }
 
 test("parent sees evidence quality separately from a spelling mistake after a recent model", async ({ page }) => {
   const { childId, childName, deckId } = await seedMockTest(1, true, true);
-  await page.request.post("/api/v1/parent/setup", { data: { secret: "1234" } });
+  await page.request.post("/api/v1/parent/setup", { data: { secret: "1234", setupToken: E2E_SETUP_TOKEN } });
   await page.request.post("/api/v1/parent/login", { data: { secret: "1234" } });
   const session = await (await page.request.post("/api/v1/kid/sessions", { data: { childId, deckId, mode: "mock_test", microphoneEnabled: false } })).json();
   const task = await (await page.request.post(`/api/v1/kid/sessions/${session.sessionId}/next`)).json();
