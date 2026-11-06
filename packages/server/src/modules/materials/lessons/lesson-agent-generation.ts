@@ -529,9 +529,12 @@ export async function executeLessonAgentGeneration(
     await saveBestEffort();
     if (!failure.retryable) {
       await markLessonRun(services.db, services.clock, run, "failed", failure.errorCode);
-    } else if (attempts >= MAX_AUTOMATIC_ATTEMPTS) {
+    } else if (attempts > MAX_AUTOMATIC_ATTEMPTS) {
+      // Nieudany zapis części z punktu kontrolnego po wyczerpaniu prób: bez kolejnych ponowień.
       await markLessonRun(services.db, services.clock, run, "failed", "attempts_exhausted");
     } else {
+      // Także w ostatniej próbie (#319): następne przejęcie (attempts > MAX) zapisuje część z punktu
+      // kontrolnego bez wywołań modelu albo kończy `attempts_exhausted`, gdy nic nie przyjęto.
       const delay = lessonRetryDelayMs(attempts, failure.retryAfterMs, Math.random);
       const nextAttemptAt = new Date(services.clock.now().getTime() + delay);
       console.log(`[lesson-agent] run=${runId} retryDelayMs=${delay} nextAttemptAt=${nextAttemptAt.toISOString()}`);

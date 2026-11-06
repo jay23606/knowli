@@ -100,4 +100,29 @@ describe("withLessonGenerationControl", () => {
     await vi.advanceTimersByTimeAsync(11);
     await assertion;
   });
+
+  it("nieudany odczyt tożsamości runu po udanej pracy nie wyrzuca wyniku (#321)", async () => {
+    let workDone = false;
+    const assertCurrent = async () => {
+      if (workDone) throw new Error("connection reset");
+      return true;
+    };
+    const work = async () => {
+      workDone = true;
+      return "done";
+    };
+    const options = { requestTimeoutMs: 1_000, runTimeoutMs: 5_000, cancelPollMs: 60_000, assertCurrent };
+    await expect(withLessonGenerationControl(options, (control) => control.run(work))).resolves.toBe("done");
+    workDone = false;
+    await expect(withLessonGenerationControl(options, (control) => control.call(work))).resolves.toBe("done");
+  });
+
+  it("zmieniona tożsamość runu po udanej pracy nadal przerywa (superseded)", async () => {
+    let workDone = false;
+    const options = { requestTimeoutMs: 1_000, runTimeoutMs: 5_000, cancelPollMs: 60_000, assertCurrent: async () => !workDone };
+    await expect(withLessonGenerationControl(options, (control) => control.run(async () => {
+      workDone = true;
+      return "done";
+    }))).rejects.toThrow(/superseded/);
+  });
 });

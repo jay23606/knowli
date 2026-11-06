@@ -201,6 +201,16 @@ describe("AiSdkLessonPoolAgent (MockLanguageModelV4, bez sieci)", () => {
     expect(model.doGenerateCalls[0]!.providerOptions).toEqual({ openrouter: { reasoning: { effort: "low" } } });
   });
 
+  it("submit_exercises z argumentami null trafia do submit jako brak ćwiczeń, zagadnienie trwa (#326)", async () => {
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallResult("submit_exercises", null), textResult("done")] });
+    const log: string[] = [];
+    const { tools, submitted } = fakeTools(log);
+    const result = await new AiSdkLessonPoolAgent({ apiKey: "", model: "test-model", effort: "low", languageModel: model }).runObjective(agentInput(), tools, recordingCost(log), new AbortController().signal);
+    expect(result).toEqual({ steps: 2, stopReason: "model_finished" });
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]!.exercises).toBeUndefined();
+  });
+
   it("nie woła modelu, gdy zagadnienie jest zamknięte przed pierwszym krokiem", async () => {
     const model = new MockLanguageModelV4({ doGenerate: [textResult("unused")] });
     const tools: LessonObjectiveAgentTools = { submit: async () => OUTCOME, remove: async () => ({ ...OUTCOME, removed: [] }), shouldStop: () => true };

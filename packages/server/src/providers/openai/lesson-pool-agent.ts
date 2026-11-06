@@ -499,7 +499,8 @@ export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
       inputSchema: submitSchema(input),
       execute: (raw, options) =>
         guard.run(() => {
-          const payload = raw as { exercises?: unknown; examples?: unknown };
+          // `null` z modelu (bez walidacji `jsonSchema`) to brak ćwiczeń: odrzucenie z informacją dla modelu (#326).
+          const payload = (raw ?? {}) as { exercises?: unknown; examples?: unknown };
           // Surowe rekordy bez zmian: materializację, kształt i reguły robią narzędzia kierownika.
           return untilAborted(
             tools.submit({

@@ -445,6 +445,29 @@ describe("agent puli lekcji (integracja)", () => {
       await pool.query("update learning_app.generation_runs set next_attempt_at = null where id = $1", [runId]);
     }
 
+    /** Wyzwalacz `before <on>` z ciałem plpgsql `body` na czas `work`, sprzątany po nim. */
+    async function withFailingUpdate(on: string, body: string, work: () => Promise<unknown>): Promise<void> {
+      await pool.query(`create or replace function learning_app.test_fail_update() returns trigger language plpgsql as $$
+        begin ${body} return new; end $$`);
+      await pool.query(`create trigger test_fail_update before ${on} for each row execute function learning_app.test_fail_update()`);
+      try {
+        await work();
+      } finally {
+        await pool.query(`drop trigger if exists test_fail_update on ${on.split(" on ")[1]}`);
+        await pool.query("drop function if exists learning_app.test_fail_update()");
+      }
+    }
+
+    /** Ostatnia automatyczna próba przerwana zamknięciem po rozliczeniu zagadnienia A (B w locie). */
+    async function shutdownInLastAttempt(services: Services, runId: string): Promise<void> {
+      await pool.query("update learning_app.generation_runs set attempts = 2 where id = $1", [runId]);
+      const shutdown = new AbortController();
+      const running = executeLessonGeneration(services, runId, { signal: shutdown.signal });
+      await untilSettled(runId, OBJECTIVE);
+      shutdown.abort();
+      await running;
+    }
+
     async function progressOf(runId: string): Promise<LessonAgentProgress | undefined> {
       return parseLessonAgentProgress((await fullRun(runId)).agent_checkpoint, runId);
     }
@@ -1125,13 +1148,7 @@ describe("agent puli lekcji (integracja)", () => {
       it("shutdown w ostatniej próbie (gate + abort sygnału) → następne przejęcie zapisuje z punktu kontrolnego bez wywołań modelu; gap dla nierozliczonego zagadnienia", async () => {
         const { services, agent } = await agentWorld({ objectives: { negative: [never()] } });
         const { runId } = await createLesson(services, command({ objectiveIds: [OBJECTIVE, NEGATIVE] }));
-        // Ostatnia automatyczna próba.
-        await pool.query("update learning_app.generation_runs set attempts = 2 where id = $1", [runId]);
-        const shutdown = new AbortController();
-        const running = executeLessonGeneration(services, runId, { signal: shutdown.signal });
-        await untilSettled(runId, OBJECTIVE);
-        shutdown.abort();
-        await running;
+        await shutdownInLastAttempt(services, runId);
 
         const stopped = await fullRun(runId);
         expect(stopped.state).toBe("queued");
@@ -1192,6 +1209,66 @@ describe("agent puli lekcji (integracja)", () => {
         expect(row.state).toBe("succeeded");
         // 0,04 z przerwanej próby + jeden krok B w próbie 2.
         expect(summaryOf(row).totalSpentUsd).toBeCloseTo(0.05, 6);
+      });
+
+      it("błąd przejściowy bazy w ostatniej próbie przy przyjętym zagadnieniu → queued, następne przejęcie zapisuje część bez wywołań modelu (#319)", async () => {
+        const held = gate();
+        const { services, agent } = await agentWorld({ objectives: { negative: [held.step] } });
+        const { runId } = await createLesson(services, command({ objectiveIds: [OBJECTIVE, NEGATIVE] }));
+        // Ostatnia automatyczna próba.
+        await pool.query("update learning_app.generation_runs set attempts = 2 where id = $1", [runId]);
+        const running = executeLessonGeneration(services, runId);
+        await untilSettled(runId, OBJECTIVE);
+        await held.reached;
+        // Zapis postępu z zagadnieniem B pada na przejściowym błędzie Postgresa (serialization_failure).
+        await withFailingUpdate(
+          "update on learning_app.generation_runs",
+          `if new.agent_checkpoint -> 'objectives' ? '${NEGATIVE}' then
+            raise exception 'test: checkpoint write failed' using errcode = '40001';
+          end if;`,
+          () => {
+            held.open();
+            return running;
+          },
+        );
+
+        const requeued = await fullRun(runId);
+        expect(requeued.state).toBe("queued");
+        expect(requeued.attempts).toBe(3);
+        const saved = parseLessonAgentProgress(requeued.agent_checkpoint, runId)!;
+        expect(saved.objectives[OBJECTIVE]!.exercises.length).toBeGreaterThan(0);
+        const calls = agent.calls.length;
+
+        await dueNow(runId);
+        await executeLessonGeneration(services, runId);
+
+        const row = await fullRun(runId);
+        expect(row.state).toBe("succeeded");
+        expect(row.attempts).toBe(4);
+        expect(agent.calls).toHaveLength(calls);
+        const version = await versionOf(runId);
+        expect(await draftObjectives(version.id)).toEqual([OBJECTIVE]);
+        expect(contextOf(version).generationGaps).toEqual([{ objectiveId: NEGATIVE, reason: "incomplete" }]);
+      });
+
+      it("przejęcie po wyczerpaniu prób: przejściowa awaria zapisu części → failed attempts_exhausted, bez kolejnego ponowienia", async () => {
+        const { services, agent } = await agentWorld({ objectives: { negative: [never()] } });
+        const { runId } = await createLesson(services, command({ objectiveIds: [OBJECTIVE, NEGATIVE] }));
+        await shutdownInLastAttempt(services, runId);
+        expect((await fullRun(runId)).state).toBe("queued");
+        const calls = agent.calls.length;
+
+        await withFailingUpdate(
+          "update of edit_number on learning_app.deck_versions",
+          "raise exception 'test: final write failed' using errcode = '40001';",
+          () => executeLessonGeneration(services, runId),
+        );
+
+        const row = await fullRun(runId);
+        expect(row.state).toBe("failed");
+        expect(row.error_code).toBe("attempts_exhausted");
+        expect(row.attempts).toBe(4);
+        expect(agent.calls).toHaveLength(calls);
       });
 
       it("budżet wyczerpany przy błędzie przejściowym innego zagadnienia → zapis części bez ponowienia", async () => {

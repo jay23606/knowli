@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { AppError } from "../../../errors";
 import { GenerationProviderError } from "../../../ports/generation-error";
 import { classifyLessonGenerationFailure, lessonRetryDelayMs } from "./lesson-generation-errors";
 
@@ -22,6 +23,18 @@ describe("classifyLessonGenerationFailure", () => {
     let error: unknown;
     try { z.string().parse(1); } catch (cause) { error = cause; }
     expect(classifyLessonGenerationFailure(error)).toMatchObject({ errorCode: "validation", retryable: false });
+  });
+
+  it("błąd w kodzie (TypeError, RangeError, AppError) to błąd wewnętrzny bez ponowienia (#320)", () => {
+    expect(classifyLessonGenerationFailure(new TypeError("x is undefined"))).toEqual({ errorCode: "internal", retryable: false });
+    expect(classifyLessonGenerationFailure(new RangeError("bad length"))).toEqual({ errorCode: "internal", retryable: false });
+    expect(classifyLessonGenerationFailure(new AppError("internal"))).toEqual({ errorCode: "internal", retryable: false });
+  });
+
+  it("przejściowy błąd bazy (pole code) pozostaje ponawiany", () => {
+    const pgError = Object.assign(new Error("terminating connection"), { code: "57P01" });
+    expect(classifyLessonGenerationFailure(pgError)).toEqual({ errorCode: "provider", retryable: true });
+    expect(classifyLessonGenerationFailure(Object.assign(new Error("x"), { retryable: false }))).toEqual({ errorCode: "provider", retryable: false });
   });
 });
 
