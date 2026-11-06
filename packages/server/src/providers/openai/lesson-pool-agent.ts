@@ -40,6 +40,7 @@ import {
   type UsageEventBase,
 } from "../usage/record-http";
 import { lessonPoolJsonSchema } from "./lesson-pool-schema";
+import { retryAfterMs } from "./retry-after";
 import { lessonSystemPrompt, lessonUserMaterial } from "./llm";
 
 /**
@@ -97,23 +98,13 @@ function unwrapRetry(error: unknown): unknown {
   return RetryError.isInstance(error) ? error.lastError : error;
 }
 
-/** `retry-after` w sekundach albo jako data HTTP; nieczytelny = brak. */
-function retryAfterMsOf(headers: Readonly<Record<string, string>> | undefined): number | undefined {
-  const raw = headers?.["retry-after"];
-  if (raw === undefined) return undefined;
-  const seconds = Number(raw);
-  if (raw.trim() !== "" && Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
-  const at = Date.parse(raw);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
-}
-
 function apiCallErrorKind(error: APICallError): GenerationProviderError {
   const status = error.statusCode;
   const withStatus = status === undefined ? {} : { status };
   if (status === 401 || status === 402 || status === 403) return new GenerationProviderError("configuration", withStatus);
   if (status === 429) {
-    const retryAfterMs = retryAfterMsOf(error.responseHeaders);
-    return new GenerationProviderError("rate_limit", { ...withStatus, ...(retryAfterMs === undefined ? {} : { retryAfterMs }) });
+    const retryAfter = retryAfterMs(error.responseHeaders?.["retry-after"]);
+    return new GenerationProviderError("rate_limit", { ...withStatus, ...(retryAfter === undefined ? {} : { retryAfterMs: retryAfter }) });
   }
   // Brak statusu = brak odpowiedzi (sieć); SDK oznacza błędy sieci i 408/409/5xx jako `isRetryable`.
   if (status === undefined || status === 408 || status >= 500 || error.isRetryable) return new GenerationProviderError("transient", withStatus);

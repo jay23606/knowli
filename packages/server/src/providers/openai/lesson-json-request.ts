@@ -9,6 +9,7 @@ import {
   recordUnreadable,
   type UsageEventBase,
 } from "../usage/record-http";
+import { retryAfterMs } from "./retry-after";
 
 /**
  * Wspólna koperta żądań lekcyjnych (strict `json_schema`) generatora
@@ -34,15 +35,6 @@ export interface LessonJsonRequestConfig {
   readonly usageFeature: UsageFeature;
 }
 
-function retryAfterMs(response: Response): number | undefined {
-  const raw = response.headers.get("retry-after");
-  if (raw === null) return undefined;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
-  const at = Date.parse(raw);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
-}
-
 async function lessonHttpError(response: Response): Promise<GenerationProviderError> {
   let kind: "configuration" | "rate_limit" | "transient" =
     response.status === 429 ? "rate_limit" : response.status === 408 || response.status >= 500 ? "transient" : "configuration";
@@ -65,7 +57,7 @@ async function lessonHttpError(response: Response): Promise<GenerationProviderEr
   }
   return new GenerationProviderError(kind, {
     status: response.status,
-    ...(kind === "rate_limit" ? { retryAfterMs: retryAfterMs(response) } : {}),
+    ...(kind === "rate_limit" ? { retryAfterMs: retryAfterMs(response.headers.get("retry-after")) } : {}),
   });
 }
 
