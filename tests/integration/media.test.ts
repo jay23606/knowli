@@ -455,7 +455,8 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
   it("#303: nieudana regeneracja nie przywraca przy edycji obrazu odrzuconego przez rodzica", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
-    const services = mediaServices(fakes);
+    const clock = new ManualClock();
+    const services = mediaServices(fakes, clock);
 
     const dto = await createDraft(services, { title: "Dni", items: [item({ visualType: "image" })] });
     await reconcileDraftAssets(services, dto.id);
@@ -470,6 +471,8 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
     });
     fakes.image.failuresLeft = 3;
     for (let pass = 0; pass < 3; pass += 1) {
+      // automatyczne ponowienie czeka na `next_attempt_at` (#300)
+      if (pass > 0) clock.advanceMs(60_000);
       await runDueGenerationWork(services);
     }
     expect((await assetRow(regenerated.assetId)).state).toBe("failed");

@@ -177,13 +177,15 @@ export async function setupParentWithToken(
   if (!(await isParentSetupRequired(services))) {
     throw new AppError("already_configured");
   }
+  // wspólny kubełek urządzeń bez ciastka — ten sam co przy logowaniu
   const limiter = limiterFor(services);
-  limiter.assertNotLocked(services.clock.now());
+  const attemptAt = services.clock.now();
+  limiter.reserve("", attemptAt);
   // skróty sha256 mają stałą długość, więc porównanie nie zdradza długości kodu
   if (!timingSafeEqual(Buffer.from(hashToken(setupToken.trim()), "hex"), Buffer.from(hashToken(expected), "hex"))) {
-    limiter.recordFailure(services.clock.now());
     throw new AppError("invalid_setup_token");
   }
+  limiter.succeed("", attemptAt);
   await setupParent(services, secret);
 }
 
