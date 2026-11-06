@@ -7,7 +7,6 @@ import { englishChapterSubject } from "../domain/lessons/subjects/english-chapte
 import { TRANSLATION_INSTRUCTION } from "../domain/lessons/subjects/english-chapter/validators";
 import { schoolSubject } from "../domain/lessons/subjects/school/module";
 import type { LessonExerciseType } from "../domain/lessons/types";
-import { materializeGeneratedCalculations } from "./lesson-calculations";
 
 /**
  * Deterministyczny generator ćwiczeń lekcji dla fake'ów (testy, E2E, `UMIEM_FAKE_PROVIDERS=1`):
@@ -523,8 +522,8 @@ function chapterObjectiveExercises(input: LessonObjectiveAgentInput, offset: num
 }
 
 /**
- * Zgłoszenie jednego kroku podagenta zagadnienia `input.objective` (rekordy gotowe, rachunki po
- * `materializeGeneratedCalculations`; materializacja narzędzi przepuszcza je bez zmian). Numeracja i dobór odpowiedzi od `offset`
+ * Zgłoszenie jednego kroku podagenta zagadnienia `input.objective` (rekordy gotowe; materializacja
+ * narzędzi przepuszcza je bez zmian). Numeracja i dobór odpowiedzi od `offset`
  * (pętla fake'a agenta: `index · 1000`, przy „+N” `index · 1000 + 500 + existingCount · 2`, kolejne
  * kroki +100), więc zagadnienia lekcji i kroki nie powtarzają odpowiedzi.
  *
@@ -545,6 +544,6 @@ export function fakeObjectiveExercises(
   const generated = chapter
     ? chapterObjectiveExercises(input, offset, request, allowed)
     : stagedObjectiveExercises(input, offset, request, allowed);
-  const exercises = materializeGeneratedCalculations(withFakeExplanations(generated.exercises, pool));
+  const exercises = withFakeExplanations(generated.exercises, pool);
   return input.objective.examplesFromPlan ? { exercises } : { exercises, examples: generated.examples };
 }

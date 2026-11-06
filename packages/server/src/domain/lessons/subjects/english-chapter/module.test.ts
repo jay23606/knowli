@@ -97,7 +97,7 @@ describe("przedmiot english_chapter", () => {
     expect(ruleText("chapter.stem_single_gap")).toContain("exactly one gap");
     expect(prompts.fieldRules).not.toContain("hint is always null");
     expect(prompts.fieldRules).toContain("Wpisz brakujące słowo.");
-    expect(prompts.objectivesRules).toContain("3 to 5 objectives");
+    expect(prompts.objectivesRules).toContain("3 to 6 objectives");
     expect(prompts.objectivesRules).toContain("'words'");
     expect(prompts.objectivesRules).toContain("'frame'");
     // Prompt mówi, co odrzuca walidacja słownikowa (review Task 5).

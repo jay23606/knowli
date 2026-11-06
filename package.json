@@ -5,7 +5,6 @@
   "description": "Knowli / Umiem! — prywatna, self-hostowana aplikacja rodzinna do nauki",
   "packageManager": "pnpm@10.34.6",
   "scripts": {
-    "report:exposure-leaks": "node apps/worker/node_modules/tsx/dist/cli.mjs scripts/report-exposure-leaks.mts",
     "eval:school-grader": "node apps/worker/node_modules/tsx/dist/cli.mjs scripts/evaluate-school-grader.mts",
     "eval:tts-styles": "node apps/worker/node_modules/tsx/dist/cli.mjs scripts/sample-tts-styles.mts",
     "eval:dictation-stt": "node apps/worker/node_modules/tsx/dist/cli.mjs scripts/evaluate-dictation-stt.mts",

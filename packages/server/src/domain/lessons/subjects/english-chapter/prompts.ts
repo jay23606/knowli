@@ -1,3 +1,4 @@
+import { AGENT_PLAN_MAX_OBJECTIVES, AGENT_PLAN_MIN_OBJECTIVES } from "../../agent/plan";
 import type { SubjectPromptProfile } from "../../types";
 
 /**
@@ -86,7 +87,7 @@ export const englishChapterPrompts: SubjectPromptProfile = {
       "different class.",
   },
   objectivesRules:
-    "Split the chapter into 3 to 5 objectives, so that every objective comes up within two or three short sessions. " +
+    `Split the chapter into ${AGENT_PLAN_MIN_OBJECTIVES} to ${AGENT_PLAN_MAX_OBJECTIVES} objectives, so that every objective comes up within two or three short sessions. ` +
     "Set kind for every objective: 'words' — a group of 4 to 12 related English words and phrases from the material " +
     "(e.g. clothes, weather, days of the week); 'frame' — one sentence frame from the material (e.g. I'm wearing (a) ..., " +
     "What's the weather like? It's ...), where the checked part is the construction and words of the 'words' objectives " +

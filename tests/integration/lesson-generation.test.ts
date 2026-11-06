@@ -42,7 +42,6 @@ import type { LessonExerciseDraft } from "../../packages/server/src/domain/lesso
 import { DEFAULT_LESSON_GENERATION_POLICY } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
 import type { FakeAgentStep, FakeLessonPoolAgent, FakeLessonPoolAgentOptions } from "../../packages/server/src/providers/fake-lesson-agent";
 import { FAKE_EXPLANATION, fakeObjectiveExercises } from "../../packages/server/src/providers/fake-lesson-pool";
-import { materializeGeneratedCalculations } from "../../packages/server/src/providers/lesson-calculations";
 
 const { pool } = testDatabase();
 
@@ -1213,14 +1212,12 @@ describe("generowanie puli lekcji (integracja)", () => {
                 return {
                   exercises: [
                     ...generated.exercises,
-                    ...materializeGeneratedCalculations([
-                      rawCalculation(input),
-                      rawCalculation(input, { calculation: { ...calculation, kind: "unknown" } }),
-                      rawCalculation(input, {
-                        calculation: { ...calculation, params: { scaleDenominator: 25000, mapDistanceCm: 5 } },
-                        sourceRefs: [{ quote: "Ten cytat nie występuje w materiale rodzica.", parentAdded: true }],
-                      }),
-                    ]),
+                    rawCalculation(input),
+                    rawCalculation(input, { calculation: { ...calculation, kind: "unknown" } }),
+                    rawCalculation(input, {
+                      calculation: { ...calculation, params: { scaleDenominator: 25000, mapDistanceCm: 5 } },
+                      sourceRefs: [{ quote: "Ten cytat nie występuje w materiale rodzica.", parentAdded: true }],
+                    }),
                   ],
                   examples: generated.examples,
                 };
@@ -1229,10 +1226,10 @@ describe("generowanie puli lekcji (integracja)", () => {
             // „+2”: ta sama metoda i parametry z inną rodziną nadal są duplikatem istniejącej puli.
             [{
               build: (input) => ({
-                exercises: materializeGeneratedCalculations([
+                exercises: [
                   rawCalculation(input, { calculation: { ...calculation, templateFamilyId: "renamed-family" } }),
                   rawCalculation(input, { calculation: { ...calculation, params: { scaleDenominator: 25000, mapDistanceCm: 4 } } }),
-                ]),
+                ],
               }),
             }],
           ],
