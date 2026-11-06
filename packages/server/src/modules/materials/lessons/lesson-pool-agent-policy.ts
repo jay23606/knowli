@@ -92,6 +92,8 @@ export class RunCostMeter implements RunBudgetSink {
     initialSpentUsd: number,
     private readonly budgetUsd: number,
     private readonly unknownEstimateUsd: number,
+    /** Wołany synchronicznie po każdym zgłoszeniu z bieżącym wydatkiem (zapis best-effort przy przerwaniu, #317). */
+    private readonly onSpend?: (spentUsd: number) => void,
   ) {
     this.spent = initialSpentUsd;
   }
@@ -108,9 +110,10 @@ export class RunCostMeter implements RunBudgetSink {
     if (usd === null || !Number.isFinite(usd) || usd < 0) {
       this.unknown += 1;
       this.spent += this.unknownEstimateUsd;
-      return;
+    } else {
+      this.spent += usd;
     }
-    this.spent += usd;
+    this.onSpend?.(this.spent);
   }
 
   exhausted(): boolean {

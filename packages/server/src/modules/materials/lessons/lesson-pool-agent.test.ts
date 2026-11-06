@@ -766,6 +766,28 @@ describe("runLessonPoolAgent — hak onObjectiveSettled", () => {
     expect(result.objectives.map((objective) => objective.objectiveId)).toEqual([A, B]);
   });
 
+  it("rozliczenie niesie odrzucenia własnego zagadnienia, a onSpend bieżący wydatek runu (#317)", async () => {
+    const duplicate = choice(A, 1);
+    const { deps } = setup({
+      agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [duplicate, duplicate] } }], [SLUG_B]: completeScript(B, 100) } },
+      checker: new FakeExerciseChecker({ costUsd: 0 }),
+    });
+    const settled: SettledObjective[] = [];
+    const spends: number[] = [];
+    const result = await runLessonPoolAgent(
+      deps,
+      runInput({ initialSpentUsd: 0.5, onSpend: (usd) => spends.push(usd), onObjectiveSettled: async (objective) => void settled.push(objective) }),
+      never,
+    );
+    const byId = new Map(settled.map((objective) => [objective.objectiveId, objective]));
+    expect(byId.get(A)!.rejections.map((entry) => entry.code)).toEqual(result.rejections.map((entry) => entry.code));
+    expect(byId.get(A)!.rejections.length).toBeGreaterThan(0);
+    expect(byId.get(B)!.rejections).toEqual([]);
+    expect(spends.length).toBeGreaterThan(0);
+    expect(spends.at(-1)).toBeCloseTo(result.spentUsd, 6);
+    expect(spends[0]).toBeGreaterThan(0.5);
+  });
+
   it("błąd haka przerywa pozostałe zagadnienia i odrzuca run tym błędem", async () => {
     const { agent, deps } = setup({ agent: { objectives: { [SLUG_A]: completeScript(A, 0), [SLUG_B]: [{ hang: true }] } } });
     const failure = new Error("hook failed");

@@ -1154,6 +1154,46 @@ describe("agent puli lekcji (integracja)", () => {
         expectSummaryWithoutContent(row.agent_checkpoint, 4);
       });
 
+      it("shutdown w trakcie zagadnienia z kosztem → punkt kontrolny ma faktyczny wydatek, kolejna próba startuje od niego (#317)", async () => {
+        // A: krok z odrzuconym zgłoszeniem i krok generatora (0,02 USD); B płaci 0,01 USD za krok 1,
+        // a po haku A drugi krok 0,01 USD „w locie”.
+        const first = gate();
+        const second = gate();
+        const { services } = await agentWorld({
+          stepCostUsd: 0.01,
+          objectives: {
+            third_person_s: [{ submit: { exercises: [{ notAnExercise: true }] } }, GENERATE],
+            negative: { calls: [[first.step, second.step], [GENERATE]] },
+          },
+        });
+        const { runId } = await createLesson(services, command({ objectiveIds: [OBJECTIVE, NEGATIVE] }));
+        const shutdown = new AbortController();
+        const running = executeLessonGeneration(services, runId, { signal: shutdown.signal });
+        await first.reached;
+        await untilSettled(runId, OBJECTIVE);
+        first.open();
+        await second.reached;
+        shutdown.abort();
+        await running;
+
+        const stopped = await fullRun(runId);
+        expect(stopped.state).toBe("queued");
+        const saved = parseLessonAgentProgress(stopped.agent_checkpoint, runId)!;
+        expect(saved.objectives[NEGATIVE]).toBeUndefined();
+        // Wydatek nierozliczonego B jest w punkcie kontrolnym, nie tylko koszt do ostatniego haka.
+        expect(saved.budgetSpentUsd).toBeCloseTo(0.04, 6);
+        expect(saved.totalSpentUsd).toBeCloseTo(0.04, 6);
+        // Kody odrzuceń rozliczonego A przetrwały przerwanie (hak, nie wynik kierownika).
+        expect(Object.values(saved.rejectionCodes).reduce((sum, count) => sum + count, 0)).toBeGreaterThan(0);
+
+        await executeLessonGeneration(services, runId);
+
+        const row = await fullRun(runId);
+        expect(row.state).toBe("succeeded");
+        // 0,04 z przerwanej próby + jeden krok B w próbie 2.
+        expect(summaryOf(row).totalSpentUsd).toBeCloseTo(0.05, 6);
+      });
+
       it("budżet wyczerpany przy błędzie przejściowym innego zagadnienia → zapis części bez ponowienia", async () => {
         // Krok kosztuje 0,01 USD, budżet runu 0,025: próba 1 wydaje 0,02 (A gotowe, B przejściowy → ponowienie),
         // w próbie 2 przejściowy błąd B przekracza budżet — kolejna próba nic by nie wydała.

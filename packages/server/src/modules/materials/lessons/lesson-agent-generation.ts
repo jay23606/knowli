@@ -90,7 +90,7 @@ function settledResult(settled: SettledObjective): LessonPoolAgentResult {
     planStatus: "not_needed",
     objectives: [settled],
     stats: emptyLessonPoolAgentStats(),
-    rejections: [],
+    rejections: settled.rejections,
     spentUsd: settled.spentUsd,
     unknownCostCalls: 0,
   };
@@ -200,6 +200,8 @@ export async function executeLessonAgentGeneration(
   let catalogTopic: LessonTopic | undefined;
   // Najświeższa znana wartość postępu: zapis best-effort przy wyjściu (przynajmniej wydatek budżetu).
   let latest: LessonAgentProgress = emptyLessonAgentProgress();
+  // Bieżący wydatek kierownika (z `initialSpentUsd`): przerwana próba zapisuje też koszt nierozliczonych zagadnień (#317).
+  let liveSpentUsd = 0;
   // Bez odczytanego punktu kontrolnego zapis best-effort nadpisałby go pustym postępem.
   let loaded = false;
   const save = async (progress: LessonAgentProgress): Promise<void> => {
@@ -209,7 +211,7 @@ export async function executeLessonAgentGeneration(
   const saveBestEffort = async (): Promise<void> => {
     if (!loaded) return;
     try {
-      await saveLessonAgentCheckpoint(services.db, run, latest);
+      await saveLessonAgentCheckpoint(services.db, run, { ...latest, ...withSpend(latest, liveSpentUsd) });
     } catch {
       // run nie jest już bieżącą próbą albo baza jest niedostępna — postęp tej próby przepada
     }
@@ -456,6 +458,9 @@ export async function executeLessonAgentGeneration(
         },
         {
           ...runInput,
+          onSpend: (spentUsd) => {
+            liveSpentUsd = spentUsd;
+          },
           onObjectivesResolved: async (resolved) => {
             const planExamples = Object.fromEntries(Object.entries(resolved.planExamples).map(([id, list]) => [id, [...list]]));
             working = {

@@ -78,6 +78,8 @@ export interface SettledObjective {
   readonly steps: number;
   /** Wydatek runu w chwili rozliczenia (`cost.spentUsd`, zawiera już `initialSpentUsd`). */
   readonly spentUsd: number;
+  /** Odrzucenia zagadnienia w tej próbie (kody trafiają do punktu kontrolnego także po przerwaniu runu). */
+  readonly rejections: readonly RejectionLogEntry[];
 }
 
 /** Wynik rozwiązania zagadnień dla haka planu (spec etapu 2a §6.1). */
@@ -106,6 +108,11 @@ export interface LessonPoolAgentRunInput {
   readonly skipObjectives: readonly string[];
   readonly familyScope: string | null;
   readonly initialSpentUsd: number;
+  /**
+   * Wołany synchronicznie po każdym zgłoszeniu kosztu z wydatkiem runu (zawiera `initialSpentUsd`) —
+   * także dla zagadnień, których hak nie zdąży się wykonać przed przerwaniem.
+   */
+  readonly onSpend?: (spentUsd: number) => void;
   /**
    * Przykłady kart wstawiane do stanu jak przykłady planu (liczą się do statusu i są źródłami
    * ujawnień), np. z punktu kontrolnego albo szkicu; przykłady planu wygrywają per zagadnienie.
@@ -309,7 +316,7 @@ export async function runLessonPoolAgent(
   const subject = resolveSubject(deps, input);
   signal.throwIfAborted();
   const policy: LessonAgentPolicy = { ...DEFAULT_LESSON_AGENT_POLICY, ...deps.policy };
-  const cost = new RunCostMeter(input.initialSpentUsd, policy.runBudgetUsd, policy.unknownCallEstimateUsd);
+  const cost = new RunCostMeter(input.initialSpentUsd, policy.runBudgetUsd, policy.unknownCallEstimateUsd, input.onSpend);
   const runDeadline = deadlineSignal(signal, policy.runTimeoutMs, RUN_TIMEOUT_REASON);
   try {
     const source = input.objectiveSource;
@@ -523,6 +530,7 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
       examples: [...(state.examples.get(objective.id) ?? [])],
       steps,
       spentUsd: cost.spentUsd,
+      rejections: rejections.filter((entry) => entry.objectiveId === objective.id),
     };
     if (error !== undefined) return { ...base, status: "failed", failure: agentFailureOf(error.error) };
     return { ...base, status: status.complete ? "complete" : "incomplete" };

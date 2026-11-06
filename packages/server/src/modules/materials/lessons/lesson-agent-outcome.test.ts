@@ -393,7 +393,7 @@ function settled(
   exercises: LessonExerciseDraft[],
   failure?: SettledObjective["failure"],
 ): SettledObjective {
-  return { objectiveId, status, missing: [], exercises, examples: [`Przykład ${objectiveId}.`], steps: 1, spentUsd: 0, ...(failure ? { failure } : {}) };
+  return { objectiveId, status, missing: [], exercises, examples: [`Przykład ${objectiveId}.`], steps: 1, spentUsd: 0, rejections: [], ...(failure ? { failure } : {}) };
 }
 
 function attemptResult(objectives: SettledObjective[], overrides: Partial<LessonPoolAgentResult> = {}): LessonPoolAgentResult {
