@@ -10,6 +10,7 @@ import {
   MIN_NOTICE_SENTENCES,
   MIN_OPTIONS,
   MIN_ORDER_ITEMS,
+  answersEquivalent,
   findDuplicateAnswers,
   poolCoverage,
   validateLessonExercise,
@@ -547,6 +548,11 @@ describe("validateLessonExercise — długości i acceptedAnswers", () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 
+  it("odrzuca wariant pusty po normalizacji (sama interpunkcja)", () => {
+    const errors = validateLessonExercise(draft({ acceptedAnswers: ["?"] }), englishGrammarSubject, englishTopic);
+    expect(errors).toContain("acceptedAnswers: pusty wariant");
+  });
+
   it("odrzuca wariant duplikujący odpowiedź kanoniczną po normalizacji", () => {
     const errors = validateLessonExercise(
       draft({ acceptedAnswers: ["Plays"] }),
@@ -554,6 +560,23 @@ describe("validateLessonExercise — długości i acceptedAnswers", () => {
       englishTopic,
     );
     expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe("answersEquivalent", () => {
+  const normalizer = englishGrammarSubject.normalizer;
+
+  it.each([
+    ["...", "?"],
+    ["", ""],
+    ["   ", "!"],
+  ])("teksty puste po normalizacji nie są równoważne: %j vs %j", (a, b) => {
+    // Jak `matchLessonAnswer`: pusta sekwencja nigdy nie zalicza odpowiedzi.
+    expect(answersEquivalent(a, b, normalizer)).toBe(false);
+  });
+
+  it("nadal dopasowuje równoważne niepuste odpowiedzi", () => {
+    expect(answersEquivalent("Plays.", "plays", normalizer)).toBe(true);
   });
 });
 

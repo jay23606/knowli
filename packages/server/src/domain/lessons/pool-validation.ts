@@ -127,11 +127,14 @@ function sequenceKey(tokens: readonly string[]): string {
   return tokens.join("\u0000");
 }
 
-/** Zbiór kluczy wariantów normalizacji tekstu (dowolny wspólny = równoważność). */
+/**
+ * Zbiór kluczy wariantów normalizacji tekstu (dowolny wspólny = równoważność).
+ * Pomija puste sekwencje — jak `matchLessonAnswer`, gdzie pusta odpowiedź nigdy nie pasuje.
+ */
 function variantKeys(text: string, normalizer: AnswerNormalizer): Set<string> {
   const keys = new Set<string>();
   for (const sequence of normalizer.normalize(text)) {
-    keys.add(sequenceKey(sequence));
+    if (sequence.length > 0) keys.add(sequenceKey(sequence));
   }
   return keys;
 }
@@ -1505,7 +1508,7 @@ function validateAcceptedAnswers(
   }
   ex.acceptedAnswers.forEach((variant, index) => {
     const field = `acceptedAnswers[${index}]`;
-    if (variant.trim() === "") {
+    if (variantKeys(variant, normalizer).size === 0) {
       issues.push(coreIssue("variants.empty", { field, pl: "acceptedAnswers: pusty wariant", found: "blank variant" }));
       return;
     }
