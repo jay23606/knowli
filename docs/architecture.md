@@ -301,7 +301,7 @@ Serwowanie (migracja oRPC v2, 2026-10-23): wszystkie grupy endpointów obsługuj
 
 | Grupa | Endpoint | Wynik |
 | --- | --- | --- |
-| Parent | POST /api/v1/parent/login; POST /logout | Cookie sesji lub błąd |
+| Parent | POST /api/v1/parent/login; POST /logout | Cookie sesji (i urządzenia przy logowaniu) lub błąd |
 | Parent | GET/POST /api/v1/parent/children; PATCH/DELETE /children/:id | Profile i usunięcie danych dziecka |
 | Parent | POST /api/v1/parent/decks/generate | 202 + generationRunId + deckId |
 | Parent | POST /api/v1/parent/decks | 201 pusty szkic; retry z tym samym deckId zwraca 200 bez zmiany zawartości |
@@ -366,7 +366,7 @@ Edycja obrazów, dodawanie/usuwanie kart i ponawianie konkretnego zasobu korzyst
 
 ## 13. Autoryzacja i prywatność
 
-MVP pozostaje jednorodzinne. Hash hasła/PIN rodzica jest w bazie; scrypt z parametrami zapisanymi w formacie hasha, stałoczasowa weryfikacja i limit prób logowania. Cookie HttpOnly, Secure przy HTTPS, SameSite oraz kontrola Origin/CSRF przy mutacjach. Surowe tokeny sesji nigdy nie trafiają do bazy; przechowujemy ich hash i czas wygaśnięcia. Wygasłe parent_sessions są usuwane leniwie przy weryfikacji i przy logowaniu; indeks na expires_at ułatwia porządkowanie.
+MVP pozostaje jednorodzinne. Hash hasła/PIN rodzica jest w bazie; scrypt z parametrami zapisanymi w formacie hasha, stałoczasowa weryfikacja i limit prób logowania. Limit (2026-11-06, #295/#306) to 5 porażek w 15 minut, liczony w pamięci procesu web osobno dla każdego znanego urządzenia i wspólnie dla wszystkich pozostałych. Znane urządzenie ma ciastko `parent_device` z udanego logowania: losowy identyfikator podpisany HMAC kluczem z hasha PIN-u (bez tabeli; zmiana PIN-u unieważnia urządzenia), HttpOnly, SameSite=Strict, ścieżka tylko `/api/v1/parent/login`, ważne 400 dni. Obce urządzenie (np. tablet dziecka) blokuje więc tylko urządzenia bez tego ciastka, a rodzic loguje się dalej na swoim; nowe urządzenie rodzica w czasie takiej blokady czeka do końca okna. Próba jest liczona jako porażka synchronicznie przed weryfikacją scrypt (sukces zeruje licznik znanego urządzenia, a we wspólnym zwalnia tylko własną próbę), więc równoległe żądania nie omijają limitu. Cookie HttpOnly, Secure przy HTTPS, SameSite oraz kontrola Origin/CSRF przy mutacjach. Surowe tokeny sesji nigdy nie trafiają do bazy; przechowujemy ich hash i czas wygaśnięcia. Wygasłe parent_sessions są usuwane leniwie przy weryfikacji i przy logowaniu; indeks na expires_at ułatwia porządkowanie.
 
 Pierwsze uruchomienie: dopóki w parent_credentials nie ma wiersza, ekran logowania pokazuje jednorazowy setup początkowego PIN-u/hasła zamiast formularza logowania. Pojedynczy wiersz o kluczu głównym id = 1 rozstrzyga próbę równoczesnej konfiguracji — wygrywa pierwsza, pozostałe dostają błąd i zwykły formularz. Po utworzeniu poświadczeń setup jest niedostępny; zmiana danych wymaga zalogowania.
 

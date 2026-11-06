@@ -600,7 +600,8 @@ export const parentApiContract = {
       .input(SecretInputSchema)
       .output(z.object({
         status: z.literal(200).optional(),
-        headers: z.object({ "set-cookie": z.string() }),
+        // ciastko sesji i ciastko urządzenia (security.ts)
+        headers: z.object({ "set-cookie": z.array(z.string()) }),
         body: z.object({ expiresAt: z.string() }),
       }))
       .meta(openapi({ method: "POST", path: "/login", outputStructure: "detailed" })),

@@ -176,6 +176,44 @@ describe("auth i profile dzieci (integracja)", () => {
     await expect(requireParent(services, fresh.token)).resolves.toBeUndefined();
   });
 
+  it("równoległe błędne logowania nie omijają limitu (#295)", async () => {
+    const { services } = buildTestServices();
+    await setupParent(services, "pin1");
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, () => loginParent(services, "zle")),
+    );
+    const codes = results.map((r) => (r.status === "rejected" ? (r.reason as AppError).code : "ok"));
+    expect(codes.filter((c) => c === "invalid_credentials")).toHaveLength(5);
+    expect(codes.filter((c) => c === "rate_limited")).toHaveLength(15);
+  });
+
+  it("obce urządzenie nie blokuje logowania na znanym urządzeniu (#306)", async () => {
+    const { services } = buildTestServices();
+    await setupParent(services, "pin1");
+    const { deviceToken } = await loginParent(services, "pin1");
+
+    for (let i = 0; i < 5; i++) {
+      await expectAppError(loginParent(services, "zle"), "invalid_credentials");
+    }
+    await expectAppError(loginParent(services, "pin1"), "rate_limited");
+    // podrobiony identyfikator urządzenia trafia do wspólnego limitu obcych urządzeń
+    const [deviceId] = deviceToken.split(".");
+    await expectAppError(loginParent(services, "pin1", `${deviceId}.podrobiony`), "rate_limited");
+
+    const known = await loginParent(services, "pin1", deviceToken);
+    await expect(requireParent(services, known.token)).resolves.toBeUndefined();
+    expect(known.deviceToken).toBe(deviceToken);
+
+    // znane urządzenie ma własny, równie ścisły limit
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 8 }, () => loginParent(services, "zle", deviceToken)),
+    );
+    const codes = attempts.map((r) => (r.status === "rejected" ? (r.reason as AppError).code : "ok"));
+    expect(codes.filter((c) => c === "invalid_credentials")).toHaveLength(5);
+    await expectAppError(loginParent(services, "pin1", deviceToken), "rate_limited");
+  });
+
   it("logout unieważnia sesję", async () => {
     const { services } = buildTestServices();
     await setupParent(services, "pin1");
@@ -374,6 +412,7 @@ describe("auth i profile dzieci (integracja)", () => {
       const setCookie = loginResponse.headers.getSetCookie().join("\n");
       expect(setCookie).toContain("HttpOnly");
       expect(setCookie).toContain("SameSite=Lax");
+      expect(setCookie).toMatch(/^parent_device=[\w-]+\.[\w-]+; Path=\/api\/v1\/parent\/login;/m);
 
       const authHeaders = { cookie, ...origin };
 

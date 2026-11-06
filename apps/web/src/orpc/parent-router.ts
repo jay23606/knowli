@@ -536,12 +536,12 @@ const authState = parentAuthOs.auth.state.handler(async ({ context }) => {
 const authLogin = parentAuthOs.auth.login
   .use(sameOriginMiddleware)
   .handler(async ({ context, input }) => {
-    const { body, cookie } = await loginAndBuildCookie(
+    const { body, cookies } = await loginAndBuildCookie(
       requestFromHeaders(context.headers, context.url),
       context.services,
       input.secret,
     );
-    return { headers: { "set-cookie": cookie }, body };
+    return { headers: { "set-cookie": cookies }, body };
   });
 
 /**

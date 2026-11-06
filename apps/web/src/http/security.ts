@@ -13,6 +13,9 @@ import { AppError } from "@learning/server";
  */
 
 export const SESSION_COOKIE_NAME = "parent_session";
+/** Podpisany identyfikator urządzenia, na którym rodzic już się logował (osobny limit prób, #306). */
+export const DEVICE_COOKIE_NAME = "parent_device";
+const DEVICE_COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60; // górny limit Max-Age w Chrome
 
 export function parseCookies(request: Request): Map<string, string> {
   const header = request.headers.get("cookie");
@@ -46,6 +49,17 @@ export function sessionCookie(request: Request, token: string): string {
     "HttpOnly",
     "SameSite=Lax",
     `Max-Age=${maxAge}`,
+    ...(isSecureRequest(request) ? ["Secure"] : []),
+  ].join("; ");
+}
+
+function deviceCookie(request: Request, deviceToken: string): string {
+  return [
+    `${DEVICE_COOKIE_NAME}=${deviceToken}`,
+    "Path=/api/v1/parent/login",
+    "HttpOnly",
+    "SameSite=Strict",
+    `Max-Age=${DEVICE_COOKIE_MAX_AGE_S}`,
     ...(isSecureRequest(request) ? ["Secure"] : []),
   ].join("; ");
 }
@@ -107,10 +121,10 @@ export async function loginAndBuildCookie(
   request: Request,
   services: Services,
   secret: string,
-): Promise<{ body: { expiresAt: string }; cookie: string }> {
-  const result = await loginParent(services, secret);
+): Promise<{ body: { expiresAt: string }; cookies: string[] }> {
+  const result = await loginParent(services, secret, parseCookies(request).get(DEVICE_COOKIE_NAME));
   return {
     body: { expiresAt: result.expiresAt },
-    cookie: sessionCookie(request, result.token),
+    cookies: [sessionCookie(request, result.token), deviceCookie(request, result.deviceToken)],
   };
 }

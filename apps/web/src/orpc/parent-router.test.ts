@@ -475,22 +475,25 @@ describe("parent oRPC router — auth bootstrap (login/logout/setup)", () => {
 
   it("POST /login ustawia cookie bajt w bajt jak loginAndBuildCookie i zwraca {expiresAt} — bez sesji", async () => {
     const token = "raw-session-token";
-    vi.mocked(loginParent).mockResolvedValueOnce({ token, expiresAt: instant });
+    vi.mocked(loginParent).mockResolvedValueOnce({ token, expiresAt: instant, deviceToken: "dev.sig" });
 
-    const response = await call("/login", authInit(secret));
+    const response = await call("/login", authInit(secret, { cookie: "parent_device=old.sig" }));
 
     expect(response.status).toBe(200);
     // oczekiwane ciastko buduje TEN SAM helper (HttpOnly, SameSite=Lax, Max-Age)
     const expected = buildSessionCookie(new Request("http://localhost"), token);
-    expect(response.headers.get("set-cookie")).toBe(expected);
+    const [session, device] = response.headers.getSetCookie();
+    expect(session).toBe(expected);
     expect(expected).toContain("HttpOnly");
     expect(expected).toContain("SameSite=Lax");
+    // ciastko urządzenia (#306) widzi wyłącznie logowanie
+    expect(device).toBe("parent_device=dev.sig; Path=/api/v1/parent/login; HttpOnly; SameSite=Strict; Max-Age=34560000");
     await expect(response.json()).resolves.toEqual({ expiresAt: instant });
-    expect(loginParent).toHaveBeenCalledWith(services, "1234");
+    expect(loginParent).toHaveBeenCalledWith(services, "1234", "old.sig");
   });
 
   it("POST /login za proxy https dostaje Secure — atrybuty dalej jak w helperze", async () => {
-    vi.mocked(loginParent).mockResolvedValueOnce({ token: "https-token", expiresAt: instant });
+    vi.mocked(loginParent).mockResolvedValueOnce({ token: "https-token", expiresAt: instant, deviceToken: "dev.sig" });
 
     const response = await call("/login", authInit(secret, { "x-forwarded-proto": "https" }));
 
@@ -499,12 +502,14 @@ describe("parent oRPC router — auth bootstrap (login/logout/setup)", () => {
       new Request("http://localhost", { headers: { "x-forwarded-proto": "https" } }),
       "https-token",
     );
-    expect(response!.headers.get("set-cookie")).toBe(expected);
+    const [session, device] = response!.headers.getSetCookie();
+    expect(session).toBe(expected);
     expect(expected).toContain("Secure");
+    expect(device).toContain("; Secure");
   });
 
   it("POST /login po bezpośrednim https (bez proxy-header) dostaje Secure (CWE-614)", async () => {
-    vi.mocked(loginParent).mockResolvedValueOnce({ token: "direct-https-token", expiresAt: instant });
+    vi.mocked(loginParent).mockResolvedValueOnce({ token: "direct-https-token", expiresAt: instant, deviceToken: "dev.sig" });
 
     // Bezpośrednie HTTPS bez x-forwarded-proto: protokół czytany z URL żądania
     // przekazywanego w kontekście oRPC — atrybut Secure nie może zniknąć.
@@ -516,8 +521,10 @@ describe("parent oRPC router — auth bootstrap (login/logout/setup)", () => {
     expect(matched).toBe(true);
 
     const expected = buildSessionCookie(new Request("https://umiem.test"), "direct-https-token");
-    expect(response!.headers.get("set-cookie")).toBe(expected);
+    const [session, device] = response!.headers.getSetCookie();
+    expect(session).toBe(expected);
     expect(expected).toContain("Secure");
+    expect(device).toContain("; Secure");
   });
 
   it("POST /login ze złym PIN-em → 401 invalid_credentials bez cookie", async () => {
@@ -1953,13 +1960,13 @@ describe("parent oRPC — pełne koło klient→handler (OpenAPILink)", () => {
 
   it("auth.login przez klienta: detailed output z body {expiresAt} i nagłówkiem set-cookie", async () => {
     stubFetchWithHandler();
-    vi.mocked(loginParent).mockResolvedValueOnce({ token: "client-token", expiresAt: instant });
+    vi.mocked(loginParent).mockResolvedValueOnce({ token: "client-token", expiresAt: instant, deviceToken: "dev.sig" });
 
     const result = await callParent(() => parentClient.auth.login({ secret: "1234" }));
 
     expect(result.body).toEqual({ expiresAt: instant });
-    expect(result.headers["set-cookie"]).toContain("parent_session=client-token");
-    expect(result.headers["set-cookie"]).toContain("HttpOnly");
+    expect(String(result.headers["set-cookie"])).toContain("parent_session=client-token");
+    expect(String(result.headers["set-cookie"])).toContain("parent_device=dev.sig");
     vi.unstubAllGlobals();
   });
 

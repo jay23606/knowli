@@ -1,5 +1,6 @@
 import {
   createHash,
+  createHmac,
   randomBytes,
   scrypt as scryptCallback,
   timingSafeEqual,
@@ -61,28 +62,39 @@ function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-/** Limiter prób logowania w pamięci procesu; MVP uruchamia jedną instancję web. */
+/**
+ * Limiter prób logowania w pamięci procesu; MVP uruchamia jedną instancję web.
+ * Kubełki: po jednym na znane urządzenie (podpisane ciastko z udanego logowania)
+ * i jeden wspólny dla urządzeń bez niego — obce urządzenie nie zablokuje więc
+ * rodzica na urządzeniu, na którym już się logował (#306).
+ */
 class LoginLimiter {
-  private failures: number[] = [];
+  private failures = new Map<string, number[]>();
 
-  private prune(now: number): void {
-    this.failures = this.failures.filter((t) => now - t < LOGIN_FAILURE_WINDOW_MS);
-  }
-
-  assertNotLocked(clockNow: Date): void {
+  /**
+   * Sprawdza limit i od razu liczy próbę jako porażkę, synchronicznie — żądania
+   * równoległe nie przejdą razem kontroli przed zapisem porażki (#295).
+   */
+  reserve(key: string, clockNow: Date): void {
     const now = clockNow.getTime();
-    this.prune(now);
-    if (this.failures.length >= LOGIN_MAX_FAILURES) {
+    const recent = (this.failures.get(key) ?? []).filter((t) => now - t < LOGIN_FAILURE_WINDOW_MS);
+    if (recent.length >= LOGIN_MAX_FAILURES) {
+      this.failures.set(key, recent);
       throw new AppError("rate_limited");
     }
+    recent.push(now);
+    this.failures.set(key, recent);
   }
 
-  recordFailure(clockNow: Date): void {
-    this.failures.push(clockNow.getTime());
-  }
-
-  reset(): void {
-    this.failures = [];
+  /** Udana próba: znane urządzenie zeruje swój kubełek, wspólny traci tylko tę rezerwację. */
+  succeed(key: string, clockNow: Date): void {
+    if (key) {
+      this.failures.delete(key);
+      return;
+    }
+    const recent = this.failures.get(key) ?? [];
+    const index = recent.lastIndexOf(clockNow.getTime());
+    if (index !== -1) recent.splice(index, 1);
   }
 }
 
@@ -95,6 +107,20 @@ function limiterFor(services: Services): LoginLimiter {
     limiters.set(services, limiter);
   }
   return limiter;
+}
+
+/** Klucz HMAC to zapisany hash PIN-u: sekret serwera, a zmiana PIN-u unieważnia urządzenia. */
+function signDevice(deviceId: string, passwordHash: string): string {
+  return createHmac("sha256", passwordHash).update(deviceId).digest("base64url");
+}
+
+/** Identyfikator znanego urządzenia albo null dla braku/podróbki ciastka. */
+function knownDeviceId(deviceToken: string | undefined, passwordHash: string): string | null {
+  const [deviceId, signature, ...rest] = (deviceToken ?? "").split(".");
+  if (!deviceId || !signature || rest.length > 0) return null;
+  const expected = Buffer.from(signDevice(deviceId, passwordHash));
+  const actual = Buffer.from(signature);
+  return expected.length === actual.length && timingSafeEqual(expected, actual) ? deviceId : null;
 }
 
 function assertSecretShape(secret: string): void {
@@ -134,10 +160,8 @@ export async function setupParent(services: Services, secret: string): Promise<v
 export async function loginParent(
   services: Services,
   secret: string,
-): Promise<{ token: string; expiresAt: string }> {
-  const limiter = limiterFor(services);
-  limiter.assertNotLocked(services.clock.now());
-
+  deviceToken?: string,
+): Promise<{ token: string; expiresAt: string; deviceToken: string }> {
   const now = services.clock.now();
   const credentials = await services.db.transaction(async (tx) => {
     // leniwe porządkowanie wygasłych sesji (architecture.md §13)
@@ -149,18 +173,28 @@ export async function loginParent(
   if (!credentials) {
     throw new AppError("setup_required");
   }
+  const limiter = limiterFor(services);
+  const deviceId = knownDeviceId(deviceToken, credentials.passwordHash);
+  const bucket = deviceId ?? "";
+  const attemptAt = services.clock.now();
+  limiter.reserve(bucket, attemptAt);
   if (!(await verifySecret(secret, credentials.passwordHash))) {
-    limiter.recordFailure(services.clock.now());
     throw new AppError("invalid_credentials");
   }
 
-  limiter.reset();
+  // wspólnego kubełka nie zerujemy: logowanie rodzica na nowym urządzeniu nie daje obcym nowych prób
+  limiter.succeed(bucket, attemptAt);
+  const device = deviceId ?? randomBytes(16).toString("base64url");
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
   await services.db
     .insert(parentSessions)
     .values({ tokenHash: hashToken(token), createdAt: now, expiresAt });
-  return { token, expiresAt: expiresAt.toISOString() };
+  return {
+    token,
+    expiresAt: expiresAt.toISOString(),
+    deviceToken: `${device}.${signDevice(device, credentials.passwordHash)}`,
+  };
 }
 
 /** Weryfikuje sesję rodzica; surowy token nigdy nie trafia do bazy. */
