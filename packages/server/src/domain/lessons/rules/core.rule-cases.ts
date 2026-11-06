@@ -416,7 +416,11 @@ registerRuleCases([
   { rule: "listen.instruction_not_allowed", violation: check(listen({ instructionPl: "Wybierz słowo." })) },
   { rule: "listen.hint_not_allowed", violation: check(listen({ hint: "play" })) },
   { rule: "listen.gap_count", violation: check(listen({ stem: "She plays tennis." })) },
-  { rule: "listen.option_apostrophe", violation: check(listen({ options: [{ id: "a", text: "plays" }, { id: "b", text: "'s" }] })) },
+  // Każdy zapis apostrofu spotykany w odpowiedziach modelu (#324).
+  ...["'s", "’s", "‘s", "ʼs", "´s", "`s"].map((text) => ({
+    rule: "listen.option_apostrophe" as const,
+    violation: check(listen({ options: [{ id: "a", text: "plays" }, { id: "b", text }] })),
+  })),
   { rule: "listen.options_equivalent", violation: check(listen({ options: [{ id: "a", text: "plays" }, { id: "b", text: "Plays" }] })) },
   {
     rule: "listen.sentence_length",

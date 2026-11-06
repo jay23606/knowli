@@ -70,6 +70,7 @@ import {
   type LessonExerciseIdentityOptions,
 } from "./exercise-identity";
 import type { PoolMinimums } from "./lesson-policy";
+import { APOSTROPHE_VARIANTS } from "./normalize";
 
 /** Fabryka zgłoszeń reguł rdzenia. */
 const coreIssue = issueFrom(CORE_RULES);
@@ -200,6 +201,8 @@ function anyTokens(text: string, normalizer: AnswerNormalizer): readonly string[
 
 /** Luka `lesson_listen_choice`: ciąg 2+ podkreśleń (jak `feedbackSentenceText` i Kid UI `splitGap`). */
 const LISTEN_GAP_PATTERN = /_{2,}/g;
+/** Opcja zaczynająca się od apostrofu w dowolnym zapisie: `'`, typograficzne warianty i grawis. */
+const LEADING_APOSTROPHE = new RegExp(`^(?:['\\u0060]|${APOSTROPHE_VARIANTS.source})`, "u");
 
 /** Liczba wystąpień `GAP_MARKER` w tekście. */
 function countGapMarkers(stem: string): number {
@@ -841,7 +844,7 @@ function validateListenChoice(
   validateOptions(ex, normalizer, issues);
   const options = ex.options ?? [];
   options.forEach((option, index) => {
-    if (/^['’]/u.test(option.text.trim())) {
+    if (LEADING_APOSTROPHE.test(option.text.trim())) {
       issues.push(coreIssue("listen.option_apostrophe", {
         field: `options[${index}]`,
         pl: `options: opcja „${option.text}” zaczyna się od apostrofu (skróty tylko jako całe słowa)`,
