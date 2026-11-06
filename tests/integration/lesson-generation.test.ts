@@ -878,6 +878,20 @@ describe("generowanie puli lekcji (integracja)", () => {
     expect(await query("select id from learning_app.item_revisions where deck_version_id=$1", [result.deckVersionId])).toHaveLength(0);
   });
 
+  it("shutdown przed przejęciem nie zużywa próby runu (#325)", async () => {
+    const fakes = await agentFakes();
+    const services = lessonServices(fakes);
+    const { runId } = await createLesson(services, command());
+    const controller = new AbortController();
+    controller.abort();
+    await executeLessonGeneration(services, runId, { signal: controller.signal });
+    const result = await readGeneration(services, runId);
+    expect(result.state).toBe("queued");
+    expect(result.attempts).toBe(0);
+    expect(fakes.agent.calls).toHaveLength(0);
+    expect(fakes.agent.planCalls).toHaveLength(0);
+  });
+
   it("przedmiot fixture historii (ttsForAnswers=false) przechodzi cały przepływ bez audio", async () => {
     const fakes = await agentFakes();
     const services = lessonServices(fakes);
