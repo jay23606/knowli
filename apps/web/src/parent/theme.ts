@@ -58,8 +58,6 @@ const STATUS_COLORS = {
   lesson: { light: ["#6b3fbf", "#f0eafc"], dark: ["#c3a6f5", "#33244f"] },
 } as const;
 
-export type ParentStatusColor = keyof typeof STATUS_COLORS;
-
 function statusVariables(scheme: "light" | "dark"): Record<string, string> {
   return Object.fromEntries(
     Object.entries(STATUS_COLORS).flatMap(([name, schemes]) => {

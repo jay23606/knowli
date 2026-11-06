@@ -43,14 +43,12 @@ export const SessionActivityIntervalSchema = z.tuple([
   z.number().int().nonnegative(),
   z.number().int().nonnegative(),
 ]);
-export type SessionActivityInterval = z.infer<typeof SessionActivityIntervalSchema>;
 
 /** Zagregowane okno edycji: czas początku okna i liczba zmian w oknie. */
 export const SessionActivityEditWindowSchema = z.object({
   atMs: z.number().int().nonnegative(),
   count: z.number().int().positive(),
 }).strict();
-export type SessionActivityEditWindow = z.infer<typeof SessionActivityEditWindowSchema>;
 
 /** Rzeczywisty odsłuch: start/koniec odtwarzania od początku pomiaru. */
 export const SessionActivityPlaybackSchema = z.object({
@@ -58,14 +56,12 @@ export const SessionActivityPlaybackSchema = z.object({
   fromMs: z.number().int().nonnegative(),
   toMs: z.number().int().nonnegative(),
 }).strict();
-export type SessionActivityPlayback = z.infer<typeof SessionActivityPlaybackSchema>;
 
 export const SessionActivityPauseSchema = z.object({
   kind: SessionActivityPauseKindSchema,
   fromMs: z.number().int().nonnegative(),
   toMs: z.number().int().nonnegative(),
 }).strict();
-export type SessionActivityPause = z.infer<typeof SessionActivityPauseSchema>;
 
 /** Aktywność jednego zadania; identyfikatory służą wyłącznie powiązaniu. */
 export const SessionActivityTaskReportSchema = z.object({
@@ -198,7 +194,6 @@ export type SessionActivityReport = z.infer<typeof SessionActivityReportSchema>;
 export const SessionEndInputSchema = z.object({
   activityReport: SessionActivityReportSchema.optional(),
 }).strict();
-export type SessionEndInput = z.infer<typeof SessionEndInputSchema>;
 
 // ===== Wynik oceny modelu (wykluczenia zadań) =====
 
@@ -208,7 +203,6 @@ export const SessionActivityExcludedTaskSchema = z.object({
   taskOrdinal: z.number().int().nonnegative(),
   reason: z.string().min(1).max(300),
 }).strict();
-export type SessionActivityExcludedTask = z.infer<typeof SessionActivityExcludedTaskSchema>;
 
 /**
  * Ścisły wynik modelu: uzasadnienie ogólne + lista wykluczonych zadań.
@@ -224,7 +218,6 @@ export type SessionActivityReviewVerdict = z.infer<typeof SessionActivityReviewV
 // ===== Wynik publiczny (dziecko) i trwały (rodzic) =====
 
 export const SessionActivityResultStatusSchema = z.enum(["evaluated", "error", "already_started"]);
-export type SessionActivityResultStatus = z.infer<typeof SessionActivityResultStatusSchema>;
 
 /**
  * Mały wynik widoczny dla dziecka: punkty, zatwierdzony czas albo jawny brak

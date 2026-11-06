@@ -164,7 +164,6 @@ export const LessonRegenerateCommandSchema = z.object({
   expectedEditNumber: z.number().int().positive(),
   clientRequestId: UuidSchema,
 }).strict();
-export type LessonRegenerateCommand = z.infer<typeof LessonRegenerateCommandSchema>;
 
 /** Wejście POST /lesson-drafts/{lessonDraftId}/prompt-audio/regenerate: ścieżka + rewizja ćwiczenia. */
 const LessonPromptAudioRegenerateInputSchema = z.object({

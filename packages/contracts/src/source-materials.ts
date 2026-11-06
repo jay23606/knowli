@@ -72,7 +72,6 @@ export const SourceMaterialDeckDtoSchema = z.object({
   copiedRevision: z.number().int().min(1).nullable(),
   stale: z.boolean(),
 });
-export type SourceMaterialDeckDto = z.infer<typeof SourceMaterialDeckDtoSchema>;
 
 /**
  * Pełne źródło: tekst i zestawy utworzone z niego (także zarchiwizowane).

@@ -91,7 +91,6 @@ export const ActivityDeckStatDtoSchema = z.object({
   deckTitle: z.string(),
   sessions: z.number().int().positive(),
 });
-export type ActivityDeckStatDto = z.infer<typeof ActivityDeckStatDtoSchema>;
 
 /** Dzienna statystyka aktywności dziecka w oknie podsumowania. */
 export const ActivityDailyStatDtoSchema = z.object({
