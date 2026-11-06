@@ -39,6 +39,25 @@ describe("createSubjectRegistry", () => {
     }
   });
 
+  it("odrzuca przedmiot bez katalogu reguł", () => {
+    const withoutRules = { ...historyLikeSubject, rules: undefined } as unknown as SubjectModule;
+    expect(() => createSubjectRegistry([withoutRules])).toThrow(/rules/);
+  });
+
+  it("odrzuca ten sam id reguły w dwóch przedmiotach z różnymi wpisami", () => {
+    const rule = { field: "answer", kind: "reject", description: "Shared fixture." } as const;
+    const first: SubjectModule = { ...historyLikeSubject, rules: { "shared.fixture": rule } };
+    const second: SubjectModule = { ...historyLikeSubject, id: "test_history_2", rules: { "shared.fixture": { ...rule } } };
+    expect(() => createSubjectRegistry([first, second])).toThrow(/shared\.fixture.*test_history_2.*test_history/);
+  });
+
+  it("dopuszcza wspólny obiekt wpisu reguły w dwóch przedmiotach", () => {
+    const shared = { "shared.fixture": { field: "answer", kind: "reject", description: "Shared fixture." } } as const;
+    const first: SubjectModule = { ...historyLikeSubject, rules: shared };
+    const second: SubjectModule = { ...historyLikeSubject, id: "test_history_2", rules: { ...shared } };
+    expect(createSubjectRegistry([first, second]).listSubjects()).toHaveLength(2);
+  });
+
   it("odrzuca zduplikowane id przedmiotów", () => {
     expect(() => createSubjectRegistry([historyLikeSubject, historyLikeSubject])).toThrow(/test_history/);
   });

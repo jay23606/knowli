@@ -1,3 +1,4 @@
+import { LessonExerciseTypeSchema } from "@learning/contracts";
 import { AppError } from "../../../errors";
 import { removeExercise, type AgentCheckContext, type ObjectiveAgentLimits } from "../../../domain/lessons/agent/admission";
 import { agentObjectivesOf } from "../../../domain/lessons/agent/capable";
@@ -140,6 +141,10 @@ export type LessonPoolAgentStats = {
   checkerCalls: number;
   invariantViolations: number;
   refused: number;
+  /** Oczyszczenia przy przyjęciu (spec katalogu reguł §4.1): usunięte podpowiedzi, warianty i wyrównane cytaty. */
+  hintsRemoved: number;
+  variantsRemoved: number;
+  quotesSnapped: number;
 } & Record<CheckCounterKey, number>;
 
 export interface LessonPoolAgentResult {
@@ -167,6 +172,14 @@ export interface LessonPoolAgentDeps {
 /** Klucz stałych źródeł ujawnień spoza zagadnień (`extraExposureSources`) w `fixedSources` stanu. */
 const EXTRA_SOURCES_KEY = "__extra";
 
+/** Liczniki oczyszczeń z narzędzi (sumowane w statystykach runu i w logu zagadnienia). */
+const CLEANUP_COUNTER_KEYS = ["hintsRemoved", "variantsRemoved", "quotesSnapped"] as const;
+
+/** Typ ćwiczenia do dziennika: tylko znane typy lekcji (typ z rekordu modelu to dowolny napis). */
+function loggedType(exerciseType: string): string {
+  return LessonExerciseTypeSchema.safeParse(exerciseType).success ? exerciseType : "unknown";
+}
+
 function slugOf(objectiveId: string): string {
   return objectiveId.slice(objectiveId.lastIndexOf(".") + 1);
 }
@@ -181,6 +194,9 @@ export function emptyLessonPoolAgentStats(): LessonPoolAgentStats {
     checkerCalls: 0,
     invariantViolations: 0,
     refused: 0,
+    hintsRemoved: 0,
+    variantsRemoved: 0,
+    quotesSnapped: 0,
     ...Object.fromEntries(CHECK_COUNTER_KEYS.map((key) => [key, 0])),
   } as LessonPoolAgentStats;
 }
@@ -392,6 +408,9 @@ interface SuperviseArgs {
 /** Liczniki zagadnienia do logu (bez treści). */
 interface ObjectiveTrack {
   accepted: number;
+  hintsRemoved: number;
+  variantsRemoved: number;
+  quotesSnapped: number;
   readonly rejected: Map<string, number>;
   costUsd: number;
   requests: number;
@@ -476,6 +495,10 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
     stats.checkerCalls += delta.checkerCalls ?? 0;
     stats.checkUnavailable += delta.checkUnavailable ?? 0;
     for (const key of CHECK_COUNTER_KEYS) stats[key] += delta[key] ?? 0;
+    for (const key of CLEANUP_COUNTER_KEYS) {
+      stats[key] += delta[key] ?? 0;
+      track[key] += delta[key] ?? 0;
+    }
     track.accepted += delta.accepted ?? 0;
   };
 
@@ -517,7 +540,7 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
   };
 
   const superviseObjective = async (objective: AgentObjective, objectiveSignal: AbortSignal): Promise<SettledObjective> => {
-    const track: ObjectiveTrack = { accepted: 0, rejected: new Map(), costUsd: 0, requests: 0 };
+    const track: ObjectiveTrack = { accepted: 0, hintsRemoved: 0, variantsRemoved: 0, quotesSnapped: 0, rejected: new Map(), costUsd: 0, requests: 0 };
     const budget = objectiveCost(track);
     const agentCost: RunCostSink = {
       record: (usd) => {
@@ -563,6 +586,10 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
       ...(addMode === undefined ? {} : { addMode }),
       onRejection: (entry) => {
         rejections.push(entry);
+        // Dziennik bez treści: kod, id reguł i typ (znany typ lekcji; inny napis modelu jako `unknown`).
+        console.log(
+          `[lesson-agent] run=${input.runId} obj=${slugOf(objective.id)} rejected code=${entry.code} type=${loggedType(entry.exerciseType)} rules=${entry.ruleIds.join(",") || "-"}`,
+        );
         stats.rejectedByKind[entry.kind] = (stats.rejectedByKind[entry.kind] ?? 0) + 1;
         track.rejected.set(entry.code, (track.rejected.get(entry.code) ?? 0) + 1);
       },
@@ -598,7 +625,7 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
     const settled = settle(objective, steps, providerError);
     settledById.set(objective.id, settled);
     console.log(
-      `[lesson-agent] run=${input.runId} obj=${slugOf(objective.id)} status=${settled.status}${settled.failure === undefined ? "" : ` error=${settled.failure.errorCode}`} steps=${steps} accepted=${track.accepted} rejected=${formatCodes(track.rejected)} costUsd=${track.costUsd.toFixed(4)}`,
+      `[lesson-agent] run=${input.runId} obj=${slugOf(objective.id)} status=${settled.status}${settled.failure === undefined ? "" : ` error=${settled.failure.errorCode}`} steps=${steps} accepted=${track.accepted} rejected=${formatCodes(track.rejected)} hintsRemoved=${track.hintsRemoved} variantsRemoved=${track.variantsRemoved} quotesSnapped=${track.quotesSnapped} costUsd=${track.costUsd.toFixed(4)}`,
     );
     return settled;
   };

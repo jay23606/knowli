@@ -7,6 +7,7 @@ import type { DynamicTopicData, LessonExerciseDraft, LessonExerciseType } from "
 import { englishNormalizer } from "../english/normalizer";
 import { createProductionSubjectRegistry, PRODUCTION_SUBJECTS } from "../index";
 import { chapterExposureText, normalizeChapterExposureText } from "./exposure";
+import { ruleOf, type RuleId } from "../../rules/catalog";
 import { englishChapterSubject } from "./module";
 import { refineChapterPool, validateChapterExercise } from "./validators";
 
@@ -34,6 +35,14 @@ const WORDS_TYPES: LessonExerciseType[] = [
 const FRAME_TYPES: LessonExerciseType[] = [
   "lesson_card", "lesson_match", "lesson_order", "lesson_choice", "lesson_listen_choice", "lesson_cloze", "lesson_gap", "lesson_open_answer",
 ];
+
+
+/** Opis reguły katalogu (rdzeń, lekcja albo przedmiot) — tekst, który dostaje model w księdze reguł. */
+function ruleText(id: string): string {
+  const rule = ruleOf(englishChapterSubject, id as RuleId);
+  if (rule === undefined) throw new Error(`brak reguły ${id}`);
+  return typeof rule.description === "string" ? rule.description : rule.description({ answerMaxLength: 120, groundingRequired: false });
+}
 
 describe("przedmiot english_chapter", () => {
   it("jest w rejestrze produkcyjnym, który się buduje", () => {
@@ -83,8 +92,10 @@ describe("przedmiot english_chapter", () => {
     expect(Object.keys(prompts.typeRules ?? {}).sort()).toEqual(["lesson_cloze", "lesson_group", "lesson_match"]);
     expect(prompts.typeRules?.lesson_match).toContain("Polish meaning");
     expect(prompts.typeRules?.lesson_group).toContain("labels are in Polish");
-    expect(prompts.fieldRules).toContain("hint is always null");
-    expect(prompts.fieldRules).toContain("exactly one gap written as ___");
+    // Reguły egzekwowane opisuje katalog reguł (księga reguł promptu), nie profil promptów (spec katalogu reguł §3).
+    expect(ruleText("chapter.hint_not_allowed")).toContain("Leave hint out");
+    expect(ruleText("chapter.stem_single_gap")).toContain("exactly one gap");
+    expect(prompts.fieldRules).not.toContain("hint is always null");
     expect(prompts.fieldRules).toContain("Wpisz brakujące słowo.");
     expect(prompts.objectivesRules).toContain("3 to 5 objectives");
     expect(prompts.objectivesRules).toContain("'words'");
@@ -92,9 +103,8 @@ describe("przedmiot english_chapter", () => {
     // Prompt mówi, co odrzuca walidacja słownikowa (review Task 5).
     expect(prompts.generationRole).toContain("Never use people's names, or numbers and other words that are not in the material");
     expect(prompts.generationRole).toContain("closed types have exactly one correct option");
-    // focus tłumaczenia to jeden ciągły fragment odpowiedzi (inaczej walidacja ogólna odrzuca ćwiczenie).
-    expect(prompts.fieldRules).toContain("focus is ONE contiguous run of the answer's words");
-    expect(prompts.fieldRules).toContain("never ['wearing', 'green']");
+    // focus tłumaczenia: ciągłość sprawdza reguła rdzenia, profil mówi, który fragment wybrać.
+    expect(prompts.fieldRules).toContain("focus is the run of the answer's words that holds the checked word or the frame part");
     // Różnorodność luk i wiarygodne dystraktory (próba na prawdziwym modelu: 6 luk „wearing”, dystraktory z innej klasy).
     expect(prompts.fieldRules).toContain("no more than 2 lesson_gap exercises of one objective may have the same answer");
     expect(prompts.fieldRules).toContain("which part of the frame the gap checks");
@@ -102,25 +112,26 @@ describe("przedmiot english_chapter", () => {
     expect(prompts.fieldRules).toContain("Distractors must be plausible: the same category as the correct option");
     expect(prompts.typeRules?.lesson_match).toContain("extraRight distractors are plausible");
     expect(prompts.typeRules?.lesson_cloze).toContain("same category as the gap words");
-    // Układanka: 4–7 klocków, bez końcowej kropki/pytajnika sklejonego z ostatnim klockiem.
-    expect(prompts.fieldRules).toContain("(4 to 7 items, no two items with the same text)");
+    // Układanka: 4–7 klocków, bez końcowej kropki/pytajnika sklejonego z ostatnim klockiem; powtórzony klocek odrzuca reguła.
+    expect(prompts.fieldRules).toContain("(4 to 7 items)");
+    expect(ruleText("chapter.order_items_distinct")).toContain("different text");
     expect(prompts.fieldRules).toContain("WITHOUT sentence-final punctuation");
     expect(prompts.fieldRules).toContain("never an item such as 'coat.' or 'like?'");
-    // Pola v3 są zawsze null; walidacja ogólna odrzuca ćwiczenie z niezamówionym cytatem.
-    expect(prompts.fieldRules).toContain("sourceRefs are ALWAYS null");
-    expect(prompts.typeRules?.lesson_cloze).toContain("appears nowhere else in the text");
-    expect(prompts.fieldRules).toContain("never only function words (articles, pronouns, be/do/can, prepositions such as in/on/at, this/that, question words)");
+    // Pola v3, słowa funkcyjne i powtórzone słowo banku sprawdzają reguły z katalogu.
+    expect(prompts.fieldRules).not.toContain("sourceRefs are ALWAYS null");
+    expect(prompts.typeRules?.lesson_cloze).not.toContain("appears nowhere else in the text");
+    expect(ruleText("chapter.function_words_only")).toContain("not only function words");
     // Tłumaczenie zawsze ma stałe polecenie (próba: model zwracał null, dziecko widziało tylko tytuł zagadnienia).
     expect(prompts.fieldRules).toContain("lesson_open_answer: instructionPl is exactly 'Przetłumacz na angielski.'");
-    // Tekst z lukami: polskie znaczenie całego tekstu w poleceniu, luki jednoznaczne, bez zamienialnych luk.
-    expect(prompts.fieldRules).toContain("For lesson_choice, lesson_gap, lesson_order and lesson_cloze the meaning stimulus lives in instructionPl");
+    expect(ruleText("chapter.translation_instruction_required")).toContain("instructionPl");
+    // Polskie zdanie-bodziec w poleceniu: regułę opisuje katalog, profil daje przykłady naturalnych zdań.
+    expect(ruleText("chapter.instruction_stimulus")).toContain("instructionPl carries the Polish stimulus sentence");
     expect(prompts.typeRules?.lesson_cloze).toContain("instructionPl gives the Polish meaning of the whole text, then a short command");
     expect(prompts.typeRules?.lesson_cloze).toContain("W poniedziałek pada deszcz. W środę wieje wiatr. Uzupełnij tekst.");
-    // Limit 120 znaków obejmuje całe polecenie (znaczenie + komenda): tekst z lukami to 2–3 krótkie zdania.
+    // Tekst z lukami: 2–3 krótkie zdania mieszczące się w limicie polecenia (liczbę podaje reguła field.max_length).
     expect(prompts.typeRules?.lesson_cloze).toContain("Use 2 or 3 short sentences built on the chapter's frames");
-    expect(prompts.typeRules?.lesson_cloze).toContain("The whole instructionPl (Polish meaning plus command) is at most 120 characters in total");
+    expect(prompts.typeRules?.lesson_cloze).toContain("fits its length limit");
     expect(prompts.typeRules?.lesson_cloze).toContain("Every gap is fixed by that Polish meaning");
-    expect(prompts.typeRules?.lesson_cloze).toContain("never two gaps whose words could be swapped");
     expect(prompts.typeRules?.lesson_cloze).toContain("no extra word may match the Polish meaning of any gap");
     // Pary pytanie ↔ odpowiedź: dodatkowa odpowiedź nie pasuje do żadnego pytania.
     expect(prompts.typeRules?.lesson_match).toContain("An extraRight item is never a correct partner of any left item");
@@ -134,16 +145,17 @@ describe("przedmiot english_chapter", () => {
     expect(prompts.almostDefinition).toContain("errorCategory null");
   });
 
-  it("profil promptów opisuje regułę wyboru ze słuchu (bodziec to nagranie, nie polecenie)", () => {
+  it("profil promptów opisuje regułę wyboru ze słuchu, a ograniczenia typu niesie katalog reguł", () => {
     const rules = englishChapterSubject.prompts.fieldRules ?? "";
     expect(rules).toContain("lesson_listen_choice");
     expect(rules).toMatch(/at most 12 words/);
-    expect(rules).toMatch(/exactly one gap/);
-    expect(rules).toMatch(/recording/);
-    expect(rules).toMatch(/never start an option with an apostrophe/i);
-    expect(rules).toContain("each option is a word or phrase from the chapter material, as in lesson_choice");
+    expect(rules).toContain("each a word or phrase from the chapter material, as in lesson_choice");
     expect(rules).not.toContain("checkedElements");
-    expect(rules).toMatch(/instructionPl.*hint.*visualSubject/s);
+    expect(ruleText("listen.gap_count")).toContain("exactly one gap");
+    expect(ruleText("listen.option_apostrophe")).toContain("apostrophe");
+    expect(ruleText("listen.instruction_not_allowed")).toContain("instructionPl");
+    expect(ruleText("listen.hint_not_allowed")).toContain("hears the sentence");
+    expect(ruleText("visual.choice_only")).toContain("only with lesson_choice");
   });
 
   it("buildDynamicTopic przypisuje typy według rodzaju zagadnienia (brak rodzaju = słowa)", () => {

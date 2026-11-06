@@ -33,7 +33,10 @@ import {
 } from "../../../domain/lessons/lesson-policy";
 import { materialCreationMode } from "../../../domain/lessons/material-creation";
 import { keywordsAnswer } from "../../../domain/lessons/pool-validation";
-import { withoutOrphanKeywords } from "../../../domain/lessons/keyword-families";
+import { hasLenientRawShape } from "../../../domain/lessons/raw-shape";
+import { familyRunSuffix, withoutOrphanKeywords } from "../../../domain/lessons/keyword-families";
+import { messagesOf } from "../../../domain/lessons/rules/catalog";
+import { lessonRuleBook, ruleBookContextFor, ruleTextContextOf } from "../../../domain/lessons/rules/rule-book";
 import {
   lessonExerciseStimulus,
   lessonIdentityOptionsOf,
@@ -518,11 +521,14 @@ export function listenChoiceAllowance(
   objective: { id: string; exerciseTypes: readonly string[] },
   present: readonly LessonExerciseStimulus[],
 ): number {
-  if (!subject.ttsForFeedbackSentence || !subject.exerciseTypes.includes("lesson_listen_choice") || !objective.exerciseTypes.includes("lesson_listen_choice")) {
-    return 0;
-  }
+  if (!listenChoiceAvailable(subject, objective)) return 0;
   const listened = present.filter((exercise) => exercise.objectiveId === objective.id && exercise.exerciseType === "lesson_listen_choice").length;
   return Math.max(0, LISTEN_CHOICE_PER_OBJECTIVE - listened);
+}
+
+/** Czy cel może mieć ćwiczenia `lesson_listen_choice`: przedmiot nagrywa zdania, a typ leży na liście przedmiotu i celu. */
+function listenChoiceAvailable(subject: SubjectModule, objective: { exerciseTypes: readonly string[] }): boolean {
+  return subject.ttsForFeedbackSentence && subject.exerciseTypes.includes("lesson_listen_choice") && objective.exerciseTypes.includes("lesson_listen_choice");
 }
 
 /** Czysta reguła rodzin słów kluczowych żyje w domenie (używa jej też agent puli); reeksport dla obecnych wywołujących. */
@@ -562,6 +568,11 @@ export function buildPoolInput(
   const withInterests = interestsRule !== undefined && interests !== undefined && interests.length > 0;
   const objective = topic.objectives.find((o) => o.id === objectiveId)!;
   const listenAllowance = listenChoiceAllowance(subject, objective, []);
+  // Księga reguł: typy celu (bez wyboru ze słuchu, gdy cel go nie dostaje — prompt go wtedy nie wymienia)
+  // i dostępność typu słuchowego, nie wolne miejsce w przydziale (reguły puli dotyczą też istniejących zdań).
+  const listenChoice = listenChoiceAvailable(subject, objective);
+  const ruleTypes = objective.exerciseTypes.filter((type) => listenChoice || type !== "lesson_listen_choice");
+  const ruleBook = lessonRuleBook(subject, ruleBookContextFor(subject, topic.id, objective.id, ruleTypes, listenChoice));
   return {
     subjectId: subject.id,
     subjectTitle: subject.titlePl,
@@ -596,10 +607,12 @@ export function buildPoolInput(
     ...(subject.usesV3Payload === true ? { minDistinctOpenAnswers: DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE } : {}),
     graderAvailable,
     groundingRequired: subject.sourceQuotes === true,
+    answerMaxLength: ruleTextContextOf(subject).answerMaxLength,
     deduplication: subject.poolDeduplication ?? "answer",
     voiceTones: subject.ttsForPrompts === true,
     exerciseExplanations: subject.exerciseExplanations,
     ...(options.avoidSentences !== undefined && options.avoidSentences.length > 0 ? { avoidSentences: [...options.avoidSentences] } : {}),
+    ruleBook,
   };
 }
 
@@ -779,7 +792,7 @@ export function withoutEmptyOptionalArrays(draft: LessonExerciseDraft): LessonEx
  * nowej partii dostają więc sufiks runu i pozostają wewnątrz niej.
  */
 export function scopeFamiliesToRun(draft: LessonExerciseDraft, runId: string): LessonExerciseDraft {
-  const suffix = `-r${runId.replace(/[^0-9a-f]/gi, "").slice(0, 6).toLowerCase()}`;
+  const suffix = familyRunSuffix(runId);
   // Cut before the suffix without leaving a dangling "-" (templateFamilyId is a strict slug).
   const scoped = (slug: string) => {
     let base = slug.slice(0, 64 - suffix.length);
@@ -808,7 +821,7 @@ export function splitByPoolExtra(
   const extraRejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
   drafts.forEach((draft, index) => {
     const errs = extra.get(index);
-    if (errs && errs.length > 0) extraRejected.push({ exercise: draft, errors: [...errs] });
+    if (errs && errs.length > 0) extraRejected.push({ exercise: draft, errors: messagesOf(errs) });
     else kept.push(draft);
   });
   return { kept, extraRejected };
@@ -853,62 +866,15 @@ export function lessonPayloadVersion(ex: LessonExerciseDraft, subject: SubjectMo
     : 2;
 }
 /**
- * Schemat KSZTAŁTU surowego ćwiczenia z portu (nie semantyki). Chroni dalszą
- * walidację semantyczną (`validatePool`) przed rekordami, których tablice mają
- * zły typ elementów (np. `options=[null,{…}]`) — bez tego `validateOptions`
- * dereferencuje `null.text` i rzuca `TypeError`, wywracając cały run zamiast
- * odrzucić jeden rekord (wymóg 2.5). Sprawdzamy tylko to, co faza semantyczna
- * dereferencuje: elementy `options`/`items` muszą być `{id,text}`, a
- * `noticeSegments` musi być tablicą tablic napisów. Pozostałe pola pozostają
- * domeną `validateLessonExercise`. `passthrough` — nie odrzucamy pól dodatkowych.
- *
- * Pola opcjonalne są `nullish`, bo structured outputs (json_schema strict)
- * zwraca KAŻDE pole schematu, z `null` dla nie dotyczących typu — brak pola
- * i jawny `null` muszą przejść tak samo (`toExerciseDraft` nulla pomija).
- */
-const optionShapeSchema = z.object({ id: z.string(), text: z.string() }).passthrough();
-const rawExerciseShapeSchema = z
-  .object({
-    exerciseType: z.string(),
-    objectiveId: z.string(),
-    answer: z.string(),
-    acceptedAnswers: z.array(z.string()).nullish(),
-    focus: z.array(z.string()).nullish(),
-    instructionPl: z.string().nullish(),
-    stem: z.string().nullish(),
-    statement: z.string().nullish(),
-    prompt: z.string().nullish(),
-    hint: z.string().nullish(),
-    // `explanationPl` celowo poza strażnikiem: zły typ znaczy „brak wyjaśnienia”
-    // (`sanitizedExplanation`), nie odrzucenie całego ćwiczenia.
-    transformId: z.string().nullish(),
-    correctOption: z.string().nullish(),
-    options: z.array(optionShapeSchema).nullish(),
-    items: z.array(optionShapeSchema).nullish(),
-    keywordOptions: z.array(optionShapeSchema).nullish(),
-    keyOptionIds: z.array(z.string()).nullish(),
-    noticeSegments: z.array(z.array(z.string())).nullish(),
-    pairs: z.array(z.object({ left: z.string(), right: z.string() }).passthrough()).nullish(),
-    extraRight: z.array(z.string()).nullish(),
-    groups: z.array(z.object({ id: z.string(), label: z.string() }).passthrough()).nullish(),
-    groupItems: z.array(z.object({ text: z.string(), groupId: z.string() }).passthrough()).nullish(),
-    clozeText: z.string().nullish(),
-    gapAnswers: z.array(z.string()).nullish(),
-    extraWords: z.array(z.string()).nullish(),
-  })
-  .passthrough();
-
-/**
- * Czy surowy obiekt ma bezpieczny KSZTAŁT do walidacji semantycznej. Rekord o
- * złym kształcie jest odrzucany (liczony do `rejectedCount`), nie rzuca. Nie
- * maskuje realnych błędów treści — sprawdza wyłącznie kształt pól tablicowych,
- * które faza semantyczna dereferencuje.
+ * Czy surowy obiekt ma bezpieczny KSZTAŁT do walidacji semantycznej (łagodny
+ * strażnik punktu kontrolnego, dzisiejsza semantyka — `hasLenientRawShape` w
+ * domenie). Rekord o złym kształcie jest odrzucany (liczony do `rejectedCount`),
+ * nie rzuca. Nie maskuje realnych błędów treści — sprawdza wyłącznie kształt pól,
+ * które faza semantyczna dereferencuje. Ścieżka agenta ze zgłoszeniami reguł:
+ * `rawShapeIssues` (`domain/lessons/raw-shape.ts`).
  */
 export function isWellShapedRawExercise(raw: unknown): boolean {
-  if (raw === null || typeof raw !== "object") {
-    return false;
-  }
-  return rawExerciseShapeSchema.safeParse(raw).success;
+  return hasLenientRawShape(raw);
 }
 
 /** Sanityzacja pól v3 surowego ćwiczenia: tylko poprawnie uformowane wpisy. */

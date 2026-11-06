@@ -19,6 +19,7 @@ import {
 import { englishGrammarSubject } from "./subjects/english-grammar/module";
 import { schoolSubject } from "./subjects/school/module";
 import { historyLikeSubject } from "./testing/history-like-subject";
+import { testIssue } from "./testing/test-issue";
 import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "./types";
 import { stageOf } from "./stages";
 
@@ -713,7 +714,7 @@ describe("validateLessonExercise — delegacja do subject.validateExercise", () 
   it("dokłada błędy zwrócone przez przedmiot", () => {
     const fakeSubject: SubjectModule = {
       ...historyLikeSubject,
-      validateExercise: () => ["Błąd przedmiotu: X"],
+      validateExercise: () => [testIssue("Błąd przedmiotu: X")],
     };
     const ex = draft({
       objectiveId: historyTopic.objectives[0]!.id,

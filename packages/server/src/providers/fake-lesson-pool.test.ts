@@ -4,6 +4,8 @@ import { agentObjectivesOf } from "../domain/lessons/agent/capable";
 import { createLessonAgentState, orderedLesson, poolOf, withExamples, withPool, allExamples, type LessonAgentState } from "../domain/lessons/agent/state";
 import { objectiveStatus } from "../domain/lessons/agent/status";
 import { cardExposureSources } from "../domain/lessons/card-exposure-sources";
+import { materializeRawExercise } from "../domain/lessons/raw-materialize";
+import { rawShapeIssues } from "../domain/lessons/raw-shape";
 import { explanationTextErrors } from "../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../domain/lessons/exposure-key";
 import { findExposureLeaks } from "../domain/lessons/exposure-leaks";
@@ -171,6 +173,11 @@ function admit(
   generated: { exercises: unknown[]; examples?: string[] },
 ): { state: LessonAgentState; rejected: string[]; drafts: LessonExerciseDraft[] } {
   expect(generated.exercises.every(isWellShapedRawExercise)).toBe(true);
+  // Jak `parseRecord` narzędzi: rekordy fake'a są gotowe (materializacja ich nie zmienia) i mają czysty kształt.
+  for (const raw of generated.exercises) {
+    expect(materializeRawExercise(raw)).toEqual({ ok: true, record: raw });
+    expect(rawShapeIssues(raw)).toEqual([]);
+  }
   const drafts = generated.exercises.map(
     (raw) => stripParentAddedFlags([sanitizeFreshLessonDraft(toExerciseDraft(raw), lesson.subject, null).draft])[0]!,
   );
@@ -251,6 +258,25 @@ describe("fakeObjectiveExercises — zagadnienia jednej lekcji nie ujawniają so
     expectNoLeaks(lesson, state);
     expectDisjoint(lesson.objectives.map((objective) => independentKeys(lesson, state, objective.id)));
     for (const objective of lesson.objectives) expect(objectiveStatus(state, objective.id, lesson.ctx).missing).toEqual([]);
+  });
+});
+
+describe("fakeObjectiveExercises — idempotencja materializacji (spec katalogu reguł §4.3)", () => {
+  it("rekordy wszystkich typów fake'a: dwa przebiegi materializacji dają ten sam rekord", async () => {
+    const lessons = [grammarLesson(), await schoolLesson(), chapterLesson(CHAPTER_MATERIAL), chapterLesson(WEAR_MATERIAL)];
+    const types = new Set<string>();
+    for (const lesson of lessons) {
+      for (const input of inputsOf(lesson, emptyState(lesson))) {
+        for (const raw of fakeObjectiveExercises(input, input.objective.index * 1000).exercises) {
+          const once = materializeRawExercise(raw);
+          if (!once.ok) throw new Error(`fake record not materialized: ${JSON.stringify(once.issues)}`);
+          expect(once.record).toEqual(raw);
+          expect(materializeRawExercise(structuredClone(once.record))).toEqual(once);
+          types.add(String(once.record.exerciseType));
+        }
+      }
+    }
+    expect([...types].sort()).toEqual(expect.arrayContaining(["lesson_choice", "lesson_cloze", "lesson_gap", "lesson_match", "lesson_open_answer", "lesson_order"]));
   });
 });
 

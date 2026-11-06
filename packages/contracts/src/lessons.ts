@@ -25,15 +25,33 @@ export const MAX_LESSON_ANSWER_LENGTH = 300;
 export const MAX_SOURCE_QUOTE_LENGTH = 600;
 /** Limit materiału zestawu szkolnego (gramatyka zostaje przy 8000). */
 export const MAX_SCHOOL_MATERIAL_LENGTH = 16000;
-const MAX_ACCEPTED_ANSWERS = 40;
-const MIN_OPTIONS = 2;
-const MAX_OPTIONS = 4;
-const MIN_ORDER_ITEMS = 3;
-const MAX_ORDER_ITEMS = 10;
-const MIN_NOTICE_SENTENCES = 2;
-const MAX_NOTICE_SENTENCES = 3;
-const MIN_NOTICE_SEGMENTS = 1;
-const MAX_NOTICE_SEGMENTS = 15;
+/** Maksymalna liczba wariantów `acceptedAnswers`. */
+export const MAX_ACCEPTED_ANSWERS = 40;
+/** Zakres liczby opcji w typach z zamkniętym wyborem. */
+export const MIN_OPTIONS = 2;
+export const MAX_OPTIONS = 4;
+/** Zakres liczby elementów w `lesson_order`. */
+export const MIN_ORDER_ITEMS = 3;
+export const MAX_ORDER_ITEMS = 10;
+/** `lesson_notice`: zakres liczby zdań i segmentów-słów na zdanie. */
+export const MIN_NOTICE_SENTENCES = 2;
+export const MAX_NOTICE_SENTENCES = 3;
+export const MIN_NOTICE_SEGMENTS = 1;
+export const MAX_NOTICE_SEGMENTS = 15;
+/** Payload v3 przedmiotów szkolnych: elementy wymagane (1–6) i uzupełniające (≤ 4), typowe błędy (≤ 4). */
+export const MIN_REQUIRED_ELEMENTS = 1;
+export const MAX_REQUIRED_ELEMENTS = 6;
+export const MAX_SUPPLEMENTARY_ELEMENTS = 4;
+export const MAX_COMMON_ERRORS = 4;
+/** Identyfikator rodziny pytań. */
+export const MAX_FAMILY_ID_LENGTH = 64;
+/** Cytaty źródłowe ćwiczenia szkolnego: 1–3, każdy co najmniej 10 znaków (uziemienie w materiale). */
+export const MIN_SOURCE_REFS = 1;
+export const MAX_SOURCE_REFS = 3;
+export const MIN_SOURCE_QUOTE_LENGTH = 10;
+/** Identyfikatory elementu wymaganego i grupy (`lesson_group`). */
+export const MAX_ELEMENT_ID_LENGTH = 40;
+export const MAX_GROUP_ID_LENGTH = 40;
 /** Trener precyzji (`lesson_keywords`): 4–6 pojęć do wyboru, z czego 2–3 kluczowe, każde ≤ 40 znaków. */
 export const MIN_KEYWORD_OPTIONS = 4;
 export const MAX_KEYWORD_OPTIONS = 6;
@@ -357,7 +375,7 @@ export const LessonExpectedFormSchema = z.enum(["short", "one_sentence", "explan
 export type LessonExpectedFormDto = z.infer<typeof LessonExpectedFormSchema>;
 
 const RequiredElementSchema = z.object({
-  id: z.string().min(1).max(40),
+  id: z.string().min(1).max(MAX_ELEMENT_ID_LENGTH),
   text: text,
 }).strict();
 
@@ -387,12 +405,12 @@ export const LessonExerciseInputSchema = z.object({
   correctOption: z.string().min(1).optional(),
   items: z.array(ExerciseItemSchema).min(MIN_ORDER_ITEMS).max(MAX_ORDER_ITEMS).optional(),
   questionType: LessonQuestionTypeSchema.optional(),
-  requiredElements: z.array(RequiredElementSchema).min(1).max(6).optional(),
-  supplementaryElements: z.array(text).max(4).optional(),
-  commonErrors: z.array(text).max(4).optional(),
+  requiredElements: z.array(RequiredElementSchema).min(MIN_REQUIRED_ELEMENTS).max(MAX_REQUIRED_ELEMENTS).optional(),
+  supplementaryElements: z.array(text).max(MAX_SUPPLEMENTARY_ELEMENTS).optional(),
+  commonErrors: z.array(text).max(MAX_COMMON_ERRORS).optional(),
   expectedForm: LessonExpectedFormSchema.optional(),
-  familyId: z.string().min(1).max(64).optional(),
-  sourceRefs: z.array(SourceRefSchema).min(1).max(3).optional(),
+  familyId: z.string().min(1).max(MAX_FAMILY_ID_LENGTH).optional(),
+  sourceRefs: z.array(SourceRefSchema).min(MIN_SOURCE_REFS).max(MAX_SOURCE_REFS).optional(),
   calculation: CalculationSpecSchema.optional(),
   /** `lesson_keywords`: pojęcia do wyboru i identyfikatory kluczowych (klucz tylko dla serwera i rodzica). */
   keywordOptions: z.array(z.object({ id: z.string().min(1), text: z.string().min(1).max(MAX_KEYWORD_LENGTH) }).strict())
@@ -407,13 +425,13 @@ export const LessonExerciseInputSchema = z.object({
   extraRight: z.array(z.string().min(1).max(MAX_MATCH_RIGHT_LENGTH)).max(MAX_MATCH_EXTRA).optional(),
   /** `lesson_group`: grupy (`id` — slug w obrębie ćwiczenia). */
   groups: z.array(z.object({
-    id: z.string().min(1).max(40),
+    id: z.string().min(1).max(MAX_GROUP_ID_LENGTH),
     label: z.string().min(1).max(MAX_GROUP_LABEL_LENGTH),
   }).strict()).min(MIN_GROUPS).max(MAX_GROUPS).optional(),
   /** `lesson_group`: elementy z przynależnością do grupy (klucz tylko dla serwera i rodzica). */
   groupItems: z.array(z.object({
     text: z.string().min(1).max(MAX_GROUP_ITEM_LENGTH),
-    groupId: z.string().min(1).max(40),
+    groupId: z.string().min(1).max(MAX_GROUP_ID_LENGTH),
   }).strict()).min(MIN_GROUP_ITEMS).max(MAX_GROUP_ITEMS).optional(),
   /** `lesson_cloze`: tekst z lukami (ciąg 2+ podkreśleń w miejscu luki). */
   clozeText: z.string().min(1).max(MAX_CLOZE_TEXT_LENGTH).optional(),

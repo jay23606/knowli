@@ -33,52 +33,40 @@ export const englishChapterPrompts: SubjectPromptProfile = {
     "mistake outside it (for example a minor typo in another word), or when the child used a correct synonym from outside " +
     "the chapter. A mistake in the checked word itself is never 'almost' — it is 'incorrect' with category spelling " +
     "(misspelt word) or wrong_word (a different word).",
+  // Wyłącznie wskazówki, których kod nie sprawdza; reguły egzekwowane (polskie zdanie-bodziec, słowa
+  // materiału, luki, podpowiedź, wybór ze słuchu, warianty) opisuje katalog reguł w księdze reguł
+  // promptu (spec katalogu reguł §3).
   fieldRules:
     "Child-facing texts are in Polish: instructionPl, the prompt of lesson_open_answer, Polish meanings and group labels. " +
     "English texts: stem, options, items, answer, acceptedAnswers, focus and bank words. " +
-    "For lesson_choice, lesson_gap, lesson_order and lesson_cloze the meaning stimulus lives in instructionPl: a short " +
-    "natural Polish sentence that the English sentence means, then a short instruction, e.g. 'Dziś pada śnieg. Wybierz słowo.', " +
+    "Polish stimulus sentences in instructionPl read naturally, e.g. 'Dziś pada śnieg. Wybierz słowo.', " +
     "'Mam na sobie zielony płaszcz. Wpisz brakujące słowo.', 'Ułóż zdanie: Mam na sobie różowy płaszcz.' " +
-    "Never use a bare instruction such as 'Wybierz słowo' or 'Ułóż zdanie' — without the Polish sentence the child cannot " +
-    "know the meaning. hint is always null. " +
-    "lesson_choice: stem is a short English sentence with exactly one gap written as ___; 2 or 3 options, all words of " +
-    "the chapter, exactly one correct for the Polish sentence. Distractors must be plausible: the same category as the " +
+    "lesson_choice: stem is a short English sentence; 2 or 3 options, exactly one correct for the Polish sentence. " +
+    "Distractors must be plausible: the same category as the " +
     "correct option, taken from the material (another colour for a colour, another clothes item for clothes, another " +
     "weather word for weather, another day for a day) — never a word of a trivially different class, such as a day " +
     "among colours or a weather word among clothes. When the chapter has no second word of that category, check a " +
     "different part of the sentence instead of padding the options. " +
     "lesson_listen_choice (listening choice): a narrator reads the full English sentence aloud and the child picks the word that fills the gap. " +
-    "The meaning stimulus is the recording, so instructionPl, hint and visualSubject are always null here. " +
-    "stem is one short natural sentence of at most 12 words with exactly one gap written as ___ (two or more underscores) on a word or frame element of the material; " +
-    "2 or 3 options, each option is a word or phrase from the chapter material, as in lesson_choice, exactly one correct, and the options sound clearly different when spoken " +
-    "(not two spellings or an apostrophe contraction beside its full form of the same word). Never start an option with an apostrophe. " +
-    "When two options differ only by an -s ending that adds no syllable, in any spelling -s, -es or -ies (cat / cats, go / goes, baby / babies), the word right after the gap must not begin with an s, z or sh sound " +
-    "(socks, zoo, shoes): in speech the ending merges into that sound. " +
+    "stem is one short natural sentence of at most 12 words whose gap stands on a word or frame element of the material; " +
+    "2 or 3 options, each a word or phrase from the chapter material, as in lesson_choice, exactly one correct, and the options sound clearly different when spoken " +
+    "(not two spellings of the same word). " +
     "Distractors are plausible: the same category as the correct option, taken from the material. " +
-    "lesson_gap: stem is a short English sentence with exactly one gap ___; answer is the missing chapter word or phrase " +
-    "(at most 3 words) and focus is that checked word. Vary the answers: no more than 2 lesson_gap exercises of one " +
+    "lesson_gap: answer is the missing chapter word or phrase and focus is that checked word. Vary the answers: no more than 2 lesson_gap exercises of one " +
     "objective may have the same answer. In an objective built on a sentence frame (e.g. I'm wearing (a) ...) vary " +
     "which part of the frame the gap checks: the frame's key word (wearing, like), a short phrase that holds the key " +
     "word together with a function word ('I'm wearing', 'are you wearing' — never a function word alone), " +
     "or the word that fills the frame (the clothes item, the colour, the weather word). " +
-    "A gap or an option is always a content word of the chapter, never only function words (articles, pronouns, " +
-    "be/do/can, prepositions such as in/on/at, this/that, question words). " +
     "lesson_order: items are the words of one English sentence built on a chapter frame, in the correct order " +
-    "(4 to 7 items, no two items with the same text), and the sentence has exactly one correct word order — no parts " +
+    "(4 to 7 items), and the sentence has exactly one correct word order — no parts " +
     "that could move, such as today at the start or at the end. Write the answer and the items WITHOUT sentence-final " +
     "punctuation: answer 'I'm wearing a pink coat' with the items I'm, wearing, a, pink, coat — never an item " +
-    "such as 'coat.' or 'like?'. Use a sentence of 4 to 7 words only. " +
-    "lesson_open_answer: instructionPl is exactly 'Przetłumacz na angielski.' (never null or empty); " +
+    "such as 'coat.' or 'like?'. " +
+    "lesson_open_answer: instructionPl is exactly 'Przetłumacz na angielski.'; " +
     "prompt is a short Polish sentence to translate; answer is its English translation using only " +
-    "chapter words; acceptedAnswers are other correct translations built from chapter words. focus is ONE contiguous " +
-    "run of the answer's words, copied in order, never skipping a word in between: for the answer 'I'm wearing a green hat.' " +
-    "use ['green', 'hat'] or ['wearing', 'a', 'green', 'hat'], never ['wearing', 'green'] — pick the run that holds the " +
-    "checked word or the frame part. Never repeat the answer or an accepted answer in the prompt. " +
-    "Expanded contractions are NOT new acceptedAnswers variants: I'm equals I am after normalization. " +
-    "Answers and accepted answers have at most 120 characters. " +
-    "In this subject the fields questionType, requiredElements, supplementaryElements, commonErrors, expectedForm, " +
-    "familyId and sourceRefs are ALWAYS null for every exercise — never quote the material in sourceRefs.",
-  // Semantyka typów z własną gałęzią schematu (pola i limity opisuje adapter).
+    "chapter words; acceptedAnswers are other correct translations built from chapter words. focus is the run of the " +
+    "answer's words that holds the checked word or the frame part. Never repeat the answer or an accepted answer in the prompt.",
+  // Semantyka typów z własną gałęzią schematu (pola i limity opisują karta typu i reguły w księdze reguł).
   typeRules: {
     lesson_match:
       "left is an English word, phrase or question from the chapter; right is its Polish meaning or, for a question " +
@@ -93,15 +81,11 @@ export const englishChapterPrompts: SubjectPromptProfile = {
     lesson_cloze:
       "Use 2 or 3 short sentences built on the chapter's frames. instructionPl gives the Polish meaning of the whole text, " +
       "then a short command, like a workbook: 'W poniedziałek pada deszcz. W środę wieje wiatr. Uzupełnij tekst.' " +
-      "The whole instructionPl (Polish meaning plus command) is at most 120 characters in total, so keep the text to " +
-      "2 or 3 short sentences that fit this limit. " +
-      "Every gap is fixed by that Polish meaning: exactly one bank word fits each gap, never two gaps whose words could " +
-      "be swapped, and no extra word may match the Polish meaning of any gap. Gap words are content words of this " +
-      "objective, never only function words (articles, pronouns, be/do/can, prepositions, this/that, question words). " +
+      "Keep the text short enough that the whole instructionPl (Polish meaning plus command) fits its length limit. " +
+      "Every gap is fixed by that Polish meaning: no extra word may match the Polish meaning of any gap. " +
       "extraWords are other chapter words of the same category as the gap words (another colour for a colour gap, " +
       "another clothes item for a clothes gap, another weather word for a weather gap), never a word of a trivially " +
-      "different class. A word of the bank (a gap word or an extra word) appears nowhere else in " +
-      "the text: if the gap word is 'wearing', no other sentence of the text may contain 'wearing'.",
+      "different class.",
   },
   objectivesRules:
     "Split the chapter into 3 to 5 objectives, so that every objective comes up within two or three short sessions. " +

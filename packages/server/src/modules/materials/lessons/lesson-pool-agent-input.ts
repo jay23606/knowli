@@ -1,16 +1,16 @@
 import type { ObjectiveAgentLimits } from "../../../domain/lessons/agent/admission";
 import { allExamples, orderedEntries, orderedLesson, type LessonAgentState } from "../../../domain/lessons/agent/state";
 import { avoidSentencesFor } from "../../../domain/lessons/avoid-sentences";
-import { lessonPoolMinimums } from "../../../domain/lessons/lesson-coverage";
+import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE, lessonPoolMinimums } from "../../../domain/lessons/lesson-coverage";
 import type { AgentObjective, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import type { LessonObjectiveAgentInput, LlmLessonStageCounts } from "../../../ports/ai";
 import { buildPoolInput, poolStageCounts } from "./lesson-drafts";
 
 /**
  * Wejście podagenta zagadnienia (spec etapu 1 §6.1, §7): pola promptu z
- * `buildPoolInput` z liczbami z `targets` (jedyne źródło liczb), lista zdań do
- * unikania i zdania kart CAŁEJ lekcji z bieżącego stanu (w chwili startu
- * podagenta) oraz dopiski przedmiotu (`promptNotes`). Pozycja zagadnienia
+ * `buildPoolInput` (z księgą reguł zagadnienia) z liczbami z `targets` (jedyne
+ * źródło liczb, także minima publikacji), lista zdań do unikania i zdania kart
+ * CAŁEJ lekcji z bieżącego stanu (w chwili startu podagenta). Pozycja zagadnienia
  * i liczba jego ćwiczeń w stanie (`objective.index`, `objective.existingCount`)
  * służą wyłącznie fake'owi agenta. Czysta funkcja nad przekazanymi danymi.
  */
@@ -72,7 +72,7 @@ export function objectiveAgentInput(args: ObjectiveAgentInputArgs): LessonObject
   const requiredTypes = (subject.agentPolicy.requiredTypes?.(objective) ?? [])
     .map((group) => group.filter((type) => objective.exerciseTypes.includes(type)))
     .filter((group) => group.length > 0);
-  const promptNotes = subject.agentPolicy.promptNotes ?? [];
+  const minima = lessonPoolMinimums(subject);
   return {
     pool,
     objective: {
@@ -94,8 +94,14 @@ export function objectiveAgentInput(args: ObjectiveAgentInputArgs): LessonObject
       ...limits,
       targetCount,
       ...(args.promptTargets === undefined ? {} : { listenAllowance: args.promptTargets.listenAllowance }),
+      publicationMinima: {
+        guided: minima.guided,
+        productive: minima.productive,
+        independent: minima.independent,
+        // Różne pytania otwarte wymaga przedmiot z payloadem v3 (`distinctOpenAnswerGaps` pokrycia publikacji).
+        ...(subject.usesV3Payload === true ? { distinctOpenAnswers: DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE } : {}),
+      },
     },
     maxSteps: args.maxSteps,
-    ...(promptNotes.length === 0 ? {} : { promptNotes: [...promptNotes] }),
   };
 }

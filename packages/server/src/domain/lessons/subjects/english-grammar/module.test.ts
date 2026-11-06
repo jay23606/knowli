@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { ruleOf, type RuleBookContext, type RuleId } from "../../rules/catalog";
+import { listenChoiceSibilantErrors } from "../english/listen-audibility";
 import { englishGrammarSubject } from "./module";
 import { englishGrammarPrompts } from "./prompts";
 import { validateEnglishGrammarExercise } from "./validators";
@@ -8,6 +10,14 @@ import { answersEquivalent, validateLessonExercise } from "../../pool-validation
 import { createProductionSubjectRegistry, PRODUCTION_SUBJECTS } from "../index";
 import { validateSubject } from "../../catalog-validation";
 import type { LessonExerciseDraft } from "../../types";
+
+
+/** Opis reguły katalogu (rdzeń, lekcja albo przedmiot) — tekst, który dostaje model w księdze reguł. */
+function ruleText(id: string): string {
+  const rule = ruleOf(englishGrammarSubject, id as RuleId);
+  if (rule === undefined) throw new Error(`brak reguły ${id}`);
+  return typeof rule.description === "string" ? rule.description : rule.description({ answerMaxLength: 120, groundingRequired: false });
+}
 
 describe("englishGrammarSubject — spójność katalogu", () => {
   it("validateSubject zwraca pustą listę (katalog poprawny)", () => {
@@ -61,12 +71,23 @@ describe("englishGrammarSubject — spójność katalogu", () => {
     expect(rules).toMatch(/hint/i);
   });
 
-  it("fieldRules definiują reguły tematu to_be dla generacji puli", () => {
+  it("fieldRules opisują temat to_be, a jego sprawdzane formy opisują reguły katalogu tylko w tym temacie", () => {
     const rules = englishGrammarPrompts.fieldRules ?? "";
     expect(rules).toContain(".to_be.");
-    expect(rules).toMatch(/am, is or are matching the subject/);
-    expect(rules).toMatch(/never use do or does/);
-    expect(rules).toMatch(/only the form itself/);
+    expect(rules).toMatch(/gap answers are am, is or are/);
+    // Wskazówki tematu i wyboru obrazka w opisach reguł tego tematu (prompt tylko w temacie „to be”).
+    expect(rules).not.toMatch(/short answers repeat the form|Picture choice/);
+    expect(ruleText("grammar.be_form_subject")).toMatch(/short answers repeat the form/);
+    expect(ruleText("grammar.visual_answer_pronoun")).toContain("Picture choice (only in objectives whose id contains '.affirmative_forms')");
+    for (const id of ["grammar.visual_answer_pronoun", "grammar.visual_option_pronoun", "grammar.visual_stem_pronoun", "grammar.visual_stem_be_form"]) {
+      expect(englishGrammarSubject.rules[id]?.when?.({ topicId: "present_simple" } as RuleBookContext), id).toBe(false);
+    }
+    // Dawne zdania profilu przeszły do opisów reguł (spec katalogu reguł §3).
+    expect(ruleText("grammar.be_form_subject")).toContain("agrees with the subject next to the gap");
+    expect(ruleText("grammar.be_no_do_does")).toContain("do not use do or does");
+    expect(ruleText("grammar.be_answer_not_be_form")).toContain("is a form of be");
+    expect(englishGrammarSubject.rules["grammar.be_no_do_does"]?.when?.({ topicId: "to_be" } as RuleBookContext)).toBe(true);
+    expect(englishGrammarSubject.rules["grammar.be_no_do_does"]?.when?.({ topicId: "present_simple" } as RuleBookContext)).toBe(false);
   });
 
   it("tylko gramatyka przyjmuje tematy zdań: reguła ma kluczowe zakazy, inne przedmioty jej nie mają (#197)", () => {
@@ -238,21 +259,38 @@ describe("englishGrammarSubject — wybór ze słuchu (#198)", () => {
     expect(toBeV1.version).toBe(1);
   });
 
-  it("fieldRules opisują regułę typu: jedna luka, słyszalna różnica, bez równoważnych opcji i bez instructionPl", () => {
-    const rules = englishGrammarPrompts.fieldRules ?? "";
-    expect(rules).toContain("lesson_listen_choice");
+  it("blok typu opisuje sens wyboru ze słuchu (słyszalna różnica, jedna poprawna), a ograniczenia typu niesie katalog reguł", () => {
+    const rules = englishGrammarPrompts.typeRules?.lesson_listen_choice ?? "";
+    expect(englishGrammarPrompts.fieldRules).not.toContain("lesson_listen_choice");
     expect(rules).toMatch(/at most 12 words/);
-    expect(rules).toMatch(/exactly one gap/);
     expect(rules).toMatch(/audibly/i);
-    expect(rules).toMatch(/never offer an equivalent/i);
-    expect(rules).toMatch(/apostrophe/);
-    expect(rules).toMatch(/instructionPl.*hint.*visualSubject/s);
+    expect(rules).toContain("exactly one is correct");
+    expect(ruleText("listen.gap_count")).toContain("exactly one gap");
+    expect(ruleText("listen.options_equivalent")).toContain("not equivalent");
+    expect(ruleText("listen.option_apostrophe")).toContain("apostrophe");
+    expect(ruleText("listen.instruction_not_allowed")).toContain("instructionPl");
+    expect(ruleText("listen.hint_not_allowed")).toContain("no hint");
   });
 
-  it("fieldRules zabraniają sybilantu zaraz za luką przy opcjach różnych o -s (końcówka zlewa się w mowie)", () => {
-    const rules = englishGrammarPrompts.fieldRules ?? "";
-    expect(rules).toMatch(/-s ending that adds no syllable.*right after the gap.*s, z or sh sound/s);
-    expect(rules).toContain("This does not apply to Do / Does or watch / watches");
-    expect(rules).toContain("never He ___ snakes. or She ___ soccer.");
+  it("sybilant zaraz za luką przy opcjach różnych o -s opisuje reguła wspólnego fragmentu angielskiego", () => {
+    const rule = ruleText("english.listen_sibilant_merge");
+    expect(rule).toMatch(/-s ending that adds no syllable.*right after the gap.*s, z or sh sound/s);
+    // Opis nie jest ostrzejszy niż sprawdzenie: wyjątki, które przyjmuje walidator, są w opisie.
+    expect(rule).toContain("watch/watches");
+    expect(rule).toContain("do/does");
+    for (const [stem, options] of [["___ she play tennis?", ["Does", "Do"]], ["He ___ soccer.", ["watches", "watch"]]] as const) {
+      const draft: LessonExerciseDraft = {
+        exerciseType: "lesson_listen_choice",
+        objectiveId: "english_grammar.present_simple.question",
+        stem,
+        options: options.map((text, index) => ({ id: String(index), text })),
+        correctOption: "0",
+        answer: options[0],
+        acceptedAnswers: [],
+        focus: [options[0]],
+      };
+      expect(listenChoiceSibilantErrors(draft), stem).toEqual([]);
+    }
+    expect(englishGrammarPrompts.fieldRules).not.toContain("snakes");
   });
 });

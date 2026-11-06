@@ -53,7 +53,7 @@ export interface LlmPromptProfileInput {
   /** Dziedzinowe reguły semantyki pól ćwiczeń (opcjonalne, od przedmiotu). */
   readonly fieldRules?: string;
   /** Semantyka typów par, grup i luk (opcjonalna, od przedmiotu); adapter dokłada ją do części strukturalnej bloku. */
-  readonly typeRules?: Partial<Record<"lesson_match" | "lesson_group" | "lesson_cloze", string>>;
+  readonly typeRules?: Partial<Record<string, string>>;
   /** Reguła użycia tematów zdań (opcjonalna, od przedmiotu); adapter dokłada ją do promptu systemowego tylko razem z `interests`. */
   readonly interestsRule?: string;
 }
@@ -95,6 +95,11 @@ export interface LessonPoolInput {
   readonly graderAvailable: boolean;
   /** Czy każde ćwiczenie MUSI nieść cytaty źródłowe z materiału (przedmioty z uziemieniem). */
   readonly groundingRequired?: boolean;
+  /**
+   * Limit długości `answer` i wariantów `acceptedAnswers` przedmiotu (ten sam, którym posługuje się walidacja i
+   * opis reguły `answer.max_length`); schemat narzędzia bierze go stąd.
+   */
+  readonly answerMaxLength: number;
   /** Tożsamość duplikatu w obrębie puli; domyślnie zgodność odpowiedzi. */
   readonly deduplication?: "answer" | "exercise";
   /** Czy generator ma zwracać `voiceTone` ćwiczenia (przedmiot z `ttsForPrompts`); bez flagi schemat i prompt nie mają pola. */
@@ -107,6 +112,42 @@ export interface LessonPoolInput {
    * po `toLowerCase().trim()` bez końcowej kropki; brak pola = bez ograniczeń.
    */
   readonly avoidSentences?: readonly string[];
+  /**
+   * Księga reguł zagadnienia (domenowa `lessonRuleBook`, spec katalogu reguł §3): karty typów i opisy
+   * reguł, które sprawdza narzędzie. Adapter tylko ją renderuje; nie dopisuje własnych reguł.
+   */
+  readonly ruleBook: LessonRuleBookInput;
+}
+
+/** Wiersz księgi reguł: id reguły (nazywa ją odrzucenie) i jej opis dla modelu, po angielsku. */
+export interface LessonRuleBookLine {
+  readonly id: string;
+  readonly text: string;
+  /** Tylko id w prompcie (kształt rekordu, powtórzenie listy pól karty typu); opis model dostaje w wyniku narzędzia. */
+  readonly brief?: boolean;
+  /** Reguła opisana już w bloku tego typu (`inEachTypeBlock`): renderer odsyła do niego zamiast powtarzać opis. */
+  readonly repeatOf?: string;
+}
+
+/** Blok typu ćwiczenia w księdze reguł: karta typu, semantyka typu przedmiotu i reguły tylko tego typu. */
+export interface LessonRuleBookTypeBlock {
+  readonly type: string;
+  readonly summary: string;
+  /** Przykład rekordu w JSON. */
+  readonly example?: string;
+  readonly subjectRule?: string;
+  readonly rules: readonly LessonRuleBookLine[];
+}
+
+/**
+ * Księga reguł jako zwykłe dane (port nie zna domeny lekcji; strukturalnie `RuleBook` z
+ * `domain/lessons/rules/rule-book.ts`).
+ */
+export interface LessonRuleBookInput {
+  readonly general: readonly LessonRuleBookLine[];
+  readonly types: readonly LessonRuleBookTypeBlock[];
+  readonly lesson: readonly LessonRuleBookLine[];
+  readonly checks: readonly LessonRuleBookLine[];
 }
 
 /**
@@ -193,21 +234,36 @@ export interface LessonObjectiveAgentInput {
     readonly targetCount: number;
     readonly listenAllowance: number;
     readonly maxExercises: number;
+    /**
+     * Minima publikacji całej puli zagadnienia (te same stałe co walidacja publikacji); `distinctOpenAnswers` —
+     * ile różnych pytań otwartych wymaga przedmiot (brak = bez takiego wymagania).
+     */
+    readonly publicationMinima: {
+      readonly guided: number;
+      readonly productive: number;
+      readonly independent: number;
+      readonly distinctOpenAnswers?: number;
+    };
   };
   readonly maxSteps: number;
-  /**
-   * Dopiski przedmiotu do instrukcji podagenta (`SubjectAgentPolicy.promptNotes`, po angielsku);
-   * adapter dokleja je do dopisku przepływu narzędzi. Brak = przedmiot bez dopisków.
-   */
-  readonly promptNotes?: readonly string[];
 }
+
+/**
+ * Wynik jednego ćwiczenia: `exerciseType` i początek bodźca (ok. 40 znaków treści modelu) mówią
+ * modelowi, którego ćwiczenia dotyczy. Powody i noty w postaci `[<id reguły>] <pole>: <co jest nie tak>`.
+ */
+export type LessonAgentToolResult =
+  | { readonly index: number; readonly exerciseType: string | null; readonly stimulus: string; readonly accepted: string; readonly notes?: readonly string[] }
+  | { readonly index: number; readonly exerciseType: string | null; readonly stimulus: string; readonly errors: readonly string[] };
 
 /** Skrót wyniku narzędzia dla modelu: co przyjęto, co odrzucono i czego brakuje do kompletu. */
 export interface LessonAgentToolOutcome {
-  readonly results: readonly (
-    | { readonly index: number; readonly accepted: string; readonly note?: string }
-    | { readonly index: number; readonly errors: readonly string[] }
-  )[];
+  readonly results: readonly LessonAgentToolResult[];
+  /**
+   * Opisy reguł użytych w powodach i notach tego wyniku (`id → opis` z dopiskiem przedmiotu); każdy id
+   * najwyżej raz na zagadnienie, więc reguła opisana we wcześniejszym wyniku już się nie powtarza.
+   */
+  readonly rules?: Readonly<Record<string, string>>;
   readonly examples?: { readonly accepted: number; readonly errors: readonly string[] };
   readonly counts: {
     readonly guided: number;

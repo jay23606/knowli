@@ -7,6 +7,7 @@ import {
   summarizeLessonAgentProgress,
   type LessonAgentProgress,
 } from "./lesson-agent-checkpoint";
+import { toExerciseDraft } from "./lesson-drafts";
 
 const OBJECTIVE = "english_grammar.present_simple.third_person_s";
 const SECRET_STEM = "Tajne zdanie ćwiczenia: He ___ football every Sunday.";
@@ -22,6 +23,57 @@ const exercise: LessonExerciseDraft = {
   correctOption: "a",
   voiceTone: "curious",
 };
+
+/** Szkice wszystkich typów puli w dzisiejszym zapisie punktu kontrolnego (pola v3, cytaty, ton, wyjaśnienie). */
+const ALL_TYPE_EXERCISES: readonly LessonExerciseDraft[] = [
+  exercise,
+  { ...exercise, exerciseType: "lesson_listen_choice", explanationPl: "Końcówka -s po he." },
+  { ...exercise, exerciseType: "lesson_short_answer", stem: undefined, prompt: "What does he do?" },
+  {
+    exerciseType: "lesson_notice", objectiveId: OBJECTIVE, noticeSegments: [["He", "plays"], ["She", "runs"]],
+    correctOption: "plays", answer: "plays", acceptedAnswers: [], focus: [],
+  },
+  {
+    exerciseType: "lesson_order", objectiveId: OBJECTIVE, items: [{ id: "i1", text: "He" }, { id: "i2", text: "plays" }],
+    answer: "He plays", acceptedAnswers: [], focus: [],
+  },
+  { exerciseType: "lesson_gap", objectiveId: OBJECTIVE, stem: "He ___ football.", answer: "plays", acceptedAnswers: ["play"], focus: ["plays"] },
+  { exerciseType: "lesson_error_fix", objectiveId: OBJECTIVE, statement: "He play.", answer: "He plays.", acceptedAnswers: [], focus: ["plays"] },
+  {
+    exerciseType: "lesson_transform", objectiveId: OBJECTIVE, statement: "He plays.", transformId: "negate",
+    answer: "He does not play.", acceptedAnswers: [], focus: ["does", "not"],
+  },
+  {
+    exerciseType: "lesson_open_answer", objectiveId: OBJECTIVE, prompt: "Co wytwarza roślina?", answer: "Roślina wytwarza cukry.",
+    acceptedAnswers: [], focus: [], hint: "Pomyśl o liściach.", questionType: "fact", expectedForm: "one_sentence", familyId: "cukry",
+    requiredElements: [{ id: "e1", text: "cukry" }], supplementaryElements: ["tlen"], commonErrors: ["skrobia"],
+    sourceRefs: [{ quote: "Roślina wytwarza cukry w liściach.", parentAdded: true }],
+  },
+  {
+    exerciseType: "lesson_calculation", objectiveId: OBJECTIVE, instructionPl: "Oblicz.", prompt: "Oblicz odległość.",
+    answer: "750 m", acceptedAnswers: [], focus: [],
+    calculation: { kind: "scale_distance", params: { scaleDenominator: 25000, mapDistanceCm: 3 }, unit: "m", templateFamilyId: "map-scale" },
+    sourceRefs: [{ quote: "Skala mapy pozwala przeliczyć odległość." }],
+  },
+  {
+    exerciseType: "lesson_keywords", objectiveId: OBJECTIVE, familyId: "cukry", answer: "cukry, światło", acceptedAnswers: [], focus: [],
+    keywordOptions: [{ id: "k1", text: "światło" }, { id: "k2", text: "cukry" }, { id: "k3", text: "tlen" }, { id: "k4", text: "korzenie" }],
+    keyOptionIds: ["k2", "k1"],
+  },
+  {
+    exerciseType: "lesson_match", objectiveId: OBJECTIVE, instructionPl: "Połącz.", answer: "cat, dog, cow", acceptedAnswers: [], focus: [],
+    pairs: [{ left: "cat", right: "kot" }, { left: "dog", right: "pies" }, { left: "cow", right: "krowa" }], extraRight: ["koń"],
+  },
+  {
+    exerciseType: "lesson_group", objectiveId: OBJECTIVE, instructionPl: "Pogrupuj.", answer: "ssaki / ptaki", acceptedAnswers: [], focus: [],
+    groups: [{ id: "g1", label: "ssaki" }, { id: "g2", label: "ptaki" }],
+    groupItems: [{ text: "pies", groupId: "g1" }, { text: "kot", groupId: "g1" }, { text: "sowa", groupId: "g2" }, { text: "wróbel", groupId: "g2" }],
+  },
+  {
+    exerciseType: "lesson_cloze", objectiveId: OBJECTIVE, instructionPl: "Uzupełnij.", answer: "półkule, południk", acceptedAnswers: [], focus: [],
+    clozeText: "Równik dzieli Ziemię na ___, a bieguny łączy ___.", gapAnswers: ["półkule", "południk"], extraWords: ["równoleżnik"],
+  },
+];
 
 function progress(overrides: Partial<LessonAgentProgress> = {}): LessonAgentProgress {
   return {
@@ -58,6 +110,19 @@ describe("punkt kontrolny agenta — odczyt i podsumowanie", () => {
     const value = progress();
     expect(parseLessonAgentProgress(stored(value), "run-1")).toEqual(value);
     expect(parseLessonAgentProgress(stored(emptyLessonAgentProgress()), "run-1")).toEqual(emptyLessonAgentProgress());
+  });
+
+  it("zgodność: punkt kontrolny w dzisiejszym formacie z ćwiczeniami wszystkich typów wczytuje się bez zmian", () => {
+    const value = progress({
+      objectives: {
+        [OBJECTIVE]: { status: "complete", exercises: ALL_TYPE_EXERCISES.map(toExerciseDraft), examples: ["He plays."] },
+      },
+    });
+    const parsed = parseLessonAgentProgress(stored(value), "run-1");
+    expect(parsed).toEqual(stored(value));
+    expect(parsed!.objectives[OBJECTIVE]!.exercises.map((draft) => draft.exerciseType)).toEqual(
+      ALL_TYPE_EXERCISES.map((draft) => draft.exerciseType),
+    );
   });
 
   it("legacy checkpoint without checkCounters: punkt kontrolny etapu 2a parsuje się, pole nieobecne", () => {

@@ -37,6 +37,7 @@ import { fakeGeneration, type FakeGeneration } from "./fakes";
 import { GenerationProviderError } from "../../packages/server/src/ports/generation-error";
 import type { LessonAgentToolOutcome, LessonObjectiveAgentInput } from "../../packages/server/src/ports/ai";
 import { lessonExerciseIdentity } from "../../packages/server/src/domain/lessons/exercise-identity";
+import { testIssue } from "../../packages/server/src/domain/lessons/testing/test-issue";
 import type { LessonExerciseDraft } from "../../packages/server/src/domain/lessons/types";
 import { DEFAULT_LESSON_GENERATION_POLICY } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
 import type { FakeAgentStep, FakeLessonPoolAgent, FakeLessonPoolAgentOptions } from "../../packages/server/src/providers/fake-lesson-agent";
@@ -406,7 +407,7 @@ describe("generowanie puli lekcji (integracja)", () => {
         return {
           kept,
           rejected: drafts.filter((draft) => draft.answer === "banned")
-            .map((exercise) => ({ exercise, reason: "słowo spoza materiału: banned" })),
+            .map((exercise) => ({ exercise, issues: [testIssue("słowo spoza materiału: banned")] })),
         };
       },
       exposureText: (draft: LessonExerciseDraft) => `Zdanie: ${draft.answer}.`,

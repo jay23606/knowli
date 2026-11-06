@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { baseNormalizer } from "../normalize";
 import type { AnswerNormalizer, LessonExerciseDraft, LessonExerciseType, LessonTopic } from "../types";
-import { blindMatches, expectedAnswerCount, SOLVER_FIELD_CLASS, solverView } from "./solver";
+import { blindMatches, blindMismatchFound, expectedAnswerCount, SOLVER_FIELD_CLASS, solverView } from "./solver";
 
 const topic: LessonTopic = {
   id: "solver_topic",
@@ -428,5 +428,64 @@ describe("blindMatches", () => {
   it("wariant przedmiotu uznaje odpowiedź jedynej luki", () => {
     const gap = make("lesson_gap", { answer: "it is", acceptedAnswers: [] });
     expect(blindMatches(gap, ["it's"], variantNormalizer)).toBe(true);
+  });
+});
+
+describe("blindMismatchFound (spec katalogu reguł §4.4)", () => {
+  const cloze = make("lesson_cloze", { clozeText: "x ___ y ___ z", gapAnswers: ["it's", "dogs"] });
+  const match = make("lesson_match", {
+    pairs: [
+      { left: "kot", right: "cat" },
+      { left: "pies", right: "dog" },
+      { left: "koń", right: "horse" },
+    ],
+  });
+  const group = make("lesson_group", {
+    groups: [
+      { id: "g-m", label: "Ssaki" },
+      { id: "g-b", label: "Ptaki" },
+    ],
+    groupItems: [
+      { text: "słoń", groupId: "g-m" },
+      { text: "wróbel", groupId: "g-b" },
+      { text: "lew", groupId: "g-m" },
+    ],
+  });
+
+  it("jedna odpowiedź: odpowiedź rozwiązującego, klucz i warianty", () => {
+    const gap = make("lesson_gap", { answer: "there's", acceptedAnswers: ["there is"] });
+    expect(blindMismatchFound(gap, ["they are"], baseNormalizer)).toBe('the solver answered "they are"; the key is "there\'s", accepted variants "there is"');
+    expect(blindMismatchFound(make("lesson_gap", { answer: "goes" }), ["go"], baseNormalizer)).toBe('the solver answered "go"; the key is "goes"');
+  });
+
+  it("inna liczba odpowiedzi: obie liczby, odpowiedzi i klucz", () => {
+    expect(blindMismatchFound(cloze, ["it's"], variantNormalizer)).toBe('the solver gave 1 answers ("it\'s") where the key has 2 ("it\'s", "dogs")');
+    expect(blindMismatchFound(group, [], baseNormalizer)).toBe('the solver gave 0 answers (nothing) where the key has 3 ("Ssaki", "Ssaki", "Ptaki")');
+  });
+
+  it("luki z bankiem: tylko różniące się luki, z wariantem przez normalizator", () => {
+    expect(blindMismatchFound(cloze, ["it is", "cats"], variantNormalizer)).toBe(
+      'the solver\'s answers differ from the key at gap 2: solver "cats", key "dogs"',
+    );
+  });
+
+  it("pary: numer i lewa strona różniących się par", () => {
+    expect(blindMismatchFound(match, ["kot => cat", "pies => horse", "koń => dog"], baseNormalizer)).toBe(
+      'the solver\'s answers differ from the key at pair 2 "pies": solver "pies => horse", key "dog"; ' +
+        'pair 3 "koń": solver "koń => dog", key "horse"',
+    );
+  });
+
+  it("grupy: element w kolejności widoku i etykieta grupy", () => {
+    // Kolejność widoku: lew, słoń, wróbel.
+    expect(blindMismatchFound(group, ["lew => Ssaki", "słoń => Ptaki", "wróbel => Ptaki"], baseNormalizer)).toBe(
+      'the solver\'s answers differ from the key at item 2 "słoń": solver "słoń => Ptaki", key "Ssaki"',
+    );
+  });
+
+  it("długa odpowiedź i nowa linia: wycinek w jednym wierszu", () => {
+    const found = blindMismatchFound(make("lesson_gap", { answer: "goes" }), [`${"a".repeat(200)}\nb`], baseNormalizer);
+    expect(found).not.toContain("\n");
+    expect(found).toContain("…");
   });
 });

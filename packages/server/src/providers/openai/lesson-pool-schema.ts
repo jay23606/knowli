@@ -1,7 +1,75 @@
-import { LessonVoiceToneSchema } from "@learning/contracts";
+import {
+  LessonVoiceToneSchema,
+  MAX_ACCEPTED_ANSWERS,
+  MAX_CALCULATION_PARAMETER,
+  MAX_CLOZE_EXTRA,
+  MAX_CLOZE_GAPS,
+  MAX_CLOZE_TEXT_LENGTH,
+  MAX_CLOZE_WORD_LENGTH,
+  MAX_COMMON_ERRORS,
+  MAX_ELEMENT_ID_LENGTH,
+  MAX_FAMILY_ID_LENGTH,
+  MAX_GROUP_ID_LENGTH,
+  MAX_GROUP_ITEM_LENGTH,
+  MAX_GROUP_ITEMS,
+  MAX_GROUP_LABEL_LENGTH,
+  MAX_GROUPS,
+  MAX_KEY_OPTIONS,
+  MAX_KEYWORD_LENGTH,
+  MAX_KEYWORD_OPTIONS,
+  MAX_LESSON_TEXT_LENGTH,
+  MAX_MATCH_EXTRA,
+  MAX_MATCH_LEFT_LENGTH,
+  MAX_MATCH_PAIRS,
+  MAX_MATCH_RIGHT_LENGTH,
+  MAX_NOTICE_SEGMENTS,
+  MAX_NOTICE_SENTENCES,
+  MAX_OPTIONS,
+  MAX_ORDER_ITEMS,
+  MAX_REQUIRED_ELEMENTS,
+  MAX_SCALE_DENOMINATOR,
+  MAX_SOURCE_QUOTE_LENGTH,
+  MAX_SOURCE_REFS,
+  MAX_SUPPLEMENTARY_ELEMENTS,
+  MAX_TEMPLATE_FAMILY_ID_LENGTH,
+  MIN_CLOZE_EXTRA,
+  MIN_CLOZE_GAPS,
+  MIN_GROUP_ITEMS,
+  MIN_GROUPS,
+  MIN_KEY_OPTIONS,
+  MIN_KEYWORD_OPTIONS,
+  MIN_MATCH_PAIRS,
+  MIN_NOTICE_SEGMENTS,
+  MIN_NOTICE_SENTENCES,
+  MIN_OPTIONS,
+  MIN_ORDER_ITEMS,
+  MIN_REQUIRED_ELEMENTS,
+  MIN_SOURCE_QUOTE_LENGTH,
+  MIN_SOURCE_REFS,
+} from "@learning/contracts";
+import { MAX_CARD_EXAMPLES } from "../../domain/lessons/agent/admission";
 import type { LessonPoolInput } from "../../ports/ai";
 
 const NON_POOL_EXERCISE_TYPES: ReadonlySet<string> = new Set(["lesson_card"]);
+
+/**
+ * Limity schematu narzędzia z tych samych stałych co walidacja (spec katalogu reguł §3): napisy
+ * `minLength: 1` i `maxLength`, listy `minItems`/`maxItems`. Schemat nie jest egzekwowany przez SDK —
+ * walidacja zostaje po stronie serwera; limity mówią modelowi, czego oczekuje sprawdzenie.
+ */
+const text = (maxLength: number = MAX_LESSON_TEXT_LENGTH): Record<string, unknown> => ({ type: "string", minLength: 1, maxLength });
+const nullableText = (maxLength: number = MAX_LESSON_TEXT_LENGTH): Record<string, unknown> => ({ type: ["null", "string"], minLength: 1, maxLength });
+const list = (items: Record<string, unknown>, minItems: number | undefined, maxItems: number): Record<string, unknown> => ({
+  type: "array",
+  ...(minItems === undefined ? {} : { minItems }),
+  maxItems,
+  items,
+});
+/** Lista, której brak (`null`) znaczy „pole nie dotyczy” (gałąź regularna trybu strict wymaga każdego pola). */
+const nullableList = (items: Record<string, unknown>, minItems: number | undefined, maxItems: number): Record<string, unknown> => ({
+  ...list(items, minItems, maxItems),
+  type: ["null", "array"],
+});
 
 /**
  * Strict-mode pole tonu lektora: nullable enum z kontraktu (`null` = styl roli).
@@ -26,29 +94,27 @@ function withExplanation(branch: Record<string, unknown>): Record<string, unknow
   return {
     ...branch,
     required: [...(branch.required as string[]), "explanationPl"],
-    properties: { ...(branch.properties as Record<string, unknown>), explanationPl: { type: ["string", "null"] } },
+    properties: { ...(branch.properties as Record<string, unknown>), explanationPl: nullableText() },
   };
 }
 
 export const poolExerciseTypes = (types: readonly string[]): string[] =>
   types.filter((type) => !NON_POOL_EXERCISE_TYPES.has(type));
 
+const strictObject = (properties: Record<string, unknown>) => ({
+  type: "object", additionalProperties: false, required: Object.keys(properties), properties,
+});
+const quoteItems = strictObject({ quote: { type: "string", minLength: MIN_SOURCE_QUOTE_LENGTH, maxLength: MAX_SOURCE_QUOTE_LENGTH } });
+/** Niepusty identyfikator (opcje, klocki, pojęcia); limit długości tylko tam, gdzie ma go kontrakt. */
+const id = (maxLength?: number): Record<string, unknown> => (maxLength === undefined ? { type: "string", minLength: 1 } : text(maxLength));
+const idTextItem = (maxLength: number = MAX_LESSON_TEXT_LENGTH, idMaxLength?: number) =>
+  strictObject({ id: id(idMaxLength), text: text(maxLength) });
+
 function lessonExerciseSchema(
   input: LessonPoolInput,
   objective: LessonPoolInput["objectives"][number],
   allowedTypes: string[],
 ): Record<string, unknown> {
-  const quoteItem = { type: "object", additionalProperties: false, required: ["quote"], properties: { quote: { type: "string" } } };
-  const idTextItem = {
-    type: "object",
-    additionalProperties: false,
-    required: ["id", "text"],
-    properties: { id: { type: "string" }, text: { type: "string" } },
-  };
-  const nullable = (schema: Record<string, unknown>) => ({
-    type: ["null", schema.type],
-    ...(schema.items ? { items: schema.items } : {}),
-  });
   return {
     type: "object",
     additionalProperties: false,
@@ -61,59 +127,71 @@ function lessonExerciseSchema(
     properties: {
       exerciseType: { type: "string", enum: allowedTypes },
       objectiveId: { type: "string", enum: [objective.id] },
-      answer: { type: "string" },
-      acceptedAnswers: { type: "array", items: { type: "string" } },
-      focus: { type: "array", items: { type: "string" } },
-      instructionPl: { type: ["null", "string"] },
-      stem: { type: ["null", "string"] },
-      statement: { type: ["null", "string"] },
-      prompt: { type: ["null", "string"] },
-      hint: { type: ["null", "string"] },
+      // Limit odpowiedzi przedmiotu (jak `answer.max_length` w księdze reguł), nie stały limit kontraktu.
+      answer: text(input.answerMaxLength),
+      acceptedAnswers: list(text(input.answerMaxLength), undefined, MAX_ACCEPTED_ANSWERS),
+      focus: { type: "array", items: text() },
+      instructionPl: nullableText(),
+      stem: nullableText(),
+      statement: nullableText(),
+      prompt: nullableText(),
+      hint: nullableText(),
       transformId: { type: ["null", "string"], enum: [null, ...input.transforms.map((transform) => transform.id)] },
-      noticeSegments: { type: ["null", "array"], items: { type: "array", items: { type: "string" } } },
+      noticeSegments: nullableList(list(text(), MIN_NOTICE_SEGMENTS, MAX_NOTICE_SEGMENTS), MIN_NOTICE_SENTENCES, MAX_NOTICE_SENTENCES),
       visualSubject: { type: ["null", "string"], enum: [null, "boy", "girl", "man", "woman", "group", "dog"] },
-      options: nullable({ type: "array", items: idTextItem }),
-      correctOption: { type: ["null", "string"] },
-      items: nullable({ type: "array", items: idTextItem }),
+      options: nullableList(idTextItem(), MIN_OPTIONS, MAX_OPTIONS),
+      correctOption: { type: ["null", "string"], minLength: 1 },
+      items: nullableList(idTextItem(), MIN_ORDER_ITEMS, MAX_ORDER_ITEMS),
       questionType: { type: ["null", "string"], enum: [null, "definition", "enumeration", "cause", "comparison", "fact", "process"] },
-      requiredElements: nullable({ type: "array", items: idTextItem }),
-      supplementaryElements: { type: ["null", "array"], items: { type: "string" } },
-      commonErrors: { type: ["null", "array"], items: { type: "string" } },
+      requiredElements: nullableList(idTextItem(MAX_LESSON_TEXT_LENGTH, MAX_ELEMENT_ID_LENGTH), MIN_REQUIRED_ELEMENTS, MAX_REQUIRED_ELEMENTS),
+      supplementaryElements: nullableList(text(), undefined, MAX_SUPPLEMENTARY_ELEMENTS),
+      commonErrors: nullableList(text(), undefined, MAX_COMMON_ERRORS),
       expectedForm: { type: ["null", "string"], enum: [null, "short", "one_sentence", "explanation", "list"] },
-      familyId: { type: ["null", "string"] },
+      familyId: nullableText(MAX_FAMILY_ID_LENGTH),
       // Przy uziemieniu tablica cytatów musi być NIEPUSTA już w schemacie: bez
       // minItems model w ok. połowie odpowiedzi zwracał `[]` dla większości ćwiczeń
       // (sonda na prawdziwym LLM), a walidacja odrzucała je potem jako nieuziemione.
       sourceRefs: input.groundingRequired
-        ? { type: "array", minItems: 1, maxItems: 3, items: quoteItem }
-        : nullable({ type: "array", items: quoteItem }),
+        ? list(quoteItems, MIN_SOURCE_REFS, MAX_SOURCE_REFS)
+        : nullableList(quoteItems, undefined, MAX_SOURCE_REFS),
     },
   };
 }
 
-/** Strict discriminated parameters: neither free-text stimulus nor model answer. */
+/** Cytaty gałęzi z własnym schematem: przy uziemieniu obowiązkowe, inaczej nullowalne (strict wymaga pola). */
+function dedicatedSourceRefs(input: LessonPoolInput): Record<string, unknown> {
+  return input.groundingRequired === true
+    ? list(quoteItems, MIN_SOURCE_REFS, MAX_SOURCE_REFS)
+    : { ...list(quoteItems, undefined, MAX_SOURCE_REFS), type: ["array", "null"] };
+}
+
+/**
+ * Rachunek: ścisłe parametry metody, bez bodźca i odpowiedzi modelu. `tolerance` jest opcjonalne
+ * (brak = 0, kod liczy dokładny wynik), więc nie leży w `required`.
+ */
 function calculationExerciseSchema(objectiveId: string): Record<string, unknown> {
   const units = { type: "string", enum: ["cm", "m", "km"] };
-  const parameter = { type: "number", minimum: -1000000, maximum: 1000000 };
+  const parameter = { type: "number", minimum: -MAX_CALCULATION_PARAMETER, maximum: MAX_CALCULATION_PARAMETER };
   const nonnegative = { ...parameter, minimum: 0 };
-  const strictObject = (properties: Record<string, unknown>) => ({
-    type: "object", additionalProperties: false, required: Object.keys(properties), properties,
-  });
-  const branch = (kind: string, params: Record<string, unknown>) => strictObject({
-    kind: { type: "string", enum: [kind] },
-    params: strictObject(params), unit: units,
-    tolerance: { type: "number", minimum: 0 },
-    templateFamilyId: { type: "string", minLength: 1, maxLength: 64, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
-  });
+  const branch = (kind: string, params: Record<string, unknown>) => {
+    const properties = {
+      kind: { type: "string", enum: [kind] },
+      params: strictObject(params),
+      unit: units,
+      tolerance: { type: "number", minimum: 0 },
+      templateFamilyId: { type: "string", minLength: 1, maxLength: MAX_TEMPLATE_FAMILY_ID_LENGTH, pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    };
+    return { type: "object", additionalProperties: false, required: ["kind", "params", "unit", "templateFamilyId"], properties };
+  };
   return strictObject({
     exerciseType: { type: "string", enum: ["lesson_calculation"] },
     objectiveId: { type: "string", enum: [objectiveId] },
     calculation: { anyOf: [
-      branch("scale_distance", { scaleDenominator: { type: "integer", minimum: 1, maximum: 1000000000 }, mapDistanceCm: nonnegative }),
+      branch("scale_distance", { scaleDenominator: { type: "integer", minimum: 1, maximum: MAX_SCALE_DENOMINATOR }, mapDistanceCm: nonnegative }),
       branch("height_difference", { upperHeightM: parameter, lowerHeightM: parameter }),
       branch("unit_conversion", { value: nonnegative, fromUnit: units }),
     ] },
-    sourceRefs: { type: "array", minItems: 1, maxItems: 3, items: strictObject({ quote: { type: "string", minLength: 10, maxLength: 600 } }) },
+    sourceRefs: list(quoteItems, MIN_SOURCE_REFS, MAX_SOURCE_REFS),
   });
 }
 
@@ -122,35 +200,14 @@ function calculationExerciseSchema(objectiveId: string): Record<string, unknown>
  * odpowiedź (`answer`) składa kod z pojęć kluczowych, model jej nie podaje.
  */
 function keywordsExerciseSchema(objectiveId: string): Record<string, unknown> {
-  const strictObject = (properties: Record<string, unknown>) => ({
-    type: "object", additionalProperties: false, required: Object.keys(properties), properties,
-  });
   return strictObject({
     exerciseType: { type: "string", enum: ["lesson_keywords"] },
     objectiveId: { type: "string", enum: [objectiveId] },
-    familyId: { type: "string", minLength: 1, maxLength: 64 },
-    keywordOptions: {
-      type: "array", minItems: 4, maxItems: 6,
-      items: strictObject({ id: { type: "string", minLength: 1 }, text: { type: "string", minLength: 1, maxLength: 40 } }),
-    },
-    keyOptionIds: { type: "array", minItems: 2, maxItems: 3, items: { type: "string", minLength: 1 } },
-    sourceRefs: { type: "array", minItems: 1, maxItems: 3, items: strictObject({ quote: { type: "string", minLength: 10, maxLength: 600 } }) },
+    familyId: text(MAX_FAMILY_ID_LENGTH),
+    keywordOptions: list(idTextItem(MAX_KEYWORD_LENGTH), MIN_KEYWORD_OPTIONS, MAX_KEYWORD_OPTIONS),
+    keyOptionIds: list(id(), MIN_KEY_OPTIONS, MAX_KEY_OPTIONS),
+    sourceRefs: list(quoteItems, MIN_SOURCE_REFS, MAX_SOURCE_REFS),
   });
-}
-
-const strictObject = (properties: Record<string, unknown>) => ({
-  type: "object", additionalProperties: false, required: Object.keys(properties), properties,
-});
-const quoteItems = strictObject({ quote: { type: "string", minLength: 10, maxLength: 600 } });
-
-/**
- * Cytaty gałęzi pary/grupy/luki: przy uziemieniu 1–3 obowiązkowe, inaczej
- * nullowalne (tryb strict wymaga pola, więc przedmiot bez cytatów dostaje `null`).
- */
-function dedicatedSourceRefs(input: LessonPoolInput): Record<string, unknown> {
-  return input.groundingRequired === true
-    ? { type: "array", minItems: 1, maxItems: 3, items: quoteItems }
-    : { type: ["array", "null"], items: quoteItems };
 }
 
 /**
@@ -161,12 +218,9 @@ function matchExerciseSchema(input: LessonPoolInput, objectiveId: string): Recor
   return strictObject({
     exerciseType: { type: "string", enum: ["lesson_match"] },
     objectiveId: { type: "string", enum: [objectiveId] },
-    instructionPl: { type: "string", minLength: 1, maxLength: 120 },
-    pairs: {
-      type: "array", minItems: 3, maxItems: 5,
-      items: strictObject({ left: { type: "string", minLength: 1, maxLength: 40 }, right: { type: "string", minLength: 1, maxLength: 100 } }),
-    },
-    extraRight: { type: "array", maxItems: 2, items: { type: "string", minLength: 1, maxLength: 100 } },
+    instructionPl: text(),
+    pairs: list(strictObject({ left: text(MAX_MATCH_LEFT_LENGTH), right: text(MAX_MATCH_RIGHT_LENGTH) }), MIN_MATCH_PAIRS, MAX_MATCH_PAIRS),
+    extraRight: list(text(MAX_MATCH_RIGHT_LENGTH), undefined, MAX_MATCH_EXTRA),
     sourceRefs: dedicatedSourceRefs(input),
   });
 }
@@ -176,15 +230,9 @@ function groupExerciseSchema(input: LessonPoolInput, objectiveId: string): Recor
   return strictObject({
     exerciseType: { type: "string", enum: ["lesson_group"] },
     objectiveId: { type: "string", enum: [objectiveId] },
-    instructionPl: { type: "string", minLength: 1, maxLength: 120 },
-    groups: {
-      type: "array", minItems: 2, maxItems: 3,
-      items: strictObject({ id: { type: "string", minLength: 1, maxLength: 40 }, label: { type: "string", minLength: 1, maxLength: 30 } }),
-    },
-    groupItems: {
-      type: "array", minItems: 4, maxItems: 8,
-      items: strictObject({ text: { type: "string", minLength: 1, maxLength: 40 }, groupId: { type: "string", minLength: 1, maxLength: 40 } }),
-    },
+    instructionPl: text(),
+    groups: list(strictObject({ id: text(MAX_GROUP_ID_LENGTH), label: text(MAX_GROUP_LABEL_LENGTH) }), MIN_GROUPS, MAX_GROUPS),
+    groupItems: list(strictObject({ text: text(MAX_GROUP_ITEM_LENGTH), groupId: text(MAX_GROUP_ID_LENGTH) }), MIN_GROUP_ITEMS, MAX_GROUP_ITEMS),
     sourceRefs: dedicatedSourceRefs(input),
   });
 }
@@ -194,10 +242,10 @@ function clozeExerciseSchema(input: LessonPoolInput, objectiveId: string): Recor
   return strictObject({
     exerciseType: { type: "string", enum: ["lesson_cloze"] },
     objectiveId: { type: "string", enum: [objectiveId] },
-    instructionPl: { type: "string", minLength: 1, maxLength: 120 },
-    clozeText: { type: "string", minLength: 1, maxLength: 300 },
-    gapAnswers: { type: "array", minItems: 2, maxItems: 4, items: { type: "string", minLength: 1, maxLength: 30 } },
-    extraWords: { type: "array", minItems: 1, maxItems: 2, items: { type: "string", minLength: 1, maxLength: 30 } },
+    instructionPl: text(),
+    clozeText: text(MAX_CLOZE_TEXT_LENGTH),
+    gapAnswers: list(text(MAX_CLOZE_WORD_LENGTH), MIN_CLOZE_GAPS, MAX_CLOZE_GAPS),
+    extraWords: list(text(MAX_CLOZE_WORD_LENGTH), MIN_CLOZE_EXTRA, MAX_CLOZE_EXTRA),
     sourceRefs: dedicatedSourceRefs(input),
   });
 }
@@ -242,7 +290,7 @@ export function lessonPoolJsonSchema(input: LessonPoolInput): Record<string, unk
           required: ["objectiveId", "examples"],
           properties: {
             objectiveId: { type: "string", enum: objectiveIds },
-            examples: { type: "array", items: { type: "string" } },
+            examples: list(text(), undefined, MAX_CARD_EXAMPLES),
           },
         },
       },

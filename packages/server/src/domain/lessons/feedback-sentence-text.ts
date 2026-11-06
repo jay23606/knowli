@@ -1,4 +1,8 @@
 import { clozeGapCount, fillCloze } from "./cloze";
+import { FEEDBACK_SENTENCE_MAX_LENGTH } from "./rules/limits";
+
+/** Najdłuższe zdanie, które nagrywamy (stała w `rules/limits.ts`, bo podaje ją opis reguły). */
+export { FEEDBACK_SENTENCE_MAX_LENGTH };
 
 /** Pola payloadu ćwiczenia potrzebne do zbudowania poprawnego zdania do odczytu po odpowiedzi. */
 export interface FeedbackSentenceSource {
@@ -14,9 +18,6 @@ export interface FeedbackSentenceSource {
   readonly clozeText?: string;
   readonly gapAnswers?: readonly string[];
 }
-
-/** Najdłuższe zdanie, które nagrywamy (jak limit odpowiedzi dziecka). */
-export const FEEDBACK_SENTENCE_MAX_LENGTH = 200;
 
 /**
  * Pełne, poprawne zdanie ćwiczenia lekcji w języku odpowiedzi (albo krótki

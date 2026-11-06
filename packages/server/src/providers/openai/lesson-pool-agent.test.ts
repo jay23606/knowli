@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { APICallError, InvalidToolInputError, JSONParseError, NoObjectGeneratedError, NoOutputGeneratedError } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
-import { messages } from "@learning/contracts";
 import type {
   LessonAgentToolOutcome,
   LessonObjectiveAgentInput,
@@ -9,6 +8,7 @@ import type {
   LessonPoolInput,
   RunCostSink,
 } from "../../ports/ai";
+import { MAX_LESSON_TEXT_LENGTH } from "@learning/contracts";
 import { GenerationProviderError } from "../../ports/generation-error";
 import { currentUsageScope, withUsageScope, type UsageEvent, type UsageScope } from "../../ports/usage";
 import { createTestRecorder } from "../usage/test-recorder";
@@ -26,7 +26,7 @@ import {
 /**
  * Testy produkcyjnego adaptera AI SDK agenta puli (issue #237, etap 1 §6.1, etap 2a §4 i §12):
  * model zastępuje `MockLanguageModelV4` z `ai/test` albo zaślepiony `fetch` — bez sieci i bez
- * kluczy. Sprawdza kontrakt adaptera: materializację przed `submit`, zatrzymanie po
+ * kluczy. Sprawdza kontrakt adaptera: surowe rekordy do `submit` bez zmian, zatrzymanie po
  * `shouldStop()`, koszt i zapis kosztów każdego żądania, przerwanie sygnałem, mapowanie błędów
  * na `GenerationProviderError`, opcje dostawcy, jawny klucz i host oraz wyniki checkera.
  */
@@ -63,6 +63,7 @@ const POOL: LessonPoolInput = {
   subjectId: "subject",
   subjectTitle: "Subject",
   answerLocale: "en-GB",
+  answerMaxLength: MAX_LESSON_TEXT_LENGTH,
   promptLocale: "pl-PL",
   promptProfile: { generationRole: "role", gradingRole: "grade", almostDefinition: "almost" },
   exerciseTypes: ["lesson_card", "lesson_choice", "lesson_match", "lesson_gap"],
@@ -72,6 +73,7 @@ const POOL: LessonPoolInput = {
   countPerObjective: 6,
   stageCounts: { guided: 2, productive: 2, independent: 2 },
   graderAvailable: false,
+  ruleBook: { general: [{ id: "field.empty", text: "EMPTY-RULE." }], types: [], lesson: [], checks: [] },
 };
 
 function agentInput(overrides: Partial<LessonObjectiveAgentInput> = {}): LessonObjectiveAgentInput {
@@ -80,20 +82,32 @@ function agentInput(overrides: Partial<LessonObjectiveAgentInput> = {}): LessonO
     objective: { id: "subject.topic.animals", title: "Zwierzęta", cards: [{ title: "Słowa", body: "cat — kot" }], examplesFromPlan: false, index: 0, existingCount: 0 },
     otherObjectives: [],
     cardSentences: [],
-    targets: { guided: 2, productive: 2, independent: 3, requiredTypes: [], targetCount: 6, listenAllowance: 0, maxExercises: 8 },
+    targets: {
+      guided: 2,
+      productive: 2,
+      independent: 3,
+      requiredTypes: [],
+      targetCount: 6,
+      listenAllowance: 0,
+      maxExercises: 8,
+      publicationMinima: { guided: 3, productive: 4, independent: 2 },
+    },
     maxSteps: 8,
     ...overrides,
   };
 }
 
 const OUTCOME: LessonAgentToolOutcome = {
-  results: [{ index: 0, accepted: "ex1" }],
+  results: [{ index: 0, exerciseType: "lesson_match", stimulus: "Połącz słowo z tłumaczeniem.", accepted: "ex1" }],
   counts: { guided: 1, productive: 0, independent: 0, outsideStages: 0, total: 1 },
   missing: ["productive: 0 of 2"],
   complete: false,
 };
 
-/** Surowy rekord dopasowania z fałszywą odpowiedzią: materializacja składa ją z par. */
+/**
+ * Surowy rekord dopasowania z fałszywą odpowiedzią: adapter oddaje go bez zmian (materializację
+ * i odrzucenie robią narzędzia kierownika; testy w `domain/lessons/raw-materialize.test.ts`).
+ */
 const RAW_MATCH = {
   exerciseType: "lesson_match",
   objectiveId: "subject.topic.animals",
@@ -150,18 +164,24 @@ describe("openRouterCostOf", () => {
 });
 
 describe("objectiveInstructions (dopisek przepływu narzędzi)", () => {
-  it("dopisuje promptNotes przedmiotu; bez nich nie ma reguły o podpowiedzi (gramatyka zachowuje hint)", () => {
-    const noted = objectiveInstructions(agentInput({ promptNotes: ["NOTE-ONE about hints.", "NOTE-TWO."] }));
-    expect(noted).toContain("NOTE-ONE about hints.");
-    expect(noted).toContain("NOTE-TWO.");
-    const plain = objectiveInstructions(agentInput());
-    expect(plain).not.toContain("NOTE-ONE");
-    expect(plain).not.toContain("Hint only for lesson_open_answer");
+  it("składa prompt z księgą reguł, trybem narzędzi bez zdań potoku i minimami publikacji w Target", () => {
+    const text = objectiveInstructions(agentInput());
+    expect(text).toContain("[field.empty] EMPTY-RULE.");
+    expect(text).toContain('TOOL MODE: deliver exercises ONLY by calling submit_exercises, with objectiveId "subject.topic.animals"');
+    expect(text).not.toContain("ignore the instruction above to answer with JSON text");
+    expect(text).toContain(
+      "Publication minima of the complete objective pool (exercises already in the lesson count too): 3 guided, 4 productive and 2 independent.",
+    );
+    expect(text).toContain("each problem is named as [rule id] field: what is wrong");
+    const distinct = objectiveInstructions(
+      agentInput({ targets: { ...agentInput().targets, publicationMinima: { guided: 3, productive: 2, independent: 2, distinctOpenAnswers: 2 } } }),
+    );
+    expect(distinct).toContain("2 independent, including 2 lesson_open_answer questions with DIFFERENT model answers (one family counts once).");
   });
 });
 
 describe("AiSdkLessonPoolAgent (MockLanguageModelV4, bez sieci)", () => {
-  it("materializuje surowe rekordy przed submit i kończy pętlę po kroku, gdy shouldStop() zwraca true", async () => {
+  it("oddaje surowe rekordy do submit bez materializacji i kończy pętlę po kroku, gdy shouldStop() zwraca true", async () => {
     const model = new MockLanguageModelV4({
       doGenerate: [toolCallResult("submit_exercises", { exercises: [RAW_MATCH], examples: ["I have a cat."] }), textResult("never reached")],
     });
@@ -175,31 +195,10 @@ describe("AiSdkLessonPoolAgent (MockLanguageModelV4, bez sieci)", () => {
     expect(model.doGenerateCalls).toHaveLength(1);
     expect(submitted).toHaveLength(1);
     expect(submitted[0]!.examples).toEqual(["I have a cat."]);
-    expect(submitted[0]!.exercises[0]).toMatchObject({ exerciseType: "lesson_match", answer: "cat, dog, cow", acceptedAnswers: [], focus: [] });
+    expect(submitted[0]!.exercises).toEqual([RAW_MATCH]);
     expect(cost.values).toEqual([0.01]);
     // Opcje dostawcy, bez ponowień SDK.
     expect(model.doGenerateCalls[0]!.providerOptions).toEqual({ openrouter: { reasoning: { effort: "low" } } });
-  });
-
-  it("rachunek: kod liczy odpowiedź i treść przed submit zamiast ufać polom modelu", async () => {
-    const material = "Skala mapy pozwala przeliczyć odległość na mapie na odległość w terenie.";
-    const calculation = {
-      exerciseType: "lesson_calculation",
-      objectiveId: "subject.topic.animals",
-      calculation: { kind: "scale_distance", params: { scaleDenominator: 25000, mapDistanceCm: 3 }, unit: "m", templateFamilyId: "map-scale" },
-      sourceRefs: [{ quote: material }],
-    };
-    const injected = { ...calculation, answer: "999 km", prompt: "Nowe fakty geograficzne", focus: ["999"], acceptedAnswers: ["999"] };
-    const model = new MockLanguageModelV4({ doGenerate: [toolCallResult("submit_exercises", { exercises: [injected] }), textResult("never reached")] });
-    const { tools, submitted } = fakeTools([], { stopAfterSubmit: true });
-
-    await new AiSdkLessonPoolAgent({ apiKey: "", model: "test-model", effort: "low", languageModel: model }).runObjective(agentInput(), tools, recordingCost([]), new AbortController().signal);
-
-    expect(submitted[0]!.exercises[0]).toMatchObject({
-      ...calculation, answer: "750 m", focus: [], acceptedAnswers: [],
-      prompt: "Na mapie w skali 1:25 000 odcinek ma 3 cm. Oblicz odległość w terenie w m.",
-      instructionPl: messages.kid.lessonCalculationInstruction,
-    });
   });
 
   it("nie woła modelu, gdy zagadnienie jest zamknięte przed pierwszym krokiem", async () => {

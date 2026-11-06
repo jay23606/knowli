@@ -44,8 +44,8 @@ describe("chapterAgentPolicy — wartości i typy", () => {
   it("nie ma sędziego podpowiedzi ani kontroli otwartej (zachowanie jak w 2a)", () => {
     expect(chapterAgentPolicy.hintJudgeTypes).toBeUndefined();
     expect(chapterAgentPolicy.openAnswerCheckTypes).toBeUndefined();
-    for (const key of ["hintUnsupported", "hintLanguage", "hintReveals", "openMissing", "openWrong"] as const) {
-      expect(chapterAgentPolicy.rejectionTexts[key]).toBeUndefined();
+    for (const key of ["check.hint_judge", "check.open_answer"]) {
+      expect(chapterAgentPolicy.ruleNotes?.[key]).toBeUndefined();
     }
   });
 
@@ -73,12 +73,17 @@ describe("chapterAgentPolicy — wartości i typy", () => {
     expect(chapterAgentPolicy.variantCheckTypes).toEqual(["lesson_open_answer", "lesson_gap"]);
   });
 
-  it("leakSource ma ustaloną treść", () => {
-    expect(chapterAgentPolicy.rejectionTexts.leakSource).toBe("Use a different sentence.");
+  it("dopisek lesson.leak_source ma ustaloną treść", () => {
+    expect(chapterAgentPolicy.ruleNotes?.["lesson.leak_source"]).toBe("Use a different sentence.");
   });
 
-  it("leakVictim podpowiada zmianę pokoju, przedmiotu lub miejsca", () => {
-    expect(chapterAgentPolicy.rejectionTexts.leakVictim).toContain("change the room, object or place");
+  it("dopisek lesson.leak podpowiada zmianę pokoju, przedmiotu lub miejsca", () => {
+    expect(chapterAgentPolicy.ruleNotes?.["lesson.leak"]).toContain("change the room, object or place");
+  });
+
+  it("dopisek check.blind_solve: polskie zdanie źródłowe wskazuje jedno sformułowanie, szyki w acceptedAnswers", () => {
+    expect(chapterAgentPolicy.ruleNotes?.["check.blind_solve"]).toContain("(pronoun, tense, word order)");
+    expect(chapterAgentPolicy.ruleNotes?.["check.blind_solve"]).toContain("acceptedAnswers");
   });
 });
 
@@ -101,7 +106,12 @@ describe("exerciseGate — słowa kart", () => {
     expect(gate(draft({ stem: "I sleep in a ___.", answer: "bed" }), bedCard)).toEqual([]);
     const findings = gate(draft({ stem: "I turn on the ___.", answer: "lamp" }), bedCard);
     expect(findings.map((finding) => finding.code)).toEqual(["card_word_missing"]);
-    expect(findings[0]!.reason).toContain("bed");
+    expect(findings[0]!.issue.rule).toBe("chapter.card_word_missing");
+    expect(findings[0]!.issue.field).toBe("answer");
+    // Do modelu idzie angielski tekst bramki (`found`), rodzic ma krótki polski opis.
+    expect(findings[0]!.issue.found).toContain("bed");
+    expect(findings[0]!.issue.found).toMatch(/^the checked answer must contain a word of THIS objective's cards/);
+    expect(findings[0]!.issue.pl).toBe("answer: sprawdzane słowo musi pochodzić z kart tego zagadnienia");
   });
 
   it("para dwóch słów kart przechodzi, z jednym dostaje card_word_missing", () => {
@@ -173,7 +183,10 @@ describe("exerciseGate — rama zagadnienia", () => {
     const order = draft({ exerciseType: "lesson_order", answer: "I'm wearing a red coat" });
     const findings = gate(order, frameObjective);
     expect(findings.map((finding) => finding.code)).toEqual(["frame_missing"]);
-    expect(findings[0]!.reason).toContain("there's a");
+    expect(findings[0]!.issue.rule).toBe("chapter.frame_missing");
+    expect(findings[0]!.issue.found).toContain("there's a");
+    expect(findings[0]!.issue.found).toMatch(/^the solved sentence must contain the fixed part of a sentence frame/);
+    expect(findings[0]!.issue.pl).toBe("answer: rozwiązanie musi zawierać stałą część ramy z kart tego zagadnienia");
   });
 
   it("luka: zdanie po wstawieniu odpowiedzi musi zawierać ramę", () => {

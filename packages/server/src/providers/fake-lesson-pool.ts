@@ -523,8 +523,8 @@ function chapterObjectiveExercises(input: LessonObjectiveAgentInput, offset: num
 }
 
 /**
- * Zgłoszenie jednego kroku podagenta zagadnienia `input.objective` (surowe rekordy po
- * `materializeGeneratedCalculations`, jak z adaptera modelu). Numeracja i dobór odpowiedzi od `offset`
+ * Zgłoszenie jednego kroku podagenta zagadnienia `input.objective` (rekordy gotowe, rachunki po
+ * `materializeGeneratedCalculations`; materializacja narzędzi przepuszcza je bez zmian). Numeracja i dobór odpowiedzi od `offset`
  * (pętla fake'a agenta: `index · 1000`, przy „+N” `index · 1000 + 500 + existingCount · 2`, kolejne
  * kroki +100), więc zagadnienia lekcji i kroki nie powtarzają odpowiedzi.
  *

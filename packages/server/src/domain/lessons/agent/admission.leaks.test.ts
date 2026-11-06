@@ -24,12 +24,13 @@ function rejectionOf(entry: AdmitEntry | undefined) {
 }
 
 describe("przyjmowanie paczki — ujawnienia (tryb generation)", () => {
-  it("kandydat samodzielny równy przykładowi karty: leak_victim z tekstem polityki i przykładem", () => {
+  it("kandydat samodzielny równy przykładowi karty: leak_victim z regułą lesson.leak i przykładem", () => {
     const state = stateWith({ examples: { [A]: ["w 966 roku"] } });
     const rejection = rejectionOf(submit(state, A, [open(A, "Kiedy?", "w 966 roku")]).results[0]);
     expect(rejection.kind).toBe("leak");
     expect(rejection.code).toBe("leak_victim");
-    expect(rejection.reasons[0]).toMatch(/^leak victim /);
+    expect(rejection.reasons[0]).toMatch(/^\[lesson\.leak\] answer: the child already sees this answer in /u);
+    expect(rejection.ruleIds).toEqual(["lesson.leak"]);
     expect(rejection.reasons[0]).toContain('the card example "w 966 roku"');
   });
 
@@ -42,7 +43,8 @@ describe("przyjmowanie paczki — ujawnienia (tryb generation)", () => {
     const state = acceptAll(stateWith(), A, [open(A, "Rok chrztu?", "966")]);
     const rejection = rejectionOf(submit(state, A, [gap(A, "Chrzest Polski w roku ___.", "966")]).results[0]);
     expect(rejection).toMatchObject({ kind: "leak", code: "leak_source" });
-    expect(rejection.reasons[0]).toMatch(/^leak source /);
+    expect(rejection.reasons[0]).toMatch(/^\[lesson\.leak_source\] answer: it would reveal the answer of /u);
+    expect(rejection.ruleIds).toEqual(["lesson.leak_source"]);
     expect(rejection.reasons[0]).toContain('exercise ex1 "966"');
   });
 
@@ -70,7 +72,7 @@ describe("przyjmowanie paczki — ujawnienia (tryb generation)", () => {
   it("ofiara ujawniona już przed kandydatem nie odrzuca kandydata", () => {
     const state = stateWith({ examples: { [A]: ["966"] }, fixed: [open(A, "Rok chrztu?", "966")] });
     const result = submit(state, A, [gap(A, "Chrzest Polski w roku ___.", "966")]);
-    expect(result.results[0]).toEqual({ accepted: "ex1", sanitized: [], unchecked: false });
+    expect(result.results[0]).toEqual({ accepted: "ex1", sanitized: [], unchecked: false, notes: [], removedVariants: [], quotesSnapped: 0 });
     expect(poolOf(result.state, A)).toHaveLength(1);
   });
 

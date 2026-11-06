@@ -1,5 +1,7 @@
+import { explanationRemovalNotes } from "../../../domain/lessons/exercise-explanation";
 import { stripListenChoiceExtras } from "../../../domain/lessons/material-creation";
 import { withoutRedundantAcceptedVariants } from "../../../domain/lessons/pool-validation";
+import type { LessonRuleIssue } from "../../../domain/lessons/rules/catalog";
 import type { LessonExerciseDraft, SubjectModule } from "../../../domain/lessons/types";
 import {
   scopeFamiliesToRun,
@@ -10,7 +12,11 @@ import {
 
 export interface SanitizedFreshDraft {
   readonly draft: LessonExerciseDraft;
-  readonly droppedExplanation: boolean;
+  /**
+   * Noty usuniętego wyjaśnienia (`explanation.*`, `found` „removed: …”) dla wyniku narzędzia agenta;
+   * pusta lista = wyjaśnienie zostało albo go nie było.
+   */
+  readonly explanationNotes: readonly LessonRuleIssue[];
   /** Liczba wariantów `acceptedAnswers` porzuconych jako redundantne wobec odpowiedzi kanonicznej. */
   readonly droppedVariants: number;
 }
@@ -32,14 +38,14 @@ export function sanitizeFreshLessonDraft(
 ): SanitizedFreshDraft {
   const toned = withoutVoiceToneUnlessAllowed(draft, subject);
   const explained = withoutInvalidExplanation(toned, subject);
-  const droppedExplanation = explained !== toned;
+  const explanationNotes = explained === toned || toned.explanationPl === undefined ? [] : explanationRemovalNotes(toned.explanationPl, subject);
   // Ćwiczenie słuchowe nie ma polecenia, podpowiedzi ani piktogramu: dodatek modelu usuwamy, nie odrzucamy ćwiczenia.
   const stripped = stripListenChoiceExtras(withoutEmptyOptionalArrays(explained));
   const scoped = familyScope === null ? stripped : scopeFamiliesToRun(stripped, familyScope);
   const sanitized = withoutRedundantAcceptedVariants(scoped, subject.normalizer);
   return {
     draft: sanitized,
-    droppedExplanation,
+    explanationNotes,
     droppedVariants: scoped.acceptedAnswers.length - sanitized.acceptedAnswers.length,
   };
 }

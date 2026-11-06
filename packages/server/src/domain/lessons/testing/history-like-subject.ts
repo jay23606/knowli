@@ -1,5 +1,6 @@
 import type { LearningObjective, LessonTopic, SubjectModule } from "../types";
 import { baseNormalizer } from "../normalize";
+import { defineRules } from "../rules/catalog";
 import { HISTORY_LIKE_EXERCISE_TYPES, testAgentPolicy } from "./test-agent-policy";
 
 /**
@@ -72,4 +73,6 @@ export const historyLikeSubject: SubjectModule = {
   ttsForFeedbackSentence: false,
   exerciseExplanations: false,
   agentPolicy: testAgentPolicy,
+  // Minimalny (pusty) katalog reguł przedmiotu testowego.
+  rules: defineRules({}),
 };

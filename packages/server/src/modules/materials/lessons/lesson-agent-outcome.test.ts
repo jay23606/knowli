@@ -425,7 +425,7 @@ describe("outcomeObjectivesOf", () => {
 });
 
 describe("mergeAttemptIntoProgress", () => {
-  const rejection = (code: string) => ({ objectiveId: A, exerciseType: "lesson_gap", kind: "rule" as const, code, detail: "treść" });
+  const rejection = (code: string) => ({ objectiveId: A, exerciseType: "lesson_gap", kind: "rule" as const, code, ruleIds: ["lesson.leak"], detail: "treść" });
 
   it("pula: wznowione zastępuje wpis, complete zostaje; wydatek, histogram i usunięcia sumowane", () => {
     const start = progressWith({
@@ -612,7 +612,7 @@ describe("agentRejectedReasons", () => {
   });
 
   it("każdy kod odrzucenia emitowany przez przyjęcie, narzędzia agenta, bramki przedmiotów i kontrole 2b ma etykietę", () => {
-    // Skan źródeł emiterów kodów: `reject(rodzaj, "kod"`, `code: "kod"` (odrzucenia narzędzi, bramki
+    // Skan źródeł emiterów kodów: `reject(rodzaj, "kod"` i `rejectionOf(rodzaj, "kod"`, `code: "kod"` (odrzucenia narzędzi, bramki
     // przedmiotów, kontrola otwarta) i krotki `["hint_…", …]` sędziego podpowiedzi. Nowy kod bez etykiety
     // pokazałby się rodzicowi jako „inne powody”.
     const subjectsDir = new URL("../../../domain/lessons/subjects/", import.meta.url);
@@ -623,16 +623,33 @@ describe("agentRejectedReasons", () => {
     const codes = new Set<string>();
     for (const file of files) {
       const text = readFileSync(file, "utf8");
-      for (const pattern of [/reject\(\s*"[a-z]+",\s*"([a-z_]+)"/gu, /\bcode: "([a-z_]+)"/gu, /\["(hint_[a-z_]+)",/gu]) {
+      for (const pattern of [/\b(?:reject|rejectionOf)\(\s*"[a-z]+",\s*"([a-z_]+)"/gu, /\bcode: "([a-z_]+)"/gu, /\["(hint_[a-z_]+)",/gu]) {
         for (const match of text.matchAll(pattern)) codes.add(match[1]!);
       }
     }
     // Skan działa: znajduje kody z każdego źródła (przyjęcie, narzędzia, bramki rozdziału i szkoły, kontrole 2b).
-    for (const known of ["limit_full", "leak_victim", "variant_rejected", "refine", "open_not_accepted", "shape_malformed", "card_word_missing", "hint_reveals_answer", "hint_language"]) {
+    for (const known of ["limit_full", "leak_victim", "rule_exercise", "refine", "open_not_accepted", "shape_malformed", "card_word_missing", "hint_language"]) {
       expect(codes, known).toContain(known);
+    }
+    // Bramka podpowiedzi szkoły już nie odrzuca (podpowiedź jest usuwana z notą), a odrzucony wariant
+    // jest usuwany z notą `check.variants`; etykiety obu kodów zostają dla szkiców zapisanych wcześniej
+    // z tymi kodami w `rejectedReasons`.
+    for (const retired of ["hint_reveals_answer", "variant_rejected"]) {
+      expect(codes).not.toContain(retired);
+      expect(Object.hasOwn(labels, retired)).toBe(true);
     }
     expect(policies.length).toBeGreaterThanOrEqual(2);
     expect([...codes].filter((code) => !Object.hasOwn(labels, code))).toEqual([]);
+  });
+
+  it("szkic zapisany przed zmianą z kodami hint_reveals_answer i variant_rejected: etykiety, nie „inne powody”", () => {
+    const stored = JSON.parse('{"hint_reveals_answer":2,"variant_rejected":3}') as Record<string, number>;
+    expect(agentRejectedReasons(stored)).toEqual({
+      [labels.hint_reveals_answer!]: 2,
+      [labels.variant_rejected!]: 3,
+    });
+    expect(labels.hint_reveals_answer).toBe("podpowiedź zdradza odpowiedź");
+    expect(labels.variant_rejected).toBe("niepoprawny wariant odpowiedzi");
   });
 
   it("każdy kod z katalogu ma etykietę bez treści ćwiczeń (krótka, bez cudzysłowów)", () => {

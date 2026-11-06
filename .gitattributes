@@ -2,3 +2,6 @@
 integrations/umiem-mcp/src/umiem_mcp/learning-overview.schema.json text eol=lf
 integrations/umiem-mcp/skills/umiem-learning/SKILL.md text eol=lf
 docs/integrations/learning-overview.schema.json text eol=lf
+
+# Migawki testów (np. prompt agenta lekcji): porównywane bajt w bajt, więc LF niezależnie od systemu.
+**/__snapshots__/** text eol=lf

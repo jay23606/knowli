@@ -1,30 +1,16 @@
-import { CalculationSpecSchema, messages } from "@learning/contracts";
-import { computeCalculationAnswer, renderCalculationPrompt } from "../domain/lessons/calculation";
+import { materializeRawExercise } from "../domain/lessons/raw-materialize";
 
-/** Convert parameter-only model output before the common draft-shape guard. */
+/**
+ * Materializacja rachunków dla fake'a agenta i testu integracyjnego (opakowanie
+ * domenowego `materializeRawExercise` z dzisiejszym zachowaniem): kod liczy
+ * odpowiedź i treść także wtedy, gdy rekord niesie `answer`, a wadliwy rekord
+ * dostaje `answer: undefined`, więc narzędzia agenta odrzucą go pojedynczo.
+ */
 export function materializeGeneratedCalculations(exercises: unknown[]): unknown[] {
   return exercises.map((raw) => {
     if (!raw || typeof raw !== "object" || (raw as { exerciseType?: unknown }).exerciseType !== "lesson_calculation") return raw;
-    const record = raw as Record<string, unknown>;
-    try {
-      const calculation = CalculationSpecSchema.parse(record.calculation);
-      return {
-        exerciseType: "lesson_calculation",
-        objectiveId: record.objectiveId,
-        // The model branch has no instruction; the code supplies the shared one.
-        instructionPl: messages.kid.lessonCalculationInstruction,
-        calculation,
-        prompt: renderCalculationPrompt(calculation),
-        answer: computeCalculationAnswer(calculation).answer,
-        acceptedAnswers: [],
-        focus: [],
-        // Keep untrusted quotes for normal grounding validation and flag stripping.
-        sourceRefs: record.sourceRefs,
-      };
-    } catch {
-      // An injected answer must not let malformed params reach validators that
-      // assume a valid spec. Keep the record counted, but force shape rejection.
-      return { ...record, answer: undefined };
-    }
+    const record = { ...(raw as Record<string, unknown>), answer: undefined };
+    const result = materializeRawExercise(record);
+    return result.ok ? result.record : record;
   });
 }

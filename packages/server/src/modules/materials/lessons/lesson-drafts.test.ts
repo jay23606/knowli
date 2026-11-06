@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createServices } from "../../../config";
 import { LessonDraftDtoSchema, type CalculationSpec } from "@learning/contracts";
 import { englishGrammarSubject } from "../../../domain/lessons/subjects/english-grammar/module";
+import { familyBase } from "../../../domain/lessons/keyword-families";
 import { validatePool } from "../../../domain/lessons/pool-validation";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
@@ -402,7 +403,7 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
     expect(withRules).not.toHaveProperty("objectivesRules");
     const bare = build({ ...schoolSubject, prompts: { ...schoolSubject.prompts, typeRules: undefined } }).promptProfile;
     expect(bare).not.toHaveProperty("typeRules");
-    expect(build(englishGrammarSubject).promptProfile).not.toHaveProperty("typeRules");
+    expect(build(englishGrammarSubject).promptProfile.typeRules).toEqual(englishGrammarSubject.prompts.typeRules);
   });
 
   describe("tematy zdań z zainteresowań dziecka", () => {
@@ -602,6 +603,12 @@ describe("scopeFamiliesToRun (dogenerowanie nie dołącza do istniejących rodzi
     expect(slug.length).toBeLessThanOrEqual(64);
     expect(slug).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
     expect(slug.endsWith("-r3f2a9c")).toBe(true);
+  });
+
+  it("familyBase z domeny zdejmuje ten sam sufiks (wspólny format `familyRunSuffix`)", () => {
+    const scope = "nonce:3f2a9c1e-0000-4000-8000-000000000000:2:0";
+    const open = scopeFamiliesToRun({ exerciseType: "lesson_open_answer", objectiveId: "o", answer: "a", acceptedAnswers: [], focus: [], familyId: "foto-def" }, scope);
+    expect(familyBase(open.familyId!, scope)).toBe("foto-def");
   });
 });
 

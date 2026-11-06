@@ -207,15 +207,35 @@ describe("runLessonPoolAgent — przebieg zagadnień", () => {
     });
     const result = await runLessonPoolAgent(deps, runInput(), never);
     const lines = log.mock.calls.map((call) => String(call[0])).filter((line) => line.startsWith("[lesson-agent]"));
-    // Kolejność zakończenia (B rzuca od razu); porównanie bez kolejności.
+    // Kolejność zakończenia (B rzuca od razu); porównanie bez kolejności. Odrzucenie: kod, typ i id reguł, bez treści.
+    const rejection = result.rejections[0]!;
     expect([...lines].sort()).toEqual([
-      `[lesson-agent] run=run-1 obj=${SLUG_A} status=incomplete steps=1 accepted=1 rejected=${result.rejections[0]!.code}:1 costUsd=0.0200`,
-      `[lesson-agent] run=run-1 obj=${SLUG_B} status=failed error=provider steps=1 accepted=0 rejected=- costUsd=0.0200`,
+      `[lesson-agent] run=run-1 obj=${SLUG_A} rejected code=${rejection.code} type=lesson_choice rules=${rejection.ruleIds.join(",")}`,
+      `[lesson-agent] run=run-1 obj=${SLUG_A} status=incomplete steps=1 accepted=1 rejected=${rejection.code}:1 hintsRemoved=0 variantsRemoved=0 quotesSnapped=0 costUsd=0.0200`,
+      `[lesson-agent] run=run-1 obj=${SLUG_B} status=failed error=provider steps=1 accepted=0 rejected=- hintsRemoved=0 variantsRemoved=0 quotesSnapped=0 costUsd=0.0200`,
     ]);
+    expect(rejection.ruleIds.length).toBeGreaterThan(0);
     const detail = result.rejections[0]!.detail;
     expect(detail.length).toBeGreaterThan(0);
     for (const line of lines) expect(line).not.toContain(detail);
     expect(lines.join("\n")).not.toContain("Pytanie numer");
+  });
+
+  it("prywatność logów: odrzucenie z cytatem treści w `found` loguje tylko kod, id reguł i typ — bez `found`, `pl` i treści", async () => {
+    const quoted = { ...choice(A, 1), options: [{ id: "a", text: "CYTAT-MARKER" }, { id: "b", text: "CYTAT-MARKER" }], correctOption: "a", answer: "CYTAT-MARKER" };
+    const { deps } = setup({ agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [quoted] } }], [SLUG_B]: [] } } });
+    const result = await runLessonPoolAgent(deps, runInput(), never);
+    const rejection = result.rejections.find((entry) => entry.objectiveId === A)!;
+    // Powód dla modelu cytuje treść ćwiczenia (found), więc test sprawdza właściwy przypadek.
+    expect(rejection.detail).toContain("CYTAT-MARKER");
+    const written = (["log", "error", "warn", "info", "debug"] as const).flatMap((method) =>
+      vi.isMockFunction(console[method]) ? vi.mocked(console[method]).mock.calls.map((call) => call.map(String).join(" ")) : [],
+    );
+    expect(written.join("\n")).not.toContain("CYTAT-MARKER");
+    for (const line of written) expect(line).not.toContain(rejection.detail);
+    const line = written.find((entry) => entry.includes(" rejected code="))!;
+    expect(line).toBe(`[lesson-agent] run=run-1 obj=${SLUG_A} rejected code=${rejection.code} type=lesson_choice rules=${rejection.ruleIds.join(",")}`);
+    expect(line).not.toMatch(/[ąćęłńóśźż]/iu);
   });
 
   it("prywatność: do checkera nie trafiają polecenie, tematy zdań, karty, przykłady ani materiał", async () => {
@@ -287,18 +307,18 @@ describe("runLessonPoolAgent — przebieg zagadnień", () => {
     expect(result.objectives[0]!.missing).toContain("independent: 0 of 3");
   });
 
-  it("promptNotes z polityki przedmiotu: szkoła dostaje dopisek o podpowiedzi, przedmiot bez dopisków — brak pola", async () => {
-    expect(schoolAgentPolicy.promptNotes).toEqual(["Hint only for lesson_open_answer: the hint field must be null for every other exercise type."]);
-    const noted = withAgentPolicy(plain, { promptNotes: schoolAgentPolicy.promptNotes });
-    const withNotes = setup({ subjects: [noted] });
-    await runLessonPoolAgent(withNotes.deps, runInput({ subjectId: noted.id }), never);
-    for (const call of withNotes.agent.calls) expect(call.input.promptNotes).toEqual(schoolAgentPolicy.promptNotes);
-
-    const without = setup();
-    await runLessonPoolAgent(without.deps, runInput(), never);
-    for (const call of without.agent.calls) expect(call.input).not.toHaveProperty("promptNotes");
-    expect(englishGrammarSubject.agentPolicy.promptNotes).toBeUndefined();
-    expect(englishChapterSubject.agentPolicy.promptNotes).toBeUndefined();
+  it("wejście podagenta niesie księgę reguł zagadnienia i minima publikacji; bez promptNotes", async () => {
+    const run = setup();
+    await runLessonPoolAgent(run.deps, runInput(), never);
+    expect(run.agent.calls.length).toBeGreaterThan(0);
+    for (const call of run.agent.calls) {
+      expect(call.input).not.toHaveProperty("promptNotes");
+      expect(call.input.pool.ruleBook.general.length + call.input.pool.ruleBook.types.length).toBeGreaterThan(0);
+      expect(call.input.targets.publicationMinima).toEqual(expect.objectContaining({ guided: expect.any(Number), independent: expect.any(Number) }));
+    }
+    for (const subject of [schoolSubject, englishGrammarSubject, englishChapterSubject]) {
+      expect(subject.agentPolicy).not.toHaveProperty("promptNotes");
+    }
   });
 });
 
@@ -1003,7 +1023,7 @@ describe("runLessonPoolAgent — grader kontroli otwartej (etap 2b)", () => {
     hintJudgeTypes: schoolAgentPolicy.hintJudgeTypes!,
     openAnswerCheckTypes: schoolAgentPolicy.openAnswerCheckTypes!,
     checkerNeedsMaterial: true,
-    rejectionTexts: schoolAgentPolicy.rejectionTexts,
+    ruleNotes: schoolAgentPolicy.ruleNotes!,
   });
   const ELEMENTS = [
     { id: "e1", text: "Wisła" },

@@ -38,7 +38,7 @@ import {
   type FakeAgentStep,
   type FakeLessonPoolAgentOptions,
 } from "../../packages/server/src/providers/fake-lesson-agent";
-import type { HintVerdict, LessonObjectiveAgentInput } from "../../packages/server/src/ports/ai";
+import type { HintVerdict, LessonAgentToolOutcome, LessonObjectiveAgentInput } from "../../packages/server/src/ports/ai";
 import {
   DEFAULT_LESSON_GENERATION_POLICY,
   type LessonGenerationPolicy,
@@ -581,6 +581,19 @@ describe("agent puli lekcji (integracja)", () => {
       const labels = messages.lessons.agentRejectionReasons;
       const reasonsOf = (version: VersionRow) => (version.lesson_context as { rejectedReasons?: Record<string, number> }).rejectedReasons;
       const malformed = { notAnExercise: true };
+      /** Tekst `found` z powodów, które model dostał w wynikach narzędzia (`[id] pole: found`). */
+      const foundTexts = (agent: AgentWorld["agent"]): string[] =>
+        agent.calls
+          .flatMap((call) => call.outcomes as LessonAgentToolOutcome[])
+          .flatMap((outcome) => outcome.results)
+          .flatMap((result) => ("errors" in result ? result.errors : []))
+          .map((reason) => reason.slice(reason.indexOf(": ") + 2))
+          .filter((found) => found.length > 0);
+      /** `rejectedReasons` szkicu: wyłącznie etykiety kodów odrzuceń z `messages.ts`, bez treści. */
+      const expectOnlyCodeLabels = (reasons: Record<string, number> | undefined): void => {
+        const known = new Set(Object.values(labels));
+        for (const key of Object.keys(reasons ?? {})) expect(known.has(key), key).toBe(true);
+      };
 
       it("rozdział: 2 z 6 ćwiczeń ze słowem spoza kart → etykieta „brak słowa z kart” ×2, bez słowa w szkicu", async () => {
         // Słowo z materiału, którego nie ma na kartach zagadnienia (przechodzi reguły materiału, nie bramkę kart).
@@ -600,7 +613,7 @@ describe("agent puli lekcji (integracja)", () => {
             correctOption: "a",
           };
         };
-        const { services } = await agentWorld({
+        const { services, agent } = await agentWorld({
           objectives: {
             part_1: [
               {
@@ -630,10 +643,16 @@ describe("agent puli lekcji (integracja)", () => {
         expect(reasonsOf(version)?.[labels.card_word_missing!]).toBe(2);
         expect(reasonsOf(version)).toEqual({ [labels.card_word_missing!]: 2 });
         for (const word of ["coat", "boots", "scarf", "gloves"]) expect(JSON.stringify(reasonsOf(version))).not.toContain(word);
+        // Prywatność (spec katalogu reguł §4.1, §7): histogram ma tylko kody, punkt kontrolny bez `found`.
+        expectOnlyCodeLabels(reasonsOf(version));
+        const found = foundTexts(agent);
+        expect(found.length).toBeGreaterThan(0);
+        const checkpoint = JSON.stringify((await fullRun(runId)).agent_checkpoint ?? null);
+        for (const text of found) expect(checkpoint).not.toContain(text);
       });
 
       it("pełne odrzucenie → failed validation, szkic ma etykietę; „Ponów” sumuje kody obu prób bez podwojenia", async () => {
-        const { services } = await agentWorld({
+        const { services, agent } = await agentWorld({
           objectives: { third_person_s: { calls: [[{ submit: { exercises: [malformed] } }], [{ submit: { exercises: [malformed, malformed] } }]] } },
         });
         const { runId } = await createLesson(services, command());
@@ -649,6 +668,11 @@ describe("agent puli lekcji (integracja)", () => {
         const saved = parseLessonAgentProgress(failed.agent_checkpoint, runId)!;
         expect(saved.rejectionCodes).toEqual({ shape_malformed: 1 });
         expect(saved.rejectionCodesWritten).toEqual({ shape_malformed: 1 });
+        // Pełny postęp w kolumnie agent_checkpoint nie zawiera tekstu `found` odrzuceń.
+        expectOnlyCodeLabels(reasonsOf(await versionOf(runId)));
+        const found = foundTexts(agent);
+        expect(found.length).toBeGreaterThan(0);
+        for (const text of found) expect(JSON.stringify(failed.agent_checkpoint)).not.toContain(text);
 
         await retryGeneration(services, runId);
         await executeLessonGeneration(services, runId);

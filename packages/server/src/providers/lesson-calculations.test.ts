@@ -4,9 +4,9 @@ import { materializeGeneratedCalculations } from "./lesson-calculations";
 import { isWellShapedRawExercise } from "../modules/materials/lessons/lesson-drafts";
 
 /**
- * Materializacja rachunków z surowego wyjścia generatora: wspólna dla adaptera agenta puli
- * (`materializeRawExercises`, test w `openai/lesson-pool-agent.test.ts`) i generatora fake'a agenta
- * (`fakeObjectiveExercises`). Kod liczy odpowiedź i treść; wadliwe rekordy zostają do odrzucenia.
+ * Opakowanie materializacji rachunków dla generatora fake'a agenta (`fakeObjectiveExercises`) i testu
+ * integracyjnego; ścieżka agenta materializuje w narzędziach (`materializeRawExercise`, test w
+ * `domain/lessons/raw-materialize.test.ts`). Kod liczy odpowiedź i treść; wadliwe rekordy zostają do odrzucenia.
  */
 
 const material = "Skala mapy pozwala przeliczyć odległość na mapie na odległość w terenie.";

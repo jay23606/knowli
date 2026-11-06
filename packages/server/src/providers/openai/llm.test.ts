@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createOpenAiLlmProvider, lessonSystemPrompt, lessonUserMaterial } from "./llm";
+import { MAX_LESSON_TEXT_LENGTH } from "@learning/contracts";
+import { createOpenAiLlmProvider, EXAMPLES_NOTE, lessonSystemPrompt, lessonUserMaterial, renderRuleBook } from "./llm";
 import { lessonPoolJsonSchema } from "./lesson-pool-schema";
-import type { LessonPoolInput, LessonStoryInput } from "../../ports/ai";
+import type { LessonPoolInput, LessonRuleBookInput, LessonStoryInput } from "../../ports/ai";
 import type { LlmGenerateDeckInput } from "../../ports/ai";
 import { englishGrammarSubject } from "../../domain/lessons/subjects/english-grammar/module";
 import { schoolSubject } from "../../domain/lessons/subjects/school/module";
@@ -17,6 +18,9 @@ import { createTestRecorder, createThrowingRecorder } from "../usage/test-record
  * Żądania HTTP adaptera (zagadnienia, historyjka, zestaw słówek) sprawdzają testy metod.
  */
 
+/** Księga reguł bez reguł: testy składania promptu sprawdzają resztę promptu. */
+const EMPTY_RULE_BOOK: LessonRuleBookInput = { general: [], types: [], lesson: [], checks: [] };
+
 function okResponse(body: unknown): Response {
   return new Response(
     JSON.stringify({ choices: [{ message: { content: JSON.stringify(body) } }] }),
@@ -28,6 +32,7 @@ const INPUT: LessonPoolInput = {
   subjectId: "english_grammar",
   subjectTitle: "Angielski — gramatyka",
   answerLocale: "en-GB",
+  answerMaxLength: MAX_LESSON_TEXT_LENGTH,
   promptLocale: "pl-PL",
   promptProfile: {
     generationRole: "You are an author of English grammar exercises.",
@@ -50,6 +55,7 @@ const INPUT: LessonPoolInput = {
   countPerObjective: 6,
   stageCounts: { guided: 2, productive: 3, independent: 1 },
   graderAvailable: true,
+  ruleBook: { ...EMPTY_RULE_BOOK, general: [{ id: "gap.marker_count", text: "GAP-MARKER-RULE." }] },
 };
 
 /** Wiadomości generatora puli: prompt systemowy i wiadomość użytkownika z materiałem. */
@@ -168,49 +174,116 @@ describe("createOpenAiLlmProvider.generateLessonObjectives — błędy wspólnej
   });
 });
 
+describe("renderRuleBook — księga reguł jako tekst promptu (spec katalogu reguł §3)", () => {
+  const BOOK: LessonRuleBookInput = {
+    general: [
+      { id: "field.empty", text: "GENERAL-EMPTY." },
+      { id: "shape.record", text: "SHAPE-RECORD.", brief: true },
+    ],
+    types: [
+      {
+        type: "lesson_choice",
+        summary: "CHOICE-SUMMARY.",
+        example: '{"exerciseType":"lesson_choice"}',
+        subjectRule: "CHOICE-SUBJECT.",
+        rules: [{ id: "options.count", text: "OPTIONS-COUNT." }, { id: "choice.stem_required", text: "STEM-REQUIRED.", brief: true }],
+      },
+      {
+        type: "lesson_gap",
+        summary: "GAP-SUMMARY.",
+        rules: [{ id: "gap.marker_count", text: "GAP-MARKER.", brief: true }, { id: "chapter.instruction_stimulus", text: "STIMULUS.", repeatOf: "lesson_choice" }],
+      },
+    ],
+    lesson: [{ id: "lesson.leak", text: "LESSON-LEAK." }],
+    checks: [{ id: "check.blind_solve", text: "CHECK-BLIND." }],
+  };
+
+  it("sekcje w stałej kolejności: nagłówek, zdanie o regułach brief, ogólne, zdanie o przykładach, bloki typów, lekcja, kontrole", () => {
+    expect(renderRuleBook(BOOK)).toBe([
+      "RULES — the tool checks every rule below; a rejection names the broken rule in [brackets].",
+      "Record shape and card fields: every exercise has the field types and limits of the tool schema and the fields its " +
+        "type card lists; the tool result names and describes a broken rule of this kind.",
+      "General: [field.empty] GENERAL-EMPTY.",
+      "Each Example shows only the record format: never copy its words or sentences; take the content from this " +
+        "lesson's material and objective.",
+      'lesson_choice — CHOICE-SUMMARY. Example: {"exerciseType":"lesson_choice"}',
+      "  CHOICE-SUBJECT.",
+      "  [options.count] OPTIONS-COUNT.",
+      "lesson_gap — GAP-SUMMARY.",
+      "  [chapter.instruction_stimulus] As in the lesson_choice block.",
+      "Lesson: [lesson.leak] LESSON-LEAK.",
+      "Checks by another model: [check.blind_solve] CHECK-BLIND.",
+    ].join("\n"));
+  });
+
+  it("zdanie o przykładach tylko przy bloku z przykładem", () => {
+    const withoutExamples = { ...BOOK, types: BOOK.types.map(({ example: _example, ...block }) => block) };
+    expect(renderRuleBook(withoutExamples)).not.toContain(EXAMPLES_NOTE);
+    expect(renderRuleBook(BOOK).split(EXAMPLES_NOTE)).toHaveLength(2);
+  });
+
+  it("reguły brief: bez id i opisu (opis w wyniku narzędzia), bez pustego wiersza bloku; powtórzenie bez opisu", () => {
+    const text = renderRuleBook(BOOK);
+    for (const hidden of ["SHAPE-RECORD.", "STEM-REQUIRED.", "GAP-MARKER.", "[shape.record]", "[choice.stem_required]", "[gap.marker_count]", "STIMULUS."]) {
+      expect(text).not.toContain(hidden);
+    }
+    expect(text).not.toMatch(/\n {2}\n|\n {2}$/);
+  });
+
+  it("pusta księga: sam nagłówek, bez pustych nagłówków sekcji", () => {
+    expect(renderRuleBook(EMPTY_RULE_BOOK)).toBe(
+      "RULES — the tool checks every rule below; a rejection names the broken rule in [brackets].",
+    );
+  });
+
+  it("jest deterministyczny", () => {
+    expect(renderRuleBook(structuredClone(BOOK))).toBe(renderRuleBook(BOOK));
+  });
+});
+
 describe("lessonSystemPrompt i lessonUserMaterial — składanie promptu puli", () => {
-  it("keeps a school top-up of two exercises within its batch budget, with minima scoped to the complete pool", () => {
-    const { system } = poolMessages({
-      ...INPUT,
-      subjectId: schoolSubject.id,
-      subjectTitle: schoolSubject.titlePl,
-      answerLocale: schoolSubject.answerLocale,
-      promptLocale: schoolSubject.promptLocale,
-      promptProfile: schoolSubject.prompts,
-      exerciseTypes: schoolSubject.exerciseTypes,
-      transforms: [],
-      objectives: [{ id: "school.scale", descriptionEn: "Map scale", exerciseTypes: schoolSubject.exerciseTypes, errorCategories: [] }],
-      material: "Skala mapy pozwala przeliczyć odległość na mapie na odległość w terenie.",
-      countPerObjective: 2,
-      stageCounts: { guided: 1, productive: 0, independent: 1 },
-      deduplication: "exercise",
-    });
-    expect(system).toContain("Return at most 2 exercises per objective in this batch");
-    expect(system).toContain("Publication minima apply to the complete pool, including existing exercises");
-    expect(system).toContain("never exceed this batch's requested count to satisfy them");
-    expect(system).toContain("Minima publikacji dotyczą całej puli, łącznie z istniejącymi ćwiczeniami");
-    expect(system).toContain("nie przekraczaj zamówionej liczby ćwiczeń w tej partii");
-    expect(system).not.toContain("Keep at least 3 guided, 2 productive and 2 DISTINCT open-answer questions per school objective");
+  const SCHOOL_INPUT: LessonPoolInput = {
+    ...INPUT,
+    subjectId: schoolSubject.id,
+    subjectTitle: schoolSubject.titlePl,
+    answerLocale: schoolSubject.answerLocale,
+    promptLocale: schoolSubject.promptLocale,
+    promptProfile: schoolSubject.prompts,
+    exerciseTypes: schoolSubject.exerciseTypes,
+    transforms: [],
+    objectives: [{ id: "school.scale", descriptionEn: "Map scale", exerciseTypes: schoolSubject.exerciseTypes, errorCategories: [] }],
+    material: "Skala mapy pozwala przeliczyć odległość na mapie na odległość w terenie.",
+    countPerObjective: 2,
+    stageCounts: { guided: 1, productive: 0, independent: 1 },
+    deduplication: "exercise",
+  };
+
+  it("bez zdań potoku: liczby partii, globalny limit i minima podaje wyłącznie Target podagenta", () => {
+    const { system } = poolMessages(SCHOOL_INPUT);
+    for (const removed of [
+      "exercises per objective in this batch",
+      "160",
+      "never exceed this batch",
+      "Return strict JSON",
+      "no markdown",
+      "Minima publikacji",
+      "nie przekraczaj zamówionej liczby ćwiczeń w tej partii",
+    ]) {
+      expect(system).not.toContain(removed);
+    }
+    expect(system).toContain("Stages of the exercise types (Target below gives the counts)");
   });
 
   it.each([
     [{ guided: 4, productive: 3, independent: 3 }, "the first 2 MUST be lesson_open_answer", "At most 1 independent slot(s) may be lesson_calculation"],
-    [{ guided: 4, productive: 4, independent: 2 }, "the first 2 MUST be lesson_open_answer", "No independent slot is left for lesson_calculation in this batch"],
+    [{ guided: 4, productive: 4, independent: 2 }, "the first 2 MUST be lesson_open_answer", "No independent slot is left for lesson_calculation: produce no calculations"],
   ])("reserves independent slots for distinct open answers before calculations (%j)", (stageCounts, open, calculations) => {
-    const { system } = poolMessages({
-      ...INPUT,
-      subjectId: schoolSubject.id, subjectTitle: schoolSubject.titlePl,
-      answerLocale: schoolSubject.answerLocale, promptLocale: schoolSubject.promptLocale,
-      promptProfile: schoolSubject.prompts, exerciseTypes: schoolSubject.exerciseTypes, transforms: [],
-      objectives: [{ id: "school.scale", descriptionEn: "Map scale", exerciseTypes: schoolSubject.exerciseTypes, errorCategories: [] }],
-      material: "Skala mapy pozwala przeliczyć odległość na mapie na odległość w terenie.",
-      countPerObjective: 10, stageCounts, minDistinctOpenAnswers: 2, deduplication: "exercise",
-    });
+    const { system } = poolMessages({ ...SCHOOL_INPUT, countPerObjective: 10, stageCounts, minDistinctOpenAnswers: 2 });
     expect(system).toContain(open);
     expect(system).toContain(calculations);
   });
 
-  it("buduje prompt systemowy z opisu przedmiotu i celów oraz materiał w wiadomości user", () => {
+  it("buduje prompt systemowy z opisu przedmiotu, celów i księgi reguł oraz materiał w wiadomości user", () => {
     // Schemat puli (gałąź `exercises` trafia do narzędzia `submit_exercises` agenta).
     const schema = lessonPoolJsonSchema(INPUT) as {
       additionalProperties: boolean;
@@ -247,49 +320,28 @@ describe("lessonSystemPrompt i lessonUserMaterial — składanie promptu puli", 
     expect(system).toContain("Third person singular adds -s.");
     expect(system).toContain("lesson_choice");
     expect(system).toContain("to_question");
-    expect(system).toContain("lesson_transform requires statement");
-    expect(system).toContain("lesson_short_answer requires prompt");
-    expect(system).toContain("lesson_choice requires stem");
 
-    // Reguły semantyczne, których złamanie odrzuca ćwiczenie w validatePool.
-    expect(system).toContain("acceptedAnswers must NOT contain the canonical answer");
-    // Skrótowa forma tych samych słów to nie „inny wariant” (incydent prod
-    // 2026-10-26: przeczenia „to be” — „They're not…” przy „They aren't…”);
-    // ogólne sformułowanie bez przykładów przedmiotowych (zasada review C1),
-    // rozdzielone od klauzuli o skróconych sformułowaniach („shortened wording”).
-    expect(system).toContain("a copy of the same words with expanded or contracted spellings, or different capitalization, is not");
-    expect(system).toContain("2 to 4 options");
-    expect(system).toContain("correctOption must be the id of exactly one of the options");
+    // Reguły sprawdzane przez kod przychodzą wyłącznie z księgi reguł, na końcu promptu.
+    expect(system.endsWith(renderRuleBook(INPUT.ruleBook))).toBe(true);
+    expect(system).toContain("[gap.marker_count] GAP-MARKER-RULE.");
 
-    // Doprecyzowana semantyka pól (incydent deepseek 2026-10-13: polskie słowa
-    // z materiału w hint; warianty acceptedAnswers różniące się tylko wielkością
-    // liter). Każde zdanie odpowiada konkretnej regule pool-validation.
+    // Znaczenie pól i dyscyplina języka (wskazówki, których kod nie sprawdza).
+    expect(system).toContain("acceptedAnswers lists other acceptable formulations of the answer");
     expect(system).toContain("Field rules for this subject:");
     expect(system).toContain("For lesson_gap, hint must be the base form of the verb.");
     expect(system).toContain("Language discipline:");
     expect(system).toContain("Never copy prompt-language words from the parent material into answer-language fields");
-    expect(system).toContain("copy the whitespace-separated tokens of the canonical answer");
-    expect(system).toContain("EXACTLY ONE gap marker");
-    expect(system).toContain("its answer is at most 3 words");
-    expect(system).toContain("3-10 items whose texts joined with spaces form the canonical answer");
-    expect(system).toContain("one word copied exactly from the segments");
-    expect(system).toContain("1-15 word segments");
-    expect(system).toContain("must NOT already equal the answer");
-    // Adapter nie zaszywa wiedzy przedmiotowej o równoważności skrótów
-    // (review C1: „doesn't play” ≡ „does not play” to własność normalizatora
-    // english_grammar — przykład z rozwinięciem skrótu w adapterze obiecywał
-    // wariant, który walidator odrzuca jako duplikat).
+    // Jeden język polecenia i odpowiedzi (szkoła): bez dyscypliny języka.
+    const oneLanguage = poolMessages({ ...INPUT, answerLocale: "pl-PL", promptLocale: "pl-PL" }).system;
+    expect(oneLanguage).toContain("acceptedAnswers lists other acceptable formulations of the answer");
+    expect(oneLanguage).not.toContain("Language discipline:");
+    // Adapter nie zaszywa wiedzy przedmiotowej o równoważności skrótów (review C1).
     expect(system).not.toContain("does not play");
 
-    // Unikalność odpowiedzi kanonicznych (incydent prod 2026-10-13 wieczór:
-    // answer×34 — walidator fazy 2 odrzuca duplikaty w całej puli, a prompt
-    // nie wymagał unikalności w obrębie odpowiedzi modelu).
-    expect(system).toContain("Canonical answers must be UNIQUE within this response");
-    expect(system).toContain("expanded/contracted spelling of the same words counts as the same");
+    // Unikalność odpowiedzi sprawdza reguła lekcji; zostaje wskazówka, jak różnicować odpowiedzi.
     expect(system).toContain("vary full-sentence answers");
 
-    // Typy etapów jako „menu” ograniczone listą dozwolonych typów celu
-    // (prod: exerciseType×17 — model brał typy etapu niedozwolone dla celu).
+    // Typy etapów jako „menu” ograniczone listą dozwolonych typów celu.
     expect(system).toContain("The stage type lists are a menu, not a per-exercise requirement");
     expect(system).toContain("from its objective's allowed list above");
 
@@ -371,11 +423,9 @@ describe("lessonSystemPrompt i lessonUserMaterial — składanie promptu puli", 
     })).toThrow(/no supported pool exercise types/);
   });
 
-  it("dla deduplikacji exercise wymaga różnych bodźców (także wobec istniejących ćwiczeń) i dopuszcza wspólny operator", () => {
+  it("deduplikacja exercise: bez wskazówki o odpowiedziach (reguła duplikatów bodźca jest w księdze reguł)", () => {
     const { system } = poolMessages({ ...INPUT, deduplication: "exercise" });
-    expect(system).toContain("Within this response, never repeat an exercise with the same objective, type, and functional stimulus");
-    expect(system).toContain("Do not repeat any existing exercise with the same objective, type, and functional stimulus");
-    expect(system).toContain("Reusing a short canonical answer such as do, does, don't, or doesn't with a different valid exercise is allowed");
+    expect(system).not.toContain("vary full-sentence answers");
     expect(system).not.toContain("Canonical answers must be UNIQUE within this response");
     expect(system).not.toContain("Existing exercise stimuli:");
     expect(system).not.toContain("Do NOT repeat these canonical answers already in the pool");
@@ -386,7 +436,7 @@ describe("lessonSystemPrompt i lessonUserMaterial — składanie promptu puli", 
       ...INPUT,
       promptProfile: englishGrammarSubject.prompts,
     });
-    expect(system).toContain("lesson_open_answer.prompt may be a translation source in the prompt language");
+    expect(system).toContain("except where field rules for this subject define a source stimulus in the prompt language");
     expect(system).toContain("For lesson_open_answer, prompt is the source sentence in the prompt language to translate");
     expect(system).toContain("answer and acceptedAnswers always use the answer language");
     expect(system).not.toContain("prompt (in the answer language)");
@@ -394,15 +444,17 @@ describe("lessonSystemPrompt i lessonUserMaterial — składanie promptu puli", 
 });
 
 describe("lessonSystemPrompt i lessonPoolJsonSchema — wyjaśnienie błędu (explanationPl)", () => {
-  it("prompt i schemat puli niosą regułę i pole tylko przy exerciseExplanations", () => {
+  it("prompt i schemat puli niosą wskazówkę stylu i pole tylko przy exerciseExplanations; limity są w regułach", () => {
     const on = { ...INPUT, exerciseExplanations: true };
     const prompt = lessonSystemPrompt(on);
     expect(prompt).toContain("explanationPl");
-    expect(prompt).toContain("one Polish sentence");
+    expect(prompt).toContain("explanationPl: for every exercise except lesson_calculation, return a Polish sentence for a child of about 8");
     expect(prompt).toContain("why the correct answer is correct");
-    expect(prompt).toContain("120");
+    // Jedno zdanie, limit długości i znaczniki sprawdzają reguły `explanation.*` z księgi reguł.
+    expect(prompt).not.toContain("at most 120 characters");
     expect((lessonPoolJsonSchema(on) as any).properties.exercises.items.required).toContain("explanationPl");
     expect(lessonSystemPrompt(INPUT)).not.toContain("explanationPl");
+    expect(lessonSystemPrompt(INPUT)).not.toContain("for every exercise except lesson_calculation");
     expect(JSON.stringify(lessonPoolJsonSchema(INPUT))).not.toContain("explanationPl");
   });
 });
@@ -415,46 +467,30 @@ describe("lessonSystemPrompt — wybór ze słuchu (lesson_listen_choice)", () =
   };
   const systemPromptOf = (input: LessonPoolInput): string => lessonSystemPrompt(input);
 
-  it("podnosi limit partii o dodatkowe ćwiczenia słuchowe i opisuje je poza podziałem etapów", () => {
+  it("przy dodatku: typ na liście celu i zdanie, że leży poza podziałem etapów (liczbę podaje Target)", () => {
     const system = systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 2 });
-    expect(system).toContain(`at most ${LISTEN_INPUT.countPerObjective + 2} exercises per objective in this batch`);
-    expect(system).toContain("up to 2 extra lesson_listen_choice exercises per objective, outside the stage split");
+    expect(system).toContain("Allowed exerciseType values: lesson_choice, lesson_listen_choice, lesson_gap.");
+    expect(system).toContain("lesson_listen_choice exercises are extra, outside the stage split (Target gives their allowance)");
     expect(system).toContain("only for an objective whose allowed exerciseType list contains lesson_listen_choice");
+    expect(system).not.toContain("exercises per objective in this batch");
     // Menu etapów pozostaje bez zmian: typ słuchowy nie należy do żadnego etapu podziału.
-    const menus = system.slice(system.indexOf("aiming for this stage split:"), system.indexOf("The stage type lists are a menu"));
+    const menus = system.slice(system.indexOf("Stages of the exercise types"), system.indexOf("The stage type lists are a menu"));
     expect(menus).not.toContain("lesson_listen_choice");
   });
 
-  it("opisuje pola typu obok lesson_choice, gdy przedmiot go wspiera", () => {
-    const system = systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 2 });
-    expect(system).toContain("lesson_listen_choice requires stem with exactly one ___");
-    expect(system).toContain("2 to 3 options");
-    expect(system).toContain("instructionPl, hint and visualSubject must be null for lesson_listen_choice");
-  });
-
-  it("bez pola listenChoicePerObjective prompt zachowuje dotychczasowy limit i nie ma zdania o dodatkach", () => {
-    const system = systemPromptOf(LISTEN_INPUT);
-    expect(system).toContain(`Return at most ${LISTEN_INPUT.countPerObjective} exercises per objective in this batch, aiming for this stage split:`);
-    expect(system).not.toContain("extra lesson_listen_choice");
-    expect(systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 0 })).toBe(system);
-  });
-
-  it("przedmiot bez typu nie dostaje opisu pól typu", () => {
+  it("przedmiot bez typu go nie wymienia", () => {
     expect(systemPromptOf(INPUT)).not.toContain("lesson_listen_choice");
   });
 
-  it("bez przyznanego dodatku (pole brak/0) prompt nie opisuje pól typu ani nie wymienia go wśród dozwolonych", () => {
+  it("bez przyznanego dodatku (pole brak/0) prompt nie wymienia typu wśród dozwolonych", () => {
     for (const input of [LISTEN_INPUT, { ...LISTEN_INPUT, listenChoicePerObjective: 0 }]) {
-      const system = systemPromptOf(input);
-      expect(system).not.toContain("lesson_listen_choice requires stem");
-      expect(system).not.toContain("lesson_listen_choice");
+      expect(systemPromptOf(input)).not.toContain("lesson_listen_choice");
     }
+    expect(systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 0 })).toBe(systemPromptOf(LISTEN_INPUT));
   });
 
   it("przycina dodatek do 0–2", () => {
-    const system = systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 5 });
-    expect(system).toContain(`at most ${LISTEN_INPUT.countPerObjective + 2} exercises per objective in this batch`);
-    expect(system).toContain("up to 2 extra lesson_listen_choice exercises per objective");
+    expect(systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 5 })).toBe(systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 2 }));
     expect(systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: -3 })).toBe(systemPromptOf(LISTEN_INPUT));
   });
 });
@@ -470,6 +506,9 @@ describe("createOpenAiLlmProvider — ton lektora (stage B)", () => {
   it("pool prompt and schema carry the tone rule and field only when voiceTones is true", () => {
     const on = { ...INPUT, voiceTones: true };
     expect(lessonSystemPrompt(on)).toContain(RULE);
+    // Ręczna wskazówka (spec katalogu reguł §3): ton dla każdego ćwiczenia poza rachunkiem.
+    expect(lessonSystemPrompt(on)).toContain("Return voiceTone for every exercise except lesson_calculation (null when no tone fits).");
+    expect(lessonSystemPrompt(INPUT)).not.toContain("Return voiceTone");
     // Pytania nie są szeptane: reguła ćwiczeń w ogóle nie wspomina `mysterious`.
     expect(lessonSystemPrompt(on)).not.toContain("mysterious");
     expect((lessonPoolJsonSchema(on) as any).properties.exercises.items.required).toContain("voiceTone");
@@ -495,93 +534,29 @@ describe("createOpenAiLlmProvider — ton lektora (stage B)", () => {
   });
 });
 
-describe("lessonSystemPrompt — bloki pary/grupy/luki składane z profilu przedmiotu", () => {
+describe("lessonSystemPrompt — typy z własną gałęzią opisuje wyłącznie księga reguł", () => {
   const PAIRING_TYPES = ["lesson_choice", "lesson_match", "lesson_group", "lesson_cloze"];
-  const pairingInput = (overrides: Partial<LessonPoolInput>): LessonPoolInput => ({
+  const pairingInput: LessonPoolInput = {
     ...INPUT,
     exerciseTypes: PAIRING_TYPES,
     objectives: [{ id: "chapter.d1.clothes", descriptionEn: "Clothes words.", exerciseTypes: PAIRING_TYPES, errorCategories: [] }],
-    ...overrides,
-  });
-  const systemPromptOf = (input: LessonPoolInput): string => lessonSystemPrompt(input);
+    promptProfile: {
+      ...INPUT.promptProfile,
+      typeRules: { lesson_match: "RULE-MATCH.", lesson_group: "RULE-GROUP.", lesson_cloze: "RULE-CLOZE." },
+    },
+  };
 
-  it("przedmiot szkolny zachowuje semantykę par, grup i luk z materiału rodzica oraz wymóg cytatów", () => {
-    const system = systemPromptOf(pairingInput({
-      subjectId: schoolSubject.id,
-      promptProfile: schoolSubject.prompts,
-      groundingRequired: true,
-    }));
-    // Część strukturalna (adapter).
-    expect(system).toContain("lesson_match and lesson_group are guided types with their own strict branches");
-    expect(system).toContain("code computes the answer");
-    expect(system).toContain("pairs (3 to 5 objects {left, right}");
-    expect(system).toContain("groupItems (4 to 8 objects {text of at most 40 characters, groupId}, at least 2 per group)");
-    expect(system).toContain("gapAnswers: the word for each gap in text order (1 to 3 words, at most 30 characters)");
-    // Cytaty tylko przy groundingRequired.
-    expect(system).toContain("and their fields below plus sourceRefs;");
-    expect(system).toContain("extraWords and sourceRefs;");
-    expect(system).toContain("sourceRefs is REQUIRED for EVERY exercise");
-    // Semantyka szkoły (profil przedmiotu, przeniesiona z adaptera).
-    expect(system).toContain("both taken from the parent material");
-    expect(system).toContain("Use it when the material pairs concepts with definitions, places with features or causes with effects.");
-    expect(system).toContain("Use it when the material classifies things (e.g. mammals/birds, lowlands/uplands).");
-    expect(system).toContain("Keep the sentences close to the parent material (vocabulary for a child of about 8)");
-    expect(system).toContain("concepts, names or numbers from the material, never conjunctions, prepositions or words guessable from grammar alone");
-    expect(system).toContain("Distractors come from the same material and category");
-    expect(system).toContain("Skip it when the material has no such pairs.");
-    expect(system).toContain("Skip it when the material has no such classification.");
-  });
-
-  it("bez uziemienia nie wspomina o sourceRefs w blokach, a semantykę bierze z typeRules przedmiotu", () => {
-    const system = systemPromptOf(pairingInput({
-      groundingRequired: false,
-      promptProfile: {
-        ...INPUT.promptProfile,
-        typeRules: {
-          lesson_match: "RULE-MATCH: left is an English chapter word, right its Polish meaning.",
-          lesson_group: "RULE-GROUP: only when the words split into 2 or 3 categories.",
-          lesson_cloze: "RULE-CLOZE: gaps are chapter words.",
-        },
-      },
-    }));
-    expect(system).toContain("RULE-MATCH: left is an English chapter word, right its Polish meaning.");
-    expect(system).toContain("RULE-GROUP: only when the words split into 2 or 3 categories.");
-    expect(system).toContain("RULE-CLOZE: gaps are chapter words.");
-    // Struktura zostaje po stronie adaptera.
-    expect(system).toContain("code computes the answer");
-    expect(system).toContain("pairs (3 to 5 objects {left, right}");
-    expect(system).toContain("clozeText: 2 to 4 short sentences");
-    // Żadnych wymagań cytatów ani szkolnej semantyki.
-    expect(system).not.toContain("plus sourceRefs");
-    expect(system).not.toContain("extraWords and sourceRefs");
+  it("adapter nie składa bloków par, grup i luk ani nie czyta typeRules (semantykę typu niesie blok księgi)", () => {
+    const system = lessonSystemPrompt(pairingInput);
+    expect(system).not.toContain("strict branch");
+    expect(system).not.toContain("pairs (3 to 5 objects");
+    expect(system).not.toContain("RULE-MATCH.");
     expect(system).not.toContain("sourceRefs is REQUIRED");
-    expect(system).not.toContain("taken from the parent material");
-    expect(system).not.toContain("close to the parent material");
-    expect(system).not.toContain("mammals/birds");
-  });
-
-  it("bez reguły typu składa wyłącznie część strukturalną bloku", () => {
-    const system = systemPromptOf(pairingInput({ groundingRequired: false }));
-    expect(system).toContain("pairs (3 to 5 objects {left, right}");
-    expect(system).toContain("groups (2 or 3 objects");
-    expect(system).toContain("gapAnswers: the word for each gap in text order");
-    expect(system).not.toContain("taken from the parent material");
-    expect(system).not.toContain("close to the parent material");
-    expect(system).not.toContain("mammals/birds");
-    expect(system).not.toContain("undefined");
-  });
-
-  it("opisuje tylko typy dozwolone w przedmiocie", () => {
-    const system = systemPromptOf(pairingInput({
-      exerciseTypes: ["lesson_choice", "lesson_match"],
-      objectives: [{ id: "chapter.d1.clothes", descriptionEn: "Clothes words.", exerciseTypes: ["lesson_choice", "lesson_match"], errorCategories: [] }],
-      groundingRequired: false,
-      promptProfile: { ...INPUT.promptProfile, typeRules: { lesson_match: "RULE-MATCH.", lesson_group: "RULE-GROUP." } },
-    }));
-    expect(system).toContain("RULE-MATCH.");
-    expect(system).not.toContain("RULE-GROUP.");
-    expect(system).not.toContain("lesson_group");
-    expect(system).not.toContain("lesson_cloze");
+    const withBlock = lessonSystemPrompt({
+      ...pairingInput,
+      ruleBook: { ...EMPTY_RULE_BOOK, types: [{ type: "lesson_match", summary: "MATCH-CARD.", subjectRule: "RULE-MATCH.", rules: [] }] },
+    });
+    expect(withBlock).toContain("lesson_match — MATCH-CARD.\n  RULE-MATCH.");
   });
 });
 

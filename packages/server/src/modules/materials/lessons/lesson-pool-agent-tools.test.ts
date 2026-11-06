@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentObjectivesOf } from "../../../domain/lessons/agent/capable";
 import { poolOf, type LessonAgentState } from "../../../domain/lessons/agent/state";
+import { familyRunSuffix } from "../../../domain/lessons/keyword-families";
+import { materializeRawExercise } from "../../../domain/lessons/raw-materialize";
+import { rawShapeIssues } from "../../../domain/lessons/raw-shape";
+import { clip, defineRules, describeRule, issueFrom, ruleOf, type RuleId } from "../../../domain/lessons/rules/catalog";
+import { ruleTextContextOf } from "../../../domain/lessons/rules/rule-book";
 import { schoolAgentPolicy } from "../../../domain/lessons/subjects/school/agent-policy";
+import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
+import { randomJson } from "../../../domain/lessons/testing/random-json";
 import {
   A,
   B,
@@ -25,6 +32,14 @@ import { createObjectiveTools, type ObjectiveToolsStats, type RejectionLogEntry 
 import { DEFAULT_LESSON_GENERATION_POLICY } from "./lesson-generation-policy";
 
 /** Rozwiązujący fake'a: „Pytanie numer N” → `odpowiedź N`, inne widoki → „966”. */
+/** Nota przyjęcia bez wyniku kontroli innym modelem. */
+const UNCHECKED = "unchecked: a check by another model was unavailable; accepted without it";
+
+/** Wyniki bez echa ćwiczenia (`exerciseType`, `stimulus` — osobny test formatu wyniku). */
+function bare(results: LessonAgentToolOutcome["results"]): Record<string, unknown>[] {
+  return results.map(({ exerciseType: _type, stimulus: _stimulus, ...rest }) => rest);
+}
+
 function solveByNumber(view: string): string[] {
   const match = /numer (\d+)/u.exec(view);
   return [match ? `odpowiedź ${match[1]}` : "966"];
@@ -44,6 +59,7 @@ interface SetupOptions {
   policy?: LessonAgentPolicy;
   checkRun?: AgentCheckRun;
   objectiveId?: string;
+  familyScope?: string | null;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -69,7 +85,7 @@ function setup(options: SetupOptions = {}) {
     cost,
     objectiveSignal: options.signal ?? new AbortController().signal,
     policy,
-    familyScope: null,
+    familyScope: options.familyScope ?? null,
     examplesFixed: options.examplesFixed ?? true,
     checkRun,
     ...(options.grader === undefined ? {} : { grader: { provider: options.grader, timeoutMs: options.graderTimeoutMs ?? 60_000 } }),
@@ -199,11 +215,11 @@ describe("submit — parsowanie i wynik dla modelu", () => {
     const errors = (first.results[0] as { readonly errors: readonly string[] }).errors;
     expect(errors.length).toBeGreaterThan(0);
     expect(tools.rejections).toEqual([
-      { objectiveId: A, exerciseType: "lesson_open_answer", kind: "rule", code: "rule_exercise", detail: errors.join("; ") },
+      { objectiveId: A, exerciseType: "lesson_open_answer", kind: "rule", code: "rule_exercise", ruleIds: [expect.any(String)], detail: errors.join("; ") },
     ]);
 
     const second = await tools.tools.submit({ exercises: [choice(A, 1)] });
-    expect(second.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare(second.results)).toEqual([{ index: 0, accepted: "ex1" }]);
     expect(poolIds(tools.state())).toEqual(["ex1"]);
     expect(second.counts.total).toBe(1);
     expect(second.complete).toBe(false);
@@ -214,7 +230,7 @@ describe("submit — parsowanie i wynik dla modelu", () => {
     const tools = setup();
     const before = tools.state();
     const outcome = await tools.tools.submit({ exercises: "x" as unknown as unknown[] });
-    expect(outcome.results).toEqual([{ index: 0, errors: ["exercises must be an array"] }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, errors: ["exercises must be an array"] }]);
     expect(tools.state()).toBe(before);
     expect(tools.checker.solveCalls).toHaveLength(0);
   });
@@ -224,10 +240,10 @@ describe("submit — parsowanie i wynik dla modelu", () => {
     const outcome = await tools.tools.submit({
       exercises: [choice(B, 1), { ...choice(A, 2), answer: null }, choice(A, 3), null],
     });
-    expect(outcome.results[0]).toEqual({ index: 0, errors: [expect.stringContaining(A)] });
-    expect(outcome.results[1]).toEqual({ index: 1, errors: [expect.any(String)] });
-    expect(outcome.results[2]).toEqual({ index: 2, accepted: "ex1" });
-    expect(outcome.results[3]).toEqual({ index: 3, errors: [expect.any(String)] });
+    expect(bare(outcome.results)[0]).toEqual({ index: 0, errors: [expect.stringContaining(A)] });
+    expect(bare(outcome.results)[1]).toEqual({ index: 1, errors: [expect.any(String)] });
+    expect(bare(outcome.results)[2]).toEqual({ index: 2, accepted: "ex1" });
+    expect(bare(outcome.results)[3]).toEqual({ index: 3, errors: [expect.any(String)] });
     expect(tools.rejections.map((entry) => [entry.code, entry.kind, entry.exerciseType])).toEqual([
       ["shape_objective", "shape", "lesson_choice"],
       ["shape_malformed", "shape", "lesson_choice"],
@@ -236,6 +252,45 @@ describe("submit — parsowanie i wynik dla modelu", () => {
     // Tylko poprawny kształt trafia do checkera.
     expect(tools.checker.solveCalls).toHaveLength(1);
     expect(tools.checker.solveCalls[0]!.items).toHaveLength(1);
+  });
+
+  it("kształt: powody [id] pole: found zgłoszeń shape.* (otrzymany typ), kod shape_malformed; obce zagadnienie z regułą shape.objective_id", async () => {
+    const tools = setup();
+    const outcome = await tools.tools.submit({
+      exercises: [
+        { ...choice(A, 1), options: ["Warszawa"] },
+        { ...choice(A, 2), sourceRefs: [null], focus: "x" },
+        { exerciseType: "lesson_match", objectiveId: A, pairs: [["a", "b"]] },
+        choice(B, 3),
+      ],
+    });
+    expect(bare(outcome.results)).toEqual([
+      { index: 0, errors: ["[shape.options] options[0]: expected {id, text}, got a string"] },
+      { index: 1, errors: ["[shape.focus] focus: expected a list of strings or null, got a string", "[shape.source_refs] sourceRefs[0]: expected {quote}, got null"] },
+      { index: 2, errors: ["[shape.pairs] pairs[0]: expected {left, right}, got an array"] },
+      { index: 3, errors: [`[shape.objective_id] objectiveId: objectiveId must be "${A}" (this objective), not "${B}"`] },
+    ]);
+    expect(tools.rejections.map((entry) => [entry.code, entry.exerciseType])).toEqual([
+      ["shape_malformed", "lesson_choice"],
+      ["shape_malformed", "lesson_choice"],
+      ["shape_malformed", "lesson_match"],
+      ["shape_objective", "lesson_choice"],
+    ]);
+    expect(tools.checker.solveCalls).toHaveLength(0);
+  });
+
+  it("surowy rekord typu liczonego przez kod materializuje się w narzędziach (adapter go nie zmienia)", async () => {
+    const tools = setup();
+    await tools.tools.submit({
+      exercises: [{
+        exerciseType: "lesson_match", objectiveId: A, instructionPl: "Połącz pojęcie z opisem.",
+        pairs: [{ left: "Mieszko I", right: "pierwszy władca" }, { left: "Bolesław", right: "pierwszy król" }, { left: "Dąbrówka", right: "żona Mieszka" }],
+        extraRight: [],
+      }],
+    });
+    // Bez materializacji rekord bez `answer` padłby na kształcie (`shape.answer`); tu dociera do reguł
+    // ćwiczenia, a przedmiot testowy nie wspiera par (odpowiedź liczoną sprawdza `raw-materialize.test.ts`).
+    expect(tools.rejections.map((entry) => entry.code)).toEqual(["rule_exercise"]);
   });
 
   it("examples: \"x\" → błąd przykładów; przykłady z planu są ignorowane z notą", async () => {
@@ -262,7 +317,8 @@ describe("submit — parsowanie i wynik dla modelu", () => {
     expect(json).not.toContain('"answer"');
     expect(json).not.toContain('"acceptedAnswers"');
     expect(json).not.toContain("odpowiedź 1");
-    expect(Object.keys(outcome).sort()).toEqual(["complete", "counts", "missing", "results"]);
+    // `rules`: opisy reguł z odrzucenia (teksty katalogu), bez treści ćwiczenia.
+    expect(Object.keys(outcome).sort()).toEqual(["complete", "counts", "missing", "results", "rules"]);
   });
 });
 
@@ -310,7 +366,7 @@ describe("submit — checker", () => {
     const schoolLike = withAgentPolicy(subject, { sanitize: schoolAgentPolicy.sanitize });
     const tools = setup({ subject: schoolLike });
     const outcome = await tools.tools.submit({ exercises: [{ ...choice(A, 1), hint: "ZNACZNIK-PODPOWIEDZI" }] });
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1", note: "hint" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1", notes: [expect.stringMatching(/^\[school\.hint_open_answer_only\] hint: removed: /u)] }]);
     expect(JSON.stringify(tools.checker.solveCalls)).not.toContain("ZNACZNIK-PODPOWIEDZI");
     expect(poolOf(tools.state(), A)[0]!.draft).not.toHaveProperty("hint");
   });
@@ -339,17 +395,17 @@ describe("submit — checker", () => {
   it("solveBatch krótsza o 1: ostatnie przyjęte jako unchecked", async () => {
     const tools = setup({ checker: { solveBatch: () => [["odpowiedź 1"], ["odpowiedź 2"]] } });
     const outcome = await tools.tools.submit({ exercises: [choice(A, 1), choice(A, 2), choice(A, 3)] });
-    expect(outcome.results).toEqual([
+    expect(bare(outcome.results)).toEqual([
       { index: 0, accepted: "ex1" },
       { index: 1, accepted: "ex2" },
-      { index: 2, accepted: "ex3", note: "unchecked" },
+      { index: 2, accepted: "ex3", notes: [UNCHECKED] },
     ]);
   });
 
   it("solveBatch dłuższa: nadmiar ignorowany", async () => {
     const tools = setup({ checker: { solveBatch: () => [["odpowiedź 1"], ["odpowiedź 2"], ["nadmiar"]] } });
     const outcome = await tools.tools.submit({ exercises: [choice(A, 1), choice(A, 2)] });
-    expect(outcome.results).toEqual([
+    expect(bare(outcome.results)).toEqual([
       { index: 0, accepted: "ex1" },
       { index: 1, accepted: "ex2" },
     ]);
@@ -358,26 +414,31 @@ describe("submit — checker", () => {
   it("null na pozycji: ta pozycja unchecked; rozjazd odrzuca jako blind", async () => {
     const tools = setup({ checker: { solveBatch: () => [["odpowiedź 1"], null, ["coś innego"]] } });
     const outcome = await tools.tools.submit({ exercises: [choice(A, 1), choice(A, 2), choice(A, 3)] });
-    expect(outcome.results[0]).toEqual({ index: 0, accepted: "ex1" });
-    expect(outcome.results[1]).toEqual({ index: 1, accepted: "ex2", note: "unchecked" });
-    expect(outcome.results[2]).toEqual({ index: 2, errors: [expect.stringContaining("independent solver")] });
+    expect(bare(outcome.results)[0]).toEqual({ index: 0, accepted: "ex1" });
+    expect(bare(outcome.results)[1]).toEqual({ index: 1, accepted: "ex2", notes: [UNCHECKED] });
+    expect(bare(outcome.results)[2]).toEqual({ index: 2, errors: [expect.stringMatching(/^\[check\.blind_solve\] answer: the solver answered "coś innego"/u)] });
     expect(tools.rejections.map((entry) => entry.code)).toEqual(["blind_mismatch"]);
   });
 
   it("wyjątek checkera: cała paczka unchecked, bez porażki", async () => {
     const tools = setup({ checker: { solveBatch: () => "throw", judgeBatch: () => "throw" } });
     const outcome = await tools.tools.submit({ exercises: [choice(A, 1), gapWithVariant] });
-    expect(outcome.results).toEqual([
-      { index: 0, accepted: "ex1", note: "unchecked" },
-      { index: 1, accepted: "ex2", note: "unchecked" },
+    expect(bare(outcome.results)).toEqual([
+      { index: 0, accepted: "ex1", notes: [UNCHECKED] },
+      { index: 1, accepted: "ex2", notes: [UNCHECKED] },
     ]);
   });
 
-  it("odrzucony wariant → variant_rejected", async () => {
+  it("odrzucony wariant: przyjęte bez wariantu, z notą check.variants; kod variant_rejected już nie powstaje", async () => {
     const tools = setup({ checker: { judge: () => false } });
     const outcome = await tools.tools.submit({ exercises: [gapWithVariant] });
-    expect(outcome.results[0]).toEqual({ index: 0, errors: [expect.stringContaining("dziewięćset sześćdziesiąt sześć")] });
-    expect(tools.rejections.map((entry) => entry.code)).toEqual(["variant_rejected"]);
+    expect(bare(outcome.results)[0]).toEqual({
+      index: 0,
+      accepted: "ex1",
+      notes: ['[check.variants] acceptedAnswers[0]: variant "dziewięćset sześćdziesiąt sześć" removed: not equivalent to the answer "966"; do not add it again'],
+    });
+    expect(tools.rejections).toEqual([]);
+    expect(poolOf(tools.state(), A)[0]!.draft.acceptedAnswers).toEqual([]);
   });
 
   it("termin checkera (fake timers): po checkerTimeoutMs pozycje unchecked, zegary zdjęte", async () => {
@@ -390,7 +451,7 @@ describe("submit — checker", () => {
     await vi.advanceTimersByTimeAsync(DEFAULT_LESSON_AGENT_POLICY.checkerTimeoutMs - 1);
     expect(settled).toBeUndefined();
     await vi.advanceTimersByTimeAsync(1);
-    expect(settled?.results).toEqual([{ index: 0, accepted: "ex1", note: "unchecked" }]);
+    expect(bare(settled!.results)).toEqual([{ index: 0, accepted: "ex1", notes: [UNCHECKED] }]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -417,13 +478,13 @@ describe("submit — budżet", () => {
     const tools = setup({ cost });
     const before = tools.state();
     const outcome = await tools.tools.submit({ exercises: [choice(A, 1), choice(A, 2)] });
-    expect(outcome.results).toEqual([
+    expect(bare(outcome.results)).toEqual([
       { index: 0, errors: ["budget exhausted"] },
       { index: 1, errors: ["budget exhausted"] },
     ]);
     expect(tools.state()).toBe(before);
     expect(tools.checker.solveCalls).toHaveLength(0);
-    expect(tools.rejections).toEqual([]);
+    expect(tools.rejections.map((entry) => [entry.code, entry.detail])).toEqual([]);
     expect(tools.refusals).toEqual(["refused_budget"]);
     expect(tools.tools.shouldStop()).toBe(true);
   });
@@ -434,9 +495,9 @@ describe("submit — budżet", () => {
     const outcome = await tools.tools.submit({ exercises: [choice(A, 1), gapWithVariantFor()] });
     expect(tools.checker.solveCalls).toHaveLength(1);
     expect(tools.checker.judgeCalls).toHaveLength(0);
-    expect(outcome.results).toEqual([
+    expect(bare(outcome.results)).toEqual([
       { index: 0, accepted: "ex1" },
-      { index: 1, accepted: "ex2", note: "unchecked" },
+      { index: 1, accepted: "ex2", notes: [UNCHECKED] },
     ]);
   });
 });
@@ -462,7 +523,7 @@ describe("mutex zagadnienia", () => {
     gate.resolve();
     expect(await Promise.all(pending)).toEqual(expected);
     expect(poolIds(parallel.state())).toEqual(poolIds(sequential.state()));
-    expect(expected[1]!.results[0]).toEqual({ index: 0, errors: expect.any(Array) });
+    expect(bare(expected[1]!.results)[0]).toEqual({ index: 0, errors: expect.any(Array) });
   });
 
   it("submit i remove(\"ex1\") naraz: remove widzi przyjęte ex1", async () => {
@@ -484,7 +545,7 @@ describe("mutex zagadnienia", () => {
     const before = tools.state();
     const outcome = await tools.tools.remove("ex9");
     expect(outcome.removed).toEqual([]);
-    expect(outcome.results).toEqual([{ index: 0, errors: [expect.stringContaining("ex9")] }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, errors: [expect.stringContaining("ex9")] }]);
     expect(tools.state()).toBe(before);
   });
 });
@@ -504,7 +565,7 @@ describe("zamknięcie narzędzi", () => {
       ],
     });
     expect(tools.state()).toBe(before);
-    expect(tools.rejections).toEqual([]);
+    expect(tools.rejections.map((entry) => [entry.code, entry.detail])).toEqual([]);
     expect(tools.refusals).toEqual(["refused_closed"]);
   });
 
@@ -513,12 +574,12 @@ describe("zamknięcie narzędzi", () => {
     expect(tools.tools.shouldStop()).toBe(false);
     await tools.close();
     const outcome = await tools.tools.submit({ exercises: [choice(A, 1)] });
-    expect(outcome.results).toEqual([{ index: 0, errors: ["tools are closed"] }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, errors: ["tools are closed"] }]);
     expect(tools.checker.solveCalls).toHaveLength(0);
     expect(tools.tools.shouldStop()).toBe(true);
     const removal = await tools.tools.remove("ex1");
     expect(removal.removed).toEqual([]);
-    expect(removal.results).toEqual([{ index: 0, errors: ["tools are closed"] }]);
+    expect(bare(removal.results)).toEqual([{ index: 0, errors: ["tools are closed"] }]);
   });
 
   it("przerwany sygnał zagadnienia w trakcie checkera → odmowa bez przyjęcia", async () => {
@@ -528,7 +589,7 @@ describe("zamknięcie narzędzi", () => {
     const pending = tools.tools.submit({ exercises: [choice(A, 1)] });
     await flush();
     controller.abort("objective_timeout");
-    expect((await pending).results).toEqual([{ index: 0, errors: ["tools are closed"] }]);
+    expect(bare((await pending).results)).toEqual([{ index: 0, errors: ["tools are closed"] }]);
     expect(tools.state()).toBe(before);
     expect(tools.tools.shouldStop()).toBe(true);
   });
@@ -537,7 +598,7 @@ describe("zamknięcie narzędzi", () => {
     const tools = setup();
     const pending = tools.tools.submit({ exercises: [choice(A, 1)] });
     await tools.close();
-    expect((await pending).results).toEqual([{ index: 0, errors: ["tools are closed"] }]);
+    expect(bare((await pending).results)).toEqual([{ index: 0, errors: ["tools are closed"] }]);
   });
 });
 
@@ -589,10 +650,10 @@ describe("sekcja krytyczna przyjęcia", () => {
       checkRun: new AgentCheckRun(DEFAULT_LESSON_AGENT_POLICY),
       onRejection: () => undefined,
     });
-    expect((await other.tools.submit({ exercises: [choice(B, 7)] })).results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare((await other.tools.submit({ exercises: [choice(B, 7)] })).results)).toEqual([{ index: 0, accepted: "ex1" }]);
     events.length = 0;
     gate.resolve();
-    expect((await pending).results).toEqual([{ index: 0, accepted: "ex2" }]);
+    expect(bare((await pending).results)).toEqual([{ index: 0, accepted: "ex2" }]);
     expect(poolOf(state, B).map((entry) => entry.id)).toEqual(["ex1"]);
     expect(poolOf(state, A).map((entry) => entry.id)).toEqual(["ex2"]);
     // Po checkerze: jeden odczyt stanu do przyjęcia, zaraz potem podmiana (status liczony po niej).
@@ -608,9 +669,11 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     hintJudgeTypes: schoolAgentPolicy.hintJudgeTypes!,
     openAnswerCheckTypes: schoolAgentPolicy.openAnswerCheckTypes!,
     checkerNeedsMaterial: true,
-    rejectionTexts: schoolAgentPolicy.rejectionTexts,
+    ruleNotes: schoolAgentPolicy.ruleNotes!,
   });
-  const texts = schoolAgentPolicy.rejectionTexts;
+  // Początki powodów reguł kontroli (spec katalogu reguł §4.1): kontrola otwarta (braki) i sędzia (bez podstaw w materiale).
+  const OPEN_MISSING = "[check.open_answer] requiredElements: a correct answer that follows the question was not accepted";
+  const HINT_UNSUPPORTED = "[check.hint_judge] hint: the hint judge found the hint not supported by the material";
   const ELEMENTS = [
     { id: "e1", text: "Wisła" },
     { id: "e2", text: "płynie przez Kraków" },
@@ -648,14 +711,25 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const tools = setup({ subject: school, grader });
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1, { hint: "   " })] });
     expect(tools.checker.hintCalls).toHaveLength(0);
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1" }]);
+  });
+
+  it("hint removed by sanitize skips judgeHints: podpowiedź zdradzająca odpowiedź znika przed sędzią, a nota nazywa regułę", async () => {
+    const grader = correctGrader();
+    const sanitizing = withAgentPolicy(school, { ...school.agentPolicy, sanitize: schoolAgentPolicy.sanitize! });
+    const tools = setup({ subject: sanitizing, grader });
+    const outcome = await tools.tools.submit({ exercises: [schoolOpen(1, { hint: "To jest odpowiedź wzorcowa." })] });
+    expect(tools.checker.hintCalls).toHaveLength(0);
+    expect(tools.stats.hintChecks ?? 0).toBe(0);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1", notes: [expect.stringMatching(/^\[hint\.reveals_words\] hint: removed: shares /u)] }]);
+    expect(poolOf(tools.state(), A)[0]!.draft).not.toHaveProperty("hint");
   });
 
   it("grammar with grader makes no open calls: przedmiot bez list etapu 2b nie woła sędziego, rozwiązującego ani gradera", async () => {
     const grader = correctGrader();
     const tools = setup({ grader, checker: { solve: () => ["odpowiedź wzorcowa 1"] } });
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1, { hint: "Pomyśl o rzekach." })] });
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1" }]);
     expect(tools.checker.hintCalls).toHaveLength(0);
     expect(tools.checker.openCalls).toHaveLength(0);
     expect(grader.requests).toHaveLength(0);
@@ -665,7 +739,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const tools = setup({ subject: school });
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
     expect(tools.checker.openCalls).toHaveLength(0);
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1" }]);
   });
 
   it("sędzia i rozwiązujący dostają widok, odpowiedź, elementy, podpowiedź i materiał", async () => {
@@ -694,7 +768,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const tools = setup({ subject: school, grader, checker: { solveOpen: () => ["odpowiedź wzorcowa 1", "odpowiedź wzorcowa 1."] } });
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
     expect(grader.requests).toHaveLength(0);
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1" }]);
     expect(tools.stats).toMatchObject({ openChecks: 1 });
     expect(tools.stats.graderCalls ?? 0).toBe(0);
   });
@@ -704,7 +778,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const tools = setup({ subject: school, grader, checker: { solveOpen: () => ["Wisła", "wisła."] } });
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
     expect(grader.requests).toHaveLength(1);
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1" }]);
     const request = grader.requests[0]!;
     expect(request.childAnswer).toBe("Wisła");
     expect(request.stimulus).toBe("Pytanie otwarte numer 1?");
@@ -717,7 +791,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const tools = setup({ subject: school, grader, checker: { solveOpen: () => ["odpowiedź wzorcowa 1", "Tylko Wisła"] } });
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
     const errors = (outcome.results[0] as { readonly errors: readonly string[] }).errors;
-    expect(errors[0]).toContain(texts.openMissing!);
+    expect(errors[0]).toContain(OPEN_MISSING);
     expect(errors[0]).toContain('"Tylko Wisła"');
     expect(errors[0]).toContain('"płynie przez Kraków"');
     expect(tools.rejections).toEqual([expect.objectContaining({ kind: "open", code: "open_not_accepted" })]);
@@ -731,8 +805,8 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const outcome = await tools.tools.submit({
       exercises: [schoolOpen(1, { hint: "Pomyśl o rzekach." }), schoolOpen(2, { hint: BAD_HINT })],
     });
-    expect(outcome.results[0]).toEqual({ index: 0, accepted: "ex1", note: "unchecked" });
-    expect(outcome.results[1]).toEqual({ index: 1, errors: [expect.stringContaining(texts.hintUnsupported!)] });
+    expect(bare(outcome.results)[0]).toEqual({ index: 0, accepted: "ex1", notes: [UNCHECKED] });
+    expect(bare(outcome.results)[1]).toEqual({ index: 1, errors: [expect.stringContaining(HINT_UNSUPPORTED)] });
     expect(tools.rejections.map((entry) => [entry.kind, entry.code])).toEqual([["hint", "hint_unsupported"]]);
     expect(tools.stats).toMatchObject({ hintChecks: 2, openChecks: 2, openUnavailable: 2 });
     expect(tools.stats.hintUnavailable ?? 0).toBe(0);
@@ -746,9 +820,9 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1), schoolOpen(2)] });
     // Cztery wywołania w locie (dwie pary) przerwane limitem etapu: więcej niż próg wyłącznika.
     expect(grader.requests).toHaveLength(4);
-    expect(outcome.results).toEqual([
-      { index: 0, accepted: "ex1", note: "unchecked" },
-      { index: 1, accepted: "ex2", note: "unchecked" },
+    expect(bare(outcome.results)).toEqual([
+      { index: 0, accepted: "ex1", notes: [UNCHECKED] },
+      { index: 1, accepted: "ex2", notes: [UNCHECKED] },
     ]);
     expect(checkRun.graderOpen()).toBe(false);
     expect(tools.breakerOpened()).toBe(0);
@@ -760,7 +834,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const grader = new FakeAnswerGrader().onDefault({ raw: schoolVerdictFor(IDS, [], "correct"), delayMs: 10_000 });
     const tools = setup({ subject: school, grader, graderTimeoutMs: 20 });
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1", note: "unchecked" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1", notes: [UNCHECKED] }]);
     expect(tools.stats).toMatchObject({ graderCalls: 2, graderErrors: 2, openUnavailable: 1 });
     expect(tools.checkRun.graderOpen()).toBe(false);
   });
@@ -772,7 +846,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
     expect(tools.checker.openCalls).toHaveLength(1);
     expect(grader.requests).toHaveLength(0);
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1", note: "unchecked" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1", notes: [UNCHECKED] }]);
     expect(tools.stats).toMatchObject({ openUnavailable: 1 });
   });
 
@@ -789,7 +863,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const grader = new FakeAnswerGrader().onDefault({ error: "boom" });
     const checkRun = new AgentCheckRun(DEFAULT_LESSON_AGENT_POLICY);
     const tools = setup({ subject: school, grader, checkRun });
-    expect((await tools.tools.submit({ exercises: [schoolOpen(1)] })).results).toEqual([{ index: 0, accepted: "ex1", note: "unchecked" }]);
+    expect(bare((await tools.tools.submit({ exercises: [schoolOpen(1)] })).results)).toEqual([{ index: 0, accepted: "ex1", notes: [UNCHECKED] }]);
     expect(tools.breakerOpened()).toBe(0);
     await tools.tools.submit({ exercises: [schoolOpen(2)] });
     expect(tools.breakerOpened()).toBe(1);
@@ -798,7 +872,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     expect(tools.checker.openCalls).toHaveLength(2);
 
     const third = await tools.tools.submit({ exercises: [schoolOpen(3)] });
-    expect(third.results).toEqual([{ index: 0, accepted: "ex3" }]);
+    expect(bare(third.results)).toEqual([{ index: 0, accepted: "ex3" }]);
     expect(tools.checker.openCalls).toHaveLength(2);
     expect(grader.requests).toHaveLength(requests);
     expect(tools.breakerOpened()).toBe(1);
@@ -809,7 +883,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const grader = new FakeAnswerGrader().onDefault({ raw: { knowledge: "correct", matchedElementIds: [], missingElementIds: [] } });
     const tools = setup({ subject: school, grader, checker: { solveOpen: () => ["odpowiedź wzorcowa 1", "Wisła"] } });
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1", note: "unchecked" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1", notes: [UNCHECKED] }]);
     expect(tools.stats).toMatchObject({ graderCalls: 1, graderInvalidVerdicts: 1, openUnavailable: 1 });
     expect(tools.stats.graderErrors ?? 0).toBe(0);
   });
@@ -818,13 +892,13 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const grader = correctGrader();
     const tools = setup({ subject: school, grader, checker: { judgeHint: judgeBadHint } });
     const first = await tools.tools.submit({ exercises: [schoolOpen(1, { hint: BAD_HINT })] });
-    expect(first.results[0]).toEqual({ index: 0, errors: [expect.stringContaining(texts.hintUnsupported!)] });
+    expect(bare(first.results)[0]).toEqual({ index: 0, errors: [expect.stringContaining(HINT_UNSUPPORTED)] });
     expect(tools.checker.openCalls).toHaveLength(1);
     const requests = grader.requests.length;
     expect(requests).toBe(2);
 
     const second = await tools.tools.submit({ exercises: [schoolOpen(1, { hint: "Pomyśl o rzekach." })] });
-    expect(second.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare(second.results)).toEqual([{ index: 0, accepted: "ex1" }]);
     expect(tools.checker.openCalls).toHaveLength(1);
     expect(tools.checker.hintCalls).toHaveLength(2);
     expect(grader.requests).toHaveLength(requests);
@@ -838,8 +912,8 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const second = setup({ subject: school, grader, checkRun, objectiveId: B });
     // Własne polecenie: widok bez tytułu celu, więc identyczny w obu celach (wejście gradera już nie).
     const exercise = schoolOpen(1, { instructionPl: "Odpowiedz pełnym zdaniem." });
-    expect((await first.tools.submit({ exercises: [exercise] })).results).toEqual([{ index: 0, accepted: "ex1" }]);
-    expect((await second.tools.submit({ exercises: [{ ...exercise, objectiveId: B }] })).results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare((await first.tools.submit({ exercises: [exercise] })).results)).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare((await second.tools.submit({ exercises: [{ ...exercise, objectiveId: B }] })).results)).toEqual([{ index: 0, accepted: "ex1" }]);
     expect(first.checker.openCalls).toHaveLength(1);
     expect(second.checker.openCalls).toHaveLength(1);
     expect(checkRun.openMemo.size).toBe(2);
@@ -866,7 +940,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const outcome = await tools.tools.submit({ exercises: [schoolOpen(1)] });
     expect(tools.checker.openCalls).toHaveLength(1);
     expect(grader.requests).toHaveLength(0);
-    expect(outcome.results).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1" }]);
     expect(tools.stats.openUnavailable ?? 0).toBe(0);
     expect(checkRun.openMemo.size).toBe(0);
   });
@@ -877,7 +951,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const pending = tools.tools.submit({ exercises: [schoolOpen(1)] });
     await vi.waitFor(() => expect(grader.requests).toHaveLength(2));
     await tools.close();
-    expect((await pending).results).toEqual([{ index: 0, errors: ["tools are closed"] }]);
+    expect(bare((await pending).results)).toEqual([{ index: 0, errors: ["tools are closed"] }]);
     expect(tools.stats.openUnavailable ?? 0).toBe(0);
     expect(tools.stats.hintUnavailable ?? 0).toBe(0);
   });
@@ -890,7 +964,7 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     const pending = tools.tools.submit({ exercises: [schoolOpen(1)] });
     await vi.waitFor(() => expect(grader.requests).toHaveLength(2));
     await tools.close();
-    expect((await pending).results).toEqual([{ index: 0, errors: ["tools are closed"] }]);
+    expect(bare((await pending).results)).toEqual([{ index: 0, errors: ["tools are closed"] }]);
     expect(tools.refusals).toEqual(["refused_closed"]);
     expect(tools.state()).toBe(before);
     // Zamknięcie nie jest awarią gradera.
@@ -909,5 +983,228 @@ describe("submit — sędzia podpowiedzi i kontrola otwarta (etap 2b, szkoła)",
     expect(started).toBe(checkRun.graderSemaphore.limit);
     gate.resolve();
     await Promise.all(runs);
+  });
+});
+
+describe("wynik dla modelu — format z katalogu reguł (spec katalogu reguł §4.1)", () => {
+  const broken = { ...open(A, "Kiedy?", "w 966 roku"), prompt: "" };
+  const errorsOf = (result: LessonAgentToolOutcome["results"][number]): readonly string[] =>
+    "errors" in result ? result.errors : [];
+
+  /** Surowy rekord z wieloma polami listowymi złego typu: wiele zgłoszeń `shape.*` naraz. */
+  const manyShapeErrors = (n: number) => ({
+    exerciseType: "lesson_choice",
+    objectiveId: A,
+    stem: `Bardzo długie zdanie numer ${n} z luką ___, które ma więcej niż czterdzieści znaków.`,
+    answer: "a",
+    acceptedAnswers: "x".repeat(200),
+    focus: 3,
+    options: 5,
+    items: 1,
+    requiredElements: 2,
+    supplementaryElements: 3,
+    commonErrors: 4,
+    sourceRefs: 5,
+    keyOptionIds: 6,
+    pairs: 7,
+  });
+
+  it("echo ćwiczenia: exerciseType i początek bodźca (najwyżej 40 znaków), także przy odrzuceniu i bez obiektu", async () => {
+    const tools = setup();
+    const long = { ...choice(A, 1), stem: `${"Długie zdanie z luką ___ i dalszym tekstem ".repeat(2)}koniec.` };
+    const outcome = await tools.tools.submit({ exercises: [long, 7, { exerciseType: 3, prompt: "Pytanie?" }, broken] });
+    expect(outcome.results.map((result) => [result.exerciseType, result.stimulus])).toEqual([
+      ["lesson_choice", clip(long.stem, 40, { quote: false })],
+      [null, ""],
+      [null, "Pytanie?"],
+      ["lesson_open_answer", ""],
+    ]);
+    expect(outcome.results[0]!.stimulus).toMatch(/^.{40}…$/u);
+  });
+
+  it("mapa rules: opis reguły z dopiskiem przedmiotu, każdy id najwyżej raz na zagadnienie", async () => {
+    const probe = await setup().tools.submit({ exercises: [broken] });
+    const [id] = Object.keys(probe.rules ?? {});
+    expect(id).toBeDefined();
+    const noted = withAgentPolicy(subject, { ruleNotes: { [id!]: "SUBJECT-NOTE." } });
+    const tools = setup({ subject: noted });
+    const first = await tools.tools.submit({ exercises: [broken] });
+    expect(first.rules).toEqual({ [id!]: describeRule(ruleOf(noted, id as RuleId)!, ruleTextContextOf(noted), "SUBJECT-NOTE.") });
+    expect(first.rules![id!]).toMatch(/ SUBJECT-NOTE\.$/u);
+    // Powód nazywa regułę z mapy.
+    expect(errorsOf(first.results[0]!)[0]).toMatch(new RegExp(`^\\[${id!.replace(".", "\\.")}\\] `, "u"));
+    const second = await tools.tools.submit({ exercises: [broken] });
+    expect(second).not.toHaveProperty("rules");
+    expect(bare(second.results)).toEqual(bare(first.results));
+    // Inne zagadnienie (osobne narzędzia) dostaje opis od nowa.
+    expect((await setup({ subject: noted }).tools.submit({ exercises: [broken] })).rules).toEqual(first.rules);
+  });
+
+  it("wyjaśnienie usunięte przy oczyszczaniu: przyjęte bez pola, nota [explanation.*] explanationPl: removed: …, opis reguły raz", async () => {
+    const tools = setup({ subject: { ...subject, exerciseExplanations: true } });
+    const first = await tools.tools.submit({ exercises: [{ ...choice(A, 1), explanationPl: "Pierwsze zdanie. Drugie zdanie." }] });
+    expect(bare(first.results)).toEqual([{
+      index: 0,
+      accepted: "ex1",
+      notes: ['[explanation.one_sentence] explanationPl: removed: 2 sentences in "Pierwsze zdanie. Drugie zdanie."'],
+    }]);
+    expect(Object.keys(first.rules ?? {})).toEqual(["explanation.one_sentence"]);
+    expect(poolOf(tools.state(), A)[0]!.draft).not.toHaveProperty("explanationPl");
+    // Drugie złamanie tej samej reguły: nota bez ponownego opisu.
+    const second = await tools.tools.submit({ exercises: [{ ...choice(A, 2), explanationPl: "Raz jest tak. Dwa jest tak." }] });
+    expect("accepted" in second.results[0]! && second.results[0].notes).toEqual([
+      '[explanation.one_sentence] explanationPl: removed: 2 sentences in "Raz jest tak. Dwa jest tak."',
+    ]);
+    expect(second).not.toHaveProperty("rules");
+    // Poprawne wyjaśnienie zostaje bez noty; przedmiot bez wyjaśnień dostaje notę explanation.not_allowed.
+    const kept = await tools.tools.submit({ exercises: [{ ...choice(A, 3), explanationPl: "Tak brzmi poprawna forma." }] });
+    expect(bare(kept.results)).toEqual([{ index: 0, accepted: "ex3" }]);
+    const plain = await setup().tools.submit({ exercises: [{ ...choice(A, 4), explanationPl: "Tak brzmi poprawna forma." }] });
+    expect("accepted" in plain.results[0]! && plain.results[0].notes).toEqual([
+      "[explanation.not_allowed] explanationPl: removed: this subject does not show error explanations",
+    ]);
+  });
+
+  it("najwyżej 6 powodów na ćwiczenie, siódmy wpis to „+N more”; dziennik ma wszystkie powody", async () => {
+    const raw = manyShapeErrors(1);
+    const materialized = materializeRawExercise(raw);
+    if (!materialized.ok) throw new Error("rekord testu powinien przejść materializację");
+    const total = rawShapeIssues(materialized.record).length;
+    expect(total).toBeGreaterThan(7);
+    const tools = setup();
+    const outcome = await tools.tools.submit({ exercises: [raw] });
+    const errors = errorsOf(outcome.results[0]!);
+    expect(errors).toHaveLength(7);
+    expect(errors.slice(0, 6).every((reason) => reason.startsWith("[shape."))).toBe(true);
+    expect(errors[6]).toBe(`+${total - 6} more`);
+    expect(tools.rejections[0]!.detail.split("[shape.").length - 1).toBe(total);
+    // Mapa opisuje tylko reguły pokazanych powodów.
+    const shown = errors.slice(0, 6).map((reason) => /^\[([a-z0-9_.]+)\]/u.exec(reason)![1]!);
+    expect(Object.keys(outcome.rules ?? {}).sort()).toEqual([...new Set(shown)].sort());
+  });
+
+  it("nota przyjęcia w postaci [id] pole: found, opis jej reguły w mapie; licznik usuniętych wariantów", async () => {
+    const tools = setup({ checker: { judge: () => false } });
+    const variant = { ...gap(A, "Chrzest w roku ___.", "966"), acceptedAnswers: ["dziewięćset sześćdziesiąt sześć", "w 966"] };
+    const outcome = await tools.tools.submit({ exercises: [variant] });
+    const result = outcome.results[0]!;
+    expect("accepted" in result && result.notes).toEqual([
+      '[check.variants] acceptedAnswers[0]: variant "dziewięćset sześćdziesiąt sześć" removed: not equivalent to the answer "966"; do not add it again',
+      '[check.variants] acceptedAnswers[1]: variant "w 966" removed: not equivalent to the answer "966"; do not add it again',
+    ]);
+    expect(Object.keys(outcome.rules ?? {})).toEqual(["check.variants"]);
+    expect(tools.stats.variantsRemoved).toBe(2);
+    expect(tools.stats.hintsRemoved ?? 0).toBe(0);
+  });
+
+  it("licznik hintsRemoved: usunięta podpowiedź pytania otwartego (nota hint.reveals_words); cicha poza nim się nie liczy", async () => {
+    // Katalog szkoły: nota hint.reveals_words ma opis reguły w mapie `rules`.
+    const sanitizing = { ...withAgentPolicy(subject, { sanitize: schoolAgentPolicy.sanitize!, blindSolveTypes: [], variantCheckTypes: [] }), rules: { ...subject.rules, ...schoolSubject.rules } };
+    const tools = setup({ subject: sanitizing });
+    const outcome = await tools.tools.submit({
+      exercises: [
+        { ...open(A, "Pytanie otwarte numer 1?", "odpowiedź wzorcowa 1"), hint: "To jest odpowiedź wzorcowa." },
+        { ...choice(A, 2), hint: "ZNACZNIK" },
+      ],
+    });
+    expect(outcome.results.map((result) => ("accepted" in result ? result.notes : undefined))).toEqual([
+      [expect.stringMatching(/^\[hint\.reveals_words\] hint: removed: shares /u)],
+      [expect.stringMatching(/^\[school\.hint_open_answer_only\] hint: removed: lesson_choice takes no hint/u)],
+    ]);
+    expect(Object.keys(outcome.rules ?? {}).sort()).toEqual(["hint.reveals_words", "school.hint_open_answer_only"]);
+    expect(tools.stats.hintsRemoved).toBe(1);
+  });
+
+  it("licznik quotesSnapped: cytat zastąpiony dokładnym fragmentem materiału", async () => {
+    const material = "Mieszko I przyjął chrzest w 966 roku.";
+    const sanitizing = withAgentPolicy(subject, { sanitize: schoolAgentPolicy.sanitize!, blindSolveTypes: [], variantCheckTypes: [] });
+    const tools = setup({ subject: sanitizing, material });
+    const quoted = { ...open(A, "Kiedy Mieszko przyjął chrzest?", "w 966 roku"), sourceRefs: [{ quote: "mieszko i przyjął chrzest w 966 roku" }] };
+    const outcome = await tools.tools.submit({ exercises: [quoted] });
+    expect(bare(outcome.results)).toEqual([{ index: 0, accepted: "ex1" }]);
+    expect(tools.stats.quotesSnapped).toBe(1);
+    expect(poolOf(tools.state(), A)[0]!.draft.sourceRefs).toEqual([{ quote: "Mieszko I przyjął chrzest w 966 roku" }]);
+  });
+
+  it("found rodziny pytań bez sufiksu runu (familyBase), także w dzienniku odrzuceń", async () => {
+    const material = "Wisła jest najdłuższą rzeką Polski i płynie przez Kraków.";
+    const familySubject: SubjectModule = {
+      ...subject,
+      validatePoolExtra: schoolSubject.validatePoolExtra!,
+      rules: { ...subject.rules, ...schoolSubject.rules },
+    };
+    const member = (prompt: string, answer: string) => ({
+      ...open(A, prompt, answer, "rzeka"),
+      requiredElements: [{ id: "e1", text: "Wisła" }],
+      questionType: "fact" as const,
+      expectedForm: "short" as const,
+      sourceRefs: [{ quote: material }],
+    });
+    const scope = "abcdef12-3456-7890-abcd-ef1234567890";
+    const tools = setup({ subject: familySubject, material, familyScope: scope });
+    const outcome = await tools.tools.submit({ exercises: [member("Która rzeka jest najdłuższa?", "Wisła"), member("Jak nazywa się najdłuższa rzeka?", "Odra")] });
+    const reasons = outcome.results.flatMap((result) => errorsOf(result));
+    const family = reasons.find((reason) => reason.startsWith("[school.family_answer_differs]"));
+    expect(family).toBeDefined();
+    expect(family).toContain('family "rzeka" has');
+    expect(JSON.stringify(outcome)).not.toContain(familyRunSuffix(scope));
+    expect(tools.rejections.map((entry) => entry.detail).join(" ")).not.toContain(familyRunSuffix(scope));
+  });
+
+  it("budżet: najgorszy wynik (10 odrzuconych po 6 powodów i mapa rules) ma najwyżej 12 000 znaków", async () => {
+    const outcome = await setup().tools.submit({ exercises: Array.from({ length: 10 }, (_item, index) => manyShapeErrors(index)) });
+    expect(outcome.results.every((result) => errorsOf(result).length === 7)).toBe(true);
+    expect(Object.keys(outcome.rules ?? {}).length).toBeGreaterThan(5);
+    expect(JSON.stringify(outcome).length).toBeLessThanOrEqual(12_000);
+  });
+});
+
+describe("submit — własność: losowy JSON (generator z ziarnem, spec katalogu reguł §2.4)", () => {
+  it("nigdy nie rzuca, każde ćwiczenie ma wynik w swoim indeksie", async () => {
+    const bases: Record<string, unknown>[] = [
+      choice(A, 1) as unknown as Record<string, unknown>,
+      open(A, "Kiedy?", "w 966 roku") as unknown as Record<string, unknown>,
+      gap(A, "Chrzest w roku ___.", "966") as unknown as Record<string, unknown>,
+    ];
+    for (let seed = 0; seed < 150; seed += 1) {
+      const exercises = Array.from({ length: 1 + (seed % 3) }, (_item, index) => randomJson(seed * 7 + index, { base: bases[(seed + index) % bases.length]! }));
+      const tools = setup();
+      const outcome = await tools.tools.submit({ exercises });
+      expect(outcome.results.map((result) => result.index), `seed ${seed}`).toEqual(exercises.map((_item, index) => index));
+      for (const result of outcome.results) {
+        expect(typeof result.stimulus, `seed ${seed}`).toBe("string");
+        expect([...result.stimulus].length, `seed ${seed}`).toBeLessThanOrEqual(41);
+      }
+    }
+  });
+
+  it("wyjątek formatowania wyniku zostawia stan i pamięć opisów reguł bez zmian", async () => {
+    const THROWING = defineRules({
+      "test.throwing_description": {
+        field: "answer",
+        kind: "reject",
+        description: () => {
+          throw new Error("format failure");
+        },
+      },
+    });
+    const issue = issueFrom(THROWING);
+    const throwing: SubjectModule = {
+      ...subject,
+      rules: { ...subject.rules, ...THROWING },
+      validateExercise: (ex, topicArg) => [
+        ...subject.validateExercise(ex, topicArg),
+        ...(ex.answer === "BOOM" ? [issue("test.throwing_description", { pl: "odpowiedź BOOM" })] : []),
+      ],
+    };
+    const tools = setup({ subject: throwing });
+    const before = tools.state();
+    const call = () => tools.tools.submit({ exercises: [choice(A, 1), open(A, "Pytanie?", "BOOM")] });
+    await expect(call()).rejects.toThrow("format failure");
+    expect(tools.state()).toBe(before);
+    expect(tools.rejections).toEqual([]);
+    // Narzędzia działają dalej, a nic z nieudanego wywołania nie trafiło do stanu (numeracja od ex1).
+    const ok = await tools.tools.submit({ exercises: [choice(A, 1)] });
+    expect(bare(ok.results)).toEqual([{ index: 0, accepted: "ex1" }]);
   });
 });

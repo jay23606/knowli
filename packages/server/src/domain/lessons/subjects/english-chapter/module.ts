@@ -12,6 +12,7 @@ import { chapterAgentPolicy } from "./agent-policy";
 import { chapterCardExposureTexts, chapterExposureText, normalizeChapterExposureText } from "./exposure";
 import { englishChapterPrompts } from "./prompts";
 import { refineChapterPool, validateChapterExercise } from "./validators";
+import { CHAPTER_RULES } from "./rules";
 
 /**
  * Przedmiot `english_chapter` — „Angielski — rozdział” (design §4). Rodzic
@@ -90,6 +91,7 @@ export const englishChapterSubject: SubjectModule = {
   refineGeneratedPool: refineChapterPool,
   // Polityka agenta puli: bramki słów i ram kart, wymagane typy i pokrycie materiału przez plan.
   agentPolicy: chapterAgentPolicy,
+  rules: CHAPTER_RULES,
   validateExercise: validateChapterExercise,
   // Audio odpowiedzi ujawniałoby rozwiązanie; polecenia są krótkie i po polsku.
   ttsForAnswers: false,

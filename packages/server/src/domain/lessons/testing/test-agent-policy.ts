@@ -22,5 +22,5 @@ export const testAgentPolicy: SubjectAgentPolicy = {
   checkerNeedsMaterial: false,
   independentReserve: 1,
   slack: 2,
-  rejectionTexts: { leakVictim: "leak victim", leakSource: "leak source" },
+  ruleNotes: { "lesson.leak": "leak victim", "lesson.leak_source": "leak source" },
 };

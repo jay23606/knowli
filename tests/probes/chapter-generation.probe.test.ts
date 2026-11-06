@@ -52,7 +52,7 @@ import {
 } from "./probe-costs";
 import { loadDotEnv, resolveOutsideRepoPath } from "./probe-helpers";
 import { probePreflight } from "./probe-preflight";
-import { recordingAgent, type AgentSubmission } from "./probe-submissions";
+import { cleanupCounters, recordingAgent, submissionMetrics, type AgentSubmission } from "./probe-submissions";
 
 const { eq } = createRequire(new URL("../../packages/server/package.json", import.meta.url))("drizzle-orm") as typeof import("../../packages/server/node_modules/drizzle-orm");
 
@@ -337,9 +337,11 @@ describe.skipIf(!enabled)("próba generowania lekcji agentem puli na prawdziwych
 
     // Wysłane ćwiczenia z odpowiedzią walidacji (przyczyny odrzuceń nie trafiają do punktu kontrolnego) — tylko do pliku wyników.
     const submissions: AgentSubmission[] = [];
+    // Etykieta bieżącego runu (`main`, potem `add` dla „+N”): wysłane ćwiczenia i wiersze dziennika są nią znakowane, a miary liczone osobno per run.
+    let currentRun = "main";
     const services = createServices({
       db: testDatabase().db,
-      generation: { ...base, lessonAgent: { ...lessonAgent, agent: recordingAgent(lessonAgent.agent, submissions) } },
+      generation: { ...base, lessonAgent: { ...lessonAgent, agent: recordingAgent(lessonAgent.agent, submissions, () => currentRun) } },
     });
 
     const titleOf = { chapter: "Angielski — rozdział", school: "szkoła (Geografia)", grammar: "Angielski — gramatyka (Present Simple)" } as const;
@@ -351,11 +353,13 @@ describe.skipIf(!enabled)("próba generowania lekcji agentem puli na prawdziwych
 
     // Wiersze dzienników generacji (mogą nieść kody i liczby, a w błędach — szczegóły) tylko do pliku wyników, nie na konsolę.
     const lessonLog: string[] = [];
+    const lessonLogByRun: Record<string, string[]> = {};
     const original = { log: console.log, warn: console.warn, error: console.error };
     const capture = (write: (...args: unknown[]) => void) => (...args: unknown[]) => {
       const text = args.map(String).join(" ");
       if (LOG_PREFIXES.some((prefix) => text.startsWith(prefix))) {
         lessonLog.push(text);
+        (lessonLogByRun[currentRun] ??= []).push(text);
         return;
       }
       write(...args);
@@ -450,7 +454,12 @@ describe.skipIf(!enabled)("próba generowania lekcji agentem puli na prawdziwych
 
     const started = Date.now();
     const resultsPath = join(outDir, `chapter-${new Date().toISOString().replace(/[:.]/gu, "-")}.json`);
-    /** Części pliku wyników liczone przy każdym zapisie: koszt (per operacja i per run), tokeny, dziennik generacji. */
+    /** Miary jednego runu: wysłane ćwiczenia, kody odrzuceń z dziennika i liczniki oczyszczeń tego runu. */
+    const runMetrics = (run: string) => ({
+      ...submissionMetrics(submissions.filter((entry) => entry.run === run), lessonLogByRun[run] ?? []),
+      cleanup: cleanupCounters(lessonLogByRun[run] ?? []),
+    });
+    /** Części pliku wyników liczone przy każdym zapisie: koszt (per operacja i per run), tokeny, dziennik generacji, miary przebiegu. */
     const liveParts = (): Record<string, unknown> => ({
       costUsd: {
         total: events.reduce((sum, event) => sum + (event.providerCostUsd ?? 0), 0),
@@ -462,6 +471,7 @@ describe.skipIf(!enabled)("próba generowania lekcji agentem puli na prawdziwych
         out: events.reduce((sum, event) => sum + (event.outputTokens ?? 0), 0),
       },
       lessonLog: lessonLog.map((text) => text.replace(/run=[0-9a-f-]+ /u, "")),
+      submissionMetrics: { main: runMetrics("main"), ...(currentRun === "main" ? {} : { [currentRun]: runMetrics(currentRun) }) },
       agentSubmissions: submissions,
     });
     /** Plik wyników: wspólna część (wejście, modele, szacunek) i stan przebiegu; koszt i dziennik dokłada zapis. */
@@ -549,7 +559,13 @@ describe.skipIf(!enabled)("próba generowania lekcji agentem puli na prawdziwych
         line("Brak szkicu po generacji — nie ma co raportować.");
         return;
       }
-      line(`Dziennik generacji: ${lessonLog.length} wierszy; wysłane ćwiczenia: ${submissions.length}, odrzucone: ${submissions.filter((entry) => "errors" in entry).length} (przyczyny tylko w pliku wyników)`);
+      const { cleanup, ...metrics } = runMetrics("main");
+      // Miary „N/M”: suma liczników / liczba różnych kluczy (kodów, id reguł); same liczby, rozbicie per klucz tylko w pliku wyników.
+      const total = (counts: Record<string, number>) => Object.values(counts).reduce((sum, count) => sum + count, 0);
+      line(`Dziennik generacji: wierszy=${lessonLog.length} wysłane=${metrics.submitted} przyjęte=${metrics.accepted} odrzucone=${metrics.submitted - metrics.accepted} przyjęte1=${metrics.acceptedFirstCall} wywołania=${metrics.submitCalls} ` +
+        `kody odrzuceń=${total(metrics.rejectedByCode)}/${Object.keys(metrics.rejectedByCode).length} reguły=${total(metrics.rejectedByRule)}/${Object.keys(metrics.rejectedByRule).length} ` +
+        `noty=${total(metrics.acceptedWithNotes)}/${Object.keys(metrics.acceptedWithNotes).length} otwarte=${metrics.openAnswers} zPodpowiedzią=${metrics.openAnswersWithHint} ` +
+        `oczyszczenia: podpowiedzi=${cleanup.hintsRemoved} warianty=${cleanup.variantsRemoved} cytaty=${cleanup.quotesSnapped}`);
       results.draft = reportDraft(draft);
 
       // Zrzut szkicu po runie agenta (przed „+N” i próbą publikacji).
@@ -579,6 +595,7 @@ describe.skipIf(!enabled)("próba generowania lekcji agentem puli na prawdziwych
         if (objectiveId === undefined) throw new Error("Szkic bez zagadnień — „+N” niemożliwe");
         const before = draft.exercises.filter((exercise) => exercise.objectiveId === objectiveId).length;
         assertWithinCostCap(readCostLedger(costsPath), runBudgetUsd, `„+${addCount}”`);
+        currentRun = "add";
         const addProbe = `${costEntry.probe}:add`;
         const addProvisionalId = appendProvisionalCostEntry(costsPath, { at: new Date().toISOString(), ...costEntry, probe: addProbe, costUsd: runBudgetUsd });
         const addStarted = Date.now();

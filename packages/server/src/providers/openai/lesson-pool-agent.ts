@@ -31,9 +31,6 @@ import type {
 } from "../../ports/ai";
 import { GenerationProviderError } from "../../ports/generation-error";
 import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
-import { materializeGeneratedAssignments } from "../lesson-assignments";
-import { materializeGeneratedCalculations } from "../lesson-calculations";
-import { materializeGeneratedKeywords } from "../lesson-keywords";
 import {
   recordHttpError,
   recordResponse,
@@ -52,8 +49,8 @@ import { lessonSystemPrompt, lessonUserMaterial } from "./llm";
  * produkcyjny z `ai` i `@openrouter/*` (pilnuje `tests/ai-sdk-scope.test.ts`); osiągalny tylko
  * przez składanie agenta w workerze.
  *
- * Adaptery nie mają reguł: surowe rekordy materializują (`materializeRawExercises`) i oddają
- * narzędziom kierownika, który waliduje wszystko. Mówią wyłącznie z OpenRouter, z kluczem z
+ * Adaptery nie mają reguł: surowe rekordy oddają bez zmian narzędziom kierownika, które je
+ * materializują (`materializeRawExercise` w domenie) i walidują. Mówią wyłącznie z OpenRouter, z kluczem z
  * opcji (biblioteka nie czyta env). `maxRetries: 0` — jedno wywołanie modelu to jedno żądanie
  * HTTP, a przejściowy błąd ponawia run, nie SDK.
  *
@@ -297,19 +294,32 @@ class AiSdkCaller {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Prompty (tekst dla modelu po angielsku; reguły przedmiotu pochodzą z `lessonSystemPrompt`)
+// Prompty (tekst dla modelu po angielsku; reguły przedmiotu pochodzą z księgi reguł w `lessonSystemPrompt`)
 
-/** Dopisek przepływu narzędzi do promptu produkcyjnego (z PoC `objectiveInstructions`). */
+/** Minima publikacji całej puli zagadnienia (te same stałe co walidacja publikacji) jako jedno zdanie `Target`. */
+function publicationMinima(minima: LessonObjectiveAgentInput["targets"]["publicationMinima"]): string {
+  const distinct = minima.distinctOpenAnswers === undefined
+    ? ""
+    : `, including ${minima.distinctOpenAnswers} lesson_open_answer questions with DIFFERENT model answers (one family counts once)`;
+  return `Publication minima of the complete objective pool (exercises already in the lesson count too): ${minima.guided} guided, ` +
+    `${minima.productive} productive and ${minima.independent} independent${distinct}.`;
+}
+
+/**
+ * Instrukcje podagenta zagadnienia: prompt produkcyjny (`lessonSystemPrompt` z księgą reguł), zadanie,
+ * karty, cele liczbowe (`Target` — jedyne miejsce liczb ćwiczeń, z minimami publikacji) i przepływ narzędzi.
+ */
 export function objectiveInstructions(input: LessonObjectiveAgentInput): string {
   const { objective, targets } = input;
   const others = input.otherObjectives
     .map((other) => `- ${other.title}${other.kind ? ` (${other.kind})` : ""}: ${other.cards.replace(/\n/gu, " / ").slice(0, 400)}`)
     .join("\n");
   const required = targets.requiredTypes.map((group) => group.join(" or ")).join("; ") || "none";
+  // Słowa kluczowe dotyczą przyjętego pytania otwartego (kaskada `school.keywords_family_rejected`): w kolejnym wywołaniu.
+  const keywords = input.pool.objectives.some((candidate) => candidate.exerciseTypes.includes("lesson_keywords"));
   return [
     lessonSystemPrompt(input.pool),
-    "TOOL MODE: ignore the instruction above to answer with JSON text. Deliver exercises ONLY by calling submit_exercises, whose argument holds the exercises array " +
-      `of exactly that JSON shape (same fields, same nulls, objectiveId "${objective.id}"). ` +
+    `TOOL MODE: deliver exercises ONLY by calling submit_exercises, with objectiveId "${objective.id}" in every exercise. ` +
       (objective.examplesFromPlan
         ? "Card examples are fixed by the lesson plan: do not send them."
         : "Also send 1-3 short card examples of this objective (plain sentences the child sees on the card) in the examples field of submit_exercises; they must never be the answer of an exercise."),
@@ -320,12 +330,16 @@ export function objectiveInstructions(input: LessonObjectiveAgentInput): string 
     `Other objectives of the lesson (do not test them):\n${others || "none"}`,
     `Target: guided >= ${targets.guided}, productive >= ${targets.productive}, independent >= ${targets.independent}, required types: ${required}; ` +
       `about ${targets.targetCount} exercises in stages (plus up to ${targets.listenAllowance} lesson_listen_choice), at most ${targets.maxExercises} exercises in total. ` +
+      `${publicationMinima(targets.publicationMinima)} ` +
       "Vary sentences: never two exercises with the same sentence, and do not reuse one template more than twice.",
-    // Reguły przedmiotu dla podagenta (np. szkoła: podpowiedź tylko przy pytaniu otwartym) — z polityki, nie stałe.
-    ...(input.promptNotes ?? []),
-    "WORKFLOW: call submit_exercises with ALL exercises of the objective in ONE call. The tool checks each one (subject and pool rules, answer leaks against the whole lesson, " +
-      "a blind solve by another model, and an independent check of every accepted answer variant). Rejected exercises are NOT in the pool: the result names each problem. " +
-      "Then call submit_exercises again with ONLY corrected or additional exercises, until the result says complete=true. remove_exercise deletes one of your accepted exercises by id. " +
+    `WORKFLOW: call submit_exercises with ALL exercises of the objective in ONE call${keywords ? " (except lesson_keywords)" : ""}. ` +
+      "The tool checks each one against the RULES above. " +
+      "Rejected exercises are NOT in the pool: each problem is named as [rule id] field: what is wrong, and the rules field of the result " +
+      "describes a rule the first time it is named. " +
+      "Then call submit_exercises again with ONLY corrected or additional exercises, until the result says complete=true. " +
+      "An accepted exercise with notes is already in the pool: do not resubmit it; to change it, call remove_exercise with its id first, " +
+      "then submit the new version. " +
+      (keywords ? "Send lesson_keywords only in a later call, after its lesson_open_answer was accepted (use that familyId). " : "") +
       "If the blind solver gave a different answer, first decide whether it is EXACTLY as correct for this stimulus: only then add it to acceptedAnswers; " +
       "otherwise the stimulus is ambiguous — make it point to one answer. Never add a variant that adds or drops meaning. Never resubmit an exercise unchanged.",
   ].join("\n\n");
@@ -408,11 +422,6 @@ function submitSchema(input: LessonObjectiveAgentInput) {
   } as Parameters<typeof jsonSchema>[0]);
 }
 
-/** Materializacja surowych rekordów modelu przed `submit`: rachunki, słowa kluczowe, pary/grupy/luki (kod liczy odpowiedź). */
-export function materializeRawExercises(raw: readonly unknown[]): unknown[] {
-  return materializeGeneratedAssignments(materializeGeneratedKeywords(materializeGeneratedCalculations([...raw])));
-}
-
 // ---------------------------------------------------------------------------------------------
 // Agent puli
 
@@ -443,10 +452,10 @@ export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
       execute: (raw, options) =>
         guard.run(() => {
           const payload = raw as { exercises?: unknown; examples?: unknown };
-          const exercises = Array.isArray(payload.exercises) ? materializeRawExercises(payload.exercises) : payload.exercises;
+          // Surowe rekordy bez zmian: materializację, kształt i reguły robią narzędzia kierownika.
           return untilAborted(
             tools.submit({
-              exercises: exercises as unknown[],
+              exercises: payload.exercises as unknown[],
               ...(Array.isArray(payload.examples) ? { examples: payload.examples as unknown[] } : {}),
             }),
             options.abortSignal,

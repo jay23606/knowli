@@ -1,4 +1,5 @@
 import { BASE_ERROR_CATEGORY_CODES } from "./base-error-categories";
+import { ENGINE_CATALOGS } from "./rules/catalog";
 import { ASSESSED_STAGES, outsideStagePath, stageOf } from "./stages";
 import type { ErrorCategoryCode, LearningObjective, LessonTopic, SubjectModule } from "./types";
 
@@ -62,11 +63,36 @@ export function validateSubject(module: SubjectModule): string[] {
     errors.push("Przedmiot: „lesson_listen_choice” wymaga ttsForFeedbackSentence (nagrania zdania)");
   }
 
+  validateSubjectRules(module, errors);
+
   for (const topic of module.topics) {
     validateTopic(topic, module, subjectTypes, errors);
   }
 
   return errors;
+}
+
+/**
+ * Katalog reguł przedmiotu (spec katalogu reguł §2.2): wymagany (kontrola
+ * wykonawcza chroni moduły z JS i stuby), a jego id nie mogą powtarzać id
+ * rdzenia ani lekcji. Kolizje między przedmiotami sprawdza rejestr.
+ */
+function validateSubjectRules(module: SubjectModule, errors: string[]): void {
+  const rules = (module as { rules?: SubjectModule["rules"] }).rules;
+  if (rules === undefined) {
+    errors.push("Przedmiot: brak katalogu reguł (rules)");
+  }
+  for (const id of Object.keys(rules ?? {})) {
+    if (ENGINE_CATALOGS.some((catalog) => Object.hasOwn(catalog, id))) {
+      errors.push(`Przedmiot: id reguły „${id}” koliduje z katalogiem reguł silnika`);
+    }
+  }
+  // Dopiski przedmiotu dotyczą wyłącznie reguł silnika (własne reguły przedmiot opisuje sam).
+  for (const id of Object.keys(module.agentPolicy?.ruleNotes ?? {})) {
+    if (!ENGINE_CATALOGS.some((catalog) => Object.hasOwn(catalog, id))) {
+      errors.push(`Przedmiot: dopisek ruleNotes do „${id}”, który nie jest regułą rdzenia ani lekcji`);
+    }
+  }
 }
 
 function validateTopic(

@@ -1,4 +1,5 @@
 import type { CalculationSpec, LessonVoiceTone } from "@learning/contracts";
+import type { LessonRuleIssue, RuleCatalog } from "./rules/catalog";
 
 /**
  * Typy silnika lekcji (design „Przedmiot i katalog”, „Typy ćwiczeń i etapy”).
@@ -142,10 +143,13 @@ export interface RawPlanObjective {
   examples: string[];
 }
 
-/** Zastrzeżenie bramki ćwiczenia agenta: kod trafia do `Rejection.code`, powód do modelu. */
+/**
+ * Zastrzeżenie bramki ćwiczenia agenta: kod trafia do `Rejection.code`, a do
+ * modelu powód z id reguły zgłoszenia (`formatRuleReason`).
+ */
 export interface AgentGateFinding {
   readonly code: string;
-  readonly reason: string;
+  readonly issue: LessonRuleIssue;
 }
 
 /**
@@ -167,21 +171,34 @@ export interface SubjectAgentPolicy {
   /** Typy sprawdzane kontrolą otwartą: rozwiązujący + grader (etap 2b). Brak = pusta lista. */
   readonly openAnswerCheckTypes?: readonly LessonExerciseType[];
   /**
-   * Szablony odrzuceń dla modelu (po angielsku). Pola sędziego podpowiedzi i kontroli otwartej
-   * są wymagane tylko wtedy, gdy przedmiot ma niepustą odpowiednią listę typów.
+   * Dopiski przedmiotu do opisów reguł silnika (spec katalogu reguł §2.1; po angielsku, dla
+   * modelu): id reguły rdzenia albo lekcji → zdania doklejane do jej opisu (`describeRule`), np.
+   * `lesson.leak` — jak zmienić ujawnione zdanie w tym przedmiocie. Klucz spoza katalogów silnika
+   * odrzuca `validateSubject`.
    */
-  readonly rejectionTexts: {
-    readonly leakVictim: string;
-    readonly leakSource: string;
-    readonly hintUnsupported?: string;
-    readonly hintLanguage?: string;
-    readonly hintReveals?: string;
-    readonly openMissing?: string;
-    readonly openWrong?: string;
-  };
+  readonly ruleNotes?: Partial<Record<string, string>>;
+  /**
+   * Przykłady typów przedmiotu dla zagadnienia (bez `objectiveId`): zastępują w księdze reguł przykład
+   * karty typu (`TYPE_CARDS`), gdy ogólny przykład łamie reguły tematu albo celu (np. formy „to be”).
+   * Brak typu w wyniku — przykład karty.
+   */
+  typeExamples?(at: { readonly topicId: string; readonly objectiveId: string }): TypeExamples | undefined;
   requiredTypes?(objective: AgentObjective): readonly (readonly LessonExerciseType[])[];
-  sanitize?(draft: LessonExerciseDraft): { draft: LessonExerciseDraft; removed: readonly string[] };
-  /** Kod trafia do `Rejection.code` (np. `hint_reveals_answer`), powód do modelu. */
+  /**
+   * Oczyszczenie kandydata agenta przed kontrolami: `removed` — nazwy usuniętych pól,
+   * `notes` — zgłoszenia reguł `sanitize` dla modelu (np. usunięta podpowiedź),
+   * `quotesSnapped` — liczba cytatów zastąpionych dokładnym fragmentem materiału.
+   */
+  sanitize?(
+    draft: LessonExerciseDraft,
+    ctx: { readonly material: string },
+  ): {
+    draft: LessonExerciseDraft;
+    removed: readonly string[];
+    notes?: readonly LessonRuleIssue[];
+    quotesSnapped?: number;
+  };
+  /** Kod trafia do `Rejection.code` (np. `card_word_missing`), powód do modelu. */
   exerciseGate?(
     draft: LessonExerciseDraft,
     objective: AgentObjective,
@@ -191,12 +208,10 @@ export interface SubjectAgentPolicy {
   /** Słowa i ramy do pokrycia przez plan (lista dla modelu planera). */
   planCoverage?(material: string): { readonly words: readonly string[]; readonly frames: readonly string[] };
   planGate?(plan: readonly RawPlanObjective[], material: string): string[];
-  /**
-   * Dopiski przedmiotu do instrukcji podagenta zagadnienia (po angielsku, dla modelu), np. szkoła:
-   * podpowiedź tylko przy pytaniu otwartym. Brak = bez dopisków (gramatyka zachowuje `hint`).
-   */
-  readonly promptNotes?: readonly string[];
 }
+/** Przykładowe rekordy agenta według typu (`SubjectAgentPolicy.typeExamples`). */
+export type TypeExamples = Partial<Record<LessonExerciseType, Readonly<Record<string, unknown>>>>;
+
 /** Normalizator odpowiedzi przedmiotu. */
 export interface AnswerNormalizer {
   /** Zbiór równoważnych sekwencji tokenów (np. rozwinięcia skrótów). */
@@ -209,17 +224,17 @@ export interface SubjectPromptProfile {
   readonly gradingRole: string; // co ocenia model (zastosowanie celu, nie styl)
   readonly almostDefinition: string; // kiedy werdykt „almost”
   /**
-   * Reguły semantyki pól ćwiczeń doklejane do promptu generacji po ogólnym
-   * opisie pól przez adapter (dziedzinowe, np. „hint = bezokolicznik”).
-   * Opcjonalne: przedmiot bez reguł pól pomija pole.
+   * Semantyka pól ćwiczeń doklejana do promptu generacji (dziedzinowa, np. „hint =
+   * bezokolicznik”) — wyłącznie wskazówki, których kod nie sprawdza; reguły
+   * egzekwowane opisuje katalog reguł (spec katalogu reguł §3). Opcjonalne.
    */
   readonly fieldRules?: string;
   /**
-   * Semantyka typów z własną ścisłą gałęzią schematu puli (pary, grupy, luki):
-   * adapter składa blok z części strukturalnej (pola, limity) i tego opisu.
-   * Brak reguły typu = sama część strukturalna.
+   * Semantyka typu (wskazówki, których kod nie sprawdza): księga reguł dokłada ją
+   * do bloku typu obok karty typu (pola, przykład) i reguł typu, więc znika z
+   * promptu razem z typem niedozwolonym w zagadnieniu.
    */
-  readonly typeRules?: Partial<Record<"lesson_match" | "lesson_group" | "lesson_cloze", string>>;
+  readonly typeRules?: Partial<Record<LessonExerciseType, string>>;
   /**
    * Reguły etapu zagadnień tematu dynamicznego (ile zagadnień, ich rodzaje,
    * treść kart) doklejane do promptu podziału materiału. Brak = ogólny opis.
@@ -408,10 +423,10 @@ export interface SubjectModule {
     ctx: { material: string },
   ): {
     kept: LessonExerciseDraft[];
-    rejected: { exercise: LessonExerciseDraft; reason: string }[];
+    rejected: { exercise: LessonExerciseDraft; issues: readonly LessonRuleIssue[] }[];
   };
   /** Błędy specyficzne dla przedmiotu (pusta lista = poprawne). */
-  validateExercise(ex: LessonExerciseDraft, topic: LessonTopic): string[];
+  validateExercise(ex: LessonExerciseDraft, topic: LessonTopic): readonly LessonRuleIssue[];
   readonly ttsForAnswers: boolean; // czy generować audio odpowiedzi kanonicznej
   /** „Posłuchaj pytania” (design szkoły §11): nagranie polecenia i pytania (`pl-PL`) przy przygotowaniu materiału. */
   readonly ttsForPrompts: boolean;
@@ -445,8 +460,21 @@ export interface SubjectModule {
    */
   validatePoolExtra?(
     drafts: readonly LessonExerciseDraft[],
-    ctx: { material: string },
-  ): ReadonlyMap<number, readonly string[]>;
+    ctx: {
+      readonly material: string;
+      /**
+       * Tylko przyjmowanie agenta: `familyId` pytań otwartych odrzuconych w bieżącym
+       * wywołaniu (kaskada słów kluczowych). Edycja i publikacja rodzica go nie podają.
+       */
+      readonly rejectedFamilies?: ReadonlySet<string>;
+    },
+  ): ReadonlyMap<number, readonly LessonRuleIssue[]>;
   /** Polityka agenta puli — każdy przedmiot jest generowany agentem. */
   readonly agentPolicy: SubjectAgentPolicy;
+  /**
+   * Katalog reguł przedmiotu (spec katalogu reguł §2.2): reguły jego walidatorów,
+   * haków puli i bramek. Id nie mogą kolidować z rdzeniem, lekcją ani innym
+   * przedmiotem (wspólny obiekt wpisu, np. fragment angielski, jest dozwolony).
+   */
+  readonly rules: RuleCatalog;
 }

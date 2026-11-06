@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { englishGrammarSubject } from "../../../domain/lessons/subjects/english-grammar/module";
+import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
 import type { SubjectModule } from "../../../domain/lessons/types";
 import { toExerciseDraft } from "./lesson-drafts";
 import { sanitizeFreshLessonDraft } from "./lesson-pool-acceptance";
@@ -32,7 +33,7 @@ describe("sanitizeFreshLessonDraft (wspólna sanityzacja świeżego ćwiczenia)"
     expect(draft.options).toEqual([]);
     const result = sanitizeFreshLessonDraft(draft, englishGrammarSubject, null);
     expect(result.draft).not.toHaveProperty("options");
-    expect(result.droppedExplanation).toBe(false);
+    expect(result.explanationNotes).toEqual([]);
     expect(result.droppedVariants).toBe(0);
   });
 
@@ -73,14 +74,21 @@ describe("sanitizeFreshLessonDraft (wspólna sanityzacja świeżego ćwiczenia)"
     expect(sanitizeFreshLessonDraft(draft, withTts, null).draft.voiceTone).toBe("curious");
   });
 
-  it("niepoprawne wyjaśnienie jest usuwane i oznaczone; poprawne zostaje", () => {
+  it("niepoprawne wyjaśnienie jest usuwane z notami reguł explanation.*; poprawne zostaje bez not", () => {
     const bad = draftOf({ ...choiceRaw("plays"), explanationPl: "Pierwsze zdanie. Drugie zdanie." });
     const dropped = sanitizeFreshLessonDraft(bad, englishGrammarSubject, null);
-    expect(dropped.droppedExplanation).toBe(true);
+    expect(dropped.explanationNotes.map((note) => [note.rule, note.field, note.found])).toEqual([
+      ["explanation.one_sentence", "explanationPl", 'removed: 2 sentences in "Pierwsze zdanie. Drugie zdanie."'],
+    ]);
     expect(dropped.draft).not.toHaveProperty("explanationPl");
     const good = draftOf({ ...choiceRaw("plays"), explanationPl: "Przy he, she, it dodajemy -s." });
     const kept = sanitizeFreshLessonDraft(good, englishGrammarSubject, null);
-    expect(kept.droppedExplanation).toBe(false);
+    expect(kept.explanationNotes).toEqual([]);
     expect(kept.draft.explanationPl).toBe("Przy he, she, it dodajemy -s.");
+    // Przedmiot bez wyjaśnień: nota explanation.not_allowed.
+    const school = sanitizeFreshLessonDraft(good, schoolSubject, null);
+    expect(school.explanationNotes.map((note) => [note.rule, note.found])).toEqual([
+      ["explanation.not_allowed", "removed: this subject does not show error explanations"],
+    ]);
   });
 });
