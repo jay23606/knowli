@@ -487,6 +487,8 @@ registerRuleCases([
 
   // Typy tekstowe.
   { rule: "gap.marker_count", violation: check(gap({ stem: "She plays tennis." })) },
+  // Krótka luka „__“ też jest luką na ekranie dziecka (#322).
+  { rule: "gap.marker_count", violation: check(gap({ stem: "I ___ like __ it." })) },
   {
     rule: "gap.answer_tokens",
     violation: check(gap({

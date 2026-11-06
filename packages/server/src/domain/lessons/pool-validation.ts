@@ -14,6 +14,7 @@
 import type { z } from "zod";
 import {
   LessonExerciseInputSchema,
+  lessonGapCount,
   MAX_CLOZE_EXTRA,
   MAX_CLOZE_GAPS,
   MAX_GROUP_ITEMS,
@@ -202,15 +203,8 @@ function anyTokens(text: string, normalizer: AnswerNormalizer): readonly string[
   return variants[0] ?? [];
 }
 
-/** Luka `lesson_listen_choice`: ciąg 2+ podkreśleń (jak `feedbackSentenceText` i Kid UI `splitGap`). */
-const LISTEN_GAP_PATTERN = /_{2,}/g;
 /** Opcja zaczynająca się od apostrofu w dowolnym zapisie: `'`, typograficzne warianty i grawis. */
 const LEADING_APOSTROPHE = new RegExp(`^(?:['\\u0060]|${APOSTROPHE_VARIANTS.source})`, "u");
-
-/** Liczba wystąpień `GAP_MARKER` w tekście. */
-function countGapMarkers(stem: string): number {
-  return stem.split(GAP_MARKER).length - 1;
-}
 
 /** Lista identyfikatorów do `found` (wycięta, bez cudzysłowu); pusta lista = „none”. */
 function idList(ids: readonly string[]): string {
@@ -837,7 +831,7 @@ function validateListenChoice(
   issues: LessonRuleIssue[],
 ): void {
   const stem = ex.stem ?? "";
-  const gaps = (stem.match(LISTEN_GAP_PATTERN) ?? []).length;
+  const gaps = lessonGapCount(stem);
   if (gaps !== 1) {
     issues.push(coreIssue("listen.gap_count", {
       pl: `stem: „lesson_listen_choice” wymaga dokładnie jednej luki (ciągu co najmniej dwóch podkreśleń, znaleziono ${gaps})`,
@@ -1425,7 +1419,7 @@ function validateGap(
   normalizer: AnswerNormalizer,
   issues: LessonRuleIssue[],
 ): void {
-  const markers = ex.stem === undefined ? 0 : countGapMarkers(ex.stem);
+  const markers = ex.stem === undefined ? 0 : lessonGapCount(ex.stem);
   if (markers !== 1) {
     issues.push(coreIssue("gap.marker_count", {
       pl: `stem: „lesson_gap” wymaga dokładnie jednego znacznika luki „${GAP_MARKER}” (znaleziono ${markers})`,

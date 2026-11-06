@@ -14,6 +14,7 @@ export * from "./reward-activity";
 export * from "./parent-work-card";
 export * from "./mock-tests";
 export * from "./lesson-calculation";
+export * from "./lesson-gap";
 export * from "./source-materials";
 export * from "./usage-features";
 export * from "./parent-costs";

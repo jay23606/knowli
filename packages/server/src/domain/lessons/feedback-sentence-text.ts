@@ -92,7 +92,7 @@ function correctOptionText(source: FeedbackSentenceSource): string | undefined {
 /** Wstawia tekst w jedyną lukę (2+ podkreśleń); inaczej `undefined`. */
 export function fillGap(stem: string | undefined, fill: string | undefined): string | undefined {
   if (!stem || !fill?.trim()) return undefined;
-  if ((stem.match(/_{2,}/g) ?? []).length !== 1) return undefined;
+  if (clozeGapCount(stem) !== 1) return undefined;
   return stem.replace(/_{2,}/, () => fill.trim());
 }
 

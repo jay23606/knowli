@@ -421,6 +421,14 @@ describe("validateLessonExercise — lesson_gap", () => {
     expect(errors.some((e) => e.includes("luk"))).toBe(true);
   });
 
+  it("dłuższy ciąg podkreśleń to jedna luka, jak na ekranie dziecka (#322)", () => {
+    expect(validateLessonExercise(draft({ stem: "She ______ tennis." }), englishGrammarSubject, englishTopic)).toEqual([]);
+    expect(
+      validateLessonExercise(draft({ stem: `She ${GAP_MARKER} tennis __.` }), englishGrammarSubject, englishTopic)
+        .some((e) => e.includes("luk")),
+    ).toBe(true);
+  });
+
   it("odrzuca odpowiedź luki dłuższą niż 3 tokeny", () => {
     const errors = validateLessonExercise(
       draft({
