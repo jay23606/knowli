@@ -66,6 +66,7 @@ function fixtureFor(args: {
     graderAvailable: true,
     examplesFixed: args.examplesFixed ?? false,
     maxSteps: 8,
+    callTimeoutMs: 90_000,
   });
   return { subject, topic, input };
 }

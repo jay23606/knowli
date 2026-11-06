@@ -161,6 +161,7 @@ function inputsOf(lesson: Lesson, state: LessonAgentState): LessonObjectiveAgent
       graderAvailable: false,
       examplesFixed: lesson.examplesFixed,
       maxSteps: 8,
+      callTimeoutMs: 90_000,
     }),
   );
 }

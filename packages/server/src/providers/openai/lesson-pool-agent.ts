@@ -13,6 +13,7 @@ import {
   tool,
   ToolLoopAgent,
   TypeValidationError,
+  wrapLanguageModel,
   type JSONValue,
   type LanguageModel,
   type LanguageModelUsage,
@@ -52,7 +53,8 @@ import { lessonSystemPrompt, lessonUserMaterial } from "./llm";
  * Adaptery nie mają reguł: surowe rekordy oddają bez zmian narzędziom kierownika, które je
  * materializują (`materializeRawExercise` w domenie) i walidują. Mówią wyłącznie z OpenRouter, z kluczem z
  * opcji (biblioteka nie czyta env). `maxRetries: 0` — jedno wywołanie modelu to jedno żądanie
- * HTTP, a przejściowy błąd ponawia run, nie SDK.
+ * HTTP, a przejściowy błąd ponawia run, nie SDK. Wyjątek: żądanie generatora i planisty z limitem
+ * `callTimeoutMs` (`withCallTimeout`) po przekroczeniu limitu ponawia się raz w tym samym kroku.
  *
  * Koszty: z `onLanguageModelCallEnd` (po odpowiedzi, przed narzędziami kroku), raz na żądanie,
  * `RunCostSink` dostaje `providerMetadata.openrouter.usage.cost` albo `null`, a `UsageRecorder`
@@ -78,7 +80,7 @@ export interface AiSdkLessonAgentOptions {
   readonly provider?: Readonly<Record<string, unknown>>;
   readonly usage?: UsageRecorder;
   /** Szwy testowe: gotowy model (MockLanguageModelV4) albo fetch przekazany do createOpenRouter. */
-  readonly languageModel?: LanguageModel;
+  readonly languageModel?: Exclude<LanguageModel, string>;
   readonly fetch?: typeof fetch;
 }
 
@@ -184,10 +186,57 @@ function requestTracker(cost: RunCostSink, usage: UsageRecorder | undefined, bas
       }
       pending = 0;
     },
+    /** Żądanie porzucone po limicie i ponawiane w tym samym kroku: bez odpowiedzi, a krok nadal czeka na `end`. */
+    abandoned(): void {
+      if (closed) return;
+      cost.record(null);
+      recordTransportFailure(usage, base);
+    },
     close(): void {
       closed = true;
     },
   };
+}
+
+/** Limit jednego żądania kroku: `canRetry` decyduje o jedynym ponowieniu (np. `shouldStop()` zagadnienia). */
+interface CallLimit {
+  readonly timeoutMs: number;
+  canRetry(): boolean;
+}
+
+/**
+ * Model z limitem jednego żądania (`doGenerate`): po `timeoutMs` żądanie jest przerywane i — gdy
+ * `canRetry()` — ponawiane raz z tymi samymi parametrami; porzucone żądanie zgłasza `onAbandoned`
+ * (koszt nieznany jak przy przerwaniu). Drugie przekroczenie rzuca `GenerationProviderError("timeout")`,
+ * a to żądanie rozlicza `fail` licznika. Zegar na `setTimeout` (testy sterują czasem), nie
+ * `AbortSignal.timeout`; wyścig z sygnałem, więc dostawca ignorujący przerwanie nie wstrzymuje kroku.
+ * Przerwanie rodzica rzuca błąd bez ponowienia.
+ */
+function withCallTimeout(model: Exclude<LanguageModel, string>, limit: CallLimit, onAbandoned: () => void): LanguageModel {
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      specificationVersion: "v4",
+      wrapGenerate: async ({ params, model: inner }) => {
+        const parent = params.abortSignal;
+        for (let attempt = 1; ; attempt += 1) {
+          const timer = new AbortController();
+          const handle = setTimeout(() => timer.abort(new GenerationProviderError("timeout")), limit.timeoutMs);
+          const signal = parent === undefined ? timer.signal : AbortSignal.any([parent, timer.signal]);
+          try {
+            return await untilAborted(Promise.resolve(inner.doGenerate({ ...params, abortSignal: signal })), signal);
+          } catch (error) {
+            if (parent?.aborted === true || !timer.signal.aborted) throw error;
+            // Budżet sprawdzany przed porzuceniem: szacunek porzuconego żądania liczy się od kolejnego kroku.
+            if (attempt >= 2 || !limit.canRetry()) throw new GenerationProviderError("timeout");
+            onAbandoned();
+          } finally {
+            clearTimeout(handle);
+          }
+        }
+      },
+    },
+  });
 }
 
 /** Status odpowiedzi HTTP z błędu SDK; brak = żądanie nie dostało odpowiedzi. */
@@ -251,7 +300,7 @@ interface CallHooks {
 /** Ustawienia wspólne obu adapterów: model, nazwa modelu, opcje dostawcy i zapis kosztów. */
 class AiSdkCaller {
   readonly model: string;
-  readonly languageModel: LanguageModel;
+  readonly languageModel: Exclude<LanguageModel, string>;
   readonly providerOptions: { openrouter: Record<string, JSONValue> };
   private readonly usage: UsageRecorder | undefined;
 
@@ -273,14 +322,22 @@ class AiSdkCaller {
 
   /**
    * Wywołanie SDK z kontrolą kosztu, przerwania i błędów: wyjątek zapisuje żądania bez
-   * odpowiedzi, a potem rzuca błąd zmapowany przez `toGenerationProviderError`.
+   * odpowiedzi, a potem rzuca błąd zmapowany przez `toGenerationProviderError`. Z `limit` wywołanie
+   * dostaje model z limitem jednego żądania (`withCallTimeout`), inaczej model bez zmian.
    */
-  async tracked<T>(operation: AgentOperation, cost: RunCostSink, signal: AbortSignal, call: (hooks: CallHooks) => Promise<T>): Promise<T> {
+  async tracked<T>(
+    operation: AgentOperation,
+    cost: RunCostSink,
+    signal: AbortSignal,
+    call: (hooks: CallHooks, model: LanguageModel) => Promise<T>,
+    limit?: CallLimit,
+  ): Promise<T> {
     signal.throwIfAborted();
     const tracker = requestTracker(cost, this.usage, { feature: "lesson_generation", operation, provider: USAGE_PROVIDER, model: this.model });
+    const model = limit === undefined ? this.languageModel : withCallTimeout(this.languageModel, limit, () => tracker.abandoned());
     try {
       const result = await untilAborted(
-        call({ onLanguageModelCallStart: () => tracker.start(), onLanguageModelCallEnd: (event) => tracker.end(event) }),
+        call({ onLanguageModelCallStart: () => tracker.start(), onLanguageModelCallEnd: (event) => tracker.end(event) }, model),
         signal,
       );
       signal.throwIfAborted();
@@ -467,9 +524,9 @@ export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
       inputSchema: jsonSchema<{ id: string }>({ type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } }),
       execute: ({ id }, options) => guard.run(() => untilAborted(tools.remove(id), options.abortSignal)),
     });
-    const result = await this.caller.tracked("agent_objective", cost, signal, (hooks) =>
+    const result = await this.caller.tracked("agent_objective", cost, signal, (hooks, model) =>
       new ToolLoopAgent({
-        model: this.caller.languageModel,
+        model,
         instructions: objectiveInstructions(input),
         tools: { submit_exercises: submit, remove_exercise: remove },
         stopWhen: [isStepCount(input.maxSteps), () => tools.shouldStop(), guard.failed],
@@ -482,6 +539,7 @@ export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
           guard.rethrow();
           return value;
         }),
+      callLimitOf(input.callTimeoutMs, tools),
     );
     const steps = result.steps.length;
     const stopReason = tools.shouldStop() ? "stopped" : steps >= input.maxSteps ? "max_steps" : "model_finished";
@@ -502,9 +560,9 @@ export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
       inputSchema: planSchema(input),
       execute: (raw, options) => guard.run(() => untilAborted(tools.propose(raw), options.abortSignal)),
     });
-    const result = await this.caller.tracked("agent_plan", cost, signal, (hooks) =>
+    const result = await this.caller.tracked("agent_plan", cost, signal, (hooks, model) =>
       new ToolLoopAgent({
-        model: this.caller.languageModel,
+        model,
         instructions: plannerInstructions(input),
         tools: { propose_objectives: propose },
         stopWhen: [isStepCount(input.maxSteps), () => tools.shouldStop(), guard.failed],
@@ -518,9 +576,15 @@ export class AiSdkLessonPoolAgent implements LessonPoolAgentProvider {
         guard.rethrow();
         return value;
       }),
+      callLimitOf(input.callTimeoutMs, tools),
     );
     return { steps: result.steps.length };
   }
+}
+
+/** Limit żądania generatora i planisty; ponowienie tylko, gdy pętla nie powinna się już zatrzymać (budżet, termin, komplet). */
+function callLimitOf(timeoutMs: number | undefined, tools: { shouldStop(): boolean }): CallLimit | undefined {
+  return timeoutMs === undefined ? undefined : { timeoutMs, canRetry: () => !tools.shouldStop() };
 }
 
 // ---------------------------------------------------------------------------------------------

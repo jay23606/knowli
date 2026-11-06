@@ -27,6 +27,7 @@ export interface ObjectiveAgentInputArgs {
   /** `true` = przykłady kart są ustalone (plan albo wznowienie); w porcie pole `objective.examplesFromPlan`. */
   readonly examplesFixed: boolean;
   readonly maxSteps: number;
+  readonly callTimeoutMs: number;
   /**
    * Liczby promptu wyliczone przez wołającego zamiast z `limits` — tryb „dodaj N” (spec etapu 2a §6.4):
    * podział etapów z braków etapów i `remaining` (bez `fixed` i bez podnoszenia etapu samodzielnego),
@@ -103,5 +104,6 @@ export function objectiveAgentInput(args: ObjectiveAgentInputArgs): LessonObject
       },
     },
     maxSteps: args.maxSteps,
+    callTimeoutMs: args.callTimeoutMs,
   };
 }

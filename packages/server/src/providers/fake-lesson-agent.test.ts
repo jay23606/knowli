@@ -840,6 +840,7 @@ describe("FakeLessonPoolAgent — generator (pętla kroków, etap 3 PR 2)", () =
       graderAvailable: false,
       examplesFixed: false,
       maxSteps: overrides.maxSteps ?? 8,
+      callTimeoutMs: 90_000,
     });
   }
 

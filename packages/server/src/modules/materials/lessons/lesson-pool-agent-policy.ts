@@ -15,6 +15,8 @@ export interface LessonAgentPolicy {
   /** Miejsca semafora checkera: jedno na wywołanie `solve` albo `judgeVariants`. */
   readonly checkerConcurrency: number;
   readonly checkerTimeoutMs: number;
+  /** Limit jednego żądania modelu generatora i planisty; po przekroczeniu jedno ponowienie kroku. */
+  readonly callTimeoutMs: number;
   /** Liczony od faktycznego startu podagenta. */
   readonly objectiveTimeoutMs: number;
   /** Agent nie trwa dłużej niż kontroler runu (`withLessonGenerationControl`). */
@@ -39,6 +41,7 @@ export const DEFAULT_LESSON_AGENT_POLICY: LessonAgentPolicy = {
   concurrency: 4,
   checkerConcurrency: 4,
   checkerTimeoutMs: 90_000,
+  callTimeoutMs: 90_000,
   objectiveTimeoutMs: 300_000,
   runTimeoutMs: DEFAULT_LESSON_GENERATION_POLICY.runTimeoutMs,
   runBudgetUsd: 1,

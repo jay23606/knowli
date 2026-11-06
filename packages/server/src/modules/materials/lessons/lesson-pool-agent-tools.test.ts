@@ -127,6 +127,7 @@ describe("polityka agenta i licznik kosztu", () => {
       concurrency: 4,
       checkerConcurrency: 4,
       checkerTimeoutMs: 90_000,
+      callTimeoutMs: 90_000,
       objectiveTimeoutMs: 300_000,
       runTimeoutMs: DEFAULT_LESSON_GENERATION_POLICY.runTimeoutMs,
       runBudgetUsd: 1,

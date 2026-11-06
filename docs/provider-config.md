@@ -123,6 +123,7 @@ i wysiłkiem rozumowania.
 | `UMIEM_LESSON_AGENT_CHECKER_CONCURRENCY` | `4` | Równoległe wywołania checkera |
 | `UMIEM_LESSON_AGENT_OBJECTIVE_TIMEOUT_MS` | `300000` | Termin jednego zagadnienia |
 | `UMIEM_LESSON_AGENT_CHECKER_TIMEOUT_MS` | `90000` | Termin jednego wywołania checkera |
+| `UMIEM_LESSON_AGENT_CALL_TIMEOUT_MS` | `90000` | Limit jednego żądania modelu generatora (krok zagadnienia) i planisty; po przekroczeniu jedno ponowienie kroku, po drugim zagadnienie kończy się jak po swoim terminie (`incomplete`), a plan — porażką `provider_timeout` |
 | `UMIEM_LESSON_AGENT_RUN_BUDGET_USD` | `1.00` | Budżet runu we wszystkich automatycznych próbach (wydatek z `usage.cost` OpenRouter; „Ponów” rodzica przyznaje świeży budżet). To limit wydatku **agenta** w jednym runie, nie ceny jednego wywołania; czas runu ogranicza `UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS` (10 min, z rezerwą 30 s na zapis do szkicu) |
 | `UMIEM_LESSON_AGENT_API_KEY` | — | Własny klucz agenta (nie jest w domyślnych) |
 | `UMIEM_LESSON_AGENT[_CHECKER]_PROVIDER_ORDER`, `_QUANTIZATIONS`, `_ALLOW_FALLBACKS`, `_DATA_COLLECTION` | — | Routing dostawców OpenRouter osobno dla generatora i checkera |

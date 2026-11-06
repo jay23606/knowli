@@ -41,6 +41,7 @@ function grammarInput(): LessonObjectiveAgentInput {
     graderAvailable: false,
     examplesFixed: false,
     maxSteps: 8,
+    callTimeoutMs: 90_000,
   });
 }
 

@@ -20,6 +20,7 @@ import {
 import { objectiveBatchCounts } from "./lesson-drafts";
 import { classifyLessonGenerationFailure } from "./lesson-generation-errors";
 import { runLessonPoolAgent, type LessonPoolAgentRunInput, type SettledObjective } from "./lesson-pool-agent";
+import { DEFAULT_LESSON_AGENT_POLICY } from "./lesson-pool-agent-policy";
 
 /** Temat fixture'ów: dwa zagadnienia (A, B) z wszystkimi typami przedmiotu testowego. */
 const SLUG_A = A.split(".").at(-1)!;
@@ -141,6 +142,21 @@ describe("runLessonPoolAgent — przebieg zagadnień", () => {
       failure: { errorCode: classifyLessonGenerationFailure(new Error("x")).errorCode },
     });
     expect(result.objectives[1]).toMatchObject({ objectiveId: B, status: "complete" });
+  });
+
+  it("limit żądania przekroczony także po ponowieniu (timeout adaptera) → incomplete jak po terminie, przyjęte ćwiczenia zostają", async () => {
+    const partial: FakeAgentStep = { submit: { exercises: fullBatch(A, 0).slice(0, 3), examples: ["Przykład karty 0."] } };
+    const { agent, deps } = setup({
+      agent: { objectives: { [SLUG_A]: [partial, { throw: new GenerationProviderError("timeout") }], [SLUG_B]: completeScript(B, 100) } },
+    });
+    const result = await runLessonPoolAgent(deps, runInput(), never);
+    expect(agent.calls[0]!.input.callTimeoutMs).toBe(DEFAULT_LESSON_AGENT_POLICY.callTimeoutMs);
+    expect(result.objectives[0]).toMatchObject({ objectiveId: A, status: "incomplete" });
+    expect(result.objectives[0]!.failure).toBeUndefined();
+    expect(result.objectives[0]!.exercises).toHaveLength(3);
+    expect(result.objectives[1]).toMatchObject({ objectiveId: B, status: "complete" });
+    const lines = vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
+    expect(lines).toContain(`[lesson-agent] run=run-1 obj=${SLUG_A} call_timeout`);
   });
 
   it("błąd kodu przy budowaniu wejścia podagenta odrzuca run (nie jest awarią dostawcy `failed`)", async () => {

@@ -568,6 +568,7 @@ export function lessonAgentPolicyFromEnv(env: Record<string, string | undefined>
     checkerConcurrency: int("UMIEM_LESSON_AGENT_CHECKER_CONCURRENCY"),
     objectiveTimeoutMs: int("UMIEM_LESSON_AGENT_OBJECTIVE_TIMEOUT_MS"),
     checkerTimeoutMs: int("UMIEM_LESSON_AGENT_CHECKER_TIMEOUT_MS"),
+    callTimeoutMs: int("UMIEM_LESSON_AGENT_CALL_TIMEOUT_MS"),
     runBudgetUsd: positiveNumberEnv(
       "UMIEM_LESSON_AGENT_RUN_BUDGET_USD",
       env.UMIEM_LESSON_AGENT_RUN_BUDGET_USD,

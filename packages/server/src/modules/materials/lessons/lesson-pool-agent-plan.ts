@@ -25,6 +25,7 @@ export interface PlanArgs {
   readonly instruction?: string;
   readonly cost: RunBudgetSink;
   readonly maxSteps: number;
+  readonly callTimeoutMs: number;
   readonly signal: AbortSignal;
 }
 
@@ -106,6 +107,7 @@ export async function planAgentObjectives(args: PlanArgs): Promise<PlanOutcome> 
     objectiveCount: { min: AGENT_PLAN_MIN_OBJECTIVES, max: AGENT_PLAN_MAX_OBJECTIVES },
     ...(subject.agentPolicy.planCoverage === undefined ? {} : { coverage: subject.agentPolicy.planCoverage(material) }),
     maxSteps: args.maxSteps,
+    callTimeoutMs: args.callTimeoutMs,
   };
 
   let steps: number;

@@ -23,6 +23,7 @@ import type {
   SubjectModule,
 } from "../../../domain/lessons/types";
 import type { LessonExerciseCheckerProvider, LessonPoolAgentProvider, LlmLessonStageCounts, RunCostSink } from "../../../ports/ai";
+import { GenerationProviderError } from "../../../ports/generation-error";
 import { AgentCheckRun, CHECK_COUNTER_KEYS, type AgentCheckGrader, type CheckCounterKey } from "./lesson-agent-check-run";
 import { deadlineSignal, Semaphore, untilAborted } from "./lesson-agent-timers";
 import { listenChoiceAllowance, mergeExamples, objectiveBatchCounts, poolStageCounts } from "./lesson-drafts";
@@ -326,6 +327,7 @@ export async function runLessonPoolAgent(
         ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
         cost,
         maxSteps: policy.planMaxSteps,
+        callTimeoutMs: policy.callTimeoutMs,
         signal: runDeadline.signal,
       });
       if (signal.aborted) throw signal.reason;
@@ -567,6 +569,7 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
             graderAvailable: input.graderAvailable,
             examplesFixed,
             maxSteps: policy.maxStepsPerObjective,
+            callTimeoutMs: policy.callTimeoutMs,
             ...(promptTargets === undefined ? {} : { promptTargets }),
           });
     const handle = createObjectiveTools({
@@ -613,7 +616,10 @@ async function superviseObjectives(args: SuperviseArgs): Promise<Pick<LessonPool
     } catch (error) {
       // `failed` tylko dla wyjątku dostawcy przy nieprzerwanym sygnale zagadnienia; termin → `incomplete`.
       // Sygnał sprawdzany TERAZ, przed `close()`: przerwanie w trakcie zamykania nie zmienia klasyfikacji.
-      if (!objectiveSignal.aborted) providerError = { error };
+      // Limit żądania przekroczony także po ponowieniu (`callTimeoutMs`) kończy zagadnienie jak jego termin.
+      const callTimedOut = error instanceof GenerationProviderError && error.kind === "timeout";
+      if (callTimedOut) console.log(`[lesson-agent] run=${input.runId} obj=${slugOf(objective.id)} call_timeout`);
+      if (!objectiveSignal.aborted && !callTimedOut) providerError = { error };
       // Kroki przerwanego wywołania nie wracają z dostawcy: liczba jego żądań to najlepsze przybliżenie.
       steps = track.requests;
     } finally {

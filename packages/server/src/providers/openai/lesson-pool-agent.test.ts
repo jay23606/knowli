@@ -1115,3 +1115,159 @@ describe("adaptery nic nie logują", () => {
     }
   });
 });
+
+describe("limit jednego żądania generatora i planisty (callTimeoutMs)", () => {
+  const LIMIT_MS = 1_000;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Model, którego wybrane wywołania (numer od 1) wiszą bez końca i ignorują przerwanie; pozostałe biorą kolejne wyniki. */
+  function hangingModel(hangs: readonly number[], results: readonly GenerateResult[]) {
+    let call = 0;
+    let next = 0;
+    return new MockLanguageModelV4({
+      doGenerate: async () => {
+        call += 1;
+        if (hangs.includes(call)) return new Promise<GenerateResult>(() => undefined);
+        return results[next++]!;
+      },
+    });
+  }
+
+  /** Stan obietnicy bez czekania na nią: `pending` albo wynik/błąd po rozstrzygnięciu. */
+  function settledState(promise: Promise<unknown>) {
+    const state: { settled: boolean; error?: unknown } = { settled: false };
+    promise.then(
+      () => {
+        state.settled = true;
+      },
+      (error: unknown) => {
+        state.settled = true;
+        state.error = error;
+      },
+    );
+    return state;
+  }
+
+  it("zawieszone żądanie przerwane po limicie i ponowione raz w tym samym kroku; porzucone ma koszt nieznany i porażkę transportu", async () => {
+    vi.useFakeTimers();
+    const usage = createTestRecorder();
+    const cost = recordingCost([]);
+    const model = hangingModel([1], [toolCallResult("submit_exercises", { exercises: [RAW_MATCH] }, 0.01), textResult("done", 0.002)]);
+    const { tools, submitted } = fakeTools([]);
+
+    const run = new AiSdkLessonPoolAgent(agentOptions(model, { usage })).runObjective(agentInput({ callTimeoutMs: LIMIT_MS }), tools, cost, new AbortController().signal);
+    const state = settledState(run);
+    await vi.advanceTimersByTimeAsync(LIMIT_MS - 1);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(run).resolves.toEqual({ steps: 2, stopReason: "model_finished" });
+    expect(model.doGenerateCalls).toHaveLength(3);
+    expect(model.doGenerateCalls[0]!.abortSignal?.aborted).toBe(true);
+    // Ponowienie z tym samym promptem i nowym sygnałem.
+    expect(model.doGenerateCalls[1]!.prompt).toEqual(model.doGenerateCalls[0]!.prompt);
+    expect(model.doGenerateCalls[1]!.abortSignal?.aborted).toBe(false);
+    expect(submitted).toHaveLength(1);
+    expect(cost.values).toEqual([null, 0.01, 0.002]);
+    expect(usage.events.map((event) => [event.operation, event.outcome, event.providerCostUsd])).toEqual([
+      ["agent_objective", "failed", undefined],
+      ["agent_objective", "ok", 0.01],
+      ["agent_objective", "ok", 0.002],
+    ]);
+  });
+
+  it("drugie zawieszenie z rzędu: GenerationProviderError timeout po dwóch limitach, oba żądania rozliczone, bez trzeciego", async () => {
+    vi.useFakeTimers();
+    const usage = createTestRecorder();
+    const cost = recordingCost([]);
+    const model = hangingModel([1, 2], [textResult("unused")]);
+
+    const run = new AiSdkLessonPoolAgent(agentOptions(model, { usage })).runObjective(agentInput({ callTimeoutMs: LIMIT_MS }), fakeTools([]).tools, cost, new AbortController().signal);
+    const state = settledState(run);
+    await vi.advanceTimersByTimeAsync(2 * LIMIT_MS - 1);
+    expect(state.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(state.settled).toBe(true);
+    expect(state.error).toBeInstanceOf(GenerationProviderError);
+    expect(state.error).toMatchObject({ kind: "timeout" });
+    expect(model.doGenerateCalls).toHaveLength(2);
+    expect(cost.values).toEqual([null, null]);
+    expect(usage.events.map((event) => [event.operation, event.outcome, event.httpStatus])).toEqual([
+      ["agent_objective", "failed", undefined],
+      ["agent_objective", "failed", undefined],
+    ]);
+  });
+
+  it("bez ponowienia, gdy pętla ma się zatrzymać (budżet, termin): jedno żądanie i timeout po jednym limicie", async () => {
+    vi.useFakeTimers();
+    const cost = recordingCost([]);
+    const model = hangingModel([1], [textResult("unused")]);
+    let stop = false;
+    const tools: LessonObjectiveAgentTools = { submit: async () => OUTCOME, remove: async () => ({ ...OUTCOME, removed: [] }), shouldStop: () => stop };
+
+    const run = new AiSdkLessonPoolAgent(agentOptions(model)).runObjective(agentInput({ callTimeoutMs: LIMIT_MS }), tools, cost, new AbortController().signal);
+    const state = settledState(run);
+    stop = true;
+    await vi.advanceTimersByTimeAsync(LIMIT_MS);
+
+    expect(state.error).toMatchObject({ kind: "timeout" });
+    expect(model.doGenerateCalls).toHaveLength(1);
+    expect(cost.values).toEqual([null]);
+  });
+
+  it("przerwanie rodzica w trakcie żądania nie jest ponawiane: signal.reason, jeden koszt null", async () => {
+    vi.useFakeTimers();
+    const cost = recordingCost([]);
+    const controller = new AbortController();
+    const reason = new Error("objective_timeout");
+    const model = new MockLanguageModelV4({
+      doGenerate: () => {
+        controller.abort(reason);
+        return new Promise<GenerateResult>(() => undefined);
+      },
+    });
+    await expect(
+      new AiSdkLessonPoolAgent(agentOptions(model)).runObjective(agentInput({ callTimeoutMs: LIMIT_MS }), fakeTools([]).tools, cost, controller.signal),
+    ).rejects.toBe(reason);
+    expect(model.doGenerateCalls).toHaveLength(1);
+    expect(cost.values).toEqual([null]);
+  });
+
+  it("planista: zawieszone żądanie ponowione raz, potem plan", async () => {
+    vi.useFakeTimers();
+    const plan = { objectives: [] };
+    const model = hangingModel([1], [toolCallResult("propose_objectives", plan, 0.003)]);
+    const cost = recordingCost([]);
+    let accepted = false;
+    const run = new AiSdkLessonPoolAgent(agentOptions(model)).planObjectives(
+      { ...PLAN_INPUT, callTimeoutMs: LIMIT_MS },
+      {
+        propose: async () => {
+          accepted = true;
+          return { ok: true, errors: [] };
+        },
+        shouldStop: () => accepted,
+      },
+      cost,
+      new AbortController().signal,
+    );
+    await vi.advanceTimersByTimeAsync(LIMIT_MS);
+    await expect(run).resolves.toEqual({ steps: 1 });
+    expect(model.doGenerateCalls).toHaveLength(2);
+    expect(cost.values).toEqual([null, 0.003]);
+  });
+
+  it("bez callTimeoutMs żądanie nie ma limitu (checker i dotychczasowe wejścia)", async () => {
+    vi.useFakeTimers();
+    const model = hangingModel([1], []);
+    const run = new AiSdkLessonPoolAgent(agentOptions(model)).runObjective(agentInput(), fakeTools([]).tools, recordingCost([]), new AbortController().signal);
+    const state = settledState(run);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(state.settled).toBe(false);
+    expect(model.doGenerateCalls).toHaveLength(1);
+  });
+});

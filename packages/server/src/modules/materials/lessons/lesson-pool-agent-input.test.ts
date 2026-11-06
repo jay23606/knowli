@@ -26,6 +26,7 @@ function inputFor(state: ReturnType<typeof createLessonAgentState>, position: nu
     graderAvailable: false,
     examplesFixed: false,
     maxSteps: 8,
+    callTimeoutMs: 90_000,
   });
 }
 

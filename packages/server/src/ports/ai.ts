@@ -246,6 +246,8 @@ export interface LessonObjectiveAgentInput {
     };
   };
   readonly maxSteps: number;
+  /** Limit jednego żądania modelu w kroku (ms), z jednym ponowieniem po przekroczeniu; brak = bez limitu żądania. */
+  readonly callTimeoutMs?: number;
 }
 
 /**
@@ -300,6 +302,8 @@ export interface LessonAgentPlanInput {
   readonly objectiveCount: { readonly min: number; readonly max: number };
   readonly coverage?: { readonly words: readonly string[]; readonly frames: readonly string[] };
   readonly maxSteps: number;
+  /** Jak w {@link LessonObjectiveAgentInput.callTimeoutMs}. */
+  readonly callTimeoutMs?: number;
 }
 
 /**
