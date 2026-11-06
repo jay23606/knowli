@@ -480,6 +480,43 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
     expect(runs.map((r) => r.state).sort()).toEqual(["queued", "succeeded"]);
   });
 
+  it("#304: zasób odłączony od szkicu przed startem workera nie wywołuje providera; współdzielony zostaje", async () => {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const services = mediaServices(fakes);
+    const image = (target: string, imagePrompt: string) =>
+      ({ ...item({ source: "kot", target, visualType: "image" }), visualData: { imagePrompt } });
+
+    // A i B współdzielą zasoby „cta”; A poprawia literówkę, B nadal ich używa
+    const a = await createDraft(services, { title: "A", items: [image("cta", "shared prompt")] });
+    const b = await createDraft(services, { title: "B", items: [image("cta", "shared prompt")] });
+    await reconcileDraftAssets(services, a.id);
+    await reconcileDraftAssets(services, b.id);
+    const sharedIll = (await assetLink(b.id, 0, "illustration")).asset_id!;
+    expect((await assetLink(a.id, 0, "illustration")).asset_id).toBe(sharedIll);
+    await editDraft(services, a.id, { items: [{ ...image("cat", "fixed prompt"), id: a.items[0]!.id }], expectedEditNumber: 1 });
+
+    // C zmienia słowo i opis obrazka, zanim worker wystartował: stare zasoby nikomu niepotrzebne
+    const c = await createDraft(services, { title: "C", items: [image("dgo", "orphan prompt")] });
+    await reconcileDraftAssets(services, c.id);
+    const orphanIll = (await assetLink(c.id, 0, "illustration")).asset_id!;
+    const orphanTts = (await assetLink(c.id, 0, "target_audio")).asset_id!;
+    await editDraft(services, c.id, { items: [{ ...image("dog", "dog prompt"), id: c.items[0]!.id }], expectedEditNumber: 1 });
+
+    for (let i = 0; i < 10; i += 1) await runDueGenerationWork(services);
+
+    expect(fakes.image.requests.map((r) => r.prompt).filter((p) => p.includes("orphan prompt"))).toEqual([]);
+    expect(fakes.tts.callsFor("dgo")).toBe(0);
+    for (const orphan of [orphanIll, orphanTts]) {
+      expect((await assetRow(orphan)).state).toBe("failed");
+      expect(await runOfAsset(orphan)).toMatchObject({ state: "superseded", attempts: 0 });
+    }
+    expect((await assetRow(sharedIll)).state).toBe("ready");
+    for (const draft of [a, c]) {
+      expect((await assetRow((await assetLink(draft.id, 0, "illustration")).asset_id!)).state).toBe("ready");
+    }
+  });
+
   it("zmiana samego tytułu nie unieważnia zadań audio", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);

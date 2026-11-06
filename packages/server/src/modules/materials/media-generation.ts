@@ -63,13 +63,16 @@ async function requeueAbortedMediaAsset(services: Services, assetId: string, lea
 }
 
 /**
- * Pending TTS używany wyłącznie przez lekcje z wyłączonym audio (także nagrania
- * kart nauki i lektora historyjki) nie powinien już wywoływać providera. Wspólny
- * fingerprint zostaje aktywny, jeśli odwołują się do niego słówka lub przedmiot
- * z włączonym TTS (dla historyjki: z flagą `lessonStory`).
+ * Pending zasób, którego żadna wersja już nie wskazuje (szkic poprawiony przed
+ * startem workera, #304), albo TTS używany wyłącznie przez lekcje z wyłączonym
+ * audio (także nagrania kart nauki i lektora historyjki) nie powinien już
+ * wywoływać providera. Wspólny fingerprint zostaje aktywny, jeśli odwołuje się
+ * do niego jakakolwiek wersja (dla TTS: słówka lub przedmiot z włączonym TTS,
+ * dla historyjki: z flagą `lessonStory`). Blokada fingerprintu jak przy
+ * wiązaniu w uzgodnieniu, więc ponowne użycie zasobu nie wyścignie się z tym.
  */
-async function supersedeDisabledLessonTts(services: Services, asset: typeof mediaAssets.$inferSelect): Promise<boolean> {
-  if (asset.kind !== "tts") return false;
+async function supersedeUnneededAsset(services: Services, asset: typeof mediaAssets.$inferSelect): Promise<boolean> {
+  if (asset.kind !== "tts" && asset.kind !== "illustration") return false;
   if (isUiAudioAssetMetadata(asset.metadata)) return false;
   return services.db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${asset.fingerprint}))`);
@@ -94,6 +97,7 @@ async function supersedeDisabledLessonTts(services: Services, asset: typeof medi
       .innerJoin(deckVersions, eq(deckVersions.id, lessonStoryAssets.deckVersionId))
       .where(eq(lessonStoryAssets.assetId, asset.id));
     references.push(...storyReferences.map((story) => ({ kind: "lesson", lessonContext: story.lessonContext, role: "story" as const })));
+    if (asset.kind !== "tts" && references.length > 0) return false;
     if (references.length > 0 && !references.every(reference => {
       const subjectId = (reference.lessonContext as { subjectId?: string } | null)?.subjectId;
       const subject = typeof subjectId === "string" ? services.subjects.getSubject(subjectId) : undefined;
@@ -152,7 +156,7 @@ export async function executeMediaAsset(services: Services, assetId: string, sig
   if (asset.state === "failed") {
     return;
   }
-  if (await supersedeDisabledLessonTts(services, asset)) return;
+  if (await supersedeUnneededAsset(services, asset)) return;
   if (isForeignTts(services, asset)) return;
 
   const leaseToken = randomUUID();
