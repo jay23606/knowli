@@ -6,10 +6,12 @@ import type { SubjectPromptProfile } from "../../types";
  * odbiorcę (polskie dziecko ~8 lat, poziom początkujący); rola oceniającego
  * ogranicza ocenę do zastosowania podanej reguły; `almost` definiuje werdykt
  * „prawie” jako poprawne zastosowanie reguły z drobnym błędem poza nią.
- * `fieldRules` precyzuje semantykę `hint` — walidator przedmiotu traktuje
- * każdy niepusty hint `lesson_gap` jako bezokolicznik i od tego sprawdza
- * formę odpowiedzi (incydent 2026-10-13: modele wypełniały hint polskimi
- * słowami z materiału rodzica).
+ * `fieldRules` precyzuje semantykę `hint` — w Present Simple walidator
+ * przedmiotu traktuje każdy niepusty hint `lesson_gap` jako bezokolicznik i od
+ * tego sprawdza formę odpowiedzi (incydent 2026-10-13: modele wypełniały hint
+ * polskimi słowami z materiału rodzica); reguły luki Present Simple są zawężone
+ * do jego celów. Present Continuous nie ma tu bloku: jego reguły, listy i wskazówki są
+ * opisami reguł katalogu z `when` na temat (`rules.ts`, `present-continuous-guidance.ts`).
  */
 export const englishGrammarPrompts: SubjectPromptProfile = {
   generationRole:
@@ -29,11 +31,12 @@ export const englishGrammarPrompts: SubjectPromptProfile = {
   // wybór ze słuchu, warianty) opisuje katalog reguł w księdze reguł promptu (spec katalogu reguł §3).
   fieldRules:
     "For lesson_open_answer, prompt is the source sentence in the prompt language to translate; answer and acceptedAnswers are in the answer language. " +
-    "Example: prompt 'Ona codziennie gra w piłkę.' → answer 'She plays football every day.' " +
-    "For lesson_gap set hint to the English BASE FORM (infinitive) of the verb that fills the gap " +
-    "(hint \"play\" for answer \"plays\", hint \"study\" for answer \"studies\"), or leave hint null. " +
-    "Keep the gap answer short, at most the verb with an auxiliary (never a full sentence with a subject). An operator-only answer (do, does, don't, doesn't, do not, does not) " +
+    "For objectives whose id contains '.present_simple.', set the lesson_gap hint to the English BASE FORM (infinitive) of the verb that fills the gap " +
+    "(hint \"play\" for answer \"plays\", hint \"study\" for answer \"studies\"), or leave hint null; " +
+    "keep the gap answer short, at most the verb with an auxiliary (never a full sentence with a subject). In those objectives an operator-only answer (do, does, don't, doesn't, do not, does not) " +
     "may be used when the remaining sentence supplies the base verb; hint may then be the auxiliary base form do. " +
+    // Przykład tłumaczenia w Present Simple tylko w jego celach: w Present Continuous to zdanie byłoby odrzucone.
+    "In those objectives a translation looks like prompt 'Ona codziennie gra w piłkę.' → answer 'She plays football every day.' " +
     "Never put Polish words, translations, pronouns or rule explanations in hint — the child sees hint as support. " +
     "For objectives whose id contains \".to_be.\" the checked verb is 'to be': gap answers are am, is or are, " +
     "in negatives am not, is not, are not, isn't or aren't.",

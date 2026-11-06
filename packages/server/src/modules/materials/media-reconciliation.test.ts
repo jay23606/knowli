@@ -191,6 +191,20 @@ describe("requiredAssetsForLessonExercise — zdanie feedbacku (feedback_audio)"
     expect(requiredAssetsForLessonExercise(cloze, defaultMediaSettings, { ...flags, ttsForFeedbackSentence: true }).map((asset) => asset.role)).toContain("feedback_audio");
   });
 
+  it("nawias z czasownikiem tuż po luce nie trafia do nagrania luki ani wyboru; „posłuchaj i wybierz” bez zmian (design Present Continuous §6.7)", () => {
+    const text = (payload: Record<string, unknown>) => {
+      const asset = requiredAssetsForLessonExercise(payload, defaultMediaSettings, on).find((candidate) => candidate.role === "feedback_audio");
+      expect(asset).toBeDefined();
+      return asset!.metadata;
+    };
+    expect(text({ ...gap, stem: "He ___ (swim) in the lake now.", answer: "is swimming" })).toMatchObject({ text: "He is swimming in the lake now." });
+    const options = [{ id: "a", text: "reads" }, { id: "b", text: "is reading" }];
+    expect(text({ exerciseType: "lesson_choice", stem: "Ola ___ (read) a comic every day.", answerLocale: "en-GB", options, correctOption: "a" }))
+      .toMatchObject({ text: "Ola reads a comic every day." });
+    expect(text({ exerciseType: "lesson_listen_choice", stem: "Ola ___ (read).", answerLocale: "en-GB", options, correctOption: "b" }))
+      .toMatchObject({ text: "Ola is reading (read)." });
+  });
+
   it("lesson_choice bez luki w zdaniu nie ma zdania do przeczytania", () => {
     expect(requiredAssetsForLessonExercise({
       exerciseType: "lesson_choice", stem: "What's the weather like?", answerLocale: "en-GB",

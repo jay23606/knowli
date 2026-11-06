@@ -77,6 +77,11 @@ async function fixtures(): Promise<Record<string, PromptFixture>> {
   // Temat „to be” ma własne reguły (`when` na temat): migawka zagadnienia z wyborem obrazka (reguły piktogramu i wskazówki tematu).
   const toBeTopic = englishGrammarSubject.topics.find((candidate) => candidate.id === "to_be")!;
   const grammarToBe = fixtureFor({ subject: englishGrammarSubject, topic: toBeTopic, material: "", objectiveId: "english_grammar.to_be.affirmative_forms" });
+  // Temat Present Continuous: reguły, listy i wskazówki tematu (`when` na temat) — zagadnienie z najdłuższym promptem.
+  const pcTopic = englishGrammarSubject.topics.find((candidate) => candidate.id === "present_continuous")!;
+  const grammarPresentContinuous = fixtureFor({ subject: englishGrammarSubject, topic: pcTopic, material: "", objectiveId: "english_grammar.present_continuous.affirmative" });
+  // Cel porównania czasów: wskazówki scenek, wybór całych pytań i reguły wyboru czasu (krytyk końcowy C, Task 16).
+  const grammarPresentContinuousMore = fixtureFor({ subject: englishGrammarSubject, topic: pcTopic, material: "", objectiveId: "english_grammar.present_continuous.now_or_usually_more" });
 
   const { objectives } = await new FakeLlmProvider().generateLessonObjectives({
     subjectTitle: schoolSubject.titlePl,
@@ -111,11 +116,11 @@ async function fixtures(): Promise<Record<string, PromptFixture>> {
     examples,
     examplesFixed: true,
   });
-  return { english_grammar: grammar, english_grammar_to_be: grammarToBe, school, english_chapter: chapter };
+  return { english_grammar: grammar, english_grammar_to_be: grammarToBe, english_grammar_present_continuous: grammarPresentContinuous, english_grammar_present_continuous_more: grammarPresentContinuousMore, school, english_chapter: chapter };
 }
 
 const FIXTURES = await fixtures();
-const SUBJECT_IDS = ["english_grammar", "english_grammar_to_be", "school", "english_chapter"] as const;
+const SUBJECT_IDS = ["english_grammar", "english_grammar_to_be", "english_grammar_present_continuous", "english_grammar_present_continuous_more", "school", "english_chapter"] as const;
 
 /**
  * Budżet długości promptu per przedmiot (rozstrzygnięcie kontrolera Task 8b: ≤ 1,5 × długości sprzed
@@ -200,7 +205,7 @@ describe.each(SUBJECT_IDS)("prompt podagenta z księgi reguł — %s", (subjectI
     await expect(prompt).toMatchFileSnapshot(`./__snapshots__/lesson-pool-prompt.${subjectId}.txt`);
   });
 
-  // Temat „to be” nie ma pomiaru „przed” (migawka od przeglądu końcowego); budżet tylko dla zmierzonych zagadnień.
+  // Tematy „to be” i Present Continuous nie mają pomiaru „przed” (migawki od przeglądu końcowego i Task 18); budżet tylko dla zmierzonych zagadnień.
   it.runIf(PROMPT_LENGTH_BEFORE[subjectId] !== undefined)(`budżet długości: najwyżej ${PROMPT_BUDGET_FACTOR} × długości sprzed katalogu reguł`, () => {
     expect(prompt.length).toBeLessThanOrEqual(Math.floor(PROMPT_LENGTH_BEFORE[subjectId]! * PROMPT_BUDGET_FACTOR));
   });

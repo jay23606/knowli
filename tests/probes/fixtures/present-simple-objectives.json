@@ -1,0 +1,51 @@
+{
+  "subjectId": "english_grammar",
+  "topicId": "present_simple",
+  "topicVersion": 1,
+  "topicTitle": "Present Simple",
+  "material": "Unit 6 — Our weekend (fragment podręcznika A1, fikcyjny)\n\nWords: play football, read a book, cook dinner, watch TV, jump, sing a song, listen to music, make a cake, write a letter, dance, ride a bike, swim in the lake, run in the park, sit on the sofa, stop at the corner, lie on the grass, tie your shoes.\nNouns: garden, kitchen, bike, lake, park, cake, letter, football, sofa, shoes, grass, song.\n\nDialogue: Look! Tom is riding his bike in the park. Mum is cooking dinner in the kitchen. The children are swimming in the lake.\n\nEvery day: I get up at seven. We play football on Mondays. My dad cooks dinner every day. Anna reads a book in the evening. They usually watch TV after school.",
+  "objectives": [
+    {
+      "id": "english_grammar.present_simple.affirmative_base",
+      "title": "Zdanie twierdzące: I, you, we, they",
+      "descriptionEn": "In the present simple, the subjects I, you, we and they use the base form of the verb with no ending (I play, they live).",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_simple.third_person_s",
+      "title": "-s w 3. osobie (he, she, it)",
+      "descriptionEn": "In the present simple, the third person singular (he, she, it) adds -s to the base verb (he plays, she works).",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_simple.spelling_es_ies",
+      "title": "Pisownia -es oraz -ies",
+      "descriptionEn": "Third person singular adds -es after -s, -sh, -ch, -x, -o (goes, watches), and changes consonant + y to -ies (studies).",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_simple.negative",
+      "title": "Przeczenie: don't / doesn't",
+      "descriptionEn": "The present simple negative uses don't for I/you/we/they and doesn't for he/she/it, followed by the base verb (she doesn't play).",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_simple.question",
+      "title": "Pytanie: Do / Does",
+      "descriptionEn": "Present simple questions start with Do (I/you/we/they) or Does (he/she/it) + subject + base verb (Does she play?).",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_simple.short_answers",
+      "title": "Krótkie odpowiedzi",
+      "descriptionEn": "Short answers repeat the auxiliary: Yes, I do / No, I don't; Yes, he does / No, he doesn't.",
+      "cards": []
+    },
+    {
+      "id": "english_grammar.present_simple.base_form_after_does",
+      "title": "Forma podstawowa po does / doesn't",
+      "descriptionEn": "After does and doesn't the main verb stays in the base form with no -s (she doesn't play, does he play?).",
+      "cards": []
+    }
+  ]
+}

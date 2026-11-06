@@ -166,6 +166,16 @@ describe("validateEnglishGrammarExercise — lesson_gap, temat to_be", () => {
     expect(validateEnglishGrammarExercise(beGap(AFF, "We ___ happy.", "are"), toBeV1)).toEqual([]);
   });
 
+  it("cel „contractions” wymaga twierdzenia (mapa biegunowości celów)", () => {
+    const CONTRACTIONS = "english_grammar.to_be.contractions";
+    expect(validateEnglishGrammarExercise(beGap(CONTRACTIONS, "She ___ happy.", "is", "be"), toBeV1)).toEqual([]);
+    expect(validateEnglishGrammarExercise(beGap(CONTRACTIONS, "She ___ happy.", "isn't", "be"), toBeV1))
+      .toEqual([expect.objectContaining({
+        rule: "grammar.be_negative_in_affirmative_objective",
+        pl: "lesson_gap: forma przecząca nie pasuje do celu twierdzącego",
+      })]);
+  });
+
   it.each([
     ["biegunowość: twierdzenie z przeczeniem", AFF, "She ___ happy.", "is not", "be"],
     ["biegunowość: przeczenie bez not", NEG, "She ___ happy.", "is", "be"],
@@ -635,6 +645,24 @@ describe("validateEnglishGrammarExercise — zgłoszenia reguł katalogu gramaty
       pl: "lesson_gap: forma „are” nie pasuje do podmiotu (poprawnie: is)",
       found: '"are" uses "are", but the subject requires "is"',
     });
+  });
+
+  it("biegunowość przekształcenia: found nazywa przekształcenie, nie cel (Task 17, krytyk C Task 19)", () => {
+    const transform = (transformId: string, statement: string, answer: string): LessonExerciseDraft => ({
+      exerciseType: "lesson_transform",
+      objectiveId: "english_grammar.to_be.negative_forms",
+      statement,
+      transformId,
+      answer,
+      acceptedAnswers: [],
+      focus: answer.split(" "),
+    });
+    const found = (ex: LessonExerciseDraft, rule: string) =>
+      validateEnglishGrammarExercise(ex, toBeV1).filter((issue) => issue.rule === rule).map((issue) => issue.found);
+    expect(found(transform("to_negative", "They are ready.", "They are ready!"), "grammar.be_missing_negation"))
+      .toEqual(['answer "They are ready!" has no negation, but the transform "to_negative" requires "not"']);
+    expect(found(transform("to_affirmative", "She isn't happy.", "She isn't happy!"), "grammar.be_negative_in_affirmative_objective"))
+      .toEqual([`answer "She isn't happy!" is negated, but the transform "to_affirmative" is affirmative`]);
   });
 
   it("wariant w acceptedAnswers wskazuje swoje pole, a pl zachowuje etykietę", () => {

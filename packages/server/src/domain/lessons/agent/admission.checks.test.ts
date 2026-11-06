@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_TEXT_LENGTH } from "../pool-validation";
 import { schoolSubject } from "../subjects/school/module";
 import { schoolAgentPolicy } from "../subjects/school/agent-policy";
+import { englishGrammarSubject } from "../subjects/english-grammar/module";
 import { A, B, choice, contextFor, gap, NA_CHECKS, open, stateWith, subject } from "../testing/agent-admission-fixtures";
 import { withAgentPolicy } from "../testing/agent-test-subject";
 import type { LessonExerciseDraft } from "../types";
@@ -195,6 +196,30 @@ describe("admitBatch — warianty odrzucone przez checker (spec katalogu reguł 
     it("typy z kluczem pozycyjnym i odpowiedzi wielokrotne nie dopisują wariantów", () => {
       const result = submitWith(stateWith(), A, [draft], [{ ...NA_CHECKS, solve: { kind: "done", value: ["a", "b"] }, solverVariant: { kind: "done", value: true } }]);
       expect(rejectedOf(result.results[0])).toMatchObject({ code: "blind_mismatch" });
+    });
+
+    it("Present Continuous: odpowiedź w złym czasie uznana przez sędziego nie trafia do wariantów (reguły pc ją odrzucają) → blind_mismatch", () => {
+      const pcTopic = englishGrammarSubject.topics.find((item) => item.id === "present_continuous")!;
+      const objectiveId = "english_grammar.present_continuous.affirmative";
+      const pcState = createLessonAgentState({ topic: pcTopic, objectives: agentObjectivesOf(pcTopic), fixed: [], examples: {}, fixedSources: {} });
+      const pcCtx: AgentCheckContext = { subject: englishGrammarSubject, material: "", limits: new Map([[objectiveId, { targetCount: 8, listenAllowance: 2, maxExercises: 12 }]]) };
+      const pcDraft: LessonExerciseDraft = {
+        exerciseType: "lesson_open_answer",
+        objectiveId,
+        instructionPl: "Przetłumacz na angielski.",
+        prompt: "Ola teraz czyta książkę.",
+        answer: "Ola is reading a book now.",
+        acceptedAnswers: ["Ola is reading a book right now.", "Ola is reading a book at the moment."],
+        focus: ["is", "reading"],
+      };
+      const prechecked = precheckBatch(pcState, objectiveId, [pcDraft], pcCtx);
+      expect(prechecked[0]).toMatchObject({ pass: true });
+      const result = admitBatch(pcState, objectiveId, prechecked, [solved("Ola reads a book now.", { kind: "done", value: true })], pcCtx);
+      expect(rejectedOf(result.results[0])).toMatchObject({ kind: "blind", code: "blind_mismatch" });
+      expect(poolOf(result.state, objectiveId)).toHaveLength(0);
+      // Kontrola: równoważna odpowiedź w dobrym czasie jest dopisywana.
+      const ok = admitBatch(pcState, objectiveId, prechecked, [solved("At the moment Ola is reading a book.", { kind: "done", value: true })], pcCtx);
+      expect(poolOf(ok.state, objectiveId)[0]!.draft.acceptedAnswers.at(-1)).toBe("At the moment Ola is reading a book.");
     });
   });
 

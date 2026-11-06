@@ -3,8 +3,8 @@ import { grammarTypeExamples } from "./type-examples";
 
 /**
  * Polityka agenta puli dla przedmiotu `english_grammar` (design etapu 1 §4.3):
- * tylko typy rozwiązywane na ślepo, dopiski do reguł silnika (`ruleNotes`) i przykłady typów tematu
- * „to be” (`typeExamples`). Bez wymaganych typów,
+ * tylko typy rozwiązywane na ślepo, dopiski do reguł silnika (`ruleNotes`) i przykłady typów tematów
+ * „to be” i Present Continuous (`typeExamples`). Bez wymaganych typów,
  * bramek, braków i planu; `hint` zostaje bez zmian (forma podstawowa, np. „go”).
  *
  * Listy to zbiór PoC (gałąź nie-szkolna) przecięty z typami gramatyki (brak

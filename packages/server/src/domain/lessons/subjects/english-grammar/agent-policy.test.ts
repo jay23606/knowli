@@ -55,11 +55,11 @@ describe("grammarAgentPolicy", () => {
     expect(grammarAgentPolicy.planGate).toBeUndefined();
   });
 
-  it("przykłady typów: w temacie „to be” każdy cel ma przykład każdego swojego typu, poza nim przykłady kart", () => {
+  it("przykłady typów: w tematach „to be” i Present Continuous każdy cel ma przykład każdego swojego typu, poza nimi przykłady kart", () => {
     for (const topic of englishGrammarSubject.topics) {
       for (const objective of topic.objectives) {
         const examples = grammarAgentPolicy.typeExamples?.({ topicId: topic.id, objectiveId: objective.id });
-        if (topic.id !== "to_be") {
+        if (topic.id !== "to_be" && topic.id !== "present_continuous") {
           expect(examples, objective.id).toBeUndefined();
           continue;
         }
@@ -69,6 +69,9 @@ describe("grammarAgentPolicy", () => {
       }
     }
     expect(grammarAgentPolicy.typeExamples?.({ topicId: "to_be", objectiveId: "english_grammar.to_be.unknown" })).toBeUndefined();
+    // Cele o tej samej nazwie w dwóch tematach (questions) mają przykłady swojego tematu.
+    expect(grammarAgentPolicy.typeExamples?.({ topicId: "present_continuous", objectiveId: "english_grammar.present_continuous.questions" })?.lesson_choice)
+      .not.toEqual(grammarAgentPolicy.typeExamples?.({ topicId: "to_be", objectiveId: "english_grammar.to_be.questions" })?.lesson_choice);
   });
 
   it("dopiski ujawnień podpowiadają zmianę podmiotu, czasownika lub dopełnienia", () => {

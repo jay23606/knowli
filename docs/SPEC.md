@@ -776,12 +776,13 @@ W odpowiedzi ustnej STT ustala tekst, dziecko widzi go przed wysłaniem, a ocena
 Aplikacja nadal nie zawiera uploadu dokumentów ani OCR; czytelność zdjęć i wierność opracowania weryfikuje rodzic przy przygotowaniu tekstu w narzędziu zewnętrznym.
 ## 29a. Lekcje i przedmioty (2026-10-12)
 
-Uzupełnienie wprowadza drugi rodzaj materiału obok zestawu słówek: **lekcję**. Lekcja uczy czasu/konstrukcji gramatycznej (tematy katalogu: Present Simple oraz czasownik „to be”, dodany 2026-10-26) na materiale, który dziecko przerabia w szkole. Szczegółowe wymagania i kryteria: `.kiro/specs/grammar-module/{requirements,design}.md`; poniżej opis produktu.
+Uzupełnienie wprowadza drugi rodzaj materiału obok zestawu słówek: **lekcję**. Lekcja uczy czasu/konstrukcji gramatycznej (tematy katalogu: Present Simple, czasownik „to be”, dodany 2026-10-26, oraz Present Continuous, dodany 2026-11-05) na materiale, który dziecko przerabia w szkole. Szczegółowe wymagania i kryteria: `.kiro/specs/grammar-module/{requirements,design}.md`; poniżej opis produktu.
 
 ### 29a.1. Pojęcia
 
 - **Przedmiot** — dziedzina nauki (pierwszy: angielska gramatyka). Silnik lekcji jest niezależny od przedmiotu; przedmiot jest wtyczką dostarczającą katalog, typy ćwiczeń, normalizator odpowiedzi, kategorie błędów, profil promptów i walidatory. Docelowo ten sam silnik obsłuży historię, biologię czy geografię.
-- **Temat** — czas lub konstrukcja (Present Simple; czasownik „to be” z regułami: formy twierdzące am/is/are, skróty, przeczenia, pytania przez inwersję, krótkie odpowiedzi). **Reguła** (w kodzie: cel nauki) — najmniejsza sprawdzana jednostka („-s w 3. osobie l.p."). Tematy, reguły, karty wyjaśnienia i kategorie błędów są wersjonowanymi danymi katalogu, więc kolejny temat nie wymaga zmian w kodzie.
+- **Temat** — czas lub konstrukcja (Present Simple; czasownik „to be” z regułami: formy twierdzące am/is/are, skróty, przeczenia, pytania przez inwersję, krótkie odpowiedzi; Present Continuous z sześcioma regułami: am/is/are + -ing, wybór „teraz czy zwykle?” po Present Simple, przeczenia, pytania i krótkie odpowiedzi, pisownia -ing oraz wybór czasu w przeczeniach i pytaniach — dziecko ma zrozumieć, kiedy użyć czasu, a nie tylko wkuć formę; projekt: `docs/superpowers/specs/2026-11-05-present-continuous-design.md`). **Reguła** (w kodzie: cel nauki) — najmniejsza sprawdzana jednostka („-s w 3. osobie l.p."). Tematy, reguły, karty wyjaśnienia i kategorie błędów są wersjonowanymi danymi katalogu, więc kolejny temat nie wymaga zmian w kodzie.
+  Rekomendacja wyboru reguł Present Continuous (formularz rodzica bez zmian, domyślnie zaznacza wszystkie): dziecko po temacie Present Simple — reguły 1, 2 i 4 (młodsze) albo wszystkie (około 11 lat); dziecko bez Present Simple — reguły 1, 3 i 4, a reguły 2 i 6 (wybór czasu) dopiero po temacie Present Simple. Wybór czasu opiera się na zamkniętych listach wskaźników („now”, „every day”, polska scenka w poleceniu); sytuacje przyszłe i tymczasowe oraz czasowniki stanu jako cel wykraczają poza wersję pierwszą (#280).
 - **Lekcja** — zestaw dla jednego tematu z pulą ćwiczeń zatwierdzoną przez rodzica.
 
 ### 29a.2. Tworzenie i publikacja

@@ -569,3 +569,32 @@ describe("assignmentText", () => {
     expect(assignmentText([{ itemId: "x", targetId: "r1" }], values)).toBe("");
   });
 });
+
+describe("matchLessonAnswer — Present Continuous (przypięte zachowanie normalizatora)", () => {
+  const pcKey = (answer: string, focus: readonly string[]) => writtenKey({ answer, focus });
+
+  it("klucz „He is playing now.” zalicza skrót, małe litery i wersaliki bez kropki", () => {
+    const key = pcKey("He is playing now.", ["is", "playing"]);
+    for (const answer of ["He's playing now.", "he is playing now", "HE IS PLAYING NOW"]) {
+      expect(matchLessonAnswer(answer, key, englishNormalizer).kind, answer).toBe("exact");
+    }
+  });
+
+  it("klucz „isn't watching” zalicza „is not watching” i „isnt watching”, ale nie samo „watching”", () => {
+    const key = pcKey("isn't watching", ["isn't", "watching"]);
+    expect(matchLessonAnswer("is not watching", key, englishNormalizer).kind).toBe("exact");
+    expect(matchLessonAnswer("isnt watching", key, englishNormalizer).kind).toBe("exact");
+    expect(matchLessonAnswer("watching", key, englishNormalizer).kind).toBe("no_match");
+  });
+
+  it("klucz „is playing” nie zalicza samego „playing”", () => {
+    expect(matchLessonAnswer("playing", pcKey("is playing", ["is", "playing"]), englishNormalizer).kind).toBe("no_match");
+  });
+
+  it("skrót po rzeczowniku „Mum's” nie dopasowuje się deterministycznie", () => {
+    // Normalizator nie rozwija „Mum's” (rzeczownik), więc taka odpowiedź trafia do
+    // modelu oceniającego, gdy jest skonfigurowany (spec Present Continuous §6.3).
+    const key = pcKey("Mum is cooking now.", ["is", "cooking"]);
+    expect(matchLessonAnswer("Mum's cooking now.", key, englishNormalizer).kind).toBe("no_match");
+  });
+});
