@@ -124,6 +124,7 @@ export const INTEGRATION_BUCKETS: readonly (readonly string[])[] = [
     publish-media-reconcile.test.ts
     reporting.test.ts
     revisions.test.ts
+    school-verdicts-signed-numbers-migration.test.ts
   `),
 ];
 

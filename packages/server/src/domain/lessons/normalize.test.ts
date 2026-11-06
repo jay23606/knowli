@@ -44,6 +44,38 @@ describe("normalizeTokens", () => {
     expect(normalizeTokens("rok 1385")).toEqual(["rok", "1385"]);
   });
 
+  it("zachowuje minus liczby ujemnej (#318): „-5” ≠ „5”", () => {
+    expect(normalizeTokens("-5")).toEqual(["-5"]);
+    expect(normalizeTokens("5")).toEqual(["5"]);
+    expect(normalizeTokens("temperatura -5 stopni")).toEqual(["temperatura", "-5", "stopni"]);
+    expect(normalizeTokens("(-12)")).toEqual(["-12"]);
+  });
+
+  it("ujednolica minus typograficzny i półpauzę do „-” przed cyfrą", () => {
+    expect(normalizeTokens("\u22125")).toEqual(["-5"]);
+    expect(normalizeTokens("\u20135")).toEqual(["-5"]);
+  });
+
+  it("spacja po minusie na początku odpowiedzi to nadal liczba ujemna", () => {
+    expect(normalizeTokens(" - 5")).toEqual(["-5"]);
+    expect(normalizeTokens("\u2212 5 stopni")).toEqual(["-5", "stopni"]);
+  });
+
+  it("minus przy ułamku dziesiętnym odróżnia liczbę ujemną", () => {
+    expect(normalizeTokens("-2,5")).not.toEqual(normalizeTokens("2,5"));
+    expect(normalizeTokens("-0.5")).not.toEqual(normalizeTokens("0.5"));
+  });
+
+  it("łącznik i odejmowanie w środku tekstu nie są znakiem liczby", () => {
+    expect(normalizeTokens("well-known")).toEqual(["well", "known"]);
+    expect(normalizeTokens("3-year-old")).toEqual(["3", "year", "old"]);
+    expect(normalizeTokens("5-3")).toEqual(["5", "3"]);
+    expect(normalizeTokens("5 - 3")).toEqual(["5", "3"]);
+    expect(normalizeTokens("x\u22122")).toEqual(["x", "2"]);
+    expect(normalizeTokens("a \u2013 b")).toEqual(["a", "b"]);
+    expect(normalizeTokens("-ing")).toEqual(["ing"]);
+  });
+
   it("normalizuje do Unicode NFC (zdekomponowane = złożone)", () => {
     const decomposed = "a\u0328"; // a + ogonek → ą
     expect(normalizeTokens(decomposed)).toEqual(normalizeTokens("ą"));
