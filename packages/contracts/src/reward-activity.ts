@@ -250,6 +250,18 @@ export const SessionActivityReviewRecordSchema = z.object({
 }).strict();
 export type SessionActivityReviewRecord = z.infer<typeof SessionActivityReviewRecordSchema>;
 
+/**
+ * Zatwierdzony czas sesji: suma czasu aktywnego zaliczonych zadań, nie więcej
+ * niż czas sesji zmierzony przez serwer — sam raport klienta nie wydłuża sesji.
+ */
+export function sessionApprovedActivityMs(
+  tasks: readonly Pick<SessionActivityTaskReport, "activeIntervals" | "playbacks">[],
+  serverDurationMs: number,
+): number {
+  const clientMs = tasks.reduce((total, task) => total + taskActiveMs(task), 0);
+  return Math.min(clientMs, serverDurationMs);
+}
+
 /** Naliczenie punktów: 1 pkt / 60 s; reszta przechodzi między sesjami. */
 export const SESSION_ACTIVITY_POINT_INTERVAL_MS = 60_000;
 

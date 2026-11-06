@@ -8,7 +8,7 @@ import {
   TaskPromptSchema,
   messages,
   sessionActivityAward,
-  taskActiveMs,
+  sessionApprovedActivityMs,
   type SessionActivityReport,
   type SessionActivityResultDto,
   type SessionActivityReviewRecord,
@@ -92,7 +92,7 @@ type AcceptancePlan =
   | { kind: "stored"; review: SessionActivityReviewRecord }
   | { kind: "already_started" }
   | { kind: "expired" }
-  | { kind: "fresh"; childId: string; stored: StoredReport; reviewTasks: SessionActivityReviewTask[]; facts: { durationSeconds: number } };
+  | { kind: "fresh"; childId: string; stored: StoredReport; reviewTasks: SessionActivityReviewTask[]; facts: { durationSeconds: number; durationMs: number } };
 
 async function lockSession(tx: Tx, sessionId: string) {
   const [identity] = await tx.select({ childId: learningSessions.childId }).from(learningSessions).where(eq(learningSessions.id, sessionId));
@@ -382,7 +382,7 @@ async function buildTaskSnapshot(tx: Tx, sessionId: string, report: SessionActiv
 function sessionFacts(session: typeof learningSessions.$inferSelect, firstIssuedAt: Date | null) {
   const endedAt = session.endedAt?.getTime() ?? session.startedAt.getTime();
   const durationMs = firstIssuedAt === null ? 0 : Math.max(0, endedAt - firstIssuedAt.getTime());
-  return { durationSeconds: Math.floor(durationMs / 1000) };
+  return { durationSeconds: Math.floor(durationMs / 1000), durationMs };
 }
 
 function reviewTasksOf(stored: StoredReport, feTasksByTaskId: Map<string, SessionActivityReport["tasks"][number]>): SessionActivityReviewTask[] {
@@ -588,11 +588,12 @@ async function settleAcceptedSessionActivity(
     }
     excluded.add(exclusion.taskOrdinal);
   }
-  // Wyłącznie kod liczy czas: suma unii przedziałów zadań niewykluczonych.
+  // Wyłącznie kod liczy czas: suma unii przedziałów zadań niewykluczonych, obcięta do czasu sesji z serwera.
   const ordinalByTaskId = new Map(plan.stored.tasks.map((task) => [task.taskId, task.taskOrdinal]));
-  const approvedMilliseconds = plan.stored.fe.tasks
-    .filter((task) => !excluded.has(ordinalByTaskId.get(task.taskId) ?? -1))
-    .reduce((total, task) => total + taskActiveMs(task), 0);
+  const approvedMilliseconds = sessionApprovedActivityMs(
+    plan.stored.fe.tasks.filter((task) => !excluded.has(ordinalByTaskId.get(task.taskId) ?? -1)),
+    plan.facts.durationMs,
+  );
   const evaluatedAt = services.clock.now().toISOString();
   const record: SessionActivityReviewRecord = {
     status: "evaluated",

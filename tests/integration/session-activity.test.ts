@@ -276,6 +276,22 @@ describe("session activity review", () => {
     expect(review.reason).toBe("Ocena aktywności: zaliczono pracę w 2 zadaniach.");
   });
 
+  it("caps the awarded time at the server-measured session duration (#305)", async () => {
+    const { services, clock } = await reviewerServices("2026-10-16T10:00:00.000Z");
+    const child = await childWithProfile(services);
+    const { session, tasks, attemptIds } = await playedSession(services, child.id);
+    clock.advanceMs(90_000);
+    // Klient twierdzi, że sesja trwała godzinę, a serwer zna 90 s.
+    const report = reportOf([
+      { taskId: tasks[0]!.taskId, exerciseType: tasks[0]!.exerciseType, intervals: [[0, 3_600_000]], edits: 5, attempts: attemptIds },
+    ], 3_600_000);
+    const activity = await reviewEndedSession(services, session.sessionId, report);
+    expect(activity).toMatchObject({ status: "evaluated", pointsAwarded: 1 });
+    expect(await rewardPointsOf(child.id)).toEqual({ points: 1, remainder: 30_000 });
+    const review = (await pool.query("select activity_review from learning_app.learning_sessions where id=$1", [session.sessionId])).rows[0].activity_review;
+    expect(review).toMatchObject({ durationSeconds: 90, activeSeconds: 90, approvedMilliseconds: 90_000, approvedSeconds: 90 });
+  });
+
   it("returns the session summary after accepting the report while the reviewer is still pending", async () => {
     const base = buildTestServices("2026-10-16T10:00:00.000Z");
     let releaseReview: () => void = () => {};
