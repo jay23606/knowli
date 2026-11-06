@@ -1271,6 +1271,15 @@ function validateOrder(
       found: `${items.length} items, allowed ${MIN_ORDER_ITEMS}–${MAX_ORDER_ITEMS}`,
     }));
   }
+  items.forEach((item, index) => {
+    if (/[.!?…]$/.test(item.text.trim())) {
+      issues.push(coreIssue("order.tile_no_final_punctuation", {
+        field: `items[${index}]`,
+        pl: `items: element „${item.text}” kończy się znakiem końcowym zdania`,
+        found: `item ${clip(item.text)} ends with sentence-final punctuation`,
+      }));
+    }
+  });
   if (items.length > 0) {
     const joined = items.map((item) => item.text).join(" ");
     if (!answersEquivalent(joined, ex.answer, normalizer)) {

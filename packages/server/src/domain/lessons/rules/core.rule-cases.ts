@@ -459,6 +459,11 @@ registerRuleCases([
     violation: check(order(Array.from({ length: MAX_ORDER_ITEMS + 1 }, (_, i) => `w${i}`))),
     boundary: check(order(Array.from({ length: MAX_ORDER_ITEMS }, (_, i) => `w${i}`))),
   },
+  {
+    rule: "order.tile_no_final_punctuation",
+    violation: check(order(["She", "plays", "tennis."])),
+    boundary: check(order(["She", "plays", "tennis"])),
+  },
   { rule: "order.items_join", violation: check(order(["She", "plays", "tennis"], "She plays football")) },
 
   // Typy tekstowe.

@@ -478,6 +478,14 @@ export const CORE_RULES = {
     types: ["lesson_order"],
     description: "The items of lesson_order joined with spaces in their order give the answer (after normalization).",
   },
+  "order.tile_no_final_punctuation": {
+    field: "items",
+    kind: "reject",
+    types: ["lesson_order"],
+    description:
+      "No item text of lesson_order ends with sentence-final punctuation (. ! ? …): write the answer and the items " +
+      "without it (answer 'I'm wearing a pink coat', items I'm, wearing, a, pink, coat — never 'coat.' or 'like?').",
+  },
 
   // Typy tekstowe.
   "gap.marker_count": {

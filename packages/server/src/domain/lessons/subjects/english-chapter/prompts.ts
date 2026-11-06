@@ -59,9 +59,7 @@ export const englishChapterPrompts: SubjectPromptProfile = {
     "or the word that fills the frame (the clothes item, the colour, the weather word). " +
     "lesson_order: items are the words of one English sentence built on a chapter frame, in the correct order " +
     "(4 to 7 items), and the sentence has exactly one correct word order — no parts " +
-    "that could move, such as today at the start or at the end. Write the answer and the items WITHOUT sentence-final " +
-    "punctuation: answer 'I'm wearing a pink coat' with the items I'm, wearing, a, pink, coat — never an item " +
-    "such as 'coat.' or 'like?'. " +
+    "that could move, such as today at the start or at the end. " +
     "lesson_open_answer: instructionPl is exactly 'Przetłumacz na angielski.'; " +
     "prompt is a short Polish sentence to translate; answer is its English translation using only " +
     "chapter words; acceptedAnswers are other correct translations built from chapter words. focus is the run of the " +
