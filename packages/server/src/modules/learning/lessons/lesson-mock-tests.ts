@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, ne, or, sql } from "drizzle-orm";
 import {
   LessonMockTestReportDtoSchema,
   LessonMockTestSummaryDtoSchema,
@@ -23,6 +23,8 @@ import { planLessonMockTest, toLessonMockPoolEntry, type LessonMockPoolEntry } f
 import { mockPrecisionHint, objectivesWorthReviewing, schoolMockAggregate, type MockAnswerDetails, type MockPrecisionHint } from "../../../domain/lessons/mock-test-precision";
 import type { LessonExerciseType } from "../../../domain/lessons/types";
 import { writeSealedEvent } from "../events";
+import { mockTestTimedOut } from "../mock-tests";
+import { sessionTimeLimitMs } from "../../../domain/session-limits";
 import { lessonContextOf, loadExercises, requireTopic } from "./lesson-sessions";
 import { materializeExercise } from "./lesson-materialize";
 import type { LessonMockSlot, LessonMockTestPlanSnapshot } from "../../../domain/mock-test-types";
@@ -34,7 +36,7 @@ export type { LessonMockSlot, LessonMockTestPlanSnapshot } from "../../../domain
  * requirements 9.1–9.4). Współdzieli mechanikę słówek przez te same punkty
  * wejścia w `sessions.ts`/`attempts.ts`: plan zamrożony w `mock_test_plan`
  * (dyskryminowany `kind:"lesson"`), jedna odpowiedź na slot kończy zadanie,
- * brak feedbacku w trakcie, limit 10 min, raport per cel utrwalony raz w
+ * brak feedbacku w trakcie, limit czasu `sessionTimeLimitMs` (min. 10 min), raport per cel utrwalony raz w
  * `context.lessonMockTestReport` (trigger czyni go niezmiennym — migracja 0008).
  */
 
@@ -374,7 +376,7 @@ export async function closeLessonMockTest(tx: Tx, services: Services, session: t
 async function terminalLessonSession(tx: Tx, services: Services, sessionId: string) {
   const [session] = await tx.select().from(learningSessions).where(eq(learningSessions.id, UuidSchema.parse(sessionId))).for("update");
   if (!session || session.mode !== "mock_test" || !isLessonMockPlan(session.mockTestPlan)) throw new AppError("not_found");
-  if (session.state === "active" && services.clock.now().getTime() - session.startedAt.getTime() <= 600_000) {
+  if (session.state === "active" && services.clock.now().getTime() - session.startedAt.getTime() <= sessionTimeLimitMs(session.taskBudget)) {
     throw new AppError("conflict", { message: "Omówienie jest dostępne po zakończeniu kartkówki." });
   }
   const report = await closeLessonMockTest(tx, services, session);
@@ -590,7 +592,7 @@ export async function listLessonMockTests(services: Services, childId: string, d
         eq(learningSessions.childId, UuidSchema.parse(childId)),
         eq(learningSessions.deckId, UuidSchema.parse(deckId)),
         eq(learningSessions.mode, "mock_test"),
-        or(ne(learningSessions.state, "active"), lt(learningSessions.startedAt, new Date(services.clock.now().getTime() - 600_000))),
+        or(ne(learningSessions.state, "active"), mockTestTimedOut(services.clock.now())),
       ),
     )
     .orderBy(desc(learningSessions.startedAt), desc(learningSessions.id))

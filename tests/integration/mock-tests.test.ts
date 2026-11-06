@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, expect, it } from "vitest";
-import { endSession, nextTask, startSession, upsertAssignment, submitAttempt, readAttempt, finalizeAttempt, authorizeDisclosure, submitSpeechAttempt } from "@learning/server";
+import { endSession, getMockTestReport, listMockTests, nextTask, readMockTestSummary, startSession, upsertAssignment, submitAttempt, readAttempt, finalizeAttempt, authorizeDisclosure, submitSpeechAttempt } from "@learning/server";
 import { randomUUID } from "node:crypto";
 import { buildTestServices, testDatabase, truncateCoreTables } from "./helpers";
 import { mockTestDeck } from "./mock-test-helpers";
@@ -38,10 +38,15 @@ it("scaled time limit: porcja 20 slotów wydaje zadania po 10 minutach i zamyka 
   const first = (await nextTask(services, s.sessionId))!;
   await submitAttempt(services, { taskId: first.taskId, clientAttemptId: randomUUID(), modality: "skip" });
   clock.advanceMs(11 * 60_000); // ponad podłogę 10 minut, pod skalowanym limitem 20 × 45 s
+  // Omówienie i lista rodzica nie zamykają trwającej kartkówki przed skalowanym limitem (#296).
+  await expect(getMockTestReport(services, s.sessionId)).rejects.toMatchObject({ code: "conflict" });
+  await expect(readMockTestSummary(services, s.sessionId)).rejects.toMatchObject({ code: "conflict" });
+  expect(await listMockTests(services, a.childId, a.deckId)).toEqual([]);
   const second = (await nextTask(services, s.sessionId))!;
   expect(second.taskId).not.toBe(first.taskId);
   await submitAttempt(services, { taskId: second.taskId, clientAttemptId: randomUUID(), modality: "skip" });
   clock.advanceMs(5 * 60_001); // łącznie ponad 15 minut od startu sesji
+  expect((await listMockTests(services, a.childId, a.deckId)).map(r => r.sessionId)).toEqual([s.sessionId]);
   expect(await nextTask(services, s.sessionId)).toBeNull();
   expect((await pool.query(`select state from learning_app.learning_sessions where id=$1`, [s.sessionId])).rows[0]).toEqual({ state: "ended" });
 });
