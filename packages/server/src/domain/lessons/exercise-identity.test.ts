@@ -65,6 +65,28 @@ describe("lessonExerciseIdentity", () => {
     expect(lessonExerciseIdentity(girl)).toBe(lessonExerciseIdentity({ ...girl }));
   });
 
+  it("treats typographic apostrophes and trailing punctuation as the same stimulus (#323)", () => {
+    const choice = (stem: string) => exercise({ exerciseType: "lesson_choice", stem });
+    expect(lessonExerciseIdentity(choice("It’s ___ cat."))).toBe(lessonExerciseIdentity(choice("It's ___ cat.")));
+    expect(lessonExerciseIdentity(choice("Is it a cat?"))).toBe(lessonExerciseIdentity(choice("Is it a cat")));
+    expect(lessonExerciseIdentity(choice("Is it a cat?!…"))).toBe(lessonExerciseIdentity(choice("Is it a cat")));
+    const order = (texts: string[]) => exercise({ exerciseType: "lesson_order", items: texts.map((text, i) => ({ id: String(i), text })) });
+    expect(lessonExerciseIdentity(order(["She", "doesn’t", "swim."]))).toBe(lessonExerciseIdentity(order(["She", "doesn't", "swim"])));
+    // Inne słowa nadal dają inne ćwiczenie; interpunkcja w środku zostaje.
+    expect(lessonExerciseIdentity(choice("Is it a cat?"))).not.toBe(lessonExerciseIdentity(choice("It is a cat.")));
+    expect(lessonExerciseIdentity(choice("Yes, it is."))).not.toBe(lessonExerciseIdentity(choice("Yes it is.")));
+    const withInstruction = { instructionIsStimulus: true } as const;
+    expect(lessonExerciseIdentity(exercise({ instructionPl: "To jest kot." }), withInstruction))
+      .toBe(lessonExerciseIdentity(exercise({ instructionPl: "To jest kot" }), withInstruction));
+  });
+
+  it("keeps the stored stimulus (criteria of match/group/cloze) unchanged by the dedup folding", () => {
+    const cloze = exercise({ exerciseType: "lesson_cloze", clozeText: "It’s a ___.", gapAnswers: ["cat."] });
+    expect(lessonExerciseStimulus(cloze)).toBe(JSON.stringify(["it’s a ___.", ["cat."]]));
+    const match = exercise({ exerciseType: "lesson_match", pairs: [{ left: "Don’t!", right: "Nie." }] });
+    expect(lessonExerciseStimulus(match)).toBe(JSON.stringify(["don’t!=nie."]));
+  });
+
   it("uses the displayed question as the short-answer stimulus before a legacy stem", () => {
     const first = exercise({
       exerciseType: "lesson_short_answer",
@@ -156,7 +178,7 @@ describe("lessonExerciseIdentity — lesson_listen_choice", () => {
 
   it("is [objectiveId, type, [normalized stem, normalized full sentence]]", () => {
     expect(lessonExerciseIdentity(listen({ stem: "  She ___   MILK. ", options: [{ id: "a", text: "Doesn't like" }, { id: "b", text: "likes" }], correctOption: "a" }))).toBe(
-      JSON.stringify(["english_grammar.present_simple.question", "lesson_listen_choice", JSON.stringify(["she ___ milk.", "she doesn't like milk."])]),
+      JSON.stringify(["english_grammar.present_simple.question", "lesson_listen_choice", JSON.stringify(["she ___ milk", "she doesn't like milk"])]),
     );
   });
 

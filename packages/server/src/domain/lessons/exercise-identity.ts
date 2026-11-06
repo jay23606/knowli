@@ -1,4 +1,5 @@
 import { feedbackSentenceText } from "./feedback-sentence-text";
+import { APOSTROPHE_VARIANTS } from "./normalize";
 import type { LessonExerciseDraft, LessonExerciseType, SubjectModule } from "./types";
 
 export interface LessonExerciseStimulus {
@@ -10,6 +11,22 @@ export interface LessonExerciseStimulus {
 function normalizeStimulus(value: string): string {
   return value.normalize("NFC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-GB");
 }
+
+/**
+ * Normalizacja tylko do deduplikacji (#323): dodatkowo apostrofy typograficzne i końcowe `.?!…`.
+ * Nie zasila `lessonExerciseStimulus`, bo ten wchodzi do zapisywanych kryteriów (`criteria.assignments`).
+ */
+function dedupStimulus(value: string): string {
+  const text = normalizeStimulus(value.replace(APOSTROPHE_VARIANTS, "'"));
+  // Pętla zamiast regexu z `+$` (wielomianowy backtracking, CodeQL); po normalizacji jedynym białym znakiem jest spacja.
+  let end = text.length;
+  while (end > 0 && TRAILING_PUNCTUATION.has(text[end - 1]!)) end -= 1;
+  return text.slice(0, end);
+}
+
+const TRAILING_PUNCTUATION: ReadonlySet<string> = new Set([" ", ".", "?", "!", "…"]);
+
+type Normalize = (value: string) => string;
 
 /** Opcje tożsamości ćwiczenia pochodzące z przedmiotu (`SubjectModule.instructionIsStimulus`). */
 export interface LessonExerciseIdentityOptions {
@@ -31,13 +48,17 @@ export function lessonIdentityOptionsOf(subject: Pick<SubjectModule, "instructio
 
 /** Wyciąga funkcjonalny bodziec, pomijając kosmetyczne pola prezentacji. */
 export function lessonExerciseStimulus(exercise: LessonExerciseDraft, options: LessonExerciseIdentityOptions = {}): string {
-  const base = baseStimulus(exercise);
+  return stimulusWith(exercise, options, normalizeStimulus);
+}
+
+function stimulusWith(exercise: LessonExerciseDraft, options: LessonExerciseIdentityOptions, normalizeStimulus: Normalize): string {
+  const base = baseStimulus(exercise, normalizeStimulus);
   return options.instructionIsStimulus === true && INSTRUCTION_STIMULUS_TYPES.has(exercise.exerciseType)
     ? JSON.stringify([normalizeStimulus(exercise.instructionPl ?? ""), base])
     : base;
 }
 
-function baseStimulus(exercise: LessonExerciseDraft): string {
+function baseStimulus(exercise: LessonExerciseDraft, normalizeStimulus: Normalize): string {
   switch (exercise.exerciseType) {
     case "lesson_calculation": {
       const calculation = exercise.calculation;
@@ -101,6 +122,6 @@ export function lessonExerciseIdentity(exercise: LessonExerciseDraft, options: L
   return JSON.stringify([
     exercise.objectiveId,
     exercise.exerciseType,
-    lessonExerciseStimulus(exercise, options),
+    stimulusWith(exercise, options, dedupStimulus),
   ]);
 }
