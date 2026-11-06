@@ -228,6 +228,13 @@ export const CORE_RULES = {
     description: (ctx) => `answer and every acceptedAnswers variant have at most ${ctx.answerMaxLength} characters.`,
     limit: "MAX_TEXT_LENGTH",
   },
+  // Dziecko jest oceniane po `correctOption`, a ślepy rozwiązujący, deduplikacja i ujawnienia po `answer` (#315).
+  "answer.correct_option_text": {
+    field: "answer",
+    kind: "reject",
+    types: [...CHOICE_TYPES, "lesson_notice"],
+    description: "In choice exercises answer is the text of the option named by correctOption; in lesson_notice answer is the correctOption word.",
+  },
   "voice_tone.not_allowed": {
     field: "voiceTone",
     kind: "reject",
@@ -752,7 +759,7 @@ export const CORE_RULES = {
     field: "gapAnswers",
     kind: "reject",
     types: ["lesson_cloze"],
-    description: "No word of the bank repeats another bank word or contains it as whole words.",
+    description: "No word of the bank repeats another bank word (also after normalization, e.g. a contraction and its full form) or contains it as whole words.",
   },
   "cloze.bank_outside_gap": {
     field: "clozeText",

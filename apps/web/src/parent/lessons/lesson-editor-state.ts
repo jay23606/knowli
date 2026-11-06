@@ -349,6 +349,9 @@ function exerciseToInput(exercise: EditableLessonExercise): LessonExerciseInput 
     if (exercise.correctOption.length > 0) {
       input.correctOption = exercise.correctOption;
     }
+    // Dziecko jest oceniane po poprawnej opcji, więc odpowiedź to jej tekst (reguła `answer.correct_option_text`).
+    const correct = exercise.options.find((option) => option.id === exercise.correctOption);
+    if (correct) input.answer = correct.text;
   }
   if (type === "lesson_choice" && exercise.visualSubject.length > 0) {
     input.visualSubject = exercise.visualSubject as LessonExerciseInput["visualSubject"];
@@ -362,6 +365,7 @@ function exerciseToInput(exercise: EditableLessonExercise): LessonExerciseInput 
     }
     if (exercise.correctOption.length > 0) {
       input.correctOption = exercise.correctOption;
+      input.answer = exercise.correctOption;
     }
   }
   if (exercise.questionType.length > 0) {

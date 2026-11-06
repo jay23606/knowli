@@ -497,7 +497,7 @@ describe("generowanie puli lekcji (integracja)", () => {
                 acceptedAnswers: [],
                 focus: [],
                 options: [{ id: "a", text: "watches" }, { id: "b", text: "watch" }],
-                correctOption: "b",
+                correctOption: "a",
                 // zły kształt: null w tablicy
                 [malformedField]: [null],
               },

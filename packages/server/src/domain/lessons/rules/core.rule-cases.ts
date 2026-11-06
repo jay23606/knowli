@@ -18,6 +18,7 @@ import { calculationIssues } from "../calculation";
 import { clozeAnswer } from "../cloze";
 import { explanationIssues } from "../exercise-explanation";
 import { groupAnswer, keywordsAnswer, matchAnswer, validateLessonExerciseIssues } from "../pool-validation";
+import { baseNormalizer } from "../normalize";
 import { historyLikeSubject } from "../testing/history-like-subject";
 import { registerRuleCases } from "../testing/rule-cases";
 import type { LearningObjective, LessonExerciseDraft, LessonExerciseType, LessonTopic, SubjectModule } from "../types";
@@ -95,6 +96,17 @@ const plainSubject: SubjectModule = {
 
 /** Przedmiot z payloadem v3, nagraniami pytań i wyjaśnieniami błędu. */
 const richSubject: SubjectModule = { ...plainSubject, usesV3Payload: true, ttsForPrompts: true, exerciseExplanations: true };
+
+/** Przedmiot, którego normalizator zrównuje „H2O” z „wodę” (jak rozwinięcie skrótu). */
+const h2oSubject: SubjectModule = {
+  ...plainSubject,
+  normalizer: {
+    normalize: (text) => {
+      const base = baseNormalizer.normalize(text)[0] ?? [];
+      return base.join(" ") === "h2o" ? [base, ["wodę"]] : [base];
+    },
+  },
+};
 
 const check = (draft: LessonExerciseDraft, subject: SubjectModule = plainSubject) => () =>
   validateLessonExerciseIssues(draft, subject, topic);
@@ -411,6 +423,9 @@ registerRuleCases([
   },
   { rule: "options.duplicate", violation: check(choice({ options: [{ id: "a", text: "plays" }, { id: "b", text: "Plays" }] })) },
   { rule: "options.correct_unknown", violation: check(choice({ correctOption: "z" })) },
+  { rule: "answer.correct_option_text", violation: check(choice({ answer: "play" })) },
+  { rule: "answer.correct_option_text", violation: check(shortAnswer({ answer: "play" })) },
+  { rule: "answer.correct_option_text", violation: check(notice({ answer: "runs" })) },
 
   // Wybór ze słuchu.
   { rule: "listen.instruction_not_allowed", violation: check(listen({ instructionPl: "Wybierz słowo." })) },
@@ -600,6 +615,11 @@ registerRuleCases([
     boundary: check(cloze({ extraWords: [Array.from({ length: MAX_CLOZE_WORD_TOKENS }, (_, i) => `dąb${i}`).join(" ")] })),
   },
   { rule: "cloze.bank_confusable", violation: check(cloze({ extraWords: ["wodę morską"] })) },
+  {
+    // Dystraktor równoważny odpowiedzi luki po normalizatorze przedmiotu (jak „is not” przy „isn't”).
+    rule: "cloze.bank_confusable",
+    violation: check(cloze({ extraWords: ["H2O"] }), h2oSubject),
+  },
   { rule: "cloze.bank_outside_gap", violation: check(cloze({ extraWords: ["gleby"] })) },
 
   // Specyfikacja rachunku.

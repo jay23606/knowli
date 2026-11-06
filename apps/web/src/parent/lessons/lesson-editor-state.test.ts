@@ -127,6 +127,21 @@ describe("toLessonDraftPatch", () => {
     expect(toLessonDraftPatch(snapshot).exercises![1]!.acceptedAnswers).toEqual(source.exercises[1]!.acceptedAnswers);
   });
 
+  it("wybór: odpowiedź to tekst poprawnej opcji po zmianie opcji albo jej tekstu (#315)", () => {
+    const snapshot = createLessonSnapshot(draft(), () => "unused");
+    const exercise = snapshot.form.exercises[0]!;
+    exercise.correctOption = "b";
+    exercise.options = [{ id: "a", text: "plays" }, { id: "b", text: "is playing" }];
+    expect(toLessonDraftPatch(snapshot).exercises![0]).toMatchObject({ correctOption: "b", answer: "is playing" });
+  });
+
+  it("wskazanie słowa: odpowiedź to wskazywane słowo (#315)", () => {
+    const snapshot = createLessonSnapshot(draft(), () => "unused");
+    const exercise = snapshot.form.exercises[0]!;
+    Object.assign(exercise, { exerciseType: "lesson_notice", options: undefined, noticeSegments: [["He", "plays"], ["She", "runs"]], correctOption: "runs" });
+    expect(toLessonDraftPatch(snapshot).exercises![0]).toMatchObject({ correctOption: "runs", answer: "runs" });
+  });
+
   it("słowa kluczowe: odpowiedź z zaznaczonych pojęć, bez wariantów i focus", () => {
     const source = draft();
     source.exercises[0] = {
@@ -410,11 +425,14 @@ describe("lessonExerciseChanged", () => {
   it("detects an edited answer, instruction, option and focus", () => {
     const base = createLessonSnapshot(draft(), () => "unused").form.exercises[0]!;
     const edited = createLessonSnapshot(draft(), () => "unused").form.exercises[0]!;
-    edited.answer = "play";
+    edited.correctOption = "b";
     expect(lessonExerciseChanged(edited, base)).toBe(true);
 
     const edited2 = createLessonSnapshot(draft(), () => "unused").form.exercises[1]!;
     edited2.focusText = "watch";
+    expect(lessonExerciseChanged(edited2, createLessonSnapshot(draft(), () => "unused").form.exercises[1]!)).toBe(true);
+    edited2.focusText = "watches";
+    edited2.answer = "watched";
     expect(lessonExerciseChanged(edited2, createLessonSnapshot(draft(), () => "unused").form.exercises[1]!)).toBe(true);
   });
 });

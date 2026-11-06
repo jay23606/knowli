@@ -294,7 +294,7 @@ describe("AiSdkLessonPoolAgent (MockLanguageModelV4, bez sieci)", () => {
 });
 
 describe("AiSdkExerciseChecker (MockLanguageModelV4, bez sieci)", () => {
-  it("solve mapuje answers po pozycjach; brakująca albo zła pozycja → null; koszt żądania zapisany", async () => {
+  it("solve: inna liczba tablic niż ćwiczeń → null dla całej paczki (bez dopasowania po pozycji); koszt żądania zapisany", async () => {
     const model = new MockLanguageModelV4({ doGenerate: [textResult(JSON.stringify({ answers: [["cat"], ["dog", "cow"]] }), 0.003)] });
     const cost = recordingCost([]);
     const result = await new AiSdkExerciseChecker({ apiKey: "", model: "test-model", effort: "low", languageModel: model }).solve(
@@ -302,7 +302,7 @@ describe("AiSdkExerciseChecker (MockLanguageModelV4, bez sieci)", () => {
       cost,
       new AbortController().signal,
     );
-    expect(result.answers).toEqual([["cat"], ["dog", "cow"], null]);
+    expect(result.answers).toEqual([null, null, null]);
     expect(cost.values).toEqual([0.003]);
     expect(model.doGenerateCalls).toHaveLength(1);
   });
@@ -317,6 +317,16 @@ describe("AiSdkExerciseChecker (MockLanguageModelV4, bez sieci)", () => {
     const prompts = model.doGenerateCalls.map((call) => JSON.stringify(call.prompt));
     expect(prompts[0]).not.toContain("MATERIAL-TEXT");
     expect(prompts[1]).toContain("MATERIAL-TEXT");
+  });
+
+  it("judgeVariants: inna liczba tablic niż ćwiczeń → null dla całej paczki, choć długość pierwszej pasuje do kandydatów", async () => {
+    const model = new MockLanguageModelV4({ doGenerate: [textResult(JSON.stringify({ equivalent: [[true]] }))] });
+    const result = await new AiSdkExerciseChecker({ apiKey: "", model: "test-model", effort: "low", languageModel: model }).judgeVariants(
+      { items: [{ view: "X", answer: "x", variants: ["a"] }, { view: "Y", answer: "y", variants: ["b"] }] },
+      recordingCost([]),
+      new AbortController().signal,
+    );
+    expect(result.equivalent).toEqual([null, null]);
   });
 
   it("judgeVariants mapuje equivalent po pozycjach; zła długość → null", async () => {
