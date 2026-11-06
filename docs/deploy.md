@@ -28,6 +28,10 @@ każdym deploju.
      modele, głos i ton są w domyślnej konfiguracji
      `packages/server/src/config-defaults.ts`),
      `AZURE_SPEECH_KEY` + `AZURE_SPEECH_REGION` (web: próby ustne dziecka),
+   - **lekcje wymagają klucza OpenRouter** (`OPENROUTER_API_KEY`,
+     `UMIEM_LESSON_AGENT_API_KEY` albo `UMIEM_LLM_API_KEY` przy `UMIEM_LLM_BASE_URL`
+     na https OpenRouter) w web i w worker — agent puli jest jedynym
+     generatorem lekcji (sekcja „Generowanie lekcji” niżej),
    - `OPENAI_API_KEY` trafia wyłącznie do `https://api.openai.com`, a wspólny
      klucz wyłącznie po https na openrouter.ai; klucz w złym miejscu kończy start
      błędem z nazwą zmiennej (szczegóły: `docs/provider-config.md`),
@@ -43,6 +47,47 @@ każdym deploju.
 
 Aktualizacja aplikacji: `git pull` + ponownie `up -d --build` — migracje
 odpalają się automatycznie przed startem web/worker.
+
+## Generowanie lekcji (agent puli)
+
+Od etapu 3 (#237, PR 2) lekcje wszystkich przedmiotów generuje wyłącznie agent
+puli (worker, OpenRouter; opis i zmienne: `docs/provider-config.md`, sekcja
+„Agent puli lekcji”). Co to znaczy przy wdrożeniu:
+
+- **Klucz.** `OPENROUTER_API_KEY` (albo `UMIEM_LESSON_AGENT_API_KEY`; trzecia
+  rezerwa to `UMIEM_LLM_API_KEY`, gdy `UMIEM_LLM_BASE_URL` wskazuje https
+  OpenRouter — kolejność w `docs/provider-config.md`) musi być w web **i** w worker. Używaj w obu serwisach tego samego klucza i tych samych
+  `UMIEM_LESSON_AGENT_MODEL` / `UMIEM_LESSON_AGENT_CHECKER_MODEL`: etykiety usług
+  w panelu rodzica pochodzą z web, a lekcje liczy worker. Po dodaniu albo zmianie
+  klucza zrestartuj oba serwisy.
+- **Bez klucza** panel rodzica pokazuje „Generowanie lekcji wymaga klucza
+  OpenRouter w konfiguracji serwera. Po dodaniu klucza ponów generowanie.” i
+  wyłącza tworzenie i dogenerowanie lekcji (zestawy słówek działają), a worker
+  kończy runy lekcji kodem `lesson_agent_unavailable` bez wywołań modeli. Worker
+  wstaje bez klucza tylko wtedy, gdy LLM i TTS są skonfigurowane na OpenAI-direct
+  (log startu: `[config] lesson-agent=unavailable reason=no_openrouter_key`);
+  przy domyślnych adresach OpenRouter brak klucza nadal zatrzymuje start
+  (`UMIEM_LLM_BASE_URL`, `UMIEM_TTS_BASE_URL`). Po dodaniu klucza i restarcie
+  rodzic ponawia generowanie przyciskiem „Ponów”.
+- **Walidacja.** Zmienne `UMIEM_LESSON_AGENT_*` worker sprawdza przy każdym
+  starcie; zła wartość (liczba, wysiłek rozumowania, routing, ta sama rodzina
+  modeli generatora i checkera, klucz w kształcie OpenAI) zatrzymuje start z nazwą
+  zmiennej. Web ich nie waliduje.
+- **Usunięte ustawienia.** `UMIEM_LESSON_AGENT_SUBJECTS` już nie istnieje (agent
+  obsługuje wszystkie przedmioty); pozostawiona w `.env` jest ignorowana, ale
+  warto ją usunąć.
+- **Koszt.** Agent kosztuje więcej niż dawny potok: próba 2026-11-03 — rozdział
+  0,11–0,15, gramatyka ok. 0,07, szkoła 0,20–0,31 USD na lekcję plus kontrole
+  modelem; domyślny budżet runu to 1,00 USD (`UMIEM_LESSON_AGENT_RUN_BUDGET_USD`).
+  Koszty widać w sekcji „Koszty” panelu rodzica.
+- **Zmiana niezgodna dla OpenAI-direct.** Instancja bez klucza OpenRouter (LLM i
+  TTS na `api.openai.com`) traci generowanie lekcji; słówka, TTS i ilustracje
+  działają jak dotąd.
+- **Wycofanie.** Zmiana nie ma migracji bazy: `git revert` PR etapu 3 PR 2 i
+  ponowne wdrożenie przywracają dawny potok. Runy zakończone już kodem
+  `lesson_agent_unavailable` pokażą po wycofaniu ogólny komunikat błędu (dawny
+  katalog komunikatów nie zna tego kodu) — wystarczy je ponowić; szkice i punkty
+  kontrolne agenta pozostają czytelne.
 
 ## Test dymny wdrożenia
 

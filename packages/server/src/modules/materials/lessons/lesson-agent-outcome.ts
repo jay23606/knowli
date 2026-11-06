@@ -1,23 +1,30 @@
-import type { LessonAgentDeps } from "../../../config";
+import { messages } from "@learning/contracts";
 import { AppError } from "../../../errors";
 import { outsideStagePath } from "../../../domain/lessons/stages";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import type { LessonAgentObjectiveProgress, LessonAgentProgress } from "./lesson-agent-checkpoint";
+import { CHECK_COUNTER_KEYS } from "./lesson-agent-check-run";
 import type { LessonGenerationGap, LessonRunInput } from "./lesson-drafts";
-import type { AgentObjectiveSource, LessonPoolAgentResult, LessonPoolAgentRunInput } from "./lesson-pool-agent";
+import { CLEANUP_COUNTER_KEYS, type AgentObjectiveSource, type LessonPoolAgentResult, type LessonPoolAgentRunInput } from "./lesson-pool-agent";
 
 export type { LessonGenerationGap };
 
 /**
  * Funkcje czyste ścieżki agenta w `executeLessonGeneration` (spec etapu 2a §3,
- * §7.1, §8.3, §9, §11): wybór ścieżki, wejście kierownika z punktu kontrolnego,
+ * §7.1, §8.3, §9, §11): wejście kierownika z punktu kontrolnego,
  * scalenie próby z postępem, wynik próby i luki generowania. Bez bazy, czasu i
  * identyfikatorów przedmiotów.
  */
 
-/** Agent wtedy i tylko wtedy, gdy są zależności agenta, przedmiot jest na liście konfiguracji i ma politykę agenta. */
-export function lessonGeneratorFor(subject: SubjectModule, agent: LessonAgentDeps | undefined): "agent" | "pipeline" {
-  return agent !== undefined && agent.subjects.has(subject.id) && subject.agentPolicy !== undefined ? "agent" : "pipeline";
+/**
+ * Linia logu startu runu (etap 2b §7.4), bez treści: `hintJudge` — przedmiot ma niepustą listę typów sędziego
+ * podpowiedzi; `openCheck` — niepusta lista typów kontroli otwartej i worker ma grader (`hasGrader`).
+ */
+export function agentCheckStartLine(runId: string, subject: SubjectModule, hasGrader: boolean): string {
+  const policy = subject.agentPolicy;
+  const hintJudge = (policy.hintJudgeTypes?.length ?? 0) > 0;
+  const openCheck = (policy.openAnswerCheckTypes?.length ?? 0) > 0 && hasGrader;
+  return `[lesson-agent] run=${runId} hintJudge=${hintJudge ? "on" : "off"} openCheck=${openCheck ? "on" : "off"}`;
 }
 
 /** Nowe ćwiczenia liczone jak `counts.total` statusu: typy na ścieżce etapów, bez słów kluczowych i słuchowych. */
@@ -80,7 +87,7 @@ export type LessonAgentRunInputResult =
 
 /**
  * Temat katalogowy zawężony do zagadnień lekcji (`objectiveIds` runu, kolejność tematu): kierownik
- * uruchamia każde zagadnienie tematu, a limity liczy z ich liczby — jak partie potoku z `objectiveIds`.
+ * uruchamia każde zagadnienie tematu, a limity liczy z ich liczby.
  */
 export function lessonCatalogTopic(topic: LessonTopic, objectiveIds: readonly string[]): LessonTopic {
   const selected = new Set(objectiveIds);
@@ -104,7 +111,7 @@ function poolSource(args: LessonAgentRunInputArgs): AgentObjectiveSource | { rea
   if (progress?.dynamicTopic !== undefined) return { source: "input", dynamicTopic: progress.dynamicTopic };
   if (input.dynamicTopic !== undefined) return { source: "input", dynamicTopic: input.dynamicTopic };
   if (subject.buildDynamicTopic === undefined) return catalogSource(args.catalogTopic, input.objectiveIds);
-  if (subject.agentPolicy?.planCoverage !== undefined) return { source: "planner" };
+  if (subject.agentPolicy.planCoverage !== undefined) return { source: "planner" };
   if (args.schoolTopic !== undefined) return { source: "input", dynamicTopic: args.schoolTopic };
   return { needsObjectives: true };
 }
@@ -253,7 +260,7 @@ export function outcomeObjectivesOf(progress: LessonAgentProgress, result: Lesso
  * Scalenie wyniku próby z postępem Z POCZĄTKU próby (tym, z którego zbudowano wejście): wpis zagadnienia
  * uruchomionego w próbie zastępuje poprzedni (pula) albo dopisuje nowe ćwiczenia (dodaj N); zagadnienia
  * `complete` pominięte w próbie zostają. Wydatek: budżet = licznik kierownika (zawiera `initialSpentUsd`),
- * łącznie + przyrost próby; histogram kodów odrzuceń i usunięcia bezpiecznika kierownika sumowane.
+ * łącznie + przyrost próby; histogram kodów odrzuceń, liczniki kontroli (2b) i usunięcia bezpiecznika kierownika sumowane.
  */
 export function mergeAttemptIntoProgress(
   progress: LessonAgentProgress,
@@ -274,6 +281,18 @@ export function mergeAttemptIntoProgress(
   }
   const rejectionCodes = { ...progress.rejectionCodes };
   for (const rejection of result.rejections) rejectionCodes[rejection.code] = (rejectionCodes[rejection.code] ?? 0) + 1;
+  // Liczniki kontroli (etap 2b): sumowane jak histogram; pole powstaje dopiero po pierwszym niezerowym liczniku.
+  const checkCounters: Record<string, number> = { ...progress.checkCounters };
+  for (const key of CHECK_COUNTER_KEYS) {
+    const delta = result.stats[key];
+    if (delta > 0) checkCounters[key] = (checkCounters[key] ?? 0) + delta;
+  }
+  // Oczyszczenia przy przyjmowaniu: sumowane jak liczniki kontroli, do zapisu w kontekście szkicu.
+  const cleanupCounts: Record<string, number> = { ...progress.cleanupCounts };
+  for (const key of CLEANUP_COUNTER_KEYS) {
+    const delta = result.stats[key];
+    if (delta > 0) cleanupCounts[key] = (cleanupCounts[key] ?? 0) + delta;
+  }
   const attemptSpentUsd = Math.max(0, result.spentUsd - progress.budgetSpentUsd);
   const dynamicTopic = progress.dynamicTopic ?? result.dynamicTopic;
   return {
@@ -283,8 +302,36 @@ export function mergeAttemptIntoProgress(
     budgetSpentUsd: progress.budgetSpentUsd + attemptSpentUsd,
     totalSpentUsd: progress.totalSpentUsd + attemptSpentUsd,
     rejectionCodes,
+    ...(Object.keys(checkCounters).length === 0 ? {} : { checkCounters }),
+    ...(Object.keys(cleanupCounts).length === 0 ? {} : { cleanupCounts }),
     removedAfterAcceptance: progress.removedAfterAcceptance + result.stats.invariantViolations,
   };
+}
+
+/**
+ * Powody odrzuceń agenta dla rodzica (`rejectedReasons` szkicu, decyzja właściciela 2026-11-05): liczby według
+ * polskiej etykiety kodu. Kody bez etykiety sumowane pod „inne powody”, zerowe pomijane; wynik nie niesie treści
+ * ćwiczeń ani słów — tylko etykiety z katalogu komunikatów. Klucze to etykiety, nie kody (panel pokazuje je wprost).
+ */
+export function agentRejectedReasons(codes: Readonly<Record<string, number>>): Record<string, number> {
+  const labels: Readonly<Record<string, string>> = messages.lessons.agentRejectionReasons;
+  const reasons = new Map<string, number>();
+  for (const [code, count] of Object.entries(codes)) {
+    if (count <= 0) continue;
+    const label = Object.hasOwn(labels, code) ? labels[code]! : messages.lessons.agentRejectionOther;
+    reasons.set(label, (reasons.get(label) ?? 0) + count);
+  }
+  return Object.fromEntries(reasons);
+}
+
+/** Kody odrzuceń jeszcze niezapisane w `rejectedReasons` szkicu: kumulowane kody runu minus `rejectionCodesWritten`. */
+export function unwrittenRejectionCodes(progress: Pick<LessonAgentProgress, "rejectionCodes" | "rejectionCodesWritten">): Record<string, number> {
+  const unwritten: Record<string, number> = {};
+  for (const [code, count] of Object.entries(progress.rejectionCodes)) {
+    const delta = count - (progress.rejectionCodesWritten?.[code] ?? 0);
+    if (delta > 0) unwritten[code] = delta;
+  }
+  return unwritten;
 }
 
 /**

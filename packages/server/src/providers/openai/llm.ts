@@ -1,19 +1,17 @@
 import type {
   LessonObjectivesInput,
   LessonPoolInput,
+  LessonRuleBookInput,
+  LessonRuleBookLine,
   LessonStoryInput,
   LlmGenerateDeckInput,
   LlmGeneratedItem,
   LlmProvider,
 } from "../../ports/ai";
-import { GenerationProviderError } from "../../ports/generation-error";
 import { LESSON_STORY_LIMITS } from "../../domain/lessons/story";
-import { lessonPoolJsonSchema, poolExerciseTypes, voiceToneProperty } from "./lesson-pool-schema";
-import { materializeGeneratedCalculations } from "../lesson-calculations";
-import { materializeGeneratedKeywords } from "../lesson-keywords";
-import { materializeGeneratedAssignments } from "../lesson-assignments";
+import { poolExerciseTypes, voiceToneProperty } from "./lesson-pool-schema";
 import { withChatRequestExtras, type ChatRequestExtras } from "../chat-request-options";
-import { asLessonTransportError, lessonHttpError, postLessonJson, type LessonJsonRequestConfig } from "./lesson-json-request";
+import { postLessonJson, type LessonJsonRequestConfig } from "./lesson-json-request";
 import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
 import {
   recordHttpError,
@@ -96,17 +94,6 @@ const VOICE_TONE_BASE_RULE =
 const VOICE_TONE_RULE =
   `${VOICE_TONE_BASE_RULE} \`mysterious\` only for curiosities/riddles such as »Czy wiesz, że…« with at least two sentences.`;
 
-/**
- * Opis pól `lesson_listen_choice` (lektor czyta pełne zdanie, dziecko wybiera brakujące słowo) — tylko
- * dla przedmiotu, który wspiera typ; reguły dziedzinowe (które różnice są słyszalne) niesie `fieldRules`.
- */
-function listenChoiceFieldRule(input: LessonPoolInput): string {
-  if (listenChoiceExtra(input) === 0) return "";
-  return "lesson_listen_choice requires stem with exactly one ___ (the sentence the narrator reads aloud with the correct option in the gap), " +
-    "2 to 3 options with distinct texts, correctOption (the id of the option that fills the gap), answer (the text of the correct option) and focus (its tokens); " +
-    "instructionPl, hint and visualSubject must be null for lesson_listen_choice. ";
-}
-
 /** Najwięcej dodatkowych ćwiczeń słuchowych na cel partii (decyzja #198). */
 const MAX_LISTEN_CHOICE_EXTRA = 2;
 
@@ -139,16 +126,74 @@ function independentReservation(input: LessonPoolInput): string {
     ? ""
     : spare > 0
       ? `At most ${spare} independent slot(s) may be lesson_calculation, and only when the material teaches the method. `
-      : "No independent slot is left for lesson_calculation in this batch: produce no calculations. ";
+      : "No independent slot is left for lesson_calculation: produce no calculations. ";
   return `Independent slots: the first ${open} MUST be lesson_open_answer questions with DIFFERENT model answers (not one family). ` +
     calculations;
 }
 
 /**
- * Prompt systemowy generacji puli lekcji: złożony WYŁĄCZNIE z danych wejścia
+ * Wiersze reguł jednej sekcji księgi: `[id] opis`, oddzielone spacją; reguły `brief` pomija (opisuje je wynik
+ * narzędzia), a powtórzenie reguły z wcześniejszego bloku typu (`repeatOf`) odsyła do tamtego bloku.
+ */
+function ruleLines(lines: readonly LessonRuleBookLine[]): string {
+  return lines
+    .filter((line) => line.brief !== true)
+    .map((line) => (line.repeatOf === undefined ? `[${line.id}] ${line.text}` : `[${line.id}] ${repeatText(line.repeatOf)}`))
+    .join(" ");
+}
+
+/** Zdanie przed blokami typów z przykładami: przykład pokazuje format rekordu, treść daje lekcja. */
+export const EXAMPLES_NOTE =
+  "Each Example shows only the record format: never copy its words or sentences; take the content from this " +
+  "lesson's material and objective.";
+
+/** Tekst powtórzonej reguły w kolejnym bloku typu: odesłanie do bloku z pełnym opisem. */
+export function repeatText(type: string): string {
+  return `As in the ${type} block.`;
+}
+
+/** Czy sekcja ma choć jedną regułę z opisem (bez pustych nagłówków). */
+function hasDescribed(lines: readonly LessonRuleBookLine[]): boolean {
+  return lines.some((line) => line.brief !== true);
+}
+
+/**
+ * Księga reguł zagadnienia jako tekst promptu (spec katalogu reguł §3): nagłówek, reguły ogólne,
+ * blok każdego typu (karta typu z przykładem, semantyka typu przedmiotu, reguły typu), reguły lekcji
+ * i kontrole innymi modelami. Kolejność i treść daje domenowa `lessonRuleBook`; renderer tylko
+ * składa wiersze i pomija puste sekcje (bez pustych nagłówków). Czysta funkcja.
+ */
+export function renderRuleBook(book: LessonRuleBookInput): string {
+  const parts = ["RULES — the tool checks every rule below; a rejection names the broken rule in [brackets]."];
+  // Reguły `brief` (kształt rekordu, pola kart typów, limity schematu narzędzia) bez id i opisu: jedno zdanie, opis w wyniku narzędzia.
+  const brief = [book.general, ...book.types.map((block) => block.rules), book.lesson, book.checks].flat().some((line) => line.brief === true);
+  if (brief) {
+    parts.push(
+      "Record shape and card fields: every exercise has the field types and limits of the tool schema and the fields its " +
+        "type card lists; the tool result names and describes a broken rule of this kind.",
+    );
+  }
+  if (hasDescribed(book.general)) parts.push(`General: ${ruleLines(book.general)}`);
+  // Przykłady kart nie znają materiału lekcji: model ma z nich brać format rekordu, nie treść.
+  if (book.types.some((block) => block.example !== undefined)) parts.push(EXAMPLES_NOTE);
+  for (const block of book.types) {
+    parts.push(`${block.type} — ${block.summary}${block.example === undefined ? "" : ` Example: ${block.example}`}`);
+    if (block.subjectRule !== undefined && block.subjectRule !== "") parts.push(`  ${block.subjectRule}`);
+    if (hasDescribed(block.rules)) parts.push(`  ${ruleLines(block.rules)}`);
+  }
+  if (hasDescribed(book.lesson)) parts.push(`Lesson: ${ruleLines(book.lesson)}`);
+  if (hasDescribed(book.checks)) parts.push(`Checks by another model: ${ruleLines(book.checks)}`);
+  return parts.join("\n");
+}
+
+/**
+ * Prompt systemowy podagenta puli lekcji: złożony WYŁĄCZNIE z danych wejścia
  * (opis przedmiotu, profil promptów, cele, dozwolone typy, przekształcenia,
- * liczby etapów). Adapter nie zna gramatyki — każdy fakt o przedmiocie pochodzi
- * z `input`. Opis JSON wyjścia odpowiada payloadowi `lesson_exercise`.
+ * etapy, księga reguł). Adapter nie zna gramatyki — każdy fakt o przedmiocie
+ * pochodzi z `input`. Reguły, które sprawdza kod, przychodzą wyłącznie z księgi
+ * reguł (`input.ruleBook`); tu zostają ręczne wskazówki, których kod nie sprawdza
+ * (rola, zagadnienia, etapy, gotowość gradera, ton lektora, styl wyjaśnień,
+ * semantyka pól przedmiotu). Liczby ćwiczeń podaje `Target` w `objectiveInstructions`.
  */
 export function lessonSystemPrompt(input: LessonPoolInput): string {
   const parts: string[] = [];
@@ -176,27 +221,23 @@ export function lessonSystemPrompt(input: LessonPoolInput): string {
         ".",
     );
   }
-  parts.push(
-    `Supported exercise types for this subject: ${promptExerciseTypes(input, input.exerciseTypes).join(", ")}.`,
-  );
-  // Wybór ze słuchu leży poza podziałem etapów (jego menu go nie wymienia): limit partii rośnie o dodatek.
-  const listenExtra = listenChoiceExtra(input);
   const stageMenu = (types: readonly string[]) =>
     types.filter((type) => input.exerciseTypes.includes(type)).join(", ") || "none available";
   parts.push(
-    `Return at most ${input.countPerObjective + listenExtra} exercises per objective in this batch, aiming for this stage split: ` +
-      `${input.stageCounts.guided} guided (${stageMenu(["lesson_choice", "lesson_order", "lesson_short_answer", "lesson_match", "lesson_group", "lesson_cloze"])}), ` +
-      `${input.stageCounts.productive} productive (${stageMenu(["lesson_gap", "lesson_error_fix", "lesson_transform"])}), ` +
-      `${input.stageCounts.independent} independent (${stageMenu(["lesson_open_answer", "lesson_calculation"])}). ` +
+    "Stages of the exercise types (Target below gives the counts): " +
+      `guided (${stageMenu(["lesson_choice", "lesson_order", "lesson_short_answer", "lesson_match", "lesson_group", "lesson_cloze"])}), ` +
+      `productive (${stageMenu(["lesson_gap", "lesson_error_fix", "lesson_transform"])}), ` +
+      `independent (${stageMenu(["lesson_open_answer", "lesson_calculation"])}). ` +
       independentReservation(input) +
       "The stage type lists are a menu, not a per-exercise requirement: every exercise must use ONLY an exerciseType " +
       "from its objective's allowed list above — if none of a stage's listed types is allowed for the objective, " +
       "cover that stage with an allowed type (typically lesson_choice).",
   );
-  if (listenExtra > 0) {
+  // Wybór ze słuchu leży poza podziałem etapów (jego menu go nie wymienia); liczbę podaje `Target`.
+  if (listenChoiceExtra(input) > 0) {
     parts.push(
-      `The stage split covers ${input.countPerObjective} exercises; in addition you may return up to ${listenExtra} extra lesson_listen_choice exercises per objective, ` +
-        "outside the stage split, only for an objective whose allowed exerciseType list contains lesson_listen_choice.",
+      "lesson_listen_choice exercises are extra, outside the stage split (Target gives their allowance), " +
+        "only for an objective whose allowed exerciseType list contains lesson_listen_choice.",
     );
   }
   if (!input.graderAvailable) {
@@ -205,109 +246,8 @@ export function lessonSystemPrompt(input: LessonPoolInput): string {
         "lesson_short_answer) and lesson_gap over free-text types.",
     );
   }
-  if (input.exerciseTypes.includes("lesson_calculation")) {
-    parts.push(
-      "lesson_calculation is a separate parameter-only branch: return ONLY exerciseType, objectiveId, calculation and sourceRefs. " +
-      "Never generate its answer, prompt, focus or acceptedAnswers; code computes the answer and renders a closed template. " +
-      "Use only a method explicitly taught in the quoted parent material: scale_distance, height_difference or unit_conversion (cm, m, km). " +
-      "Numbers may vary as abstract examples of that same method; never invent named places, measurements of real objects or new geographical facts. " +
-      "sourceRefs must quote the method, not a vaguely related fact. If the material teaches no supported calculation method, produce no calculations. " +
-      "Calculations supplement the pool within the requested count and the global 160-exercise limit. " +
-      "Publication minima apply to the complete pool, including existing exercises: 3 guided, 2 productive and 2 DISTINCT open-answer questions per school objective. " +
-      "Calculations never replace these minima; never exceed this batch's requested count to satisfy them. " +
-      "calculation contains kind, params, unit, tolerance (use 0 unless needed), templateFamilyId (lowercase hyphenated slug). " +
-      "scale_distance.params: {scaleDenominator: integer 1..1000000000, mapDistanceCm: nonnegative number}; " +
-      "height_difference.params: {upperHeightM, lowerHeightM}, upperHeightM >= lowerHeightM; " +
-      "unit_conversion.params: {value: nonnegative number, fromUnit: cm|m|km}. " +
-      "unit: cm|m|km; numerical parameters have at most 3 decimal places and absolute value <=1000000. " +
-      "Variants of the same method and units share templateFamilyId, with different parameters; do not repeat existing parameters.",
-    );
-  }
-  if (input.exerciseTypes.includes("lesson_keywords")) {
-    parts.push(
-      "lesson_keywords is an OPTIONAL extra (precision trainer), outside the stage split and the requested count: at most ONE per objective in this batch, " +
-      "and only for a lesson_open_answer family of this same batch. Return ONLY exerciseType, objectiveId, familyId (exactly the familyId of that open answer), " +
-      "keywordOptions (4 to 6 objects {id: k1..k6, text}: short concepts, one word or a short phrase of at most 40 characters, taken from the parent material), " +
-      "keyOptionIds (2 or 3 ids of the concepts a precise answer to that question must use; each key concept appears in that family model answer) and sourceRefs. " +
-      "The other options are real concepts from the material that are NOT essential for this answer. Never put the answer sentence or a definition into keywordOptions; " +
-      "code computes the answer from keyOptionIds. Skip lesson_keywords when the open answer has fewer than two essential concepts.",
-    );
-  }
-  const pairingTypes = (["lesson_match", "lesson_group"] as const).filter((type) => input.exerciseTypes.includes(type));
-  if (pairingTypes.length > 0) {
-    // Część strukturalna (pola, limity) należy do adaptera; semantykę typu dokłada profil przedmiotu.
-    const typeRule = (type: (typeof pairingTypes)[number]) => {
-      const rule = input.promptProfile.typeRules?.[type];
-      return rule === undefined || rule.trim() === "" ? "" : ` ${rule}`;
-    };
-    const structure = {
-      lesson_match:
-        "lesson_match: pairs (3 to 5 objects {left, right}: left of at most 40 characters, right of at most 100 characters) and extraRight " +
-        "(0 to 2 extra right-side texts that match none of the left items)." + typeRule("lesson_match"),
-      lesson_group:
-        "lesson_group: groups (2 or 3 objects {id: g1..g3, label of at most 30 characters}) and groupItems " +
-        "(4 to 8 objects {text of at most 40 characters, groupId}, at least 2 per group)." + typeRule("lesson_group"),
-    };
-    const several = pairingTypes.length > 1;
-    parts.push(
-      (several
-        ? "lesson_match and lesson_group are guided types with their own strict branches"
-        : `${pairingTypes[0]} is a guided type with its own strict branch`) +
-      ": return ONLY exerciseType, objectiveId, instructionPl " +
-      `(a short child-facing instruction in the prompt language, e.g. which things to connect or sort) and ${several ? "their" : "its"} fields below` +
-      `${input.groundingRequired ? " plus sourceRefs" : ""}; code computes the answer. ` +
-      pairingTypes.map((type) => structure[type]).join(" ") +
-      " Texts on one side must be distinct and none may contain another as whole words" +
-      `${pairingTypes.includes("lesson_group") ? "; an item must not repeat a group label" : ""}.`,
-    );
-  }
-  if (input.exerciseTypes.includes("lesson_cloze")) {
-    const clozeRule = input.promptProfile.typeRules?.lesson_cloze;
-    parts.push(
-      "lesson_cloze is a guided type with its own strict branch: return ONLY exerciseType, objectiveId, instructionPl (a short child-facing " +
-      `instruction in the prompt language), clozeText, gapAnswers, extraWords${input.groundingRequired ? " and sourceRefs" : ""}; ` +
-      "code computes the answer. clozeText: 2 to 4 short sentences (at most 300 characters) with 2 to 4 gaps written as ___ and " +
-      "at least one word between two gaps. gapAnswers: the word for each gap in text order (1 to 3 words, at most 30 characters). " +
-      "extraWords: 1 or 2 distractors that fit no gap. " +
-      (clozeRule === undefined || clozeRule.trim() === "" ? "" : `${clozeRule} `) +
-      "Exactly one bank word fits each gap (never two gaps whose words could be swapped), and no " +
-      "bank word appears in clozeText outside the gaps.",
-    );
-  }
   if (input.deduplication !== "exercise") {
-    parts.push(
-      "Canonical answers must be UNIQUE within this response: never submit two exercises whose canonical answer is " +
-        "the same wording or an equivalent of it (capitalization, punctuation, or an expanded/contracted spelling of " +
-        "the same words counts as the same). When distinct short answers run out, vary full-sentence answers " +
-        "(different subjects, verbs or objects) so every canonical answer differs.",
-    );
-  }
-  if (input.deduplication !== "exercise" && input.existingAnswers && input.existingAnswers.length > 0) {
-    parts.push(
-      "Do NOT repeat these canonical answers already in the pool: " +
-        input.existingAnswers.map((a) => `"${a}"`).join(", ") +
-        ".",
-    );
-  }
-  if (input.deduplication === "exercise") {
-    parts.push(
-      "Within this response, never repeat an exercise with the same objective, type, and functional stimulus. " +
-        "Do not repeat any existing exercise with the same objective, type, and functional stimulus, even if its answer differs. " +
-        "Reusing a short canonical answer such as do, does, don't, or doesn't with a different valid exercise is allowed.",
-    );
-    if (input.existingExercises?.length) {
-      parts.push(
-        "Existing exercise stimuli: " +
-          input.existingExercises.map((exercise) => `${exercise.objectiveId} / ${exercise.exerciseType} / ${exercise.stimulus}`).join("; ") +
-          ".",
-      );
-    }
-  }
-  if (input.groundingRequired) {
-    parts.push(
-      "sourceRefs is REQUIRED for EVERY exercise (never null, never empty): 1-3 quotes copied EXACTLY from the material that the exercise and its answer are based on, each quote at most 600 characters (pick the shortest sufficient fragment). " +
-        "An exercise without an exact quote from the material is invalid and will be discarded.",
-    );
+    parts.push("When distinct short answers run out, vary full-sentence answers (different subjects, verbs or objects).");
   }
   if (input.promptProfile.fieldRules !== undefined) {
     parts.push(`Field rules for this subject: ${input.promptProfile.fieldRules}`);
@@ -321,49 +261,26 @@ export function lessonSystemPrompt(input: LessonPoolInput): string {
   }
   if (input.exerciseExplanations === true) {
     parts.push(
-      "explanationPl: for every exercise except lesson_calculation, return exactly one Polish sentence for a child of about 8 that explains " +
-        "why the correct answer is correct (the rule behind it), at most 120 characters. " +
+      "explanationPl: for every exercise except lesson_calculation, return a Polish sentence for a child of about 8 that explains " +
+        "why the correct answer is correct (the rule behind it). " +
         "Do not assume which mistake the child made — the sentence must also fit after »Nie pamiętam«. " +
-        "No praise or judging of the child, no names, no markup (no *, _ or line breaks). " +
+        "No praise or judging of the child, no names. " +
         "English examples only from this exercise (its answer, sentence or options). Use null when no short, accurate rule applies.",
     );
   }
+  // Dyscyplina języków ma sens tylko przy dwóch językach (język polecenia ≠ język odpowiedzi).
+  const twoLanguages = input.promptLocale !== input.answerLocale;
   parts.push(
-    'Return strict JSON of the shape {"exercises": [ ... ], "examples": [{"objectiveId": "<id>", "examples": ["<short example sentence>"]}]}. ' +
-      "Each non-calculation exercise object has fields: exerciseType, objectiveId, instructionPl (child-facing instruction in the prompt language), " +
-      "optional stem (lesson_gap: the sentence with EXACTLY ONE gap marker ___), " +
-      "optional statement (lesson_error_fix: the sentence with the checked mistake — it must NOT already equal the answer; " +
-      "lesson_transform: the sentence to transform), " +
-      "optional prompt, optional hint (a short child-facing support clue in the answer language), " +
-      "optional transformId (for lesson_transform), optional noticeSegments (lesson_notice: 2-3 sentences, each an array of 1-15 word segments), " +
-      "optional visualSubject (lesson_choice picture choice: one of boy, girl, man, woman, group, dog — who is pictured; null otherwise), " +
-      "answer (canonical answer in the answer language), acceptedAnswers (array of accepted variants), " +
-      "focus (the checked answer tokens: copy the whitespace-separated tokens of the canonical answer, or one contiguous run of them — " +
-      "never words that are not in the answer), " +
-      "optional options (lesson_choice/lesson_short_answer: array of {id, text}), " +
-      "optional correctOption (option id; lesson_notice: one word copied exactly from the segments — the word the child points at), " +
-      "optional items (lesson_order: 3-10 items whose texts joined with spaces form the canonical answer). " +
-      "Use null for optional fields that do not apply to the exercise type — never invent extra fields. " +
-      "The fields questionType, requiredElements, supplementaryElements, commonErrors, expectedForm, familyId and sourceRefs " +
-      "are used ONLY when the subject field rules above ask for them; otherwise always return null for them. " +
-      "Language discipline: instructionPl is in the prompt language; exercise stimuli normally use the answer language, except where field rules for this subject " +
-      "define a source stimulus in the prompt language (for example lesson_open_answer translations). lesson_open_answer.prompt may be a translation source " +
-      "in the prompt language when subject rules say so; answer and acceptedAnswers always use the answer language. " +
-      "Never copy prompt-language words from the parent material into answer-language fields. " +
-      "acceptedAnswers must NOT contain the canonical answer itself, nor trivial variants that differ only by case or punctuation — " +
-      "the canonical answer is accepted automatically, so every listed variant must be a DIFFERENT acceptable formulation " +
-      "(a shortened wording without optional words is different; a copy of the same words with expanded or contracted spellings, or different capitalization, is not). " +
-      "lesson_choice and lesson_short_answer must have exactly 2 to 4 options with distinct texts, and correctOption must be the id " +
-      "of exactly one of the options. Use only the exerciseType values allowed for the exercise's objective (see the list above). " +
-      listenChoiceFieldRule(input) +
-      "Required non-empty stimulus fields by type: lesson_choice requires stem; lesson_gap requires stem with exactly one ___ " +
-      "and its answer is at most 3 words; " +
-      "lesson_error_fix requires statement with the sentence to correct; lesson_transform requires statement with the sentence to transform; " +
-      "lesson_short_answer requires prompt with the actual question (stem is accepted as a legacy alternative); lesson_open_answer requires prompt. " +
-      "Exercise text values and option/item text are at most 120 characters; canonical answers and accepted variants follow the limit from the subject field rules (120 unless they state otherwise). " +
-      "Return at most three non-empty examples of at most 120 characters for the requested objective. " +
-      "No commentary, no markdown — JSON only.",
+    "Field meaning: instructionPl is the child-facing instruction in the prompt language; hint is a short child-facing support clue " +
+      "in the answer language; acceptedAnswers lists other acceptable formulations of the answer (a shorter wording without optional " +
+      "words counts; the same words with other spelling of contractions or other capitalization do not)." +
+      (twoLanguages
+        ? " Language discipline: exercise stimuli normally use the answer language, except where field rules for this subject " +
+          "define a source stimulus in the prompt language; answer and acceptedAnswers always use the answer language. " +
+          "Never copy prompt-language words from the parent material into answer-language fields."
+        : ""),
   );
+  parts.push(renderRuleBook(input.ruleBook));
   return parts.join("\n");
 }
 
@@ -447,38 +364,6 @@ function fencedUserMaterial(lead: string, input: { material: string; instruction
   return lines.join("\n");
 }
 
-/**
- * `examples` z modelu: strict schema zwraca tablicę par {objectiveId,
- * examples}; dla odporności na providery ignorujące schema akceptujemy też
- * record. Scalanie: pierwsza para per objectiveId wygrywa.
- */
-function lessonExamplesToRecord(raw: unknown): Record<string, string[]> {
-  const result: Record<string, string[]> = {};
-  if (Array.isArray(raw)) {
-    for (const entry of raw) {
-      if (entry === null || typeof entry !== "object") {
-        continue;
-      }
-      const { objectiveId, examples } = entry as { objectiveId?: unknown; examples?: unknown };
-      if (typeof objectiveId !== "string" || !Array.isArray(examples)) {
-        continue;
-      }
-      if (!(objectiveId in result)) {
-        result[objectiveId] = examples.filter((e): e is string => typeof e === "string");
-      }
-    }
-    return result;
-  }
-  if (raw !== null && typeof raw === "object") {
-    for (const [objectiveId, examples] of Object.entries(raw as Record<string, unknown>)) {
-      if (Array.isArray(examples)) {
-        result[objectiveId] = examples.filter((e): e is string => typeof e === "string");
-      }
-    }
-  }
-  return result;
-}
-
 /** Schema etapu zagadnień tematu dynamicznego (przedmioty z materiału rodzica). */
 function lessonObjectivesJsonSchema(voiceTones: boolean): Record<string, unknown> {
   return {
@@ -491,13 +376,11 @@ function lessonObjectivesJsonSchema(voiceTones: boolean): Record<string, unknown
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["slug", "titlePl", "descriptionEn", "kind", "cards"],
+          required: ["slug", "titlePl", "descriptionEn", "cards"],
           properties: {
             slug: { type: "string" },
             titlePl: { type: "string" },
             descriptionEn: { type: "string" },
-            // Strict wymaga pola; null = przedmiot bez rodzajów zagadnień.
-            kind: { type: ["string", "null"], enum: ["words", "frame", null] },
             cards: {
               type: "array",
               items: {
@@ -519,18 +402,15 @@ function lessonObjectivesJsonSchema(voiceTones: boolean): Record<string, unknown
 }
 
 function lessonObjectivesSystemPrompt(input: LessonObjectivesInput): string {
-  const rules = input.objectivesRules?.trim();
   return (
     `${input.generationRole} ` +
     `Subject: ${input.subjectTitle}. Topic: ${input.topicTitle}. ` +
     "Split the parent material into 2-8 learnable objectives (one checkable knowledge unit each), in teaching order. " +
     "For every objective return: slug (ASCII lowercase with underscores, unique), titlePl (short Polish title), " +
     "descriptionEn (one English sentence describing exactly what the child must know, based only on the material), " +
-    "kind (an objective kind such as words or frame, only when the subject rules for objectives ask for it; otherwise null), " +
     "cards (2-4 Polish explanation cards {title, body} in simple language for a child; body at most 600 characters; " +
     "you may simplify and add a non-factual analogy, but NEVER add facts, dates or definitions that are not in the material). " +
     (input.voiceTones === true ? `Each card also has ${VOICE_TONE_RULE} ` : "") +
-    (rules === undefined || rules === "" ? "" : `Subject rules for objectives: ${rules} `) +
     "Return strict JSON only."
   );
 }
@@ -599,10 +479,12 @@ function lessonStorySystemPrompt(input: LessonStoryInput): string {
 }
 
 /**
- * Adapter LLM: zestawy słówek w trybie `json_object`, pula lekcji w trybie
- * `json_schema` strict (structured outputs) — walidacja semantyczna wyniku
- * AI pozostaje w domenie (`pool-validation.ts`). Wybór modelu czeka na
- * próbę techniczną z zadania 0 — bez kluczy adapter pozostaje niezweryfikowany.
+ * Adapter LLM: zestawy słówek w trybie `json_object`, zagadnienia i historyjka
+ * lekcji w trybie `json_schema` strict (structured outputs) — walidacja
+ * semantyczna wyniku AI pozostaje w domenie. Pulę ćwiczeń generuje agent puli
+ * (`lesson-pool-agent.ts`) z promptem `lessonSystemPrompt`/`lessonUserMaterial`.
+ * Wybór modelu czeka na próbę techniczną z zadania 0 — bez kluczy adapter
+ * pozostaje niezweryfikowany.
  */
 export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider {
   const model = options.model ?? DEFAULT_MODEL;
@@ -707,90 +589,6 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
         accept: isPlainObject,
       });
       return { story };
-    },
-    async generateLessonPool(input: LessonPoolInput, signal?: AbortSignal) {
-      // Local schema/prompt errors are programming/input errors, not network
-      // failures. Keep them outside the transport catch so they are not retried.
-      const schema = lessonPoolJsonSchema(input);
-      const system = lessonSystemPrompt(input);
-      const user = lessonUserMaterial(input);
-      const base = usageBase("lesson_generation", "lesson_pool");
-      // ciało też przed `try`: błąd jego budowy nie jest wywołaniem dostawcy (bez zapisu `failed`)
-      const body = JSON.stringify(withChatRequestExtras(options.requestExtras, {
-        model,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "lesson_pool",
-            strict: true,
-            schema,
-          },
-        },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }));
-      let recorded = false;
-      try {
-        const timeoutSignal = AbortSignal.timeout(lessonRequestTimeoutMs);
-        const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-        const response = await fetch(`${baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${options.apiKey}`,
-            "content-type": "application/json",
-          },
-          body,
-          signal: requestSignal,
-        });
-        if (!response.ok) {
-          recorded = true;
-          recordHttpError(options.usage, base, response.status);
-          throw await lessonHttpError(response);
-        }
-        let payload: unknown;
-        try {
-          payload = await response.json();
-        } catch {
-          recorded = true;
-          recordUnreadable(options.usage, base, response.status);
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        // płatna odpowiedź jest zapisana zanim treść zostanie zwalidowana
-        recorded = true;
-        recordResponse(options.usage, base, response.status, payload);
-        if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        const choices = (payload as { choices?: unknown }).choices;
-        if (!Array.isArray(choices) || choices.length === 0 || choices[0] === null || typeof choices[0] !== "object") {
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        const choice = choices[0] as { finish_reason?: string | null; message?: { content?: string | null; refusal?: string | null } };
-        if (choice?.message?.refusal) throw new GenerationProviderError("refusal", { status: response.status });
-        if (choice?.finish_reason === "content_filter") throw new GenerationProviderError("refusal", { status: response.status });
-        if (choice?.finish_reason === "length") throw new GenerationProviderError("incomplete", { status: response.status });
-        const content = choice?.message?.content;
-        if (typeof content !== "string" || content.trim() === "") throw new GenerationProviderError("output", { status: response.status });
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(content);
-        } catch {
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray((parsed as { exercises?: unknown }).exercises)) {
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        const result = parsed as { exercises: unknown[]; examples?: unknown };
-        return {
-          exercises: materializeGeneratedAssignments(materializeGeneratedKeywords(materializeGeneratedCalculations(result.exercises))),
-          examples: lessonExamplesToRecord(result.examples),
-        };
-      } catch (error) {
-        if (!recorded) recordTransportFailure(options.usage, base);
-        throw asLessonTransportError(error);
-      }
     },
   };
 }

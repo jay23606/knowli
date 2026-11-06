@@ -71,3 +71,16 @@ describe("listenChoiceSibilantErrors — końcówka -s przed sybilantem za luką
     expect(sibilantErrorsOf("He likes snakes.", ["likes", "like"])).toEqual([]);
   });
 });
+
+describe("listenChoiceSibilantErrors — zgłoszenie reguły", () => {
+  it("niesie id reguły, pole stem, pl bez zmian i opcje z wyrazem za luką w found", () => {
+    expect(listenChoiceSibilantErrors(listen("She ___ snakes.", ["like", "likes"]))).toEqual([
+      {
+        rule: "english.listen_sibilant_merge",
+        field: "stem",
+        pl: "stem: opcje „like” i „likes” różnią się końcówką -s/-es, która w nagraniu zlewa się z początkiem wyrazu „snakes” (głoska s, z albo sz) — różnica niesłyszalna, zmień wyraz za luką",
+        found: 'options "like" and "likes" differ only by the ending -s/-es, which merges into the following word "snakes" (s, z or sh sound) in speech',
+      },
+    ]);
+  });
+});

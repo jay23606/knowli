@@ -9,6 +9,7 @@ import type {
 } from "../../types";
 import { chapterExposureText } from "./exposure";
 import { frameKey, mentions, parseMaterialLexicon, plainText } from "./material-lexicon";
+import { chapterIssue } from "./rules";
 
 /**
  * Polityka agenta puli dla przedmiotu `english_chapter` (design etapu 1 §4.2):
@@ -35,6 +36,18 @@ const BLIND_SOLVE_TYPES: readonly LessonExerciseType[] = [
 /** Typy, których warianty odpowiedzi sprawdza niezależny model. */
 const VARIANT_CHECK_TYPES: readonly LessonExerciseType[] = ["lesson_open_answer", "lesson_gap"];
 
+/** Dopisek do ślepego rozwiązania (spec katalogu reguł §3): polskie zdanie źródłowe wskazuje jedno sformułowanie. */
+const BLIND_SOLVE_NOTE =
+  "The Polish source sentence must point to one English wording (pronoun, tense, word order); " +
+  "put common equivalent word orders into acceptedAnswers right away.";
+
+/** Jednoznaczność luk z bankiem (sprawdza ją ślepe rozwiązanie pozycja po pozycji). */
+const CLOZE_UNAMBIGUOUS_NOTE =
+  "In lesson_cloze exactly one bank word fits each gap: never two gaps whose words could be swapped.";
+
+/** Dopisek do duplikatu wariantu: skrócona i pełna forma to ten sam wariant po normalizacji. */
+const CONTRACTIONS_NOTE = "Contractions count as the same: doesn't = does not, I'm = I am.";
+
 /** Wymagane typy per rodzaj zagadnienia: przeciw szablonowaniu i dla słuchania. */
 const REQUIRED_TYPES: Readonly<Record<DynamicObjectiveKind, readonly (readonly LessonExerciseType[])[]>> = {
   words: [["lesson_match"], ["lesson_listen_choice"], ["lesson_cloze", "lesson_group"]],
@@ -46,17 +59,17 @@ const NO_SOLUTION_TYPES: ReadonlySet<LessonExerciseType> = new Set(["lesson_card
 /** Typy, których rozwiązanie nie jest jednym zdaniem ramy: bramka ramy je pomija. */
 const FRAME_GATE_SKIPPED: ReadonlySet<LessonExerciseType> = new Set(["lesson_listen_choice", "lesson_match", "lesson_group"]);
 
-function cardsText(objective: AgentObjective): string {
+function cardsText(objective: Pick<AgentObjective, "cards">): string {
   return objective.cards.map((card) => card.body).join("\n");
 }
 
-/** Słowa materiału, które występują na kartach tego zagadnienia. */
-function objectiveCardWords(objective: AgentObjective, material: string): string[] {
+/** Słowa materiału, które występują na kartach tego zagadnienia (także generator fake'a agenta). */
+export function objectiveCardWords(objective: Pick<AgentObjective, "cards">, material: string): string[] {
   return parseMaterialLexicon(material).words.filter((word) => objective.cards.some((card) => mentions(card.body, word)));
 }
 
-/** Ramy materiału, których stała część występuje na kartach tego zagadnienia. */
-function objectiveFrames(objective: AgentObjective, material: string): string[] {
+/** Ramy materiału, których stała część występuje na kartach tego zagadnienia (także generator fake'a agenta). */
+export function objectiveFrames(objective: Pick<AgentObjective, "cards">, material: string): string[] {
   const cards = plainText(cardsText(objective));
   return parseMaterialLexicon(material).frames.filter((frame) => {
     const key = frameKey(frame);
@@ -112,10 +125,16 @@ function cardWordFindings(draft: LessonExerciseDraft, objective: AgentObjective,
   // Pary i grupy wymagają dwóch słów, ale zagadnienie z jednym słowem kart nie może wymagać więcej niż ma.
   if (hits >= (isMatchOrGroup(draft) ? Math.min(2, cardWords.length) : 1)) return [];
   const part = draft.exerciseType === "lesson_cloze" ? "gap words" : isMatchOrGroup(draft) ? "items" : "answer";
+  const field = draft.exerciseType === "lesson_cloze" ? "gapAnswers" : draft.exerciseType === "lesson_match" ? "pairs" : draft.exerciseType === "lesson_group" ? "groupItems" : "answer";
   return [
     {
       code: "card_word_missing",
-      reason: `the checked ${part} must contain a word of THIS objective's cards (${cardWords.join(", ")}); other words may only fill the sentence.`,
+      // Dzisiejszy tekst dla modelu jest w `found` (model dostaje `found ?? pl`).
+      issue: chapterIssue("chapter.card_word_missing", {
+        field,
+        pl: `${field}: sprawdzane słowo musi pochodzić z kart tego zagadnienia`,
+        found: `the checked ${part} must contain a word of THIS objective's cards (${cardWords.join(", ")}); other words may only fill the sentence.`,
+      }),
     },
   ];
 }
@@ -142,7 +161,11 @@ function frameFindings(draft: LessonExerciseDraft, objective: AgentObjective, ma
   return [
     {
       code: "frame_missing",
-      reason: `the solved sentence must contain the fixed part of a sentence frame of THIS objective's cards (${keys.map((key) => `"${key}"`).join(", ")}); do not use another objective's frame.`,
+      // Dzisiejszy tekst dla modelu jest w `found` (model dostaje `found ?? pl`).
+      issue: chapterIssue("chapter.frame_missing", {
+        pl: "answer: rozwiązanie musi zawierać stałą część ramy z kart tego zagadnienia",
+        found: `the solved sentence must contain the fixed part of a sentence frame of THIS objective's cards (${keys.map((key) => `"${key}"`).join(", ")}); do not use another objective's frame.`,
+      }),
     },
   ];
 }
@@ -153,9 +176,11 @@ export const chapterAgentPolicy: SubjectAgentPolicy = {
   checkerNeedsMaterial: false,
   independentReserve: 1,
   slack: 2,
-  rejectionTexts: {
-    leakVictim: "An independent answer must be a NEW sentence nobody showed before — change the room, object or place.",
-    leakSource: "Use a different sentence.",
+  ruleNotes: {
+    "lesson.leak": "An independent answer must be a NEW sentence nobody showed before — change the room, object or place.",
+    "lesson.leak_source": "Use a different sentence.",
+    "check.blind_solve": `${BLIND_SOLVE_NOTE} ${CLOZE_UNAMBIGUOUS_NOTE}`,
+    "variants.duplicate": CONTRACTIONS_NOTE,
   },
   requiredTypes(objective: AgentObjective) {
     return objective.kind === undefined ? [] : REQUIRED_TYPES[objective.kind];

@@ -185,7 +185,7 @@ describe("lekcja — migawka tematów", () => {
     expect(await countRows("generation_runs")).toBe(0);
   });
 
-  it("wykonanie i dogenerowanie niosą migawkę do LLM, a żądanie nie zawiera danych dziecka", async () => {
+  it("wykonanie i dogenerowanie niosą migawkę do agenta, a wejście podagenta nie zawiera danych dziecka", async () => {
     const { fakes, services } = await world();
     const child = await createChild(services, { displayName: "Zuzanna Testowa-Fikcyjna", avatarKey: "fox", birthYear: 2017 });
     const themes = ["piłka nożna", "dinozaury"];
@@ -195,15 +195,15 @@ describe("lekcja — migawka tematów", () => {
     await executeLessonGeneration(services, runId);
     expect((await readGeneration(services, runId)).state).toBe("succeeded");
 
-    expect(fakes.llm.lessonRequests.length).toBeGreaterThan(0);
-    for (const request of fakes.llm.lessonRequests) {
-      expect(request.interests).toEqual(themes);
-      expect(request.promptProfile.interestsRule).toEqual(expect.any(String));
+    expect(fakes.agent.calls.length).toBeGreaterThan(0);
+    for (const call of fakes.agent.calls) {
+      expect(call.input.pool.interests).toEqual(themes);
+      expect(call.input.pool.promptProfile.interestsRule).toEqual(expect.any(String));
     }
 
     // Profil znika, a dogenerowanie dalej korzysta z migawki lekcji.
     await deleteChild(services, child.id);
-    const before = fakes.llm.lessonRequests.length;
+    const before = fakes.agent.calls.length;
     const draft = (await readLessonDeck(services, deckId)).draft!;
     const topUp = await regenerateObjective(services, {
       deckId, objectiveId: OBJECTIVE_ID, count: 2, expectedEditNumber: draft.editNumber, clientRequestId: randomUUID(),
@@ -211,10 +211,10 @@ describe("lekcja — migawka tematów", () => {
     const topUpStored = await snapshots(deckId, topUp.runId);
     expect(topUpStored.input).toEqual({ has: true, value: themes });
     await executeLessonGeneration(services, topUp.runId);
-    expect(fakes.llm.lessonRequests.length).toBeGreaterThan(before);
-    for (const request of fakes.llm.lessonRequests.slice(before)) expect(request.interests).toEqual(themes);
+    expect(fakes.agent.calls.length).toBeGreaterThan(before);
+    for (const call of fakes.agent.calls.slice(before)) expect(call.input.pool.interests).toEqual(themes);
 
-    const serialized = JSON.stringify(fakes.llm.lessonRequests);
+    const serialized = JSON.stringify(fakes.agent.calls.map((call) => call.input));
     expect(serialized).not.toContain("Zuzanna");
     expect(serialized).not.toContain("Testowa-Fikcyjna");
     expect(serialized).not.toContain("2017");
@@ -254,13 +254,13 @@ describe("lekcja — API rodzica (szkic i patch tematów)", () => {
     );
     expect(stored.rows[0]).toEqual({ has: false });
 
-    const before = fakes.llm.lessonRequests.length;
+    const before = fakes.agent.calls.length;
     const topUp = await regenerateObjective(services, {
       deckId, objectiveId: OBJECTIVE_ID, count: 2, expectedEditNumber: cleared.editNumber, clientRequestId: randomUUID(),
     });
     await executeLessonGeneration(services, topUp.runId);
-    expect(fakes.llm.lessonRequests.length).toBeGreaterThan(before);
-    for (const request of fakes.llm.lessonRequests.slice(before)) expect(request).not.toHaveProperty("interests");
+    expect(fakes.agent.calls.length).toBeGreaterThan(before);
+    for (const call of fakes.agent.calls.slice(before)) expect(call.input.pool).not.toHaveProperty("interests");
   });
 
   it("patch niepustej listy dla przedmiotu bez reguły tematów kończy się validation i nic nie zapisuje", async () => {

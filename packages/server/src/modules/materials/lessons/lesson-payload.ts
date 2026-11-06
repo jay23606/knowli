@@ -2,7 +2,7 @@ import type { LessonExerciseDraft, SubjectModule } from "../../../domain/lessons
 
 /**
  * Payload `lesson_exercise` (payload_version 2) z locale przedmiotu. Moduł-liść bez zależności
- * od generowania, przeglądu i API (zapis, odciski kontroli jakości, nadzór).
+ * od generowania i API (zapis, nadzór).
  */
 export function buildLessonPayload(
   ex: LessonExerciseDraft,

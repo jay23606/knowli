@@ -3,6 +3,7 @@ import { openNewMaterial } from "./helpers/parent-new-material";
 import { randomUUID } from "node:crypto";
 import { DeckDtoSchema, messages } from "@learning/contracts";
 import { loginParent } from "./helpers/parent-session";
+import { holdFakeGeneration, releaseFakeGeneration } from "./helpers/fake-hold";
 
 /**
  * Pełny obieg rodzica z zadania 4: generuj → preview/edit → publikuj → przypisz.
@@ -93,6 +94,9 @@ async function createReadyManualDraft(page: Page, title: string): Promise<string
   await expect(page.getByTestId("item-card-1")).toBeVisible();
   return deckId;
 }
+
+// Bramka fake'ów nie może zostać zamknięta po porażce w środku testu.
+test.afterEach(releaseFakeGeneration);
 
 test("zakładka Dzieci: karty profili z avatarem, nauką jako główną akcją i kartą dodawania", async ({ page }) => {
   const name = `Karta-${randomUUID().slice(0, 8)}`;
@@ -337,6 +341,9 @@ test("pełny obieg rodzica: generuj, popraw, publikuj, przypisz", async ({ page,
   const generated = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith("/api/v1/parent/decks/generate"),
   );
+  // Fake'i nie mają opóźnienia: bramka trzyma generowanie, dopóki test nie
+  // sprawdzi banera i odświeżenia w trakcie.
+  await holdFakeGeneration();
   await page.getByTestId("generate-submit").click();
   const generationResponse = await generated;
   expect(generationResponse.status()).toBe(202);
@@ -349,8 +356,8 @@ test("pełny obieg rodzica: generuj, popraw, publikuj, przypisz", async ({ page,
   // Edytor ma własny adres, więc odświeżenie zostawia go otwartym.
   await page.reload();
   await expect(page.getByTestId("editor-title")).toHaveValue(DECK_TITLE);
-  // Worker may finish while the list is reloading; the banner is asserted
-  // immediately after creation above, and either state should open the editor.
+  await expect(page.getByTestId("generation-banner")).toBeVisible();
+  await releaseFakeGeneration();
   await expect(page.getByTestId("item-card-0")).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId("item-card-6")).toBeVisible();
   await expect(page.getByTestId("item-target-0")).toHaveValue("monday");
@@ -363,6 +370,7 @@ test("pełny obieg rodzica: generuj, popraw, publikuj, przypisz", async ({ page,
   // Popraw słowo i wariant; kosztowna regeneracja dopiero po jawnym zapisie.
   await page.getByTestId("item-target-3").fill("thursday");
   await page.getByTestId("item-accepted-3").fill("Thursday");
+  await holdFakeGeneration();
   await page.getByTestId("save-items").click();
   await expect(page.getByTestId("item-target-3")).toHaveValue("thursday");
   await expect(page.getByTestId("item-audio-state-3")).toContainText("generowanie");
@@ -371,6 +379,7 @@ test("pełny obieg rodzica: generuj, popraw, publikuj, przypisz", async ({ page,
   // wie, że media się przygotowują i wystarczy opublikować ponownie (#106).
   await page.getByTestId("publish-deck").click();
   await expect(page.getByTestId("api-error")).toContainText(messages.decks.publishMediaPending);
+  await releaseFakeGeneration();
 
   // Nowe audio gotowe → odtworzenie nowego zasobu.
   await expect(page.getByTestId("item-audio-state-3")).toContainText("gotowe", { timeout: 60_000 });
@@ -425,6 +434,7 @@ test("pełny obieg rodzica: generuj, popraw, publikuj, przypisz", async ({ page,
   const saved = page.waitForResponse(
     (response) => response.request().method() === "PATCH" && response.url().includes("/drafts/"),
   );
+  await holdFakeGeneration();
   await page.getByTestId("save-items").click();
   const savedResponse = await saved;
   expect(savedResponse.status()).toBe(200);
@@ -444,8 +454,9 @@ test("pełny obieg rodzica: generuj, popraw, publikuj, przypisz", async ({ page,
   );
   expect(mondayImage?.state).toBe("pending");
 
-  // publikacja dopiero, gdy nowy obraz dojrzeje w workerze (regulowany fake delay)
+  // publikacja dopiero, gdy nowy obraz dojrzeje w workerze (bramka fake'ów)
   await expect(page.getByTestId("item-image-state-0")).toContainText("generowanie");
+  await releaseFakeGeneration();
   await expect(page.getByTestId("item-image-state-0")).toContainText("gotowy", { timeout: 60_000 });
   await page.getByTestId("publish-deck").click();
   await expect(page.getByTestId("publish-status")).toContainText(messages.decks.published);
@@ -480,6 +491,7 @@ test("ręczna edycja zestawu: dodaj element, usuń element, zmień tytuł", asyn
   const added = page.waitForResponse(
     (response) => response.request().method() === "PATCH" && response.url().includes("/drafts/"),
   );
+  await holdFakeGeneration();
   await page.getByTestId("save-items").click();
   const addedResponse = await added;
   expect(addedResponse.status()).toBe(200);
@@ -487,6 +499,7 @@ test("ręczna edycja zestawu: dodaj element, usuń element, zmień tytuł", asyn
   expect(addedDraft.items).toHaveLength(3);
   expect(addedDraft.items[2]!.source).toBe("gruszka");
   await expect(page.getByTestId("item-audio-state-2")).toContainText("generowanie");
+  await releaseFakeGeneration();
   await expect(page.getByTestId("item-audio-state-2")).toContainText("gotowe", { timeout: 60_000 });
 
   // Usunięcie karty jest częścią formularza: znika po zapisie jako element wersji.

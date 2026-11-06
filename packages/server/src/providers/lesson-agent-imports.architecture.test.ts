@@ -18,8 +18,8 @@ const repoRoot = join(serverSrc, "..", "..", "..");
 
 const ADAPTER = "providers/openai/lesson-pool-agent.ts";
 const COMPOSITION = "providers/lesson-agent-env.ts";
-/** Jedyni importerzy adaptera w `packages/server/src` (sondy w `tests/probes` są poza pakietem). */
-const ADAPTER_IMPORTERS = new Set([COMPOSITION, "providers/openai/lesson-pool-agent.test.ts"]);
+/** Jedyni importerzy adaptera w `packages/server/src` (sondy w `tests/probes` są poza pakietem); testy: adaptera i promptu. */
+const ADAPTER_IMPORTERS = new Set([COMPOSITION, "providers/openai/lesson-pool-agent.test.ts", "providers/openai/lesson-pool-prompt.test.ts"]);
 const WEB_ROOTS = ["config.ts", "providers/generation-env.ts", "index.ts"];
 const SUBPATH = "@learning/server/lesson-agent";
 const SOURCE_FILE = /\.(?:[cm]?[jt]sx?)$/u;

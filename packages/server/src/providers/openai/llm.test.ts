@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createOpenAiLlmProvider } from "./llm";
-import type { LessonPoolInput, LessonStoryInput } from "../../ports/ai";
+import { MAX_LESSON_TEXT_LENGTH } from "@learning/contracts";
+import { createOpenAiLlmProvider, EXAMPLES_NOTE, lessonSystemPrompt, lessonUserMaterial, renderRuleBook } from "./llm";
+import { lessonPoolJsonSchema } from "./lesson-pool-schema";
+import type { LessonPoolInput, LessonRuleBookInput, LessonStoryInput } from "../../ports/ai";
 import type { LlmGenerateDeckInput } from "../../ports/ai";
 import { englishGrammarSubject } from "../../domain/lessons/subjects/english-grammar/module";
 import { schoolSubject } from "../../domain/lessons/subjects/school/module";
@@ -9,11 +11,15 @@ import type { UsageRecorder } from "../../ports/usage";
 import { createTestRecorder, createThrowingRecorder } from "../usage/test-recorder";
 
 /**
- * Kontrakt składania promptu generacji puli lekcji: adapter buduje prompt
- * WYŁĄCZNIE z danych wejścia (opis przedmiotu i celów, dozwolone typy), a
- * materiał rodzica trafia osobną wiadomością `user` oznaczoną jako materiał.
- * Adapter nie zna gramatyki — żaden fakt o Present Simple nie jest zaszyty.
+ * Kontrakt składania promptu generacji puli lekcji (`lessonSystemPrompt`, z którego składa prompt
+ * podagent agenta puli): prompt powstaje WYŁĄCZNIE z danych wejścia (opis przedmiotu i celów,
+ * dozwolone typy), a materiał rodzica trafia osobną wiadomością `user` (`lessonUserMaterial`)
+ * oznaczoną jako materiał. Adapter nie zna gramatyki — żaden fakt o Present Simple nie jest zaszyty.
+ * Żądania HTTP adaptera (zagadnienia, historyjka, zestaw słówek) sprawdzają testy metod.
  */
+
+/** Księga reguł bez reguł: testy składania promptu sprawdzają resztę promptu. */
+const EMPTY_RULE_BOOK: LessonRuleBookInput = { general: [], types: [], lesson: [], checks: [] };
 
 function okResponse(body: unknown): Response {
   return new Response(
@@ -26,6 +32,7 @@ const INPUT: LessonPoolInput = {
   subjectId: "english_grammar",
   subjectTitle: "Angielski — gramatyka",
   answerLocale: "en-GB",
+  answerMaxLength: MAX_LESSON_TEXT_LENGTH,
   promptLocale: "pl-PL",
   promptProfile: {
     generationRole: "You are an author of English grammar exercises.",
@@ -48,7 +55,16 @@ const INPUT: LessonPoolInput = {
   countPerObjective: 6,
   stageCounts: { guided: 2, productive: 3, independent: 1 },
   graderAvailable: true,
+  ruleBook: { ...EMPTY_RULE_BOOK, general: [{ id: "gap.marker_count", text: "GAP-MARKER-RULE." }] },
 };
+
+/** Wiadomości generatora puli: prompt systemowy i wiadomość użytkownika z materiałem. */
+function poolMessages(input: LessonPoolInput): { system: string; user: string } {
+  return { system: lessonSystemPrompt(input), user: lessonUserMaterial(input) };
+}
+
+/** Wejście etapu zagadnień do testów koperty żądań lekcji. */
+const OBJECTIVES_REQUEST = { subjectTitle: "Przyroda", topicTitle: "Las", material: "Las to ekosystem.", generationRole: "You write cards." };
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -56,13 +72,13 @@ afterEach(() => {
 });
 
 describe("createOpenAiLlmProvider — opcje pośrednika z konfiguracji", () => {
-  it("dokłada rozumowanie i routing dostawcy do puli lekcji, bez nadpisywania modelu i schematu", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
+  it("dokłada rozumowanie i routing dostawcy do żądań lekcji, bez nadpisywania modelu i schematu", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ objectives: [] }));
     vi.stubGlobal("fetch", fetchMock);
     await createOpenAiLlmProvider({
       apiKey: "k", model: "deepseek/deepseek-v4.1-flash-1017",
       requestExtras: { reasoning: { enabled: false }, provider: { quantizations: ["fp8"], require_parameters: true }, response_format: { type: "text" } },
-    }).generateLessonPool(INPUT);
+    }).generateLessonObjectives(OBJECTIVES_REQUEST);
     const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as Record<string, any>;
     expect(body.model).toBe("deepseek/deepseek-v4.1-flash-1017");
     expect(body.reasoning).toEqual({ enabled: false });
@@ -71,72 +87,21 @@ describe("createOpenAiLlmProvider — opcje pośrednika z konfiguracji", () => {
   });
 
   it("bez konfiguracji nie wysyła pól pośrednika (zwykłe API OpenAI)", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ objectives: [] }));
     vi.stubGlobal("fetch", fetchMock);
-    await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(INPUT);
+    await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives(OBJECTIVES_REQUEST);
     const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as Record<string, unknown>;
     expect(body).not.toHaveProperty("reasoning");
     expect(body).not.toHaveProperty("provider");
   });
 });
 
-describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", () => {
-  it("keeps a school top-up of two exercises within its batch budget, with minima scoped to the complete pool", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool({
-      ...INPUT,
-      subjectId: schoolSubject.id,
-      subjectTitle: schoolSubject.titlePl,
-      answerLocale: schoolSubject.answerLocale,
-      promptLocale: schoolSubject.promptLocale,
-      promptProfile: schoolSubject.prompts,
-      exerciseTypes: schoolSubject.exerciseTypes,
-      transforms: [],
-      objectives: [{ id: "school.scale", descriptionEn: "Map scale", exerciseTypes: schoolSubject.exerciseTypes, errorCategories: [] }],
-      material: "Skala mapy pozwala przeliczyć odległość na mapie na odległość w terenie.",
-      countPerObjective: 2,
-      stageCounts: { guided: 1, productive: 0, independent: 1 },
-      deduplication: "exercise",
-      existingExercises: [{ objectiveId: "school.scale", exerciseType: "lesson_calculation", stimulus: "existing-scale-variant" }],
-    });
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
-    const system = body.messages.find((message) => message.role === "system")!.content;
-    expect(system).toContain("Return at most 2 exercises per objective in this batch");
-    expect(system).toContain("Publication minima apply to the complete pool, including existing exercises");
-    expect(system).toContain("never exceed this batch's requested count to satisfy them");
-    expect(system).toContain("Minima publikacji dotyczą całej puli, łącznie z istniejącymi ćwiczeniami");
-    expect(system).toContain("nie przekraczaj zamówionej liczby ćwiczeń w tej partii");
-    expect(system).toContain("existing-scale-variant");
-    expect(system).not.toContain("Keep at least 3 guided, 2 productive and 2 DISTINCT open-answer questions per school objective");
-  });
-
-  it.each([
-    [{ guided: 4, productive: 3, independent: 3 }, "the first 2 MUST be lesson_open_answer", "At most 1 independent slot(s) may be lesson_calculation"],
-    [{ guided: 4, productive: 4, independent: 2 }, "the first 2 MUST be lesson_open_answer", "No independent slot is left for lesson_calculation in this batch"],
-  ])("reserves independent slots for distinct open answers before calculations (%j)", async (stageCounts, open, calculations) => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool({
-      ...INPUT,
-      subjectId: schoolSubject.id, subjectTitle: schoolSubject.titlePl,
-      answerLocale: schoolSubject.answerLocale, promptLocale: schoolSubject.promptLocale,
-      promptProfile: schoolSubject.prompts, exerciseTypes: schoolSubject.exerciseTypes, transforms: [],
-      objectives: [{ id: "school.scale", descriptionEn: "Map scale", exerciseTypes: schoolSubject.exerciseTypes, errorCategories: [] }],
-      material: "Skala mapy pozwala przeliczyć odległość na mapie na odległość w terenie.",
-      countPerObjective: 10, stageCounts, minDistinctOpenAnswers: 2, deduplication: "exercise",
-    });
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
-    const system = body.messages.find((message) => message.role === "system")!.content;
-    expect(system).toContain(open);
-    expect(system).toContain(calculations);
-  });
-
+describe("createOpenAiLlmProvider.generateLessonObjectives — błędy wspólnej koperty żądań lekcji", () => {
   it("nie ponawia HTTP 400, nie ujawnia body i klasyfikuje konfigurację", async () => {
     const fetchMock = vi.fn(async () => new Response("secret provider body", { status: 400 }));
     vi.stubGlobal("fetch", fetchMock);
     const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    await expect(provider.generateLessonPool(INPUT)).rejects.toMatchObject({
+    await expect(provider.generateLessonObjectives(OBJECTIVES_REQUEST)).rejects.toMatchObject({
       kind: "configuration",
       status: 400,
     } satisfies Partial<GenerationProviderError>);
@@ -146,7 +111,7 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
   it("odczytuje Retry-After odpowiedzi 429", async () => {
     const fetchMock = vi.fn(async () => new Response("rate limited", { status: 429, headers: { "retry-after": "60" } }));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(INPUT)).rejects.toMatchObject({
+    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives(OBJECTIVES_REQUEST)).rejects.toMatchObject({
       kind: "rate_limit",
       status: 429,
       retryAfterMs: 60_000,
@@ -156,7 +121,7 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
   it("traktuje wyczerpany budżet 429 jako błąd konfiguracji bez treści body", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: { code: "insufficient_quota", message: "private billing detail" } }), { status: 429 }));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(INPUT)).rejects.toMatchObject({ kind: "configuration", status: 429 });
+    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives(OBJECTIVES_REQUEST)).rejects.toMatchObject({ kind: "configuration", status: 429 });
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
@@ -166,7 +131,7 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
       message: "Token quota per minute exceeded",
     } }), { status: 429, headers: { "retry-after": "60" } }));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(INPUT)).rejects.toMatchObject({
+    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives(OBJECTIVES_REQUEST)).rejects.toMatchObject({
       kind: "rate_limit",
       status: 429,
       retryAfterMs: 60_000,
@@ -179,12 +144,12 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
     [500, "transient"],
   ] as const)("klasyfikuje HTTP %i jako %s", async (status, kind) => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("provider details", { status })));
-    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(INPUT)).rejects.toMatchObject({ kind, status });
+    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives(OBJECTIVES_REQUEST)).rejects.toMatchObject({ kind, status });
   });
 
   it("klasyfikuje nieparsowalny wynik jako output", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: "not json" } }] }), { status: 200 })));
-    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(INPUT)).rejects.toMatchObject({ kind: "output" });
+    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives(OBJECTIVES_REQUEST)).rejects.toMatchObject({ kind: "output" });
   });
 
   it("ma timeout także przy bezpośrednim wywołaniu adaptera bez zewnętrznego sygnału", async () => {
@@ -193,45 +158,134 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
       init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
     }));
     vi.stubGlobal("fetch", fetchMock);
-    const result = createOpenAiLlmProvider({ apiKey: "k", lessonRequestTimeoutMs: 25 }).generateLessonPool(INPUT);
+    const result = createOpenAiLlmProvider({ apiKey: "k", lessonRequestTimeoutMs: 25 }).generateLessonObjectives(OBJECTIVES_REQUEST);
     const assertion = expect(result).rejects.toMatchObject({ kind: "timeout" });
     await vi.advanceTimersByTimeAsync(26);
     await assertion;
   });
 
   it("nie przyjmuje parsowalnego JSON po odmowie albo ucięciu modelu", async () => {
-    const refusalFetch = vi.fn(async () => new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { refusal: "no", content: '{"exercises":[]}' } }] }), { status: 200 }));
+    const refusalFetch = vi.fn(async () => new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { refusal: "no", content: '{"objectives":[]}' } }] }), { status: 200 }));
     vi.stubGlobal("fetch", refusalFetch);
-    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(INPUT)).rejects.toMatchObject({ kind: "refusal" });
-    const incompleteFetch = vi.fn(async () => new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: '{"exercises":[]}' } }] }), { status: 200 }));
+    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives(OBJECTIVES_REQUEST)).rejects.toMatchObject({ kind: "refusal" });
+    const incompleteFetch = vi.fn(async () => new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: '{"objectives":[]}' } }] }), { status: 200 }));
     vi.stubGlobal("fetch", incompleteFetch);
-    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(INPUT)).rejects.toMatchObject({ kind: "incomplete" });
+    await expect(createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives(OBJECTIVES_REQUEST)).rejects.toMatchObject({ kind: "incomplete" });
+  });
+});
+
+describe("renderRuleBook — księga reguł jako tekst promptu (spec katalogu reguł §3)", () => {
+  const BOOK: LessonRuleBookInput = {
+    general: [
+      { id: "field.empty", text: "GENERAL-EMPTY." },
+      { id: "shape.record", text: "SHAPE-RECORD.", brief: true },
+    ],
+    types: [
+      {
+        type: "lesson_choice",
+        summary: "CHOICE-SUMMARY.",
+        example: '{"exerciseType":"lesson_choice"}',
+        subjectRule: "CHOICE-SUBJECT.",
+        rules: [{ id: "options.count", text: "OPTIONS-COUNT." }, { id: "choice.stem_required", text: "STEM-REQUIRED.", brief: true }],
+      },
+      {
+        type: "lesson_gap",
+        summary: "GAP-SUMMARY.",
+        rules: [{ id: "gap.marker_count", text: "GAP-MARKER.", brief: true }, { id: "chapter.instruction_stimulus", text: "STIMULUS.", repeatOf: "lesson_choice" }],
+      },
+    ],
+    lesson: [{ id: "lesson.leak", text: "LESSON-LEAK." }],
+    checks: [{ id: "check.blind_solve", text: "CHECK-BLIND." }],
+  };
+
+  it("sekcje w stałej kolejności: nagłówek, zdanie o regułach brief, ogólne, zdanie o przykładach, bloki typów, lekcja, kontrole", () => {
+    expect(renderRuleBook(BOOK)).toBe([
+      "RULES — the tool checks every rule below; a rejection names the broken rule in [brackets].",
+      "Record shape and card fields: every exercise has the field types and limits of the tool schema and the fields its " +
+        "type card lists; the tool result names and describes a broken rule of this kind.",
+      "General: [field.empty] GENERAL-EMPTY.",
+      "Each Example shows only the record format: never copy its words or sentences; take the content from this " +
+        "lesson's material and objective.",
+      'lesson_choice — CHOICE-SUMMARY. Example: {"exerciseType":"lesson_choice"}',
+      "  CHOICE-SUBJECT.",
+      "  [options.count] OPTIONS-COUNT.",
+      "lesson_gap — GAP-SUMMARY.",
+      "  [chapter.instruction_stimulus] As in the lesson_choice block.",
+      "Lesson: [lesson.leak] LESSON-LEAK.",
+      "Checks by another model: [check.blind_solve] CHECK-BLIND.",
+    ].join("\n"));
   });
 
-  it("buduje prompt systemowy z opisu przedmiotu i celów oraz materiał w wiadomości user", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
+  it("zdanie o przykładach tylko przy bloku z przykładem", () => {
+    const withoutExamples = { ...BOOK, types: BOOK.types.map(({ example: _example, ...block }) => block) };
+    expect(renderRuleBook(withoutExamples)).not.toContain(EXAMPLES_NOTE);
+    expect(renderRuleBook(BOOK).split(EXAMPLES_NOTE)).toHaveLength(2);
+  });
 
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    await provider.generateLessonPool(INPUT);
+  it("reguły brief: bez id i opisu (opis w wyniku narzędzia), bez pustego wiersza bloku; powtórzenie bez opisu", () => {
+    const text = renderRuleBook(BOOK);
+    for (const hidden of ["SHAPE-RECORD.", "STEM-REQUIRED.", "GAP-MARKER.", "[shape.record]", "[choice.stem_required]", "[gap.marker_count]", "STIMULUS."]) {
+      expect(text).not.toContain(hidden);
+    }
+    expect(text).not.toMatch(/\n {2}\n|\n {2}$/);
+  });
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toContain("/chat/completions");
-    const body = JSON.parse(init!.body as string) as {
-      response_format: {
-        type: string;
-        json_schema: { name: string; strict: boolean; schema: Record<string, unknown> };
-      };
-      messages: Array<{ role: string; content: string }>;
-    };
-
-    // Structured outputs: strict json_schema (walidacja kształtu po stronie API).
-    expect(body.response_format.type).toBe("json_schema");
-    expect(body.response_format.json_schema).toEqual(
-      expect.objectContaining({ name: "lesson_pool", strict: true }),
+  it("pusta księga: sam nagłówek, bez pustych nagłówków sekcji", () => {
+    expect(renderRuleBook(EMPTY_RULE_BOOK)).toBe(
+      "RULES — the tool checks every rule below; a rejection names the broken rule in [brackets].",
     );
-    const schema = body.response_format.json_schema.schema as {
+  });
+
+  it("jest deterministyczny", () => {
+    expect(renderRuleBook(structuredClone(BOOK))).toBe(renderRuleBook(BOOK));
+  });
+});
+
+describe("lessonSystemPrompt i lessonUserMaterial — składanie promptu puli", () => {
+  const SCHOOL_INPUT: LessonPoolInput = {
+    ...INPUT,
+    subjectId: schoolSubject.id,
+    subjectTitle: schoolSubject.titlePl,
+    answerLocale: schoolSubject.answerLocale,
+    promptLocale: schoolSubject.promptLocale,
+    promptProfile: schoolSubject.prompts,
+    exerciseTypes: schoolSubject.exerciseTypes,
+    transforms: [],
+    objectives: [{ id: "school.scale", descriptionEn: "Map scale", exerciseTypes: schoolSubject.exerciseTypes, errorCategories: [] }],
+    material: "Skala mapy pozwala przeliczyć odległość na mapie na odległość w terenie.",
+    countPerObjective: 2,
+    stageCounts: { guided: 1, productive: 0, independent: 1 },
+    deduplication: "exercise",
+  };
+
+  it("bez zdań potoku: liczby partii, globalny limit i minima podaje wyłącznie Target podagenta", () => {
+    const { system } = poolMessages(SCHOOL_INPUT);
+    for (const removed of [
+      "exercises per objective in this batch",
+      "160",
+      "never exceed this batch",
+      "Return strict JSON",
+      "no markdown",
+      "Minima publikacji",
+      "nie przekraczaj zamówionej liczby ćwiczeń w tej partii",
+    ]) {
+      expect(system).not.toContain(removed);
+    }
+    expect(system).toContain("Stages of the exercise types (Target below gives the counts)");
+  });
+
+  it.each([
+    [{ guided: 4, productive: 3, independent: 3 }, "the first 2 MUST be lesson_open_answer", "At most 1 independent slot(s) may be lesson_calculation"],
+    [{ guided: 4, productive: 4, independent: 2 }, "the first 2 MUST be lesson_open_answer", "No independent slot is left for lesson_calculation: produce no calculations"],
+  ])("reserves independent slots for distinct open answers before calculations (%j)", (stageCounts, open, calculations) => {
+    const { system } = poolMessages({ ...SCHOOL_INPUT, countPerObjective: 10, stageCounts, minDistinctOpenAnswers: 2 });
+    expect(system).toContain(open);
+    expect(system).toContain(calculations);
+  });
+
+  it("buduje prompt systemowy z opisu przedmiotu, celów i księgi reguł oraz materiał w wiadomości user", () => {
+    // Schemat puli (gałąź `exercises` trafia do narzędzia `submit_exercises` agenta).
+    const schema = lessonPoolJsonSchema(INPUT) as {
       additionalProperties: boolean;
       properties: {
         exercises: { items: { additionalProperties: boolean; required: string[]; properties: { exerciseType: { enum: string[] }; objectiveId: { enum: string[] }; transformId: { enum: Array<string | null> } } } };
@@ -254,8 +308,7 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
     expect(schema.properties.examples.type).toBe("array");
     expect(schema.properties.examples.items.properties.objectiveId.enum).toEqual(["english_grammar.present_simple.third_person_s"]);
 
-    const system = body.messages.find((m) => m.role === "system")!.content;
-    const user = body.messages.find((m) => m.role === "user")!.content;
+    const { system, user } = poolMessages(INPUT);
 
     // lesson_card nie może pojawić się nigdzie w prompcie generacji puli.
     expect(system).not.toContain("lesson_card");
@@ -267,49 +320,28 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
     expect(system).toContain("Third person singular adds -s.");
     expect(system).toContain("lesson_choice");
     expect(system).toContain("to_question");
-    expect(system).toContain("lesson_transform requires statement");
-    expect(system).toContain("lesson_short_answer requires prompt");
-    expect(system).toContain("lesson_choice requires stem");
 
-    // Reguły semantyczne, których złamanie odrzuca ćwiczenie w validatePool.
-    expect(system).toContain("acceptedAnswers must NOT contain the canonical answer");
-    // Skrótowa forma tych samych słów to nie „inny wariant” (incydent prod
-    // 2026-10-26: przeczenia „to be” — „They're not…” przy „They aren't…”);
-    // ogólne sformułowanie bez przykładów przedmiotowych (zasada review C1),
-    // rozdzielone od klauzuli o skróconych sformułowaniach („shortened wording”).
-    expect(system).toContain("a copy of the same words with expanded or contracted spellings, or different capitalization, is not");
-    expect(system).toContain("2 to 4 options");
-    expect(system).toContain("correctOption must be the id of exactly one of the options");
+    // Reguły sprawdzane przez kod przychodzą wyłącznie z księgi reguł, na końcu promptu.
+    expect(system.endsWith(renderRuleBook(INPUT.ruleBook))).toBe(true);
+    expect(system).toContain("[gap.marker_count] GAP-MARKER-RULE.");
 
-    // Doprecyzowana semantyka pól (incydent deepseek 2026-10-13: polskie słowa
-    // z materiału w hint; warianty acceptedAnswers różniące się tylko wielkością
-    // liter). Każde zdanie odpowiada konkretnej regule pool-validation.
+    // Znaczenie pól i dyscyplina języka (wskazówki, których kod nie sprawdza).
+    expect(system).toContain("acceptedAnswers lists other acceptable formulations of the answer");
     expect(system).toContain("Field rules for this subject:");
     expect(system).toContain("For lesson_gap, hint must be the base form of the verb.");
     expect(system).toContain("Language discipline:");
     expect(system).toContain("Never copy prompt-language words from the parent material into answer-language fields");
-    expect(system).toContain("copy the whitespace-separated tokens of the canonical answer");
-    expect(system).toContain("EXACTLY ONE gap marker");
-    expect(system).toContain("its answer is at most 3 words");
-    expect(system).toContain("3-10 items whose texts joined with spaces form the canonical answer");
-    expect(system).toContain("one word copied exactly from the segments");
-    expect(system).toContain("1-15 word segments");
-    expect(system).toContain("must NOT already equal the answer");
-    // Adapter nie zaszywa wiedzy przedmiotowej o równoważności skrótów
-    // (review C1: „doesn't play” ≡ „does not play” to własność normalizatora
-    // english_grammar — przykład z rozwinięciem skrótu w adapterze obiecywał
-    // wariant, który walidator odrzuca jako duplikat).
+    // Jeden język polecenia i odpowiedzi (szkoła): bez dyscypliny języka.
+    const oneLanguage = poolMessages({ ...INPUT, answerLocale: "pl-PL", promptLocale: "pl-PL" }).system;
+    expect(oneLanguage).toContain("acceptedAnswers lists other acceptable formulations of the answer");
+    expect(oneLanguage).not.toContain("Language discipline:");
+    // Adapter nie zaszywa wiedzy przedmiotowej o równoważności skrótów (review C1).
     expect(system).not.toContain("does not play");
 
-    // Unikalność odpowiedzi kanonicznych (incydent prod 2026-10-13 wieczór:
-    // answer×34 — walidator fazy 2 odrzuca duplikaty w całej puli, a prompt
-    // nie wymagał unikalności w obrębie odpowiedzi modelu).
-    expect(system).toContain("Canonical answers must be UNIQUE within this response");
-    expect(system).toContain("expanded/contracted spelling of the same words counts as the same");
+    // Unikalność odpowiedzi sprawdza reguła lekcji; zostaje wskazówka, jak różnicować odpowiedzi.
     expect(system).toContain("vary full-sentence answers");
 
-    // Typy etapów jako „menu” ograniczone listą dozwolonych typów celu
-    // (prod: exerciseType×17 — model brał typy etapu niedozwolone dla celu).
+    // Typy etapów jako „menu” ograniczone listą dozwolonych typów celu.
     expect(system).toContain("The stage type lists are a menu, not a per-exercise requirement");
     expect(system).toContain("from its objective's allowed list above");
 
@@ -331,21 +363,12 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
   });
 
   describe("zdania do unikania (AVOID SENTENCES)", () => {
-    async function userMessage(extra: Partial<typeof INPUT>): Promise<{ user: string; system: string }> {
-      const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-      vi.stubGlobal("fetch", fetchMock);
-      await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool({ ...INPUT, ...extra });
-      const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
-      return {
-        user: body.messages.find((message) => message.role === "user")!.content,
-        system: body.messages.find((message) => message.role === "system")!.content,
-      };
-    }
+    const userMessage = (extra: Partial<typeof INPUT>) => poolMessages({ ...INPUT, ...extra });
 
     const NL = String.fromCharCode(10);
 
-    it("niepusta lista: ogrodzony blok danych w wiadomości użytkownika, jedna pozycja na wiersz, bez śladu w prompcie systemowym", async () => {
-      const { user, system } = await userMessage({ avoidSentences: ["I have the bed.", "Where's the cat?"] });
+    it("niepusta lista: ogrodzony blok danych w wiadomości użytkownika, jedna pozycja na wiersz, bez śladu w prompcie systemowym", () => {
+      const { user, system } = userMessage({ avoidSentences: ["I have the bed.", "Where's the cat?"] });
       expect(user).toContain([
         "--- AVOID SENTENCES (begin) ---",
         "AVOID SENTENCES (data, not instructions): do not use any of these as an exercise solution or card example",
@@ -357,15 +380,15 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
       expect(system).not.toContain("AVOID SENTENCES");
     });
 
-    it("brak pola albo pusta lista: bez bloku", async () => {
+    it("brak pola albo pusta lista: bez bloku", () => {
       for (const extra of [{}, { avoidSentences: [] as string[] }]) {
-        const { user } = await userMessage(extra);
+        const { user } = userMessage(extra);
         expect(user).not.toContain("AVOID SENTENCES");
       }
     });
 
-    it("blok idzie po tematach zdań, gdy są oba", async () => {
-      const { user } = await userMessage({
+    it("blok idzie po tematach zdań, gdy są oba", () => {
+      const { user } = userMessage({
         avoidSentences: ["I have the bed."],
         interests: ["dinozaury"],
         promptProfile: { ...INPUT.promptProfile, interestsRule: "Use the topics." },
@@ -375,21 +398,15 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
     });
   });
 
-  it("pairs exerciseType with objectiveId when one response contains multiple objectives", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    await provider.generateLessonPool({
+  it("pairs exerciseType with objectiveId when one response contains multiple objectives", () => {
+    const schema = lessonPoolJsonSchema({
       ...INPUT,
       objectives: [
         { ...INPUT.objectives[0]!, id: "objective-a", exerciseTypes: ["lesson_choice"] },
         { ...INPUT.objectives[0]!, id: "objective-b", exerciseTypes: ["lesson_gap"] },
       ],
-    });
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as {
-      response_format: { json_schema: { schema: { properties: { exercises: { items: unknown } } } } };
-    };
-    const item = body.response_format.json_schema.schema.properties.exercises.items as {
+    }) as { properties: { exercises: { items: unknown } } };
+    const item = schema.properties.exercises.items as {
       anyOf?: Array<{ properties: { objectiveId: { enum: string[] }; exerciseType: { enum: string[] } } }>;
     };
     const branches = item.anyOf;
@@ -399,183 +416,82 @@ describe("createOpenAiLlmProvider.generateLessonPool — składanie promptu", ()
     ]);
   });
 
-  it("rejects a request whose objective has no supported pool type before HTTP", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    await expect(provider.generateLessonPool({
+  it("rejects an objective with no supported pool type when building the schema", () => {
+    expect(() => lessonPoolJsonSchema({
       ...INPUT,
       objectives: [{ ...INPUT.objectives[0]!, exerciseTypes: ["lesson_card"] }],
-    })).rejects.toThrow(/no supported pool exercise types/);
-    expect(fetchMock).not.toHaveBeenCalled();
+    })).toThrow(/no supported pool exercise types/);
   });
 
-  it("zwraca surowe exercises i examples z odpowiedzi modelu", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        okResponse({
-          exercises: [{ exerciseType: "lesson_gap", answer: "plays" }],
-          examples: { "english_grammar.present_simple.third_person_s": ["He plays."] },
-        }),
-      ),
-    );
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    const result = await provider.generateLessonPool(INPUT);
-    expect(result.exercises).toHaveLength(1);
-    expect(result.examples["english_grammar.present_simple.third_person_s"]).toEqual(["He plays."]);
-  });
-
-  it("dla deduplikacji exercise opisuje istniejące bodźce i dopuszcza wspólny operator", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    await provider.generateLessonPool({
-      ...INPUT,
-      deduplication: "exercise",
-      existingExercises: [{ objectiveId: "q", exerciseType: "lesson_gap", stimulus: "___ she play tennis?" }],
-    });
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
-    const system = body.messages.find((message) => message.role === "system")!.content;
-    expect(system).toContain("Do not repeat any existing exercise with the same objective, type, and functional stimulus");
-    expect(system).toContain("___ she play tennis?");
-    expect(system).toContain("Reusing a short canonical answer such as do, does, don't, or doesn't");
+  it("deduplikacja exercise: bez wskazówki o odpowiedziach (reguła duplikatów bodźca jest w księdze reguł)", () => {
+    const { system } = poolMessages({ ...INPUT, deduplication: "exercise" });
+    expect(system).not.toContain("vary full-sentence answers");
     expect(system).not.toContain("Canonical answers must be UNIQUE within this response");
+    expect(system).not.toContain("Existing exercise stimuli:");
+    expect(system).not.toContain("Do NOT repeat these canonical answers already in the pool");
   });
 
-  it("requires distinct exercise stimuli inside the first batch too", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    await provider.generateLessonPool({
-      ...INPUT,
-      deduplication: "exercise",
-      existingExercises: [],
-    });
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
-    const system = body.messages.find((message) => message.role === "system")!.content;
-    expect(system).toContain("Within this response, never repeat an exercise with the same objective, type, and functional stimulus");
-    expect(system).toContain("Reusing a short canonical answer such as do, does, don't, or doesn't with a different valid exercise is allowed");
-  });
-
-  it("translationUsesPolishStimulusInProviderRequest", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    await provider.generateLessonPool({
+  it("translationUsesPolishStimulusInProviderRequest", () => {
+    const { system } = poolMessages({
       ...INPUT,
       promptProfile: englishGrammarSubject.prompts,
     });
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
-    const system = body.messages.find((message) => message.role === "system")!.content;
-    expect(system).toContain("lesson_open_answer.prompt may be a translation source in the prompt language");
+    expect(system).toContain("except where field rules for this subject define a source stimulus in the prompt language");
     expect(system).toContain("For lesson_open_answer, prompt is the source sentence in the prompt language to translate");
     expect(system).toContain("answer and acceptedAnswers always use the answer language");
     expect(system).not.toContain("prompt (in the answer language)");
   });
-
-  it("tłumaczy examples z tablicy par {objectiveId, examples} z strict schema na record", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        okResponse({
-          exercises: [],
-          examples: [
-            { objectiveId: "english_grammar.present_simple.third_person_s", examples: ["He plays.", "She runs."] },
-            { objectiveId: "other.objective", examples: ["X."] },
-          ],
-        }),
-      ),
-    );
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    const result = await provider.generateLessonPool(INPUT);
-    expect(result.examples).toEqual({
-      "english_grammar.present_simple.third_person_s": ["He plays.", "She runs."],
-      "other.objective": ["X."],
-    });
-  });
 });
 
-describe("createOpenAiLlmProvider — wyjaśnienie błędu (explanationPl)", () => {
-  type Body = { response_format: { json_schema: { schema: any } }; messages: Array<{ role: string; content: string }> };
-  const bodyAt = (fetchMock: { mock: { calls: unknown[][] } }, index: number) =>
-    JSON.parse((fetchMock.mock.calls[index]![1] as RequestInit).body as string) as Body;
-  const systemOf = (body: Body) => body.messages.find((m) => m.role === "system")!.content;
-
-  it("prompt i schemat puli niosą regułę i pole tylko przy exerciseExplanations", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    await provider.generateLessonPool({ ...INPUT, exerciseExplanations: true });
-    await provider.generateLessonPool(INPUT);
-    const on = bodyAt(fetchMock, 0);
-    const off = bodyAt(fetchMock, 1);
-    const prompt = systemOf(on);
+describe("lessonSystemPrompt i lessonPoolJsonSchema — wyjaśnienie błędu (explanationPl)", () => {
+  it("prompt i schemat puli niosą wskazówkę stylu i pole tylko przy exerciseExplanations; limity są w regułach", () => {
+    const on = { ...INPUT, exerciseExplanations: true };
+    const prompt = lessonSystemPrompt(on);
     expect(prompt).toContain("explanationPl");
-    expect(prompt).toContain("one Polish sentence");
+    expect(prompt).toContain("explanationPl: for every exercise except lesson_calculation, return a Polish sentence for a child of about 8");
     expect(prompt).toContain("why the correct answer is correct");
-    expect(prompt).toContain("120");
-    expect(on.response_format.json_schema.schema.properties.exercises.items.required).toContain("explanationPl");
-    expect(systemOf(off)).not.toContain("explanationPl");
-    expect(JSON.stringify(off.response_format.json_schema.schema)).not.toContain("explanationPl");
+    // Jedno zdanie, limit długości i znaczniki sprawdzają reguły `explanation.*` z księgi reguł.
+    expect(prompt).not.toContain("at most 120 characters");
+    expect((lessonPoolJsonSchema(on) as any).properties.exercises.items.required).toContain("explanationPl");
+    expect(lessonSystemPrompt(INPUT)).not.toContain("explanationPl");
+    expect(lessonSystemPrompt(INPUT)).not.toContain("for every exercise except lesson_calculation");
+    expect(JSON.stringify(lessonPoolJsonSchema(INPUT))).not.toContain("explanationPl");
   });
 });
 
-describe("createOpenAiLlmProvider.generateLessonPool — wybór ze słuchu (lesson_listen_choice)", () => {
+describe("lessonSystemPrompt — wybór ze słuchu (lesson_listen_choice)", () => {
   const LISTEN_INPUT: LessonPoolInput = {
     ...INPUT,
     exerciseTypes: ["lesson_card", "lesson_choice", "lesson_listen_choice", "lesson_gap", "lesson_open_answer"],
     objectives: [{ ...INPUT.objectives[0]!, exerciseTypes: ["lesson_card", "lesson_choice", "lesson_listen_choice", "lesson_gap"] }],
   };
-  const systemPromptOf = async (input: LessonPoolInput): Promise<string> => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(input);
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
-    return body.messages.find((message) => message.role === "system")!.content;
-  };
+  const systemPromptOf = (input: LessonPoolInput): string => lessonSystemPrompt(input);
 
-  it("podnosi limit partii o dodatkowe ćwiczenia słuchowe i opisuje je poza podziałem etapów", async () => {
-    const system = await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 2 });
-    expect(system).toContain(`at most ${LISTEN_INPUT.countPerObjective + 2} exercises per objective in this batch`);
-    expect(system).toContain("up to 2 extra lesson_listen_choice exercises per objective, outside the stage split");
+  it("przy dodatku: typ na liście celu i zdanie, że leży poza podziałem etapów (liczbę podaje Target)", () => {
+    const system = systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 2 });
+    expect(system).toContain("Allowed exerciseType values: lesson_choice, lesson_listen_choice, lesson_gap.");
+    expect(system).toContain("lesson_listen_choice exercises are extra, outside the stage split (Target gives their allowance)");
     expect(system).toContain("only for an objective whose allowed exerciseType list contains lesson_listen_choice");
+    expect(system).not.toContain("exercises per objective in this batch");
     // Menu etapów pozostaje bez zmian: typ słuchowy nie należy do żadnego etapu podziału.
-    const menus = system.slice(system.indexOf("aiming for this stage split:"), system.indexOf("The stage type lists are a menu"));
+    const menus = system.slice(system.indexOf("Stages of the exercise types"), system.indexOf("The stage type lists are a menu"));
     expect(menus).not.toContain("lesson_listen_choice");
   });
 
-  it("opisuje pola typu obok lesson_choice, gdy przedmiot go wspiera", async () => {
-    const system = await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 2 });
-    expect(system).toContain("lesson_listen_choice requires stem with exactly one ___");
-    expect(system).toContain("2 to 3 options");
-    expect(system).toContain("instructionPl, hint and visualSubject must be null for lesson_listen_choice");
+  it("przedmiot bez typu go nie wymienia", () => {
+    expect(systemPromptOf(INPUT)).not.toContain("lesson_listen_choice");
   });
 
-  it("bez pola listenChoicePerObjective prompt zachowuje dotychczasowy limit i nie ma zdania o dodatkach", async () => {
-    const system = await systemPromptOf(LISTEN_INPUT);
-    expect(system).toContain(`Return at most ${LISTEN_INPUT.countPerObjective} exercises per objective in this batch, aiming for this stage split:`);
-    expect(system).not.toContain("extra lesson_listen_choice");
-    expect(await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 0 })).toBe(system);
-  });
-
-  it("przedmiot bez typu nie dostaje opisu pól typu", async () => {
-    expect(await systemPromptOf(INPUT)).not.toContain("lesson_listen_choice");
-  });
-
-  it("bez przyznanego dodatku (pole brak/0) prompt nie opisuje pól typu ani nie wymienia go wśród dozwolonych", async () => {
+  it("bez przyznanego dodatku (pole brak/0) prompt nie wymienia typu wśród dozwolonych", () => {
     for (const input of [LISTEN_INPUT, { ...LISTEN_INPUT, listenChoicePerObjective: 0 }]) {
-      const system = await systemPromptOf(input);
-      expect(system).not.toContain("lesson_listen_choice requires stem");
-      expect(system).not.toContain("lesson_listen_choice");
+      expect(systemPromptOf(input)).not.toContain("lesson_listen_choice");
     }
+    expect(systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 0 })).toBe(systemPromptOf(LISTEN_INPUT));
   });
 
-  it("przycina dodatek do 0–2", async () => {
-    const system = await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 5 });
-    expect(system).toContain(`at most ${LISTEN_INPUT.countPerObjective + 2} exercises per objective in this batch`);
-    expect(system).toContain("up to 2 extra lesson_listen_choice exercises per objective");
-    expect(await systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: -3 })).toBe(await systemPromptOf(LISTEN_INPUT));
+  it("przycina dodatek do 0–2", () => {
+    expect(systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 5 })).toBe(systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: 2 }));
+    expect(systemPromptOf({ ...LISTEN_INPUT, listenChoicePerObjective: -3 })).toBe(systemPromptOf(LISTEN_INPUT));
   });
 });
 
@@ -587,20 +503,17 @@ describe("createOpenAiLlmProvider — ton lektora (stage B)", () => {
   const systemOf = (body: Body) => body.messages.find((m) => m.role === "system")!.content;
   const OBJECTIVES_INPUT = { subjectTitle: "Przyroda", topicTitle: "Las", material: "Las to ekosystem.", generationRole: "You write cards." };
 
-  it("pool prompt and schema carry the tone rule and field only when voiceTones is true", async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    const provider = createOpenAiLlmProvider({ apiKey: "k" });
-    await provider.generateLessonPool({ ...INPUT, voiceTones: true });
-    await provider.generateLessonPool(INPUT);
-    const on = bodyAt(fetchMock, 0);
-    const off = bodyAt(fetchMock, 1);
-    expect(systemOf(on)).toContain(RULE);
+  it("pool prompt and schema carry the tone rule and field only when voiceTones is true", () => {
+    const on = { ...INPUT, voiceTones: true };
+    expect(lessonSystemPrompt(on)).toContain(RULE);
+    // Ręczna wskazówka (spec katalogu reguł §3): ton dla każdego ćwiczenia poza rachunkiem.
+    expect(lessonSystemPrompt(on)).toContain("Return voiceTone for every exercise except lesson_calculation (null when no tone fits).");
+    expect(lessonSystemPrompt(INPUT)).not.toContain("Return voiceTone");
     // Pytania nie są szeptane: reguła ćwiczeń w ogóle nie wspomina `mysterious`.
-    expect(systemOf(on)).not.toContain("mysterious");
-    expect(on.response_format.json_schema.schema.properties.exercises.items.required).toContain("voiceTone");
-    expect(systemOf(off)).not.toContain("voiceTone");
-    expect(JSON.stringify(off.response_format.json_schema.schema)).not.toContain("voiceTone");
+    expect(lessonSystemPrompt(on)).not.toContain("mysterious");
+    expect((lessonPoolJsonSchema(on) as any).properties.exercises.items.required).toContain("voiceTone");
+    expect(lessonSystemPrompt(INPUT)).not.toContain("voiceTone");
+    expect(JSON.stringify(lessonPoolJsonSchema(INPUT))).not.toContain("voiceTone");
   });
 
   it("objectives prompt and card schema carry the tone rule and field only when voiceTones is true", async () => {
@@ -621,99 +534,29 @@ describe("createOpenAiLlmProvider — ton lektora (stage B)", () => {
   });
 });
 
-describe("createOpenAiLlmProvider.generateLessonPool — bloki pary/grupy/luki składane z profilu przedmiotu", () => {
+describe("lessonSystemPrompt — typy z własną gałęzią opisuje wyłącznie księga reguł", () => {
   const PAIRING_TYPES = ["lesson_choice", "lesson_match", "lesson_group", "lesson_cloze"];
-  const pairingInput = (overrides: Partial<LessonPoolInput>): LessonPoolInput => ({
+  const pairingInput: LessonPoolInput = {
     ...INPUT,
     exerciseTypes: PAIRING_TYPES,
     objectives: [{ id: "chapter.d1.clothes", descriptionEn: "Clothes words.", exerciseTypes: PAIRING_TYPES, errorCategories: [] }],
-    ...overrides,
-  });
-  const systemPromptOf = async (input: LessonPoolInput): Promise<string> => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(input);
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
-    return body.messages.find((message) => message.role === "system")!.content;
+    promptProfile: {
+      ...INPUT.promptProfile,
+      typeRules: { lesson_match: "RULE-MATCH.", lesson_group: "RULE-GROUP.", lesson_cloze: "RULE-CLOZE." },
+    },
   };
 
-  it("przedmiot szkolny zachowuje semantykę par, grup i luk z materiału rodzica oraz wymóg cytatów", async () => {
-    const system = await systemPromptOf(pairingInput({
-      subjectId: schoolSubject.id,
-      promptProfile: schoolSubject.prompts,
-      groundingRequired: true,
-    }));
-    // Część strukturalna (adapter).
-    expect(system).toContain("lesson_match and lesson_group are guided types with their own strict branches");
-    expect(system).toContain("code computes the answer");
-    expect(system).toContain("pairs (3 to 5 objects {left, right}");
-    expect(system).toContain("groupItems (4 to 8 objects {text of at most 40 characters, groupId}, at least 2 per group)");
-    expect(system).toContain("gapAnswers: the word for each gap in text order (1 to 3 words, at most 30 characters)");
-    // Cytaty tylko przy groundingRequired.
-    expect(system).toContain("and their fields below plus sourceRefs;");
-    expect(system).toContain("extraWords and sourceRefs;");
-    expect(system).toContain("sourceRefs is REQUIRED for EVERY exercise");
-    // Semantyka szkoły (profil przedmiotu, przeniesiona z adaptera).
-    expect(system).toContain("both taken from the parent material");
-    expect(system).toContain("Use it when the material pairs concepts with definitions, places with features or causes with effects.");
-    expect(system).toContain("Use it when the material classifies things (e.g. mammals/birds, lowlands/uplands).");
-    expect(system).toContain("Keep the sentences close to the parent material (vocabulary for a child of about 8)");
-    expect(system).toContain("concepts, names or numbers from the material, never conjunctions, prepositions or words guessable from grammar alone");
-    expect(system).toContain("Distractors come from the same material and category");
-    expect(system).toContain("Skip it when the material has no such pairs.");
-    expect(system).toContain("Skip it when the material has no such classification.");
-  });
-
-  it("bez uziemienia nie wspomina o sourceRefs w blokach, a semantykę bierze z typeRules przedmiotu", async () => {
-    const system = await systemPromptOf(pairingInput({
-      groundingRequired: false,
-      promptProfile: {
-        ...INPUT.promptProfile,
-        typeRules: {
-          lesson_match: "RULE-MATCH: left is an English chapter word, right its Polish meaning.",
-          lesson_group: "RULE-GROUP: only when the words split into 2 or 3 categories.",
-          lesson_cloze: "RULE-CLOZE: gaps are chapter words.",
-        },
-      },
-    }));
-    expect(system).toContain("RULE-MATCH: left is an English chapter word, right its Polish meaning.");
-    expect(system).toContain("RULE-GROUP: only when the words split into 2 or 3 categories.");
-    expect(system).toContain("RULE-CLOZE: gaps are chapter words.");
-    // Struktura zostaje po stronie adaptera.
-    expect(system).toContain("code computes the answer");
-    expect(system).toContain("pairs (3 to 5 objects {left, right}");
-    expect(system).toContain("clozeText: 2 to 4 short sentences");
-    // Żadnych wymagań cytatów ani szkolnej semantyki.
-    expect(system).not.toContain("plus sourceRefs");
-    expect(system).not.toContain("extraWords and sourceRefs");
+  it("adapter nie składa bloków par, grup i luk ani nie czyta typeRules (semantykę typu niesie blok księgi)", () => {
+    const system = lessonSystemPrompt(pairingInput);
+    expect(system).not.toContain("strict branch");
+    expect(system).not.toContain("pairs (3 to 5 objects");
+    expect(system).not.toContain("RULE-MATCH.");
     expect(system).not.toContain("sourceRefs is REQUIRED");
-    expect(system).not.toContain("taken from the parent material");
-    expect(system).not.toContain("close to the parent material");
-    expect(system).not.toContain("mammals/birds");
-  });
-
-  it("bez reguły typu składa wyłącznie część strukturalną bloku", async () => {
-    const system = await systemPromptOf(pairingInput({ groundingRequired: false }));
-    expect(system).toContain("pairs (3 to 5 objects {left, right}");
-    expect(system).toContain("groups (2 or 3 objects");
-    expect(system).toContain("gapAnswers: the word for each gap in text order");
-    expect(system).not.toContain("taken from the parent material");
-    expect(system).not.toContain("close to the parent material");
-    expect(system).not.toContain("mammals/birds");
-    expect(system).not.toContain("undefined");
-  });
-
-  it("opisuje tylko typy dozwolone w przedmiocie", async () => {
-    const system = await systemPromptOf(pairingInput({
-      exerciseTypes: ["lesson_choice", "lesson_match"],
-      objectives: [{ id: "chapter.d1.clothes", descriptionEn: "Clothes words.", exerciseTypes: ["lesson_choice", "lesson_match"], errorCategories: [] }],
-      groundingRequired: false,
-      promptProfile: { ...INPUT.promptProfile, typeRules: { lesson_match: "RULE-MATCH.", lesson_group: "RULE-GROUP." } },
-    }));
-    expect(system).toContain("RULE-MATCH.");
-    expect(system).not.toContain("RULE-GROUP.");
-    expect(system).not.toContain("lesson_group");
-    expect(system).not.toContain("lesson_cloze");
+    const withBlock = lessonSystemPrompt({
+      ...pairingInput,
+      ruleBook: { ...EMPTY_RULE_BOOK, types: [{ type: "lesson_match", summary: "MATCH-CARD.", subjectRule: "RULE-MATCH.", rules: [] }] },
+    });
+    expect(withBlock).toContain("lesson_match — MATCH-CARD.\n  RULE-MATCH.");
   });
 });
 
@@ -831,17 +674,17 @@ describe("createOpenAiLlmProvider.generateLessonStory — historyjka na koniec s
   });
 });
 
-describe("createOpenAiLlmProvider.generateLessonObjectives — reguły przedmiotu i rodzaj zagadnienia", () => {
+describe("createOpenAiLlmProvider.generateLessonObjectives — prompt i schemat zagadnień (szkoła)", () => {
   const OBJECTIVES_INPUT = {
     subjectTitle: "Angielski — rozdział",
     topicTitle: "Unit 1",
     material: "coat — płaszcz",
     generationRole: "You are an author.",
   };
-  const callObjectives = async (extra: { objectivesRules?: string }) => {
+  const callObjectives = async () => {
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ objectives: [{ slug: "a" }] }));
     vi.stubGlobal("fetch", fetchMock);
-    const result = await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives({ ...OBJECTIVES_INPUT, ...extra });
+    const result = await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonObjectives(OBJECTIVES_INPUT);
     const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as {
       messages: Array<{ role: string; content: string }>;
       response_format: { json_schema: { name: string; strict: boolean; schema: any } };
@@ -849,25 +692,22 @@ describe("createOpenAiLlmProvider.generateLessonObjectives — reguły przedmiot
     return { result, body, system: body.messages.find((message) => message.role === "system")!.content };
   };
 
-  it("dokleja objectivesRules do promptu zagadnień jako reguły przedmiotu", async () => {
-    const { result, system } = await callObjectives({ objectivesRules: "Split into 3 to 5 objectives." });
-    expect(system).toContain("Subject rules for objectives: Split into 3 to 5 objectives.");
+  it("prompt zagadnień bez reguł przedmiotu i bez rodzaju zagadnienia (rodzaj daje planista agenta rozdziału)", async () => {
+    const { result, system } = await callObjectives();
+    expect(system).toContain("You are an author.");
+    expect(system).toContain("Subject: Angielski — rozdział. Topic: Unit 1.");
+    expect(system).not.toContain("Subject rules for objectives");
+    expect(system).not.toContain("kind");
     expect(system.trimEnd().endsWith("Return strict JSON only.")).toBe(true);
     expect(result.objectives).toHaveLength(1);
   });
 
-  it("bez objectivesRules prompt zagadnień nie ma bloku reguł", async () => {
-    const { system } = await callObjectives({});
-    expect(system).not.toContain("Subject rules for objectives");
-    expect(system).toContain("kind");
-  });
-
-  it("schemat zagadnień ma wymagane, nullowalne pole kind z enumem words/frame", async () => {
-    const { body } = await callObjectives({});
+  it("schemat zagadnień: ścisły, bez pola kind, wszystkie pola wymagane", async () => {
+    const { body } = await callObjectives();
     expect(body.response_format.json_schema).toMatchObject({ name: "lesson_objectives", strict: true });
     const item = body.response_format.json_schema.schema.properties.objectives.items;
-    expect(item.properties.kind).toEqual({ type: ["string", "null"], enum: ["words", "frame", null] });
-    expect(item.required).toContain("kind");
+    expect(item.properties).not.toHaveProperty("kind");
+    expect(item.required).toEqual(["slug", "titlePl", "descriptionEn", "cards"]);
     expect([...item.required].sort()).toEqual(Object.keys(item.properties).sort());
     expect(item.additionalProperties).toBe(false);
   });
@@ -1002,22 +842,12 @@ describe("createOpenAiLlmProvider.generateDeck — tryb ze źródła", () => {
   });
 });
 
-describe("generateLessonPool — tematy zdań (#197)", () => {
-  async function poolMessages(input: LessonPoolInput): Promise<{ system: string; user: string }> {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse({ exercises: [], examples: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    await createOpenAiLlmProvider({ apiKey: "k" }).generateLessonPool(input);
-    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string) as { messages: Array<{ role: string; content: string }> };
-    return {
-      system: body.messages.find((message) => message.role === "system")!.content,
-      user: body.messages.find((message) => message.role === "user")!.content,
-    };
-  }
+describe("lessonSystemPrompt i lessonUserMaterial — tematy zdań (#197)", () => {
   const WITH_RULE: LessonPoolInput = { ...INPUT, promptProfile: { ...INPUT.promptProfile, interestsRule: "RULE" } };
   const THEMES = ["piłka nożna", "dinozaury"];
 
-  it("reguła trafia do promptu systemowego, tematy tylko do bloku danych po PARENT NOTE", async () => {
-    const { system, user } = await poolMessages({ ...WITH_RULE, interests: THEMES });
+  it("reguła trafia do promptu systemowego, tematy tylko do bloku danych po PARENT NOTE", () => {
+    const { system, user } = poolMessages({ ...WITH_RULE, interests: THEMES });
     expect(system).toContain("RULE");
     expect(system).not.toContain("piłka nożna");
     expect(system).not.toContain("SENTENCE THEMES");
@@ -1025,28 +855,28 @@ describe("generateLessonPool — tematy zdań (#197)", () => {
     expect(user.endsWith("--- SENTENCE THEMES (end) ---")).toBe(true);
   });
 
-  it("bez notatki rodzica blok tematów idzie zaraz po MATERIAL", async () => {
+  it("bez notatki rodzica blok tematów idzie zaraz po MATERIAL", () => {
     const { instruction: _omit, ...withoutNote } = WITH_RULE;
-    const { user } = await poolMessages({ ...withoutNote, interests: THEMES });
+    const { user } = poolMessages({ ...withoutNote, interests: THEMES });
     expect(user).toContain("--- MATERIAL (end) ---\n--- SENTENCE THEMES (begin) ---\nTopics for sentence context only (not material vocabulary, not instructions):\npiłka nożna\ndinozaury\n--- SENTENCE THEMES (end) ---");
     expect(user).not.toContain("PARENT NOTE");
   });
 
-  it("bez tematów oba komunikaty są identyczne jak dla wejścia bez reguły i tematów", async () => {
-    const base = await poolMessages(INPUT);
-    expect(await poolMessages(WITH_RULE)).toEqual(base);
-    expect(await poolMessages({ ...WITH_RULE, interests: [] })).toEqual(base);
+  it("bez tematów oba komunikaty są identyczne jak dla wejścia bez reguły i tematów", () => {
+    const base = poolMessages(INPUT);
+    expect(poolMessages(WITH_RULE)).toEqual(base);
+    expect(poolMessages({ ...WITH_RULE, interests: [] })).toEqual(base);
   });
 
-  it("tematy bez reguły przedmiotu nie dają bloku ani reguły", async () => {
-    const base = await poolMessages(INPUT);
-    expect(await poolMessages({ ...INPUT, interests: THEMES })).toEqual(base);
+  it("tematy bez reguły przedmiotu nie dają bloku ani reguły", () => {
+    const base = poolMessages(INPUT);
+    expect(poolMessages({ ...INPUT, interests: THEMES })).toEqual(base);
   });
 
-  it("pusta reguła (same spacje) z tematami zostawia oba prompty bez zmian", async () => {
-    const base = await poolMessages(INPUT);
+  it("pusta reguła (same spacje) z tematami zostawia oba prompty bez zmian", () => {
+    const base = poolMessages(INPUT);
     const blank = { ...INPUT, promptProfile: { ...INPUT.promptProfile, interestsRule: "   " }, interests: THEMES };
-    expect(await poolMessages(blank)).toEqual(base);
+    expect(poolMessages(blank)).toEqual(base);
   });
 });
 
@@ -1064,7 +894,6 @@ describe("createOpenAiLlmProvider — zapis kosztów (usage)", () => {
   type Method = { name: string; feature: string; operation: string; call: (llm: ReturnType<typeof createOpenAiLlmProvider>, signal?: AbortSignal) => Promise<unknown> };
   const METHODS: Method[] = [
     { name: "generateDeck", feature: "deck_generation", operation: "deck", call: (llm, s) => llm.generateDeck(DECK, s) },
-    { name: "generateLessonPool", feature: "lesson_generation", operation: "lesson_pool", call: (llm, s) => llm.generateLessonPool(INPUT, s) },
     { name: "generateLessonObjectives", feature: "lesson_generation", operation: "lesson_objectives", call: (llm, s) => llm.generateLessonObjectives(OBJECTIVES, s) },
     { name: "generateLessonStory", feature: "lesson_generation", operation: "lesson_story", call: (llm, s) => llm.generateLessonStory(STORY, s) },
   ];
@@ -1075,10 +904,10 @@ describe("createOpenAiLlmProvider — zapis kosztów (usage)", () => {
   it("records paid response even when content is rejected (finish_reason length)", async () => {
     stubFetch(async () => json({ choices: [{ finish_reason: "length", message: { content: "{" } }], usage: COST }));
     const rec = createTestRecorder();
-    await expect(make(rec).generateLessonPool(INPUT)).rejects.toMatchObject({ kind: "incomplete" });
+    await expect(make(rec).generateLessonObjectives(OBJECTIVES)).rejects.toMatchObject({ kind: "incomplete" });
     expect(rec.events).toHaveLength(1);
     expect(rec.events[0]).toMatchObject({
-      feature: "lesson_generation", operation: "lesson_pool", outcome: "ok", providerCostUsd: 0.003,
+      feature: "lesson_generation", operation: "lesson_objectives", outcome: "ok", providerCostUsd: 0.003,
       provider: "openrouter", model: "google/gemini-3.8-flash", httpStatus: 200, inputTokens: 12, outputTokens: 8,
     });
   });
@@ -1139,7 +968,6 @@ describe("createOpenAiLlmProvider — zapis kosztów (usage)", () => {
   it.each(METHODS)("$name records exactly one ok event for a valid response", async (method) => {
     const body = {
       generateDeck: { items: [] },
-      generateLessonPool: { exercises: [], examples: [] },
       generateLessonObjectives: { objectives: [] },
       generateLessonStory: { sentences: ["a"], questions: [] },
     }[method.name];
@@ -1151,14 +979,14 @@ describe("createOpenAiLlmProvider — zapis kosztów (usage)", () => {
   });
 
   it("throwing recorder does not change adapter result", async () => {
-    const body = { choices: [{ message: { content: JSON.stringify({ exercises: [], examples: [] }) } }], usage: COST };
+    const body = { choices: [{ message: { content: JSON.stringify({ objectives: [] }) } }], usage: COST };
     stubFetch(async () => json(body));
-    const plain = await make().generateLessonPool(INPUT);
-    expect(await make(createThrowingRecorder()).generateLessonPool(INPUT)).toEqual(plain);
+    const plain = await make().generateLessonObjectives(OBJECTIVES);
+    expect(await make(createThrowingRecorder()).generateLessonObjectives(OBJECTIVES)).toEqual(plain);
 
     stubFetch(async () => json({}, 500));
-    const withoutRecorder = await make().generateLessonPool(INPUT).catch((e: unknown) => e);
-    const withRecorder = await make(createThrowingRecorder()).generateLessonPool(INPUT).catch((e: unknown) => e);
+    const withoutRecorder = await make().generateLessonObjectives(OBJECTIVES).catch((e: unknown) => e);
+    const withRecorder = await make(createThrowingRecorder()).generateLessonObjectives(OBJECTIVES).catch((e: unknown) => e);
     expect(withRecorder).toBeInstanceOf(GenerationProviderError);
     expect(withRecorder).toMatchObject({ kind: (withoutRecorder as GenerationProviderError).kind, status: 500 });
     await expect(make(createThrowingRecorder()).generateDeck(DECK)).rejects.toThrow("provider_http_500");
@@ -1182,7 +1010,6 @@ describe("createOpenAiLlmProvider — kształt żądań lekcji po wydzieleniu ws
   it.each([
     ["lesson_objectives", { objectives: [] }, (llm: ReturnType<typeof createOpenAiLlmProvider>) => llm.generateLessonObjectives(OBJECTIVES)],
     ["lesson_story", { sentences: ["a"], questions: [] }, (llm: ReturnType<typeof createOpenAiLlmProvider>) => llm.generateLessonStory(STORY)],
-    ["lesson_pool", { exercises: [], examples: [] }, (llm: ReturnType<typeof createOpenAiLlmProvider>) => llm.generateLessonPool(INPUT)],
   ] as const)("%s wysyła tylko model, response_format i wiadomości tekstowe (bez max_tokens i cache_control)", async (name, result, call) => {
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okResponse(result));
     vi.stubGlobal("fetch", fetchMock);

@@ -3,13 +3,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   completePresentation,
   createChild,
-  createLessonFromMaterial,
   createServices,
   endSession,
-  executeLessonGeneration,
   nextTask,
   publishLessonDraft,
-  readGeneration,
   readLessonDeck,
   runDueGenerationWork,
   startSession,
@@ -18,13 +15,13 @@ import {
 } from "@learning/server";
 import type { AttemptDto, AttemptInput, TaskDto } from "@learning/contracts";
 import { lessonTextTargetKey } from "../../packages/server/src/domain/lessons/exposure-key";
-import { DEFAULT_LESSON_GENERATION_POLICY } from "../../packages/server/src/modules/materials/lessons/lesson-generation-policy";
+import { seedChapterDraft } from "./chapter-lesson-helpers";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
 import { ManualClock, testDatabase } from "./helpers";
 
 /**
  * Odczyt pełnego zdania po odpowiedzi w lekcji „Angielski — rozdział” (Etap 3,
- * mechanizm #194): szkic zleca `feedback_audio` w `en-GB` bez stylu pl-PL dla
+ * mechanizm #194): szkic (pula sterowana zasiana edycją rodzica, bez generowania) zleca `feedback_audio` w `en-GB` bez stylu pl-PL dla
  * typów ze zdaniem, worker je syntezuje, a feedback ocenionej odpowiedzi niesie
  * nagranie z pieczęcią `audio_issued` na kluczu rozwiązanego zdania. Omówienie
  * z innym zatwierdzonym wariantem niż kanoniczny nie dostaje nagrania (design
@@ -32,9 +29,6 @@ import { ManualClock, testDatabase } from "./helpers";
  */
 
 const { db, pool } = testDatabase();
-
-/** Bez rundy pod brakujący etap: pule sterowane zbyt małe do pokrycia, test dotyczy samej partii głównej. */
-const MAIN_BATCH_ONLY = { ...DEFAULT_LESSON_GENERATION_POLICY, stageTopUp: false };
 
 async function query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
   return (await pool.query(sql, params)).rows as T[];
@@ -149,21 +143,28 @@ describe("lekcja Angielski — rozdział: odczyt zdania po odpowiedzi (integracj
 
   afterAll(() => pool.end());
 
+  /** Szkic z dwoma zagadnieniami (słowa i rama) z pulami sterowanymi, zasiany bez generowania. */
   async function chapterWorld() {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);
-    fakes.deps.lessonExecution = MAIN_BATCH_ONLY;
     const clock = new ManualClock();
     const services = createServices({ db, clock, media: mediaSettings(fakes), generation: fakes.deps });
-    fakes.deps.llm.generateLessonPool = async (input) => {
-      const objectiveId = input.objectives[0]!.id;
-      return { exercises: objectiveId.endsWith(".ubrania") ? wordsPool(objectiveId) : framePool(objectiveId), examples: {} };
-    };
-    const { runId, deckId } = await createLessonFromMaterial(services, {
-      subjectId: "english_chapter", topicTitlePl: "Ubrania", material: MATERIAL, poolSize: 40, clientRequestId: randomUUID(),
+    const { deckId } = await seedChapterDraft(services, {
+      material: MATERIAL,
+      topicTitlePl: "Ubrania",
+      objectives: [
+        {
+          slug: "ubrania", titlePl: "Ubrania", kind: "words",
+          cards: [{ title: "Wyjaśnienie", body: "coat, boots, dress, skirt, hat" }, { title: "Do zapamiętania", body: "coat, boots, dress, skirt, hat" }],
+          exercises: (_deckId, objectiveId) => wordsPool(objectiveId),
+        },
+        {
+          slug: "co_mam_na_sobie", titlePl: "Co mam na sobie", kind: "frame",
+          cards: [{ title: "Wyjaśnienie", body: "I'm wearing a coat today." }, { title: "Do zapamiętania", body: "I'm wearing boots." }],
+          exercises: (_deckId, objectiveId) => framePool(objectiveId),
+        },
+      ],
     });
-    await executeLessonGeneration(services, runId);
-    expect((await readGeneration(services, runId)).state).toBe("succeeded");
     const draft = (await readLessonDeck(services, deckId)).draft!;
     return { fakes, services, clock, deckId, draft };
   }
@@ -364,7 +365,6 @@ describe("lekcja Angielski — rozdział: odczyt zdania po odpowiedzi (integracj
 
   it("szkic zleca feedback_audio en-GB bez stylu dla typów ze zdaniem, nie dla par, grup i kart; publikacja na nie nie czeka", async () => {
     const { fakes, services, draft } = await chapterWorld();
-    expect(draft.rejectedCount).toBe(0);
     expect(draft.coverage).toEqual([]);
     expect(draft.dynamicTopic!.objectives.map((objective) => objective.kind)).toEqual(["words", "frame"]);
     // Rodzic nie widzi nagrań zdań w widoku szkicu.

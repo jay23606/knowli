@@ -33,6 +33,7 @@ import { finishLessonTask, testDatabase, testDatabaseUrl, truncateCoreTables } f
 import { EDITOR_CARD_EXAMPLE, lessonWorld, seedEditorPoolWithLeak } from "../fixtures/lesson-world";
 import { ManualClock } from "./helpers";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
+import { fakeObjectiveExercises } from "../../packages/server/src/providers/fake-lesson-pool";
 import { handleParentApi } from "./helpers";
 import { errorResponse } from "../../apps/web/src/http/errors";
 import { createLessonSnapshot, toLessonDraftPatch } from "../../apps/web/src/parent/lessons/lesson-editor-state";
@@ -316,14 +317,36 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
     expect(cards[0]).toEqual({ title: "Dodaj -s", body: expect.any(String) });
     expect(Object.keys(cards[0]!).sort()).toEqual(["body", "title"]);
     for (const forbidden of ["descriptionEn", "errorCategories", "hints"]) expect(objective).not.toHaveProperty(forbidden);
+    // usługi bez opisu agenta (web bez klucza OpenRouter): generowanie lekcji niedostępne, bez usług agenta
+    expect(catalog.lessonGenerationAvailable).toBe(false);
+    expect(subject).not.toHaveProperty("generationServices");
+  });
+
+  it("katalog z opisem agenta: generowanie lekcji dostępne, usługi przy każdym przedmiocie", async () => {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const { db } = testDatabase();
+    const services = createServices({
+      db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps,
+      lessonAgentPublic: { generationService: "fake-lesson-agent-model", checkService: "fake-lesson-checker-model" },
+    });
+    await setupParent(services, "lesson-api-pin");
+    const { token } = await loginParent(services, "lesson-api-pin");
+
+    const res = await call(services, "GET", "lesson-catalog", { cookie: token });
+    expect(res.status).toBe(200);
+    const catalog = SubjectCatalogDtoSchema.parse(await res.json());
+    expect(catalog.lessonGenerationAvailable).toBe(true);
+    for (const subject of catalog.subjects) {
+      expect(subject.generationServices?.[0]).toBe("fake-lesson-agent-model");
+      expect(subject.checkService).toBe("fake-lesson-checker-model");
+    }
   });
 
   it("generacja → edycja samego tytułu → publikacja → rzeczywista sesja dziecka", async () => {
-    const fakes = await fakeGeneration();
-    disposers.push(fakes.dispose);
-    const generate = fakes.llm.generateLessonPool.bind(fakes.llm);
-    fakes.llm.generateLessonPool = async (...args) => {
-      const result = await generate(...args);
+    // Zgłoszenie generatora fake'a agenta z pierwszą luką zamienioną na przekształcenie.
+    const fakes = await fakeGeneration({ agent: { generate: {}, objectives: { negative: [{ build: (input) => {
+      const result = fakeObjectiveExercises(input, 0);
       let replaced = false;
       return { ...result, exercises: result.exercises.map((raw) => {
         const ex = raw as Record<string, unknown>;
@@ -333,7 +356,8 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
         return { ...base, exerciseType: "lesson_transform", statement: "She dances.", transformId: "to_negative",
           answer: "She does not dance", focus: ["does", "not"], acceptedAnswers: [] };
       }) };
-    };
+    } }] } } });
+    disposers.push(fakes.dispose);
     const { services, cookie } = await freshParent(fakes);
     // Transform jest preferowany dopiero przy dostępnym graderze; dokładna
     // odpowiedź w tym teście nadal jest oceniana deterministycznie.
@@ -773,7 +797,10 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
       "Wyjaśnienie: Mieszko I przyjął chrzest w 966 roku. Chrzest włączył państwo do chrześcijańskiej Europy i wzmocnił władzę księcia.",
     ].join("\n");
 
-    async function schoolDraft(fakes: FakeGeneration): Promise<{ services: Services; cookie: string; deckId: string; draft: LessonDraftDto }> {
+    async function schoolDraft(
+      fakes: FakeGeneration,
+      material: string = SCHOOL_MATERIAL,
+    ): Promise<{ services: Services; cookie: string; deckId: string; draft: LessonDraftDto }> {
       const { db } = testDatabase();
       const services = createServices({
         db,
@@ -787,7 +814,7 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
       const { runId, deckId } = await createSchoolLesson(services, {
         subjectTitlePl: "Przyroda i historia",
         topicTitlePl: "Materiał pilotażowy",
-        material: SCHOOL_MATERIAL,
+        material,
         poolSize: 40,
         clientRequestId: randomUUID(),
       });
@@ -807,6 +834,78 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
       expect(response.status).toBe(200);
       return LessonDraftDtoSchema.parse(await response.json());
     }
+
+    describe("cytaty i komunikaty walidacji rodzica (katalog reguł §5.2)", () => {
+      const TYPOGRAPHIC_MATERIAL = `${SCHOOL_MATERIAL}\nWyjaśnienie: Mieszko I przyjął chrzest w 966 roku – był to „chrzest Polski”.`;
+      const patchBody = (draft: LessonDraftDto, change: (ex: LessonExerciseInput, index: number) => LessonExerciseInput) => ({
+        expectedEditNumber: draft.editNumber,
+        exercises: draft.exercises.map(stripToInput).map(change),
+      });
+
+      it("edycja i publikacja z cytatem różniącym się cudzysłowem i myślnikiem przechodzą (cytat rodzica bez wyrównania)", async () => {
+        const fakes = await fakeGeneration();
+        disposers.push(fakes.dispose);
+        const { services, cookie, draft } = await schoolDraft(fakes, TYPOGRAPHIC_MATERIAL);
+        const quote = 'Mieszko I przyjął chrzest w 966 roku - był to "chrzest Polski"';
+        const edited = await call(services, "PATCH", `lesson-drafts/${draft.id}`, {
+          body: patchBody(draft, (ex, i) => (i === 0 ? { ...ex, sourceRefs: [{ quote }] } : ex)),
+          cookie,
+        });
+        expect(edited.status).toBe(200);
+        const afterEdit = LessonDraftDtoSchema.parse(await edited.json());
+        expect(afterEdit.exercises[0]!.sourceRefs).toEqual([{ quote }]);
+        const published = await call(services, "POST", `lesson-drafts/${afterEdit.id}/publish`, {
+          body: { expectedEditNumber: afterEdit.editNumber },
+          cookie,
+        });
+        expect(published.status).toBe(200);
+      });
+
+      it("błędny szkic: `details.exercises[].errors` to dokładnie polskie komunikaty, bez id reguł i angielskiego found", async () => {
+        const fakes = await fakeGeneration();
+        disposers.push(fakes.dispose);
+        const { services, cookie, draft } = await schoolDraft(fakes, TYPOGRAPHIC_MATERIAL);
+        const response = await call(services, "PATCH", `lesson-drafts/${draft.id}`, {
+          body: patchBody(draft, (ex, i) => (i === 0 ? { ...ex, sourceRefs: [{ quote: "Mieszko I przyjął chrzest w 967 roku" }] } : ex)),
+          cookie,
+        });
+        expect(response.status).toBe(400);
+        const body = (await response.json()) as { code: string; details?: { exercises?: { index: number; errors: string[] }[] } };
+        expect(body.code).toBe("validation");
+        expect(body.details?.exercises).toEqual([{ index: 0, errors: ["sourceRefs: cytat nie występuje w materiale źródłowym"] }]);
+        for (const error of body.details!.exercises!.flatMap((entry) => entry.errors)) {
+          expect(error).not.toContain("[");
+          expect(error).not.toContain("does not occur");
+        }
+      });
+
+      it("szkic z pustym `hint` i błędnym `focus` zwraca te same komunikaty co przed katalogiem reguł", async () => {
+        const fakes = await fakeGeneration();
+        disposers.push(fakes.dispose);
+        const { services, cookie, draft } = await schoolDraft(fakes);
+        const index = draft.exercises.findIndex((ex) => ex.exerciseType === "lesson_open_answer");
+        expect(index).toBeGreaterThanOrEqual(0);
+        // Edycja: pusty napis odrzuca już schemat wejścia HTTP (ogólny błąd walidacji, bez listy ćwiczeń).
+        const response = await call(services, "PATCH", `lesson-drafts/${draft.id}`, {
+          body: patchBody(draft, (ex, i) => (i === index ? { ...ex, hint: "", focus: ["słowo spoza odpowiedzi"] } : ex)),
+          cookie,
+        });
+        expect(response.status).toBe(400);
+        const body = (await response.json()) as { code: string; details?: unknown };
+        expect(body.code).toBe("validation");
+        expect(body.details).toBeUndefined();
+        // Publikacja szkicu zapisanego z takim payloadem: walidator ćwiczenia rodzica jak dotąd zgłasza tylko
+        // kontrakt (dalszych reguł nie liczy; ponowna analiza po pustych napisach działa wyłącznie u agenta).
+        await pool.query("update learning_app.item_revisions set payload=payload || $1::jsonb where id=$2", [
+          JSON.stringify({ hint: "", focus: ["słowo spoza odpowiedzi"] }),
+          draft.exercises[index]!.revisionId,
+        ]);
+        const published = await call(services, "POST", `lesson-drafts/${draft.id}/publish`, { body: { expectedEditNumber: draft.editNumber }, cookie });
+        expect(published.status).toBe(400);
+        const publishBody = (await published.json()) as { details?: { exercises?: { index: number; errors: string[] }[] } };
+        expect(publishBody.details?.exercises).toEqual([{ index, errors: ["hint: wymagane minimum 1"] }]);
+      });
+    });
 
     it("świeżo wygenerowany szkic szkolny z fake'a nie ma exposureLeaks", async () => {
       const fakes = await fakeGeneration();

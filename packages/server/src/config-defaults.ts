@@ -41,22 +41,6 @@ export const CONFIG_DEFAULTS = {
   UMIEM_GRADER_MAX_CALLS_PER_SESSION: "20",
   UMIEM_SESSION_ACTIVITY_TIMEOUT_MS: "60000",
 
-  // ── Krytyk lekcji (worker): przegląd świeżych ćwiczeń po walidacji ──
-  // Domyślnie wyłączony; włączony z UMIEM_REVIEWER_API_KEY albo wspólnym
-  // OPENROUTER_API_KEY (tylko https OpenRouter). Do modelu trafia wyłącznie
-  // materiał rodzica i ćwiczenia — bez danych dziecka. Rozumowanie
-  // (UMIEM_REVIEWER_REASONING) zostaje nieustawione.
-  UMIEM_REVIEWER_ENABLED: "false",
-  UMIEM_REVIEWER_BASE_URL: "https://openrouter.ai/api/v1",
-  UMIEM_REVIEWER_MODEL: "anthropic/claude-sonnet-5.5",
-  UMIEM_REVIEWER_TIMEOUT_MS: "120000",
-  UMIEM_REVIEWER_CONCURRENCY: "3",
-  UMIEM_REVIEWER_MAX_OUTPUT_TOKENS: "6000",
-  UMIEM_REVIEWER_MAX_CALLS_PER_RUN: "12",
-  // Budżet fazy krytyka; razem z limitem przebiegu generacji musi mieścić się
-  // w WORKER_HEALTH_STALE_MS (pilnuje apps/worker/src/loop.test.ts).
-  UMIEM_REVIEWER_PHASE_BUDGET_MS: "240000",
-
   // ── Obrazy (OpenAI, klucz OPENAI_API_KEY) ──
   UMIEM_IMAGE_PROVIDER: "openai",
   UMIEM_IMAGE_MODEL: "gpt-image-2.5-sunburst",
@@ -77,12 +61,12 @@ export const CONFIG_DEFAULTS = {
   UMIEM_LESSON_GENERATION_RUN_TIMEOUT_MS: "600000",
   UMIEM_LESSON_GENERATION_CANCEL_POLL_MS: "1000",
 
-  // ── Agent puli lekcji (worker; etap 2 #237) ──
-  // Lista przedmiotów generowanych agentem (identyfikatory po przecinku); pusta =
-  // wszystkie lekcje generuje potok. Adapter mówi wyłącznie z OpenRouter; routing
+  // ── Agent puli lekcji (worker; etap 2–3 #237) ──
+  // Generuje lekcje każdego przedmiotu. Adapter mówi wyłącznie z OpenRouter; routing
   // dostawcy `UMIEM_LESSON_AGENT[_CHECKER]_PROVIDER_*` dziedziczy `UMIEM_LLM_PROVIDER_*`.
-  // Klucz: UMIEM_LESSON_AGENT_API_KEY → OPENROUTER_API_KEY → UMIEM_LLM_API_KEY (nie tutaj).
-  UMIEM_LESSON_AGENT_SUBJECTS: "",
+  // Klucz: UMIEM_LESSON_AGENT_API_KEY → OPENROUTER_API_KEY → UMIEM_LLM_API_KEY (nie tutaj);
+  // bez klucza agent jest niedostępny; worker startuje bez niego tylko bez innych zależności od
+  // OpenRouter (LLM i TTS na OpenAI-direct) — przy domyślnych adresach brak klucza zatrzymuje start.
   UMIEM_LESSON_AGENT_MODEL: "google/gemini-3.8-flash",
   UMIEM_LESSON_AGENT_REASONING: "low",
   UMIEM_LESSON_AGENT_CHECKER_MODEL: "deepseek/deepseek-v4.1-flash-1017",
@@ -92,10 +76,12 @@ export const CONFIG_DEFAULTS = {
   UMIEM_LESSON_AGENT_CHECKER_CONCURRENCY: "4",
   UMIEM_LESSON_AGENT_OBJECTIVE_TIMEOUT_MS: "300000",
   UMIEM_LESSON_AGENT_CHECKER_TIMEOUT_MS: "90000",
+  UMIEM_LESSON_AGENT_CALL_TIMEOUT_MS: "90000",
   UMIEM_LESSON_AGENT_RUN_BUDGET_USD: "1.00",
 
   // ── Worker ──
   WORKER_POLL_MS: "2000",
+  // Limit runu generacji lekcji mieści się w progu zdrowia; pilnuje apps/worker/src/loop.test.ts.
   WORKER_HEALTH_STALE_MS: "900000",
 } as const satisfies Record<string, string>;
 

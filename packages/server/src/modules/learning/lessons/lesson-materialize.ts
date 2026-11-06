@@ -12,6 +12,7 @@ import { clozeParts, fillCloze } from "../../../domain/lessons/cloze";
 import { answersEquivalent } from "../../../domain/lessons/pool-validation";
 import type { LearningObjective, LessonExerciseType, LessonTopic, LessonVisualSubject, SubjectModule } from "../../../domain/lessons/types";
 import type { LessonTaskPlan } from "../../../domain/lessons/scheduler";
+import { lessonInstructionOf, schoolCriteriaOf } from "../../materials";
 
 /**
  * Materializacja zadań lekcji — część CZYSTA (poza `randomUUID` i zdeterminowanym
@@ -133,12 +134,6 @@ export function lessonLocale(value: string): LessonContentLocale | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
-/** Polecenie przekształcenia z tematu, gdy payload go nie niesie. */
-function transformInstruction(topic: LessonTopic, payload: LessonExercisePayload): string | undefined {
-  if (payload.exerciseType !== "lesson_transform" || !payload.transformId) return undefined;
-  return topic.transforms.find((t) => t.id === payload.transformId)?.instructionPl;
-}
-
 /**
  * Składa kartę (prezentacja): treść karty tematu z przykładami lekcji oraz
  * gotowe nagranie „Posłuchaj karty”, gdy przedmiot ma `ttsForPrompts`
@@ -201,7 +196,7 @@ export function materializeExercise(
   const payload = exercise.payload;
   const shuffleSeed = options.shuffleSeed ?? `${taskId}:${randomUUID()}`;
   const objective = topic.objectives.find((o) => o.id === payload.objectiveId);
-  const instructionPl = payload.instructionPl ?? transformInstruction(topic, payload) ?? objective?.titlePl ?? "";
+  const instructionPl = lessonInstructionOf(topic, payload);
   const mockTest = options.mockTest ?? false;
 
   // Audio odpowiedzi kanonicznej dołączane WYŁĄCZNIE do typów tekstowych i tylko
@@ -241,15 +236,8 @@ export function materializeExercise(
     ...(objective ? { objectiveSnapshot: { objectiveTitlePl: objective.titlePl, topicId: topic.id, topicVersion: topic.version, descriptionEn: objective.descriptionEn, errorCategories: [...objective.errorCategories], hints: { ...objective.hints }, topicTitlePl: topic.titlePl, extraErrorCategories: topic.extraErrorCategories.map((c) => ({ ...c })) } } : {}),
   };
   // Kryteria v3 w kluczu prywatnym: ocena szkolna (Etap 2) ich potrzebuje, a prompt dziecka ich nie zawiera.
-  if (payload.requiredElements && payload.requiredElements.length > 0) {
-    baseKey.schoolCriteria = {
-      requiredElements: payload.requiredElements.map((el) => ({ ...el })),
-      supplementaryElements: [...(payload.supplementaryElements ?? [])],
-      commonErrors: [...(payload.commonErrors ?? [])],
-      ...(payload.expectedForm ? { expectedForm: payload.expectedForm } : {}),
-      sourceQuotes: (payload.sourceRefs ?? []).map((ref) => ref.quote),
-    };
-  }
+  const schoolCriteria = schoolCriteriaOf(payload);
+  if (schoolCriteria) baseKey.schoolCriteria = schoolCriteria;
   const taskContext: Record<string, unknown> = { reason: plan.reason, objectiveId: payload.objectiveId, independentCheck: plan.independentCheck };
   const common = { exerciseType: payload.exerciseType, itemRevisionId: exercise.revisionId, context: taskContext } as const;
   // Treść zadań zamkniętych i luki jest w języku odpowiedzi przedmiotu; nieznany język = brak pola.

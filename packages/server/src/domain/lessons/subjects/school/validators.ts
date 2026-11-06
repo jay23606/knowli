@@ -1,27 +1,27 @@
+import { MIN_SOURCE_QUOTE_LENGTH } from "@learning/contracts";
 import type { LessonExerciseDraft, LessonTopic } from "../../types";
 import { computeCalculationAnswer, renderCalculationPrompt } from "../../calculation";
+import { clip, type LessonRuleIssue } from "../../rules/catalog";
+import { quoteGrounding } from "./quote-normalize";
+import { schoolIssue } from "./rules";
 
 /**
  * Reguły przedmiotu szkolnego dokładane do walidacji ogólnej puli
  * (`subject.validateExercise`) oraz walidacja całej puli z materiałem
  * (`validatePoolExtra`: uziemienie cytatów i spójność rodzin pytań).
- * Komunikaty po polsku, z nazwą pola — jak reszta walidatorów lekcji.
+ * Zgłoszenia reguł katalogu szkoły (`rules.ts`): `pl` to dzisiejszy komunikat po
+ * polsku z nazwą pola, `found` po angielsku z wartością dla modelu agenta.
  */
 
 const OPEN_TYPE = "lesson_open_answer";
 const KEYWORDS_TYPE = "lesson_keywords";
 
 /**
- * Normalizacja do porównania cytatu z materiałem: tylko NFC i białe znaki —
- * cytat pokazywany rodzicowi ma być dokładnym fragmentem, z wielkością liter.
+ * Porównanie sformułowań w rodzinie pytań: NFC, zwinięte białe znaki, bez
+ * wielkości liter. Osobne od dopasowania cytatów (`quote-normalize.ts`).
  */
-function normalizeForGrounding(text: string): string {
-  return text.normalize("NFC").replace(/\s+/g, " ").trim();
-}
-
-/** Porównanie sformułowań w rodzinie pytań: jak wyżej, ale bez wielkości liter. */
 function normalizeForPromptComparison(text: string): string {
-  return normalizeForGrounding(text).toLocaleLowerCase("pl-PL");
+  return text.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase("pl-PL");
 }
 
 /** Słowa tekstu po NFC i małymi literami (litery i cyfry). */
@@ -45,75 +45,122 @@ function termOccursIn(term: string, words: readonly string[]): boolean {
   });
 }
 
-export function validateSchoolExercise(ex: LessonExerciseDraft, _topic: LessonTopic): string[] {
-  const errors: string[] = [];
+/** Posortowane identyfikatory elementów wymaganych (porównanie rodziny). */
+function elementIdsOf(ex: LessonExerciseDraft): string {
+  return (ex.requiredElements ?? []).map((el) => el.id).sort((a, b) => a.localeCompare(b)).join(",");
+}
+
+/** Pola v3 dozwolone tylko w odpowiedzi otwartej, z dzisiejszymi komunikatami. */
+const OPEN_ONLY_FIELDS = [
+  ["questionType", "questionType: typ pytania dotyczy tylko odpowiedzi otwartej"],
+  ["requiredElements", "requiredElements: elementy wymagane dotyczą tylko odpowiedzi otwartej"],
+  ["supplementaryElements", "supplementaryElements: elementy uzupełniające dotyczą tylko odpowiedzi otwartej"],
+  ["commonErrors", "commonErrors: typowe błędy dotyczą tylko odpowiedzi otwartej"],
+  ["expectedForm", "expectedForm: oczekiwana forma dotyczy tylko odpowiedzi otwartej"],
+] as const;
+
+export function validateSchoolExercise(ex: LessonExerciseDraft, _topic: LessonTopic): LessonRuleIssue[] {
+  const issues: LessonRuleIssue[] = [];
 
   // Każde ćwiczenie puli musi mieć uziemienie (obecność; zgodność z materiałem
   // sprawdza validateSchoolPool, które ma dostęp do materiału).
   if (ex.exerciseType !== "lesson_card") {
     if (!ex.sourceRefs || ex.sourceRefs.length === 0) {
-      errors.push("sourceRefs: ćwiczenie przedmiotu szkolnego wymaga co najmniej jednego cytatu źródłowego");
+      issues.push(schoolIssue("school.quote_required", {
+        pl: "sourceRefs: ćwiczenie przedmiotu szkolnego wymaga co najmniej jednego cytatu źródłowego",
+        found: ex.sourceRefs ? "sourceRefs is empty" : "sourceRefs is missing",
+      }));
     }
   }
 
   if (ex.exerciseType === "lesson_calculation") {
     if (ex.calculation === undefined) {
-      errors.push("calculation: zadanie rachunkowe wymaga parametrów obliczenia");
+      issues.push(schoolIssue("school.calculation_params_required", {
+        pl: "calculation: zadanie rachunkowe wymaga parametrów obliczenia",
+        found: "calculation is missing",
+      }));
     } else {
       try {
         const expectedAnswer = computeCalculationAnswer(ex.calculation).answer;
         const expectedPrompt = renderCalculationPrompt(ex.calculation);
         if (ex.answer !== expectedAnswer) {
-          errors.push("answer: wynik rachunku musi być zgodny z odpowiedzią obliczoną przez kod");
+          issues.push(schoolIssue("school.calculation_answer_computed", {
+            pl: "answer: wynik rachunku musi być zgodny z odpowiedzią obliczoną przez kod",
+            found: `answer ${clip(ex.answer)}, computed ${clip(expectedAnswer)}`,
+          }));
         }
         if (ex.prompt !== expectedPrompt) {
-          errors.push("prompt: treść rachunku musi być zgodna z szablonem renderowanym przez kod");
+          issues.push(schoolIssue("school.calculation_prompt_template", {
+            pl: "prompt: treść rachunku musi być zgodna z szablonem renderowanym przez kod",
+            found: `prompt ${clip(ex.prompt ?? "")}, template ${clip(expectedPrompt)}`,
+          }));
         }
       } catch {
-        errors.push("calculation: nieprawidłowe parametry obliczenia lub tolerancja wyniku");
+        issues.push(schoolIssue("school.calculation_invalid", {
+          pl: "calculation: nieprawidłowe parametry obliczenia lub tolerancja wyniku",
+          found: `the calculator rejected calculation ${clip(JSON.stringify(ex.calculation))}`,
+        }));
       }
     }
     if (ex.acceptedAnswers.length > 0) {
-      errors.push("acceptedAnswers: zadanie rachunkowe wymaga pustej listy wariantów");
+      issues.push(schoolIssue("school.computed_lists_empty", {
+        field: "acceptedAnswers",
+        pl: "acceptedAnswers: zadanie rachunkowe wymaga pustej listy wariantów",
+        found: `acceptedAnswers has ${ex.acceptedAnswers.length} items on lesson_calculation`,
+      }));
     }
     if (ex.focus.length > 0) {
-      errors.push("focus: zadanie rachunkowe wymaga pustej listy");
+      issues.push(schoolIssue("school.computed_lists_empty", {
+        field: "focus",
+        pl: "focus: zadanie rachunkowe wymaga pustej listy",
+        found: `focus has ${ex.focus.length} items on lesson_calculation`,
+      }));
     }
   }
 
   if (ex.exerciseType === OPEN_TYPE) {
     if (!ex.questionType) {
-      errors.push("questionType: odpowiedź otwarta wymaga typu pytania");
+      issues.push(schoolIssue("school.open_required_fields", {
+        field: "questionType",
+        pl: "questionType: odpowiedź otwarta wymaga typu pytania",
+        found: "questionType is missing",
+      }));
     }
     if (!ex.requiredElements || ex.requiredElements.length === 0) {
-      errors.push("requiredElements: odpowiedź otwarta wymaga 1–6 elementów wymaganych");
+      issues.push(schoolIssue("school.open_required_fields", {
+        field: "requiredElements",
+        pl: "requiredElements: odpowiedź otwarta wymaga 1–6 elementów wymaganych",
+        found: ex.requiredElements ? "requiredElements is empty" : "requiredElements is missing",
+      }));
     } else {
       const ids = ex.requiredElements.map((el) => el.id);
       if (new Set(ids).size !== ids.length) {
-        errors.push("requiredElements: identyfikatory elementów muszą być unikalne w ćwiczeniu");
+        const repeated = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+        issues.push(schoolIssue("school.element_ids_unique", {
+          pl: "requiredElements: identyfikatory elementów muszą być unikalne w ćwiczeniu",
+          found: `repeated ids ${clip(repeated.join(", "))}`,
+        }));
       }
     }
     if (!ex.expectedForm) {
-      errors.push("expectedForm: odpowiedź otwarta wymaga oczekiwanej formy");
+      issues.push(schoolIssue("school.open_required_fields", {
+        field: "expectedForm",
+        pl: "expectedForm: odpowiedź otwarta wymaga oczekiwanej formy",
+        found: "expectedForm is missing",
+      }));
     }
   } else {
-    if (ex.questionType !== undefined) {
-      errors.push("questionType: typ pytania dotyczy tylko odpowiedzi otwartej");
-    }
-    if (ex.requiredElements !== undefined) {
-      errors.push("requiredElements: elementy wymagane dotyczą tylko odpowiedzi otwartej");
-    }
-    if (ex.supplementaryElements !== undefined) {
-      errors.push("supplementaryElements: elementy uzupełniające dotyczą tylko odpowiedzi otwartej");
-    }
-    if (ex.commonErrors !== undefined) {
-      errors.push("commonErrors: typowe błędy dotyczą tylko odpowiedzi otwartej");
-    }
-    if (ex.expectedForm !== undefined) {
-      errors.push("expectedForm: oczekiwana forma dotyczy tylko odpowiedzi otwartej");
+    for (const [field, pl] of OPEN_ONLY_FIELDS) {
+      if (ex[field] !== undefined) {
+        issues.push(schoolIssue("school.v3_field_type", { field, pl, found: `${field} is set on ${ex.exerciseType}` }));
+      }
     }
     if (ex.familyId !== undefined && ex.exerciseType !== KEYWORDS_TYPE) {
-      errors.push("familyId: rodziny pytań dotyczą tylko odpowiedzi otwartej i słów kluczowych");
+      issues.push(schoolIssue("school.v3_field_type", {
+        field: "familyId",
+        pl: "familyId: rodziny pytań dotyczą tylko odpowiedzi otwartej i słów kluczowych",
+        found: `familyId is set on ${ex.exerciseType}`,
+      }));
     }
   }
 
@@ -121,47 +168,72 @@ export function validateSchoolExercise(ex: LessonExerciseDraft, _topic: LessonTo
     // Słowa kluczowe poprzedzają konkretną rodzinę pytań otwartych (design 6.1);
     // istnienie tej rodziny w celu sprawdza validateSchoolPool.
     if (!ex.familyId) {
-      errors.push("familyId: słowa kluczowe muszą wskazywać rodzinę pytań otwartych");
+      issues.push(schoolIssue("school.keywords_family_required", {
+        pl: "familyId: słowa kluczowe muszą wskazywać rodzinę pytań otwartych",
+        found: ex.familyId === undefined ? "familyId is missing" : "familyId is empty",
+      }));
     }
     if (ex.acceptedAnswers.length > 0) {
-      errors.push("acceptedAnswers: słowa kluczowe wymagają pustej listy wariantów");
+      issues.push(schoolIssue("school.computed_lists_empty", {
+        field: "acceptedAnswers",
+        pl: "acceptedAnswers: słowa kluczowe wymagają pustej listy wariantów",
+        found: `acceptedAnswers has ${ex.acceptedAnswers.length} items on lesson_keywords`,
+      }));
     }
     if (ex.focus.length > 0) {
-      errors.push("focus: słowa kluczowe wymagają pustej listy");
+      issues.push(schoolIssue("school.computed_lists_empty", {
+        field: "focus",
+        pl: "focus: słowa kluczowe wymagają pustej listy",
+        found: `focus has ${ex.focus.length} items on lesson_keywords`,
+      }));
     }
   }
 
-  return errors;
+  return issues;
 }
 
 /**
  * Walidacja puli z materiałem: (1) każdy cytat niepochodzący od rodzica musi
- * być dokładnym fragmentem materiału (po normalizacji), (2) ćwiczenia jednej
- * rodziny pytań (cel + familyId) muszą mieć tę samą odpowiedź wzorcową i ten
- * sam zbiór identyfikatorów elementów wymaganych.
+ * być fragmentem materiału (po normalizacji typograficznej, `quote-normalize.ts`),
+ * (2) ćwiczenia jednej rodziny pytań (cel + familyId) muszą mieć tę samą
+ * odpowiedź wzorcową i ten sam zbiór identyfikatorów elementów wymaganych.
+ * `rejectedFamilies` (tylko przyjmowanie agenta) to `familyId` pytań otwartych
+ * odrzuconych w bieżącym wywołaniu: słowa kluczowe takiej brakującej rodziny
+ * dostają osobną regułę kaskady zamiast „brak rodziny”.
  */
 export function validateSchoolPool(
   drafts: readonly LessonExerciseDraft[],
-  ctx: { material: string },
-): ReadonlyMap<number, readonly string[]> {
-  const errors = new Map<number, string[]>();
-  const push = (index: number, message: string) => {
+  ctx: { readonly material: string; readonly rejectedFamilies?: ReadonlySet<string> },
+): ReadonlyMap<number, readonly LessonRuleIssue[]> {
+  const errors = new Map<number, LessonRuleIssue[]>();
+  const push = (index: number, issue: LessonRuleIssue) => {
     const list = errors.get(index) ?? [];
-    list.push(message);
+    list.push(issue);
     errors.set(index, list);
   };
 
-  const materialNormalized = normalizeForGrounding(ctx.material);
   drafts.forEach((ex, index) => {
-    for (const ref of ex.sourceRefs ?? []) {
-      if (ref.parentAdded === true) continue;
-      const quote = normalizeForGrounding(ref.quote);
-      if (quote.length < 10) {
-        push(index, "sourceRefs: cytat za krótki, aby uziemiał ćwiczenie (min. 10 znaków)");
-      } else if (!materialNormalized.includes(quote)) {
-        push(index, "sourceRefs: cytat nie występuje w materiale źródłowym");
+    (ex.sourceRefs ?? []).forEach((ref, refIndex) => {
+      if (ref.parentAdded === true) return;
+      const field = `sourceRefs[${refIndex}].quote`;
+      const grounding = quoteGrounding(ref.quote, ctx.material);
+      if (grounding.kind === "too_short") {
+        push(index, schoolIssue("school.quote_too_short", {
+          field,
+          pl: `sourceRefs: cytat za krótki, aby uziemiał ćwiczenie (min. ${MIN_SOURCE_QUOTE_LENGTH} znaków)`,
+          found: `quote ${refIndex} ${clip(ref.quote)} has ${grounding.length} characters, minimum ${MIN_SOURCE_QUOTE_LENGTH}`,
+        }));
+      } else if (grounding.kind === "not_in_material") {
+        const prefix = grounding.matchedPrefix === ""
+          ? "not even its first character occurs there"
+          : `the material matches it only up to ${clip(grounding.matchedPrefix)}`;
+        push(index, schoolIssue("school.quote_in_material", {
+          field,
+          pl: "sourceRefs: cytat nie występuje w materiale źródłowym",
+          found: `quote ${refIndex} ${clip(ref.quote)} does not occur in the material; ${prefix}`,
+        }));
       }
-    }
+    });
   });
 
   // Rodzina żyje w obrębie celu: model generuje każdy cel osobną partią i nie zna
@@ -178,20 +250,32 @@ export function validateSchoolPool(
     if (indexes.length < 2) continue;
     const familyId = drafts[indexes[0]!]!.familyId!;
     const first = drafts[indexes[0]!]!;
-    const firstElements = (first.requiredElements ?? []).map((el) => el.id).sort((a, b) => a.localeCompare(b)).join(",");
+    const firstElements = elementIdsOf(first);
     for (const index of indexes.slice(1)) {
       const ex = drafts[index]!;
-      const elements = (ex.requiredElements ?? []).map((el) => el.id).sort((a, b) => a.localeCompare(b)).join(",");
+      const elements = elementIdsOf(ex);
       const samePrompt =
         normalizeForPromptComparison(ex.prompt ?? "") === normalizeForPromptComparison(first.prompt ?? "") && (ex.prompt ?? "") !== "";
       if (samePrompt) {
-        push(index, `familyId: ćwiczenie z rodziny „${familyId}” powiela tekst pytania innego członka rodziny`);
+        push(index, schoolIssue("school.family_prompt_repeated", {
+          pl: `familyId: ćwiczenie z rodziny „${familyId}” powiela tekst pytania innego członka rodziny`,
+          found: `prompt ${clip(ex.prompt ?? "")} repeats another member of family ${clip(familyId)}`,
+        }));
       }
-      if (ex.answer.trim() !== first.answer.trim() || elements !== firstElements) {
-        push(
-          index,
-          `familyId: ćwiczenie z rodziny „${familyId}” różni się odpowiedzią wzorcową lub elementami wymaganymi od reszty rodziny`,
-        );
+      // Dzisiejszy komunikat „odpowiedzią wzorcową lub elementami” obsługują dwie reguły
+      // z tym samym `pl`; różnica w obu polach daje oba zgłoszenia.
+      const differs = `familyId: ćwiczenie z rodziny „${familyId}” różni się odpowiedzią wzorcową lub elementami wymaganymi od reszty rodziny`;
+      if (ex.answer.trim() !== first.answer.trim()) {
+        push(index, schoolIssue("school.family_answer_differs", {
+          pl: differs,
+          found: `answer ${clip(ex.answer.trim())}, family ${clip(familyId)} has ${clip(first.answer.trim())}`,
+        }));
+      }
+      if (elements !== firstElements) {
+        push(index, schoolIssue("school.family_elements_differ", {
+          pl: differs,
+          found: `requiredElements ids [${clip(elements, undefined, { quote: false })}], family ${clip(familyId)} has [${clip(firstElements, undefined, { quote: false })}]`,
+        }));
       }
     }
   }
@@ -203,8 +287,18 @@ export function validateSchoolPool(
     if (ex.exerciseType !== KEYWORDS_TYPE || !ex.familyId) return;
     const familyIndexes = families.get(JSON.stringify([ex.objectiveId, ex.familyId])) ?? [];
     const family = familyIndexes[0] === undefined ? undefined : drafts[familyIndexes[0]];
+    if (!family && ctx.rejectedFamilies?.has(ex.familyId) === true) {
+      push(index, schoolIssue("school.keywords_family_rejected", {
+        pl: "familyId: pytanie otwarte tej rodziny odpadło w tym samym wywołaniu",
+        found: `the lesson_open_answer with familyId ${clip(ex.familyId)} was rejected in this call; submit these keywords again together with the corrected open question`,
+      }));
+      return;
+    }
     if (!family) {
-      push(index, `familyId: brak rodziny pytań otwartych „${ex.familyId}” w tym zagadnieniu`);
+      push(index, schoolIssue("school.keywords_family_missing", {
+        pl: `familyId: brak rodziny pytań otwartych „${ex.familyId}” w tym zagadnieniu`,
+        found: `no lesson_open_answer with familyId ${clip(ex.familyId)} in this objective`,
+      }));
       return;
     }
     const haystack = [...wordsOf(family.answer), ...wordsOf(ctx.material)];
@@ -212,7 +306,10 @@ export function validateSchoolPool(
     for (const id of ex.keyOptionIds ?? []) {
       const term = textById.get(id);
       if (term !== undefined && !termOccursIn(term, haystack)) {
-        push(index, `keyOptionIds: pojęcie kluczowe „${term}” nie występuje w odpowiedzi wzorcowej ani w materiale`);
+        push(index, schoolIssue("school.keyword_not_in_answer", {
+          pl: `keyOptionIds: pojęcie kluczowe „${term}” nie występuje w odpowiedzi wzorcowej ani w materiale`,
+          found: `key term ${clip(term)} (option ${clip(id)}) occurs neither in the family's model answer nor in the material`,
+        }));
       }
     }
   });
@@ -237,10 +334,19 @@ export function validateSchoolPool(
         calculation.kind === "unit_conversion" && calculation.params.fromUnit === firstCalculation.params.fromUnit
       );
       if (calculation.kind !== firstCalculation.kind || calculation.unit !== firstCalculation.unit || !sameInputUnit) {
-        push(index, `templateFamilyId: ćwiczenie z rodziny „${familyId}” różni się rodzajem obliczenia lub jednostkami od reszty rodziny`);
+        push(index, schoolIssue("school.calculation_family_mismatch", {
+          pl: `templateFamilyId: ćwiczenie z rodziny „${familyId}” różni się rodzajem obliczenia lub jednostkami od reszty rodziny`,
+          found: `${calculationShape(calculation)}, family ${clip(familyId)} has ${calculationShape(firstCalculation)}`,
+        }));
       }
     }
   }
 
   return errors;
+}
+
+/** Rodzaj obliczenia i jednostki do `found` (bez liczb wejścia). */
+function calculationShape(calculation: NonNullable<LessonExerciseDraft["calculation"]>): string {
+  const fromUnit = calculation.kind === "unit_conversion" ? `, input unit ${clip(calculation.params.fromUnit)}` : "";
+  return `kind ${clip(calculation.kind)}, unit ${clip(calculation.unit)}${fromUnit}`;
 }

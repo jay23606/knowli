@@ -18,10 +18,10 @@ import { attempts, deckVersions, eventExposures, itemRevisions, learningEvents, 
 import { AppError } from "../../../errors";
 import { fillCloze } from "../../../domain/lessons/cloze";
 import { assignmentText } from "../../../domain/lessons/evaluate";
-import { BASE_ERROR_CATEGORIES } from "../../../domain/lessons/base-error-categories";
+import { lessonCategoryLabels } from "../../materials";
 import { planLessonMockTest, toLessonMockPoolEntry, type LessonMockPoolEntry } from "../../../domain/lessons/mock-test-plan";
 import { mockPrecisionHint, objectivesWorthReviewing, schoolMockAggregate, type MockAnswerDetails, type MockPrecisionHint } from "../../../domain/lessons/mock-test-precision";
-import type { LessonExerciseType, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
+import type { LessonExerciseType } from "../../../domain/lessons/types";
 import { writeSealedEvent } from "../events";
 import { lessonContextOf, loadExercises, requireTopic } from "./lesson-sessions";
 import { materializeExercise } from "./lesson-materialize";
@@ -239,15 +239,6 @@ export async function issueLessonMockTestTask(tx: Tx, services: Services, sessio
   };
 }
 
-/** Etykiety kategorii dla celu: bazowe ∪ przedmiotu ∪ tematu, po kodzie. */
-function categoryLabels(subject: SubjectModule, topic: LessonTopic): Map<string, string> {
-  const labels = new Map<string, string>();
-  for (const category of BASE_ERROR_CATEGORIES) labels.set(category.code, category.labelPl);
-  for (const category of subject.errorCategories) labels.set(category.code, category.labelPl);
-  for (const category of topic.extraErrorCategories) labels.set(category.code, category.labelPl);
-  return labels;
-}
-
 interface AssessmentRow {
   taskId: string;
   objectiveId: string;
@@ -308,7 +299,7 @@ export async function closeLessonMockTest(tx: Tx, services: Services, session: t
   const version = (await tx.select().from(deckVersions).where(eq(deckVersions.id, session.deckVersionId)))[0]!;
   const context = lessonContextOf(version);
   const { subject, topic } = requireTopic(services, context);
-  const labels = categoryLabels(subject, topic);
+  const labels = lessonCategoryLabels(subject, topic);
   const titleOf = (objectiveId: string): string => topic.objectives.find((o) => o.id === objectiveId)?.titlePl ?? objectiveId;
 
   const byTask = await loadMockAssessments(tx, session.id);

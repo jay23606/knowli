@@ -9,11 +9,8 @@ import {
   type ExposureLeakDto,
   type LessonDraftDto,
   type LessonPromptAudioDto,
-  type LessonReviewDto,
-  type ReviewCategoryDto,
 } from "@learning/contracts";
 import { ParentIcon } from "../ParentIcon";
-import { fillTemplate, reviewCategoryLabel } from "./LessonReviewBanner";
 import AssignmentFields from "./AssignmentFields";
 import ClozeFields from "./ClozeFields";
 import PromptAudioControls, { VoiceToneSelect } from "./PromptAudioControls";
@@ -73,38 +70,6 @@ export function leakNoticeFor(
   };
 }
 
-/**
- * Wynik automatycznej kontroli jakości przy ćwiczeniu: `changed` — ćwiczenie poprawione automatycznie
- * (plakietka w nagłówku karty); `lines` — teksty notki z katalogu komunikatów.
- */
-export interface ExerciseReviewNotice {
-  changed: boolean;
-  lines: string[];
-}
-
-/** Notka kontroli dla wpisów raportu tego ćwiczenia (poprawka i/lub uwaga); brak obu → null. */
-export function reviewNoticeFor(
-  changed: LessonReviewDto["changed"][number] | undefined,
-  note: LessonReviewDto["notes"][number] | undefined,
-): ExerciseReviewNotice | null {
-  if (!changed && !note) return null;
-  const finding = (template: string, category: ReviewCategoryDto, reason: string) =>
-    fillTemplate(template, { category: reviewCategoryLabel(category), reason });
-  const lines: string[] = [];
-  if (changed) {
-    lines.push(finding(messages.lessons.reviewChangedReason, changed.category, changed.reasonPl));
-    lines.push(fillTemplate(messages.lessons.reviewChangedBefore, { before: changed.beforePl }));
-    if (changed.addedVariants.length > 0) {
-      lines.push(fillTemplate(messages.lessons.reviewAddedVariants, { variants: changed.addedVariants.join(", ") }));
-    }
-  }
-  if (note) {
-    lines.push(finding(messages.lessons.reviewNote, note.category, note.reasonPl));
-    if (note.fixRejected) lines.push(messages.lessons.reviewNoteFixRejected);
-  }
-  return { changed: changed !== undefined, lines };
-}
-
 export interface CalculationControls {
   /** Tekst wpisany w pole liczby (z przecinkiem), zanim stanie się liczbą. */
   input: (field: string) => string | undefined;
@@ -133,8 +98,6 @@ interface LessonExerciseCardProps {
   changed: boolean;
   /** Ujawnione rozwiązanie tego ćwiczenia (z zapisanego szkicu); po zmianie karty zastępuje je prośba o zapis. */
   leak: LeakNotice | null;
-  /** Wynik automatycznej kontroli jakości (tylko wpisy aktualne dla zapisanej treści ćwiczenia). */
-  review: ExerciseReviewNotice | null;
   /** Klucz źródła (id ćwiczenia) do pokazania: rozwija jego zagadnienie i etap oraz przewija do niego. */
   onShowSource: (sourceKey: string) => void;
   /** Zapisana wersja ćwiczenia ma audio — zmiana oznacza nowe media po zapisie. */
@@ -176,7 +139,6 @@ function sameCardProps(prev: LessonExerciseCardProps, next: LessonExerciseCardPr
   if (prev.calculation !== null || next.calculation !== null) return false;
   if (prev.leak?.kind !== next.leak?.kind || prev.leak?.message !== next.leak?.message
     || prev.leak?.show?.label !== next.leak?.show?.label || prev.leak?.show?.sourceKey !== next.leak?.show?.sourceKey) return false;
-  if (prev.review?.changed !== next.review?.changed || prev.review?.lines.join("\n") !== next.review?.lines.join("\n")) return false;
   if (prev.audio?.state !== next.audio?.state || prev.audio?.assetId !== next.audio?.assetId) return false;
   if (prev.promptAudio?.state !== next.promptAudio?.state || prev.promptAudio?.assetId !== next.promptAudio?.assetId
     || prev.promptAudio?.previousAssetId !== next.promptAudio?.previousAssetId) return false;
@@ -185,7 +147,7 @@ function sameCardProps(prev: LessonExerciseCardProps, next: LessonExerciseCardPr
   if (prev.sentenceAudio?.state !== next.sentenceAudio?.state || prev.sentenceAudio?.assetId !== next.sentenceAudio?.assetId
     || prev.sentenceAudio?.previousAssetId !== next.sentenceAudio?.previousAssetId) return false;
   return (Object.keys(next) as (keyof LessonExerciseCardProps)[])
-    .every((key) => key === "audio" || key === "leak" || key === "review" || key === "promptAudio" || key === "explanationAudio" || key === "sentenceAudio" || key === "calculation" || Object.is(prev[key], next[key]));
+    .every((key) => key === "audio" || key === "leak" || key === "promptAudio" || key === "explanationAudio" || key === "sentenceAudio" || key === "calculation" || Object.is(prev[key], next[key]));
 }
 
 function LessonExerciseCard({
@@ -196,7 +158,6 @@ function LessonExerciseCard({
   open,
   changed,
   leak,
-  review,
   onShowSource,
   hadAudio,
   errors,
@@ -238,9 +199,7 @@ function LessonExerciseCard({
   const errId = `exercise-errors-${index}`;
   const leakId = `exercise-leak-${index}`;
   const leakTextId = `${leakId}-text`;
-  const reviewId = `exercise-review-${index}`;
-  const reviewTextId = `${reviewId}-text`;
-  const describedBy = [leak ? leakTextId : null, review ? reviewTextId : null].filter((id) => id !== null).join(" ") || undefined;
+  const describedBy = leak ? leakTextId : undefined;
   const described = errors ? { "aria-describedby": errId } : {};
   const forcedOpen = changed || errors !== undefined;
   const preview = exercisePreview(ex);
@@ -275,9 +234,6 @@ function LessonExerciseCard({
           {messages.lessons.exerciseNumber.replace("{n}", String(index + 1))}
           {open && editable ? ` · ${messages.lessons.exerciseEditing}` : ""}
         </Text>
-        {review?.changed && (
-          <span className="pp-status-badge" data-tone="warning" data-testid={`exercise-review-badge-${index}`}>{messages.lessons.reviewChangedBadge}</span>
-        )}
         {audio && (
           <span className="pp-status-badge" data-tone={audioReady ? "success" : audio.state === "failed" ? "danger" : "neutral"} data-testid={`exercise-audio-state-${index}`}>
             {audioText}
@@ -340,15 +296,6 @@ function LessonExerciseCard({
               {leak.show.label}
             </Button>
           )}
-        </Alert>
-      )}
-
-      {review && (
-        // Notka kontroli jakości: wskazówka dla rodzica (bez role="alert"), widoczna także przy zwiniętej karcie.
-        <Alert color="gray" variant="light" id={reviewId} role="note" data-testid={reviewId} mb="sm" icon={<ParentIcon name="info" />}>
-          <div id={reviewTextId}>
-            {review.lines.map((line, i) => <Text key={i} size="sm">{line}</Text>)}
-          </div>
         </Alert>
       )}
 

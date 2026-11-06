@@ -34,6 +34,7 @@ function withList(list: SourceMaterialSummaryDto[]): QueryClient {
 }
 
 const fullCatalog: SubjectCatalogDto = {
+  lessonGenerationAvailable: true,
   subjects: [
     { id: "english_grammar", titlePl: "Gramatyka angielska", creation: "catalog", subjectTitleRequired: false, topics: [] },
     { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] },
@@ -103,29 +104,19 @@ describe("SourcePage", () => {
     expect(markup).not.toContain('data-testid="source-body"');
   });
 
-  it("informacja o automatycznej kontroli jakości przy przyciskach lekcji, gdy katalog podaje jej usługę", () => {
-    const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
-    const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, { ...fullCatalog, reviewService: REVIEW }));
-    expect(markup).toContain('data-testid="source-review-service"');
-    expect(markup).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
-    const without = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source));
-    expect(without).not.toContain('data-testid="source-review-service"');
-  });
-
   describe("przedmioty z agentem puli (checkService)", () => {
-    const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
     const GEN = ["openrouter.ai · a", "openrouter.ai · b"];
     const CHECK = "openrouter.ai · c";
     const agentCatalog = (chapterOnly: boolean): SubjectCatalogDto => ({
+      lessonGenerationAvailable: true,
       subjects: [
         fullCatalog.subjects[0]!,
         { ...fullCatalog.subjects[1]!, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true },
         chapterOnly ? { ...fullCatalog.subjects[2]!, generationServices: GEN, checkService: CHECK } : fullCatalog.subjects[2]!,
       ],
-      reviewService: REVIEW,
     });
 
-    it("usługi generowania i drugi model w wariancie szkolnym (z materiałem), krytyk tylko dla przedmiotu potoku", () => {
+    it("usługi generowania i drugi model w wariancie szkolnym (z materiałem)", () => {
       const both = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, agentCatalog(true)));
       expect(both).toContain(messages.lessons.generationServicesInfo.replace("{service}", GEN.join(", ")));
       // te same usługi generowania przy obu przyciskach: komunikat tylko raz
@@ -135,18 +126,26 @@ describe("SourcePage", () => {
       expect(both).toContain(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
       expect(both).toContain('data-testid="source-check-service-chapter"');
       expect(both).toContain(messages.lessons.checkServiceInfo.replace("{service}", CHECK));
-      // oba przyciski prowadzą do agenta: krytyk ich nie obejmuje
-      expect(both).not.toContain('data-testid="source-review-service"');
 
       const mixed = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, agentCatalog(false)));
       expect(mixed).toContain('data-testid="source-check-service-school"');
       expect(mixed).not.toContain('data-testid="source-check-service-chapter"');
-      // przycisk rozdziału prowadzi do przedmiotu potoku, więc komunikat krytyka zostaje
-      expect(mixed).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
+    });
+
+    it("ocena pytań otwartych: komunikat tylko przy przedmiocie z openCheckService", () => {
+      const OPEN = "openrouter.ai · g";
+      const catalog: SubjectCatalogDto = {
+        ...agentCatalog(true),
+        subjects: agentCatalog(true).subjects.map((s) => (s.id === fullCatalog.subjects[1]!.id ? { ...s, openCheckService: OPEN } : s)),
+      };
+      const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, catalog));
+      expect(markup).toContain('data-testid="source-open-check-service-school"');
+      expect(markup).toContain(messages.lessons.openCheckServiceInfo.replace("{service}", OPEN));
+      expect(markup).not.toContain('data-testid="source-open-check-service-chapter"');
     });
 
     it("bez checkService nie ma komunikatów agenta", () => {
-      const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, { ...fullCatalog, reviewService: REVIEW }));
+      const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, fullCatalog));
       expect(markup).not.toContain('data-testid="source-check-service-school"');
       expect(markup).not.toContain('data-testid="source-generation-service-school"');
     });
@@ -195,6 +194,17 @@ describe("SourcePage", () => {
       expect(markup).not.toContain('data-testid="source-no-lesson-subjects"');
     });
 
+    it("bez klucza (lessonGenerationAvailable: false): przyciski lekcji wyłączone z komunikatem, zestaw słówek aktywny", () => {
+      const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, { ...fullCatalog, lessonGenerationAvailable: false }));
+      expect(markup).toMatch(/<button[^>]*disabled=""[^>]*data-testid="source-create-chapter"/);
+      expect(markup).toMatch(/<button[^>]*disabled=""[^>]*data-testid="source-create-school"/);
+      expect(markup).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="source-create-vocabulary"/);
+      expect(markup).toContain('data-testid="source-generation-unavailable"');
+      expect(markup).toContain(messages.lessons.generationErrors.lesson_agent_unavailable);
+      const available = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source));
+      expect(available).not.toContain('data-testid="source-generation-unavailable"');
+    });
+
     it("katalog jeszcze się wczytuje: przyciski są, ale wyłączone", () => {
       const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, null));
       expect(markup).toMatch(/<button[^>]*disabled=""[^>]*data-testid="source-create-chapter"/);
@@ -202,12 +212,12 @@ describe("SourcePage", () => {
     });
 
     it("przedmiotu nie ma w katalogu: bez jego przycisku (formularz nie wybierze innego przedmiotu)", () => {
-      const schoolOnly = { subjects: fullCatalog.subjects.filter((subject) => subject.id !== "english_chapter") };
+      const schoolOnly = { lessonGenerationAvailable: true, subjects: fullCatalog.subjects.filter((subject) => subject.id !== "english_chapter") };
       const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, schoolOnly));
       expect(markup).not.toContain('data-testid="source-create-chapter"');
       expect(markup).toContain('data-testid="source-create-school"');
 
-      const none = { subjects: fullCatalog.subjects.filter((subject) => subject.creation !== "material") };
+      const none = { lessonGenerationAvailable: true, subjects: fullCatalog.subjects.filter((subject) => subject.creation !== "material") };
       const empty = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, none));
       expect(empty).not.toContain('data-testid="source-create-chapter"');
       expect(empty).not.toContain('data-testid="source-create-school"');
@@ -233,7 +243,7 @@ describe("SourcePage", () => {
       const loading = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, null));
       expect(loading).toMatch(vocabularyButton);
 
-      const none = { subjects: fullCatalog.subjects.filter((subject) => subject.creation !== "material") };
+      const none = { lessonGenerationAvailable: true, subjects: fullCatalog.subjects.filter((subject) => subject.creation !== "material") };
       const empty = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, none));
       expect(empty).toMatch(vocabularyButton);
       expect(empty).toContain(messages.sources.noLessonSubjects);

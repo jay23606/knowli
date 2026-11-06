@@ -18,6 +18,7 @@ import {
 import { createOpenApiHandler } from "@/orpc/handler";
 import { kidRouter } from "@/orpc/kid-router";
 import { parentORpcRouter } from "@/orpc/parent-router";
+import { parseLessonAgentProgress } from "../../packages/server/src/modules/materials/lessons/lesson-agent-checkpoint";
 import { currentPoolId, workerDatabaseUrl } from "../integration-worker-databases";
 
 type Pool = ReturnType<typeof createDatabase>["pool"];
@@ -263,6 +264,22 @@ export async function countRows(table: string): Promise<number> {
   const { pool } = testDatabase();
   const result = await pool.query(`SELECT count(*)::int AS count FROM learning_app.${table}`);
   return result.rows[0]?.count as number;
+}
+
+/**
+ * Kody odrzuceń agenta puli w runie z `generation_runs.agent_checkpoint`: podsumowanie po zapisie do
+ * szkicu, pełny postęp po porażce walidacji. Kumulują się w obrębie runu (także po „Ponów”). Brak
+ * punktu kontrolnego to błąd testu (run agenta zawsze go zapisuje).
+ */
+export async function rejectionCodesOf(runId: string): Promise<Record<string, number>> {
+  const { pool } = testDatabase();
+  const [row] = (await pool.query<{ agent_checkpoint: { kind?: string; rejectionCodes?: Record<string, number> } | null }>(
+    "select agent_checkpoint from learning_app.generation_runs where id = $1", [runId],
+  )).rows;
+  const checkpoint = row?.agent_checkpoint;
+  if (checkpoint === null || checkpoint === undefined) throw new Error(`run ${runId} bez punktu kontrolnego agenta`);
+  if (checkpoint.kind === "summary") return checkpoint.rejectionCodes!;
+  return parseLessonAgentProgress(checkpoint, runId)!.rejectionCodes;
 }
 
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

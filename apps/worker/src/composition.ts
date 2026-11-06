@@ -4,6 +4,7 @@ import {
   createGenerationDepsFromEnv,
   createProductionSubjectRegistry,
   createServices,
+  isLessonAgentAvailable,
   mediaSettingsFromEnv,
   pricesFromEnv,
   systemClock,
@@ -23,8 +24,10 @@ type WorkerPool = ReturnType<typeof createDatabase>["pool"];
  * (także fake agenta puli) go nie używają, więc tryb fake nie zapisuje kosztów.
  *
  * Agent puli lekcji (#237) składa się tylko tutaj, z osobnego eksportu
- * `@learning/server/lesson-agent` — proces web nie ładuje adaptera AI SDK. Ten sam
- * rejestr przedmiotów waliduje listę agenta i trafia do usług.
+ * `@learning/server/lesson-agent` — proces web nie ładuje adaptera AI SDK. Pole
+ * `generation.lessonAgent` jest zawsze ustawione: bez klucza OpenRouter worker
+ * startuje z agentem niedostępnym i jedną linią logu (bez innych zależności od
+ * OpenRouter, np. LLM i TTS na OpenAI, start się udaje).
  */
 export function buildWorkerServices(): { services: Services; pool: WorkerPool; usage: UsageRecorder } {
   // domyślna konfiguracja z repo pod spodem, .env nadpisuje (config-defaults.ts)
@@ -37,21 +40,27 @@ export function buildWorkerServices(): { services: Services; pool: WorkerPool; u
   const prices = pricesFromEnv(env);
   const subjects = createProductionSubjectRegistry();
   const { db, pool } = createDatabase(databaseUrl);
-  const usage = createDrizzleUsageRecorder({ db, clock: systemClock, prices });
-  const base = createGenerationDepsFromEnv(env, usage);
-  if (!base) {
-    throw new Error("OPENAI_API_KEY is not configured (obrazy; LLM i TTS biorą OPENROUTER_API_KEY) — albo ustaw UMIEM_FAKE_PROVIDERS=1");
+  try {
+    const usage = createDrizzleUsageRecorder({ db, clock: systemClock, prices });
+    const base = createGenerationDepsFromEnv(env, usage);
+    if (!base) {
+      throw new Error("OPENAI_API_KEY is not configured (obrazy; LLM i TTS biorą OPENROUTER_API_KEY) — albo ustaw UMIEM_FAKE_PROVIDERS=1");
+    }
+    const lessonAgent = lessonAgentDepsFromEnv(env, usage);
+    if (!isLessonAgentAvailable(lessonAgent)) console.log("[config] lesson-agent=unavailable reason=no_openrouter_key");
+    const generation = { ...base, lessonAgent };
+    const services = createServices({
+      db,
+      clock: systemClock,
+      media: mediaSettingsFromEnv(env),
+      generation,
+      subjects,
+      usage,
+    });
+    return { services, pool, usage };
+  } catch (error) {
+    // Błąd konfiguracji po utworzeniu puli (adaptery, agent): pula zamknięta, zanim błąd zatrzyma start.
+    void pool.end().catch(() => undefined);
+    throw error;
   }
-  // Tryb fake: agent „jak LLM” bierze fake LLM potoku; bez listy przedmiotów — brak agenta (potok).
-  const lessonAgent = lessonAgentDepsFromEnv(env, subjects, usage, base.llm);
-  const generation = lessonAgent ? { ...base, lessonAgent } : base;
-  const services = createServices({
-    db,
-    clock: systemClock,
-    media: mediaSettingsFromEnv(env),
-    generation,
-    subjects,
-    usage,
-  });
-  return { services, pool, usage };
 }

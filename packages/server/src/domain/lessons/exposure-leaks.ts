@@ -40,6 +40,20 @@ export interface ExposureLeakInput {
    * (także warianty zaakceptowane ofiary) — ostrzejsza, bo działa na świeżych tekstach.
    */
   readonly mode: "coverage" | "generation";
+  /**
+   * `true`: powtórzenie odpowiedzi w tej samej rodzinie pytań ({@link sameQuestionFamily}) nie jest
+   * źródłem miękkiego ujawnienia — rodzina to zamierzona struktura (różne sformułowania jednego pytania),
+   * a pokrycie i tak liczy ją raz. Źródła twarde i samodzielne ćwiczenia spoza rodziny działają jak zwykle.
+   */
+  readonly familyRepeatsAllowed?: boolean;
+}
+
+/**
+ * Ta sama rodzina pytań: to samo zagadnienie i ta sama niepusta `familyId` (rodziny pytań otwartych
+ * szkoły). Wspólna dla przyjęcia agenta puli i ostrzeżeń szkicu dla rodzica.
+ */
+export function sameQuestionFamily(a: LessonExerciseDraft, b: LessonExerciseDraft): boolean {
+  return a.objectiveId === b.objectiveId && a.familyId !== undefined && a.familyId.trim() !== "" && a.familyId === b.familyId;
 }
 
 /** Ofiarą bywa tylko ćwiczenie samodzielne ze ścieżki etapów. */
@@ -133,6 +147,9 @@ function firstSoftSourceOf(victimIndex: number, input: ExposureLeakInput): LeakS
     if (index === victimIndex || stageOf(other.exerciseType) !== "independent") {
       return;
     }
+    if (input.familyRepeatsAllowed === true && sameQuestionFamily(victim, other)) {
+      return;
+    }
     const position = positionOf(input, index);
     if (!isEarlier(position, victimPosition) || (best !== undefined && !isEarlier(position, best.position))) {
       return;
@@ -162,86 +179,4 @@ export function findExposureLeaks(input: ExposureLeakInput): ExposureLeak[] {
     }
   });
   return leaks;
-}
-
-export interface GenerationLeakResolution {
-  readonly keptFresh: LessonExerciseDraft[];
-  readonly droppedFresh: LessonExerciseDraft[];
-  /** Nowe przykłady po odrzuceniu ujawniających; zagadnienie bez żadnego pozostałego przykładu jest POMINIĘTE (zostają stare przykłady szkicu). */
-  readonly keptNewExamples: Record<string, string[]>;
-  readonly droppedExampleCount: number;
-}
-
-/**
- * Rozstrzyga ujawnienia po generowaniu dla szkicu z istniejącymi ćwiczeniami:
- * istniejące ćwiczenia i przykłady są nietykalne, odpadają tylko świeże
- * ćwiczenia i nowe przykłady. Ocena jak w trybie `generation`; ujawnienia
- * miękkie nic nie usuwają.
- *
- * `fixedSources` (zagadnienie → teksty) to stałe źródła ujawnień, np. zdania
- * kart rozdziału: doklejane per zagadnienie PO scaleniu przykładów, więc nowe
- * przykłady zagadnienia ich nie zastępują. Służą wyłącznie jako źródła reguły
- * twardej wobec świeżych ćwiczeń; nie wpływają na filtr nowych przykładów,
- * `keptNewExamples` ani `droppedExampleCount`.
- */
-export function resolveGenerationLeaks(input: {
-  readonly existing: readonly LessonExerciseDraft[];
-  readonly fresh: readonly LessonExerciseDraft[];
-  readonly existingExamples: Readonly<Record<string, readonly string[]>>;
-  readonly newExamples: Readonly<Record<string, readonly string[]>>;
-  readonly fixedSources?: Readonly<Record<string, readonly string[]>>;
-  readonly objectiveOrder: readonly string[];
-  readonly subject: LeakSubject;
-}): GenerationLeakResolution {
-  const { existing, fresh, existingExamples, newExamples, fixedSources = {}, objectiveOrder, subject } = input;
-  const judge = { subject, mode: "generation" } as const;
-
-  // Nowy przykład ujawniający rozwiązanie istniejącego ćwiczenia odpada.
-  const keptNewExamples: Record<string, string[]> = {};
-  let droppedExampleCount = 0;
-  for (const [objectiveId, texts] of Object.entries(newExamples)) {
-    const kept = texts.filter((text) => !existing.some((victim) => isVictimCandidate(victim) && exampleExposes(judge, victim, text)));
-    droppedExampleCount += texts.length - kept.length;
-    if (kept.length > 0) {
-      keptNewExamples[objectiveId] = kept;
-    }
-  }
-
-  // Końcowe przykłady: stare z zagadnieniami zastąpionymi przez zachowane nowe,
-  // a do każdego zagadnienia dokleja się jego stałe źródła (konkatenacja).
-  const merged: Record<string, readonly string[]> = { ...existingExamples, ...keptNewExamples };
-  const withFixed: Record<string, readonly string[]> = { ...merged };
-  for (const [objectiveId, texts] of Object.entries(fixedSources)) {
-    withFixed[objectiveId] = [...(merged[objectiveId] ?? []), ...texts];
-  }
-  const all: ExposureLeakInput = {
-    exercises: [...existing, ...fresh],
-    examples: withFixed,
-    objectiveOrder,
-    subject,
-    mode: "generation",
-  };
-  const droppedIndexes = new Set<number>();
-  all.exercises.forEach((_victim, victimIndex) => {
-    const sources = hardSourcesOf(victimIndex, all);
-    if (sources.length === 0) {
-      return;
-    }
-    if (victimIndex >= existing.length) {
-      droppedIndexes.add(victimIndex);
-      return;
-    }
-    for (const source of sources) {
-      if (source.kind === "exercise" && source.index >= existing.length) {
-        droppedIndexes.add(source.index);
-      }
-    }
-  });
-
-  const keptFresh: LessonExerciseDraft[] = [];
-  const droppedFresh: LessonExerciseDraft[] = [];
-  fresh.forEach((draft, freshIndex) => {
-    (droppedIndexes.has(existing.length + freshIndex) ? droppedFresh : keptFresh).push(draft);
-  });
-  return { keptFresh, droppedFresh, keptNewExamples, droppedExampleCount };
 }

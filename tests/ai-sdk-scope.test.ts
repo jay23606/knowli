@@ -94,7 +94,7 @@ describe("zakres AI SDK", () => {
     for (const sample of [
       "packages/server/src/index.ts",
       "packages/server/src/providers/openai/llm.ts",
-      "packages/server/src/providers/openai/lesson-reviewer.ts",
+      "packages/server/src/providers/openai/lesson-json-request.ts",
       "tests/integration-buckets.test.ts",
       "vitest.unit.config.ts",
     ]) {

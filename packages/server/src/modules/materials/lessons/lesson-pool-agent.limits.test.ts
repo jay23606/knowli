@@ -417,12 +417,18 @@ describe("runLessonPoolAgent — logi", () => {
       for (const rejection of result.rejections) expect(line).not.toContain(rejection.detail);
     }
 
-    const summaries = written.filter((line) => line.includes(" obj="));
+    const summaries = written.filter((line) => line.includes(" status="));
     expect(summaries).toHaveLength(2);
     const FORMAT =
-      /^\[lesson-agent\] run=run-77 obj=[a-z0-9_]+ status=(complete|incomplete|failed)( error=[a-z_]+)? steps=\d+ accepted=\d+ rejected=(-|[a-z_]+:\d+(,[a-z_]+:\d+)*) costUsd=\d+\.\d{4}$/u;
+      /^\[lesson-agent\] run=run-77 obj=[a-z0-9_]+ status=(complete|incomplete|failed)( error=[a-z_]+)? steps=\d+ accepted=\d+ rejected=(-|[a-z_]+:\d+(,[a-z_]+:\d+)*) hintsRemoved=\d+ variantsRemoved=\d+ quotesSnapped=\d+ costUsd=\d+\.\d{4}$/u;
     for (const line of summaries) expect(line).toMatch(FORMAT);
-    expect(summaries.find((line) => line.includes(`obj=${SLUG_A} `))).toMatch(/status=incomplete steps=2 accepted=0 rejected=\S*shape_malformed:1\S* costUsd=0\.0400$/u);
-    expect(summaries.find((line) => line.includes(`obj=${SLUG_B} `))).toMatch(/status=failed error=\S+ steps=1 accepted=0 rejected=- costUsd=0\.0200$/u);
+    expect(summaries.find((line) => line.includes(`obj=${SLUG_A} `))).toMatch(/status=incomplete steps=2 accepted=0 rejected=\S*shape_malformed:1\S* hintsRemoved=0 variantsRemoved=0 quotesSnapped=0 costUsd=0\.0400$/u);
+    expect(summaries.find((line) => line.includes(`obj=${SLUG_B} `))).toMatch(/status=failed error=\S+ steps=1 accepted=0 rejected=- hintsRemoved=0 variantsRemoved=0 quotesSnapped=0 costUsd=0\.0200$/u);
+    // Wpisy odrzuceń: wyłącznie kod, znany typ (albo `unknown`) i id reguł.
+    const rejections = written.filter((line) => line.includes(" rejected code="));
+    expect(rejections).toHaveLength(result.rejections.length);
+    for (const line of rejections) {
+      expect(line).toMatch(/^\[lesson-agent\] run=run-77 obj=[a-z0-9_]+ rejected code=[a-z_]+ type=[a-z_]+ rules=[a-z0-9_.,]+$/u);
+    }
   });
 });

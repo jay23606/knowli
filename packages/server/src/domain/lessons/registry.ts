@@ -1,4 +1,5 @@
 import { validateSubject } from "./catalog-validation";
+import type { LessonRule } from "./rules/catalog";
 import type { LessonTopic, SubjectModule } from "./types";
 
 /**
@@ -14,19 +15,37 @@ export interface SubjectRegistry {
 }
 
 /**
- * Buduje rejestr z listy przedmiotów. Odrzuca (rzuca) duplikaty id przedmiotów
- * oraz moduły niepoprawne wg `validateSubject`, dołączając listę błędów do
- * komunikatu — walidacja katalogu jest warunkiem rejestracji, nie odczytu.
+ * Buduje rejestr z listy przedmiotów. Odrzuca (rzuca) duplikaty id przedmiotów,
+ * przedmioty bez polityki agenta (`agentPolicy`; typ ją wymaga, kontrola
+ * wykonawcza chroni moduły z JS i stuby) oraz moduły niepoprawne wg
+ * `validateSubject`, dołączając listę błędów do komunikatu — walidacja katalogu
+ * jest warunkiem rejestracji, nie odczytu. Odrzuca też id reguły powtórzone
+ * w dwóch przedmiotach z różnymi obiektami wpisu (wspólny fragment katalogu,
+ * np. angielski, daje ten sam obiekt i jest dozwolony).
  */
 export function createSubjectRegistry(modules: SubjectModule[]): SubjectRegistry {
   const byId = new Map<string, SubjectModule>();
+  const ruleOwners = new Map<string, { readonly subjectId: string; readonly rule: LessonRule }>();
   for (const module of modules) {
     if (byId.has(module.id)) {
       throw new Error(`Rejestr przedmiotów: zduplikowany identyfikator przedmiotu „${module.id}”`);
     }
+    if ((module as { agentPolicy?: unknown }).agentPolicy === undefined) {
+      throw new Error(`Rejestr przedmiotów: przedmiot „${module.id}” nie ma agentPolicy`);
+    }
     const errors = validateSubject(module);
     if (errors.length > 0) {
       throw new Error(`Rejestr przedmiotów: przedmiot „${module.id}” niepoprawny:\n- ${errors.join("\n- ")}`);
+    }
+    for (const [ruleId, rule] of Object.entries(module.rules)) {
+      const owner = ruleOwners.get(ruleId);
+      if (owner === undefined) {
+        ruleOwners.set(ruleId, { subjectId: module.id, rule });
+      } else if (owner.rule !== rule) {
+        throw new Error(
+          `Rejestr przedmiotów: id reguły „${ruleId}” przedmiotu „${module.id}” koliduje z przedmiotem „${owner.subjectId}”`,
+        );
+      }
     }
     byId.set(module.id, module);
   }

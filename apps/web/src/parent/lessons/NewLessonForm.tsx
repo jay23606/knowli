@@ -465,8 +465,9 @@ export default function NewLessonForm({
   const themesService = themesTarget
     ? messages.lessons.themesService.replace("{service}", () => themesTarget)
     : messages.lessons.themesServiceUnknown;
-  // krytyk lekcji nie przegląda puli agenta, więc jego komunikat znika przy przedmiocie z `checkService`
-  const reviewService = serviceInfo.check === null ? catalog?.reviewService : undefined;
+
+  // bez klucza OpenRouter na serwerze run lekcji kończyłby się porażką (także ponowienie niewysłanego polecenia)
+  const generationUnavailable = catalog?.lessonGenerationAvailable === false;
 
   const submitError = form.errors.submit;
   const counterTemplate = fromMaterial ? messages.lessons.schoolMaterialCounter : messages.lessons.materialCounter;
@@ -679,10 +680,14 @@ export default function NewLessonForm({
             {serviceInfo.check && (
               <Text size="sm" className="pp-editor-muted" data-testid="lesson-check-service">{serviceInfo.check}</Text>
             )}
-            {reviewService && (
-              <Text size="sm" className="pp-editor-muted" data-testid="lesson-review-service">
-                {messages.lessons.reviewServiceInfo.replace("{service}", () => reviewService)}
-              </Text>
+            {serviceInfo.openCheck && (
+              <Text size="sm" className="pp-editor-muted" data-testid="lesson-open-check-service">{serviceInfo.openCheck}</Text>
+            )}
+
+            {generationUnavailable && (
+              <Alert color="yellow" variant="light" role="status" data-testid="lesson-generation-unavailable" icon={<ParentIcon name="alert-triangle" />}>
+                {messages.lessons.generationErrors.lesson_agent_unavailable}
+              </Alert>
             )}
 
             {submitError && (
@@ -710,7 +715,7 @@ export default function NewLessonForm({
                 data-testid="lesson-create-submit"
                 leftSection={creating ? <Loader size={16} color="currentColor" /> : undefined}
                 onClick={() => void submit()}
-                disabled={creating || refreshingSource || sourceRefreshFailed || sourceOutdated || sourceMissing || (!hasPending && !canSubmitLesson(values, catalog, fromSource))}
+                disabled={creating || refreshingSource || sourceRefreshFailed || sourceOutdated || sourceMissing || generationUnavailable || (!hasPending && !canSubmitLesson(values, catalog, fromSource))}
               >
                 {creating ? messages.lessons.creating : hasPending ? messages.lessons.retryCreate : messages.lessons.createLesson}
               </Button>

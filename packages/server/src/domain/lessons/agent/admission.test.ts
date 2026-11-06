@@ -16,8 +16,11 @@ import {
   subject,
   topic,
 } from "../testing/agent-admission-fixtures";
+import { schoolSubject } from "../subjects/school/module";
+import { testIssue } from "../testing/test-issue";
 import { withAgentPolicy } from "../testing/agent-test-subject";
-import type { DynamicTopicData, LessonExerciseDraft } from "../types";
+import { NA_CHECKS } from "../testing/agent-admission-fixtures";
+import type { DynamicObjectiveKind, DynamicTopicData, LessonExerciseDraft } from "../types";
 import { admitBatch, precheckBatch, removeExercise, type AdmitEntry, type AgentCheckContext, type PrecheckEntry } from "./admission";
 import { agentObjectivesOf } from "./capable";
 import { createLessonAgentState, orderedLesson, poolOf, type LessonAgentState } from "./state";
@@ -94,11 +97,204 @@ describe("przyjmowanie paczki — limity i kolejność kroków", () => {
 
   it("bramka przedmiotu zwraca swój kod i powody", () => {
     const gated = withAgentPolicy(subject, {
-      exerciseGate: (draft) => (draft.answer === "odpowiedź 2" ? [{ code: "gate_code", reason: "gate reason" }] : []),
+      exerciseGate: (draft) => (draft.answer === "odpowiedź 2" ? [{ code: "gate_code", issue: testIssue("bramka", "gate reason") }] : []),
     });
     const result = submit(stateWith(), A, [choice(A, 1), choice(A, 2)], contextFor({ subject: gated }));
     expect(result.results[0]).toMatchObject({ accepted: "ex1" });
-    expect(result.results[1]).toEqual({ rejected: { kind: "rule", code: "gate_code", reasons: ["gate reason"] } });
+    expect(result.results[1]).toEqual({
+      rejected: {
+        kind: "rule",
+        code: "gate_code",
+        reasons: ["[test.issue] exercise: gate reason"],
+        issues: [testIssue("bramka", "gate reason")],
+        ruleIds: ["test.issue"],
+      },
+    });
+  });
+});
+
+describe("przyjmowanie paczki — kody i powody odrzuceń (spec katalogu reguł §4.1–4.2)", () => {
+  /** Przedmiot z regułą przedmiotu (odpowiedź „odpowiedź 2”) i bramką (odpowiedzi „odpowiedź 2” i „odpowiedź 3”). */
+  const ruled = withAgentPolicy(
+    {
+      ...subject,
+      validateExercise: (ex) => (ex.answer === "odpowiedź 2" ? [testIssue("reguła", "subject rule broken")] : []),
+    },
+    {
+      ...subject.agentPolicy,
+      exerciseGate: (draft) =>
+        draft.answer === "odpowiedź 2" || draft.answer === "odpowiedź 3"
+          ? [{ code: "gate_first", issue: testIssue("bramka", "gate finding") }, { code: "gate_second", issue: testIssue("bramka", "second finding") }]
+          : [],
+    },
+  );
+  const ruledCtx = contextFor({ subject: ruled });
+  const rejectionAt = (entry: AdmitEntry | undefined) => {
+    if (entry === undefined || !("rejected" in entry)) throw new Error(`expected rejection, got ${JSON.stringify(entry)}`);
+    return entry.rejected;
+  };
+
+  it("reguła i ustalenie bramki: jedno odrzucenie z powodami obu (reguły najpierw) i kodem pierwszego ustalenia", () => {
+    const rejection = rejectionAt(submit(stateWith(), A, [choice(A, 2)], ruledCtx).results[0]);
+    expect(rejection).toMatchObject({ kind: "rule", code: "gate_first", ruleIds: ["test.issue"] });
+    expect(rejection.reasons).toEqual([
+      "[test.issue] exercise: subject rule broken",
+      "[test.issue] exercise: gate finding",
+      "[test.issue] exercise: second finding",
+    ]);
+  });
+
+  it("same ustalenia bramki: kod pierwszego; same reguły: rule_exercise", () => {
+    expect(rejectionAt(submit(stateWith(), A, [choice(A, 3)], ruledCtx).results[0]).code).toBe("gate_first");
+    const invalid = { ...choice(A, 1), correctOption: "z" };
+    const rejection = rejectionAt(submit(stateWith(), A, [invalid], ruledCtx).results[0]);
+    expect(rejection.code).toBe("rule_exercise");
+    expect(rejection.reasons.every((reason) => /^\[[a-z0-9_.]+\] /u.test(reason))).toBe(true);
+  });
+
+  it("błąd kontraktu: tylko zgłoszenia kontraktu, bez bramki", () => {
+    const broken = { ...choice(A, 3), options: [{ id: "a", text: "odpowiedź 3" }] };
+    const rejection = rejectionAt(submit(stateWith(), A, [broken], ruledCtx).results[0]);
+    expect(rejection.code).toBe("rule_exercise");
+    expect(rejection.reasons.some((reason) => reason.includes("gate finding"))).toBe(false);
+    expect(rejection.ruleIds).not.toContain("test.issue");
+  });
+
+  it("puste napisy w polach opcjonalnych (ścieżka agenta): field.empty razem z regułami dalszymi", () => {
+    const draft = { ...choice(A, 2), instructionPl: "" };
+    const rejection = rejectionAt(submit(stateWith(), A, [draft], ruledCtx).results[0]);
+    // Bramka też liczy się na kopii bez pustego pola: kod pierwszego ustalenia bramki.
+    expect(rejection.code).toBe("gate_first");
+    expect(rejection.ruleIds).toEqual(["field.empty", "test.issue"]);
+    expect(rejection.reasons[0]).toMatch(/^\[field\.empty\] instructionPl/u);
+    expect(rejection.reasons.slice(1)).toEqual([
+      "[test.issue] exercise: subject rule broken",
+      "[test.issue] exercise: gate finding",
+      "[test.issue] exercise: second finding",
+    ]);
+  });
+
+  it("kolejność powodów jest stała: kontrakt, rdzeń, przedmiot, bramka; wyniki w indeksach wejścia", () => {
+    const batch = [choice(A, 2), { ...choice(A, 1), correctOption: "z", instructionPl: "" }, keywords(A, "f9", 1)];
+    const results = submit(stateWith(), A, batch, ruledCtx).results;
+    expect(results.map(codeOf)).toEqual(["gate_first", "rule_exercise", "lesson_extra"]);
+    expect(rejectionAt(results[0]).reasons).toEqual([
+      "[test.issue] exercise: subject rule broken",
+      "[test.issue] exercise: gate finding",
+      "[test.issue] exercise: second finding",
+    ]);
+    expect(rejectionAt(results[1]).ruleIds).toEqual(["field.empty", "options.correct_unknown"]);
+    expect(rejectionAt(results[2]).reasons).toEqual(["[test.issue] exercise"]);
+  });
+
+  it("ofiara reguł lekcji: powód z prefiksem ofiary i id reguły", () => {
+    const triggering = withAgentPolicy(
+      {
+        ...subject,
+        validatePoolExtra: (drafts) => {
+          const triggered = drafts.some((draft) => draft.answer === "odpowiedź 9");
+          return new Map(drafts.flatMap((draft, index) => (triggered && draft.answer === "odpowiedź 1" ? [[index, [testIssue("ofiara", "victim of trigger")]] as const] : [])));
+        },
+      },
+      subject.agentPolicy,
+    );
+    const context = contextFor({ subject: triggering });
+    const state = accepted(stateWith(), A, [choice(A, 1)], context);
+    const rejection = rejectionAt(submit(state, A, [choice(A, 9)], context).results[0]);
+    expect(rejection).toMatchObject({ kind: "lesson", code: "lesson_extra", ruleIds: ["test.issue"] });
+    expect(rejection.reasons).toEqual(["adding this exercise would make the lesson reject exercise ex1: [test.issue] exercise: victim of trigger"]);
+  });
+
+  it("własne odrzucenie reguły puli: lesson_pool z id reguły, bez prefiksu ofiary", () => {
+    const state = accepted(stateWith(), A, [choice(A, 1)]);
+    const rejection = rejectionAt(submit(state, A, [choice(A, 1)]).results[0]);
+    expect(rejection).toMatchObject({ code: "lesson_pool", ruleIds: ["lesson.duplicate_stimulus"] });
+    expect(rejection.reasons[0]).toMatch(/^\[lesson\.duplicate_stimulus\] exercise: same stimulus as the earlier lesson_choice /u);
+  });
+
+  it("ofiara reguł puli: duplikat odpowiedzi ćwiczenia późniejszego zagadnienia — lesson_pool z prefiksem ofiary", () => {
+    // Unikalność odpowiedzi zachowuje PIERWSZE wystąpienie: kandydat w A wyprzedza przyjęte ćwiczenie B.
+    const byAnswer = contextFor({ subject: { ...subject, poolDeduplication: "answer" } });
+    const state = accepted(stateWith(), B, [choice(B, 1)], byAnswer);
+    const rejection = rejectionAt(submit(state, A, [gap(A, "Inne pytanie: ___.", "odpowiedź 1")], byAnswer).results[0]);
+    expect(rejection).toMatchObject({ kind: "lesson", code: "lesson_pool", ruleIds: ["lesson.duplicate_answer"] });
+    expect(rejection.reasons[0]).toMatch(/^adding this exercise would make the lesson reject exercise ex1: \[lesson\.duplicate_answer\] answer: /u);
+  });
+});
+
+describe("przyjmowanie paczki — kaskada słów kluczowych szkoły (spec katalogu reguł §4.4)", () => {
+  const OBJECTIVE = "school.ddeck.fotosynteza";
+  const QUOTE = "wytwarza cukry";
+  const material = `Fotosynteza to proces, w którym roślina z wody i dwutlenku węgla, przy udziale światła, ${QUOTE}.`;
+  const schoolTopic = schoolSubject.buildDynamicTopic!({
+    titlePl: "Przyroda",
+    objectives: [{
+      id: OBJECTIVE,
+      titlePl: "Fotosynteza",
+      descriptionEn: "Photosynthesis.",
+      cards: [{ title: "Co to jest?", body: "Roślina wytwarza cukry." }, { title: "Po co?", body: "Cukry są pokarmem rośliny." }],
+    }],
+  });
+  const context: AgentCheckContext = {
+    subject: schoolSubject,
+    material,
+    limits: new Map([[OBJECTIVE, { targetCount: 8, listenAllowance: 0, maxExercises: 10 }]]),
+  };
+  const state = () => createLessonAgentState({ topic: schoolTopic, objectives: agentObjectivesOf(schoolTopic), fixed: [], examples: {}, fixedSources: {} });
+  const openDraft = (overrides: Partial<LessonExerciseDraft> = {}): LessonExerciseDraft => ({
+    exerciseType: "lesson_open_answer",
+    objectiveId: OBJECTIVE,
+    prompt: "Co to jest fotosynteza?",
+    answer: "Roślina z wody i dwutlenku węgla, przy udziale światła, wytwarza cukry.",
+    acceptedAnswers: [],
+    focus: ["wytwarza cukry"],
+    questionType: "definition",
+    requiredElements: [{ id: "e1", text: "Roślina wytwarza cukry." }],
+    expectedForm: "explanation",
+    sourceRefs: [{ quote: QUOTE }],
+    familyId: "def",
+    ...overrides,
+  });
+  const keywordsDraft: LessonExerciseDraft = {
+    exerciseType: "lesson_keywords",
+    objectiveId: OBJECTIVE,
+    familyId: "def",
+    keywordOptions: [{ id: "k1", text: "światło" }, { id: "k2", text: "cukry" }, { id: "k3", text: "tlen" }, { id: "k4", text: "korzenie" }],
+    keyOptionIds: ["k1", "k2"],
+    answer: "światło, cukry",
+    acceptedAnswers: [],
+    focus: [],
+    sourceRefs: [{ quote: QUOTE }],
+  };
+  const ruleIdsOf = (entry: PrecheckEntry | AdmitEntry | undefined) => {
+    if (entry === undefined) return [];
+    if ("pass" in entry) return entry.pass ? [] : entry.rejection.ruleIds;
+    return "rejected" in entry ? entry.rejected.ruleIds : [];
+  };
+
+  it("szkice kaskady są poprawne razem (bez odrzucenia rodziny)", () => {
+    const prechecked = precheckBatch(state(), OBJECTIVE, [keywordsDraft, openDraft()], context);
+    expect(prechecked.map(codeOf)).toEqual(["pass", "pass"]);
+  });
+
+  it("pytanie otwarte odrzucone w precheck: słowa kluczowe z tej paczki dostają school.keywords_family_rejected", () => {
+    const prechecked = precheckBatch(state(), OBJECTIVE, [keywordsDraft, openDraft({ questionType: undefined })], context);
+    expect(prechecked.map(codeOf)).toEqual(["lesson_extra", "rule_exercise"]);
+    expect(ruleIdsOf(prechecked[0])).toEqual(["school.keywords_family_rejected"]);
+  });
+
+  it("pytanie otwarte odrzucone przez kontrolę otwartą w admit: słowa kluczowe też dostają regułę kaskady", () => {
+    const prechecked = precheckBatch(state(), OBJECTIVE, [keywordsDraft, openDraft()], context);
+    const failed = { answer: "zła", knowledge: "incorrect", missing: [], wrong: ["zła"] } as const;
+    const checks = [NA_CHECKS, { ...NA_CHECKS, open: { kind: "done", value: { answers: [failed, failed] } } } as const];
+    const admitted = admitBatch(state(), OBJECTIVE, prechecked, checks, context);
+    expect(admitted.results.map(codeOf)).toEqual(["lesson_extra", "open_not_accepted"]);
+    expect(ruleIdsOf(admitted.results[0])).toEqual(["school.keywords_family_rejected"]);
+  });
+
+  it("bez rodziny w lekcji i bez jej odrzucenia: zwykłe school.keywords_family_missing", () => {
+    const prechecked = precheckBatch(state(), OBJECTIVE, [keywordsDraft], context);
+    expect(ruleIdsOf(prechecked[0])).toEqual(["school.keywords_family_missing"]);
   });
 });
 
@@ -118,19 +314,25 @@ describe("przyjmowanie paczki — reguły lekcji", () => {
   it("wadliwe fixed (duplikat w fixed) nie blokuje poprawnego kandydata", () => {
     const state = stateWith({ fixed: [choice(A, 1), choice(A, 1)] });
     const result = submit(state, A, [choice(A, 2)]);
-    expect(result.results).toEqual([{ accepted: "ex1", sanitized: [], unchecked: false }]);
+    expect(result.results).toEqual([{ accepted: "ex1", sanitized: [], unchecked: false, notes: [], removedVariants: [], quotesSnapped: 0 }]);
   });
 
   it("fixed odrzucone przez validatePoolExtra (sierota słów kluczowych) nie blokuje poprawnego kandydata", () => {
     const state = stateWith({ fixed: [keywords(A, "f9", 9)] });
     const result = submit(state, A, [choice(A, 1)]);
-    expect(result.results).toEqual([{ accepted: "ex1", sanitized: [], unchecked: false }]);
+    expect(result.results).toEqual([{ accepted: "ex1", sanitized: [], unchecked: false, notes: [], removedVariants: [], quotesSnapped: 0 }]);
   });
 
   it("słowa kluczowe bez rodziny w lekcji: lesson_extra", () => {
     const result = submit(stateWith(), A, [keywords(A, "f1", 1)]);
     expect(result.results[0]).toEqual({
-      rejected: { kind: "lesson", code: "lesson_extra", reasons: ["keywords without open-answer family"] },
+      rejected: {
+        kind: "lesson",
+        code: "lesson_extra",
+        reasons: ["[test.issue] exercise"],
+        issues: [testIssue("keywords without open-answer family")],
+        ruleIds: ["test.issue"],
+      },
     });
   });
 
@@ -138,8 +340,8 @@ describe("przyjmowanie paczki — reguły lekcji", () => {
     const result = submit(stateWith(), A, [keywords(A, "f1", 1), open(A, "Kiedy?", "w 966 roku", "f1")]);
     expect(result.prechecked.map(codeOf)).toEqual(["pass", "pass"]);
     expect(result.results).toEqual([
-      { accepted: "ex2", sanitized: [], unchecked: false },
-      { accepted: "ex1", sanitized: [], unchecked: false },
+      { accepted: "ex2", sanitized: [], unchecked: false, notes: [], removedVariants: [], quotesSnapped: 0 },
+      { accepted: "ex1", sanitized: [], unchecked: false, notes: [], removedVariants: [], quotesSnapped: 0 },
     ]);
   });
 
@@ -149,7 +351,7 @@ describe("przyjmowanie paczki — reguły lekcji", () => {
         ...subject,
         validatePoolExtra: (drafts) => {
           const triggered = drafts.some((draft) => draft.answer === "odpowiedź 9");
-          return new Map(drafts.flatMap((draft, index) => (triggered && draft.answer === "odpowiedź 1" ? [[index, ["victim of trigger"]] as const] : [])));
+          return new Map(drafts.flatMap((draft, index) => (triggered && draft.answer === "odpowiedź 1" ? [[index, [testIssue("victim of trigger")]] as const] : [])));
         },
       },
       subject.agentPolicy,
@@ -158,7 +360,7 @@ describe("przyjmowanie paczki — reguły lekcji", () => {
     const state = accepted(stateWith(), A, [choice(A, 1)], context);
     const result = submit(state, A, [choice(A, 9)], context);
     expect(result.results[0]).toMatchObject({ rejected: { kind: "lesson", code: "lesson_extra" } });
-    expect((result.results[0] as { rejected: { reasons: readonly string[] } }).rejected.reasons[0]).toContain("exercise ex1");
+    expect((result.results[0] as { rejected: { reasons: readonly string[] } }).rejected.reasons[0]).toContain("reject exercise ex1: [test.issue]");
   });
 });
 
@@ -242,13 +444,54 @@ describe("przyjmowanie paczki — konflikt słuchowy między zagadnieniami (rozd
     const result = submit(withText.state, WEATHER, [listenWeather], chapterCtx);
     expect(result.results[0]).toMatchObject({ rejected: { kind: "lesson", code: "lesson_pool" } });
   });
+
+  it("pusty napis w polu opcjonalnym i naruszenie bramki rozdziału: jedno odrzucenie z field.empty i ustaleniem bramki (kod bramki)", () => {
+    // Prawdziwa polityka rozdziału: luka zagadnienia „words” sprawdza słowo spoza kart tego zagadnienia.
+    const lexicon = ["Pogoda:", "raining — pada deszcz", "sunny — słonecznie", "windy — wietrznie", "Ubrania:", "coat — płaszcz", "Zwroty:", "I'm wearing (a) …"].join("\n");
+    const gatedCtx: AgentCheckContext = { ...chapterCtx, subject: englishChapterSubject, material: lexicon };
+    const offCard: LessonExerciseDraft = {
+      exerciseType: "lesson_gap",
+      objectiveId: WEATHER,
+      instructionPl: "Mam na sobie płaszcz. Uzupełnij zdanie.",
+      stem: "I'm wearing a ___.",
+      answer: "coat",
+      acceptedAnswers: [],
+      focus: ["coat"],
+    };
+    // Rodzaj zagadnienia z planu: bramka słów kart działa tylko dla „words”.
+    const kinds = new Map<string, DynamicObjectiveKind>([[WEATHER, "words"], [WEARING, "frame"]]);
+    const kindState = () =>
+      createLessonAgentState({ topic: chapterTopic, objectives: agentObjectivesOf(chapterTopic, kinds), fixed: [], examples: {}, fixedSources: {} });
+    expect(codeOf(submit(kindState(), WEATHER, [offCard], gatedCtx).results[0])).toBe("card_word_missing");
+    const result = submit(kindState(), WEATHER, [{ ...offCard, hint: "" }], gatedCtx);
+    const entry = result.results[0]!;
+    if (!("rejected" in entry)) throw new Error("expected rejection");
+    expect(entry.rejected).toMatchObject({ kind: "rule", code: "card_word_missing", ruleIds: ["field.empty", "chapter.card_word_missing"] });
+    expect(entry.rejected.reasons[0]).toMatch(/^\[field\.empty\] hint/u);
+    expect(entry.rejected.reasons[1]).toMatch(/^\[chapter\.card_word_missing\] answer: the checked answer must contain a word of THIS objective's cards/u);
+  });
 });
 
 describe("przyjmowanie paczki — sanityzacja i refine", () => {
   it("odpowiedź REFINE-REJECT: refine z powodem przedmiotu", () => {
     const result = submit(stateWith(), A, [{ ...choice(A, 1), answer: "REFINE-REJECT" }]);
-    expect(result.prechecked[0]).toEqual({ pass: false, rejection: { kind: "rule", code: "refine", reasons: ["refine reject"] } });
-    expect(result.results[0]).toEqual({ rejected: { kind: "rule", code: "refine", reasons: ["refine reject"] } });
+    const rejection = { kind: "rule", code: "refine", reasons: ["[test.issue] exercise"], issues: [testIssue("refine reject")], ruleIds: ["test.issue"] };
+    expect(result.prechecked[0]).toEqual({ pass: false, rejection });
+    expect(result.results[0]).toEqual({ rejected: rejection });
+  });
+
+  it("refine odrzucający bez zgłoszeń (błąd kontraktu haka): odrzucenie z regułą bezpiecznika, bez wyjątku", () => {
+    const silent = withAgentPolicy({ ...subject, refineGeneratedPool: () => ({ kept: [], rejected: [] }) }, subject.agentPolicy);
+    const [entry] = precheckBatch(stateWith(), A, [choice(A, 1)], contextFor({ subject: silent }));
+    expect(entry).toMatchObject({
+      pass: false,
+      rejection: {
+        kind: "rule",
+        code: "refine",
+        ruleIds: ["lesson.refine_unnamed"],
+        reasons: ["[lesson.refine_unnamed] exercise: the subject rejected this exercise without naming a rule"],
+      },
+    });
   });
 
   it("wariant DROP usunięty w szkicu z precheckBatch; do puli trafia oczyszczony szkic", () => {
@@ -268,7 +511,7 @@ describe("przyjmowanie paczki — sanityzacja i refine", () => {
     const result = submit(stateWith(), A, [{ ...choice(A, 1), hint: "podpowiedź" }], contextFor({ subject: sanitizing }));
     expect(result.prechecked[0]).toMatchObject({ pass: true, sanitized: ["hint"] });
     expect((result.prechecked[0] as { draft: LessonExerciseDraft }).draft.hint).toBeUndefined();
-    expect(result.results[0]).toEqual({ accepted: "ex1", sanitized: ["hint"], unchecked: false });
+    expect(result.results[0]).toEqual({ accepted: "ex1", sanitized: ["hint"], unchecked: false, notes: [], removedVariants: [], quotesSnapped: 0 });
   });
 });
 

@@ -15,6 +15,12 @@ import {
   type UsageFeature,
   type UsageRecorder,
 } from "@learning/server";
+import {
+  FakeExerciseChecker,
+  FakeLessonPoolAgent,
+  type FakeLessonPoolAgentOptions,
+} from "../../packages/server/src/providers/fake-lesson-agent";
+import type { LessonAgentPolicy } from "../../packages/server/src/modules/materials/lessons/lesson-pool-agent-policy";
 
 // Klasy fake'ów żyją w packages/server (współdzielone z trybem
 // UMIEM_FAKE_PROVIDERS=1); testy tylko konfigurują zachowania.
@@ -29,6 +35,8 @@ export {
 
 export interface FakeGeneration {
   llm: FakeLlmProvider;
+  /** Agent puli lekcji składany zawsze (etap 3: jedyny generator lekcji). */
+  agent: FakeLessonPoolAgent;
   tts: FakeTtsProvider;
   image: FakeImageProvider;
   store: MediaStore;
@@ -38,20 +46,40 @@ export interface FakeGeneration {
   dispose: () => Promise<void>;
 }
 
-export async function fakeGeneration(): Promise<FakeGeneration> {
+export interface FakeGenerationOptions {
+  /** Opcje fake'a agenta, nadpisują domyślne `generate: {}`. */
+  agent?: FakeLessonPoolAgentOptions;
+  /** Checker zamiast domyślnego „niedostępnego”. */
+  checker?: FakeExerciseChecker;
+  policy?: Partial<LessonAgentPolicy>;
+}
+
+export async function fakeGeneration(options: FakeGenerationOptions = {}): Promise<FakeGeneration> {
   const root = await mkdtemp(join(tmpdir(), "knowli-media-"));
   const store = createLocalMediaStore(root);
   const llm = new FakeLlmProvider();
   const tts = new FakeTtsProvider();
   const image = new FakeImageProvider();
   const settings = fakeMediaSettings;
+  const agent = new FakeLessonPoolAgent({ generate: {}, ...options.agent });
   return {
     llm,
     tts,
     image,
     store,
     settings,
-    deps: { llm, tts, image, mediaStore: store },
+    agent,
+    deps: {
+      llm,
+      tts,
+      image,
+      mediaStore: store,
+      lessonAgent: {
+        agent,
+        checker: options.checker ?? new FakeExerciseChecker({ unavailable: true }),
+        policy: options.policy ?? {},
+      },
+    },
     root,
     dispose: () => rm(root, { recursive: true, force: true }),
   };
@@ -83,20 +111,4 @@ export function recordingProvider<T extends object>(provider: T, usage: UsageRec
 /** Znacznik "obcego" właściciela lease symulowany w testach awarii workera. */
 export function staleLeaseToken(): string {
   return randomUUID();
-}
-
-/** Wejście generatora puli lekcji (partia główna i runda pod etap). */
-export type LessonPoolRequest = Parameters<FakeLlmProvider["generateLessonPool"]>[0];
-
-/**
- * Trasowanie po celu żądania: partia główna z `main`, runda pod etap (`purpose: "stage_top_up"`)
- * z `fakes.llm` — kolejka `queueLessonTopUp` albo domyślna pula fake'a; żądania rundy zapisuje
- * `fakes.llm.lessonRequests`. `main` nie widzi więc wywołań rundy (domyślnie włączonej).
- */
-export function routeLessonRound(
-  fakes: FakeGeneration,
-  main: (input: LessonPoolRequest) => Promise<{ exercises: unknown[]; examples: Record<string, string[]> }>,
-): void {
-  const round = fakes.llm.generateLessonPool.bind(fakes.llm);
-  fakes.deps.llm.generateLessonPool = async (input) => (input.purpose === "stage_top_up" ? round(input) : main(input));
 }

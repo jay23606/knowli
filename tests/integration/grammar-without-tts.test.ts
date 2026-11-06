@@ -61,8 +61,9 @@ async function legacyLessonTask(services: Services): Promise<{ childId: string; 
 describe("gramatyka bez TTS", () => {
   it("generacja zapisuje ćwiczenia bez zasobów audio odpowiedzi; zlecone są tylko nagrania zdań feedbacku i wyjaśnień", async () => {
     const { draft } = await generatedLesson();
-    // 20 ćwiczeń podziału etapów + 2 ćwiczenia wyboru ze słuchu (dodatek poza podziałem).
-    expect(draft.exercises).toHaveLength(22);
+    // Liczbę ćwiczeń wyznacza agent (cele zagadnienia); dodatek słuchowy to 2 ćwiczenia wyboru ze słuchu.
+    expect(draft.exercises.length).toBeGreaterThan(0);
+    expect(draft.exercises.filter((exercise) => exercise.exerciseType === "lesson_listen_choice")).toHaveLength(2);
     expect(draft.assets).toEqual([]);
     expect((await pool.query("select count(*)::int as count from learning_app.revision_assets where role not in ('feedback_audio', 'explanation_audio')")).rows[0].count).toBe(0);
     expect((await pool.query("select count(*)::int as count from learning_app.media_assets")).rows[0].count).toBeGreaterThan(0);
@@ -106,7 +107,9 @@ describe("gramatyka bez TTS", () => {
 
   it("worker nie wykonuje wcześniejszych zadań TTS używanych wyłącznie przez wyłączoną gramatykę", async () => {
     const { fakes, draft } = await generatedLesson(true);
-    expect(draft.assets).toHaveLength(22);
+    // Jeden zasób audio odpowiedzi na ćwiczenie.
+    expect(draft.exercises.length).toBeGreaterThan(0);
+    expect(draft.assets).toHaveLength(draft.exercises.length);
     // Przedmiot z wyłączonym audio odpowiedzi i zdania feedbacku (jak po wyłączeniu obu flag).
     const services = createServices({ db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps,
       subjects: createSubjectRegistry([{ ...grammarWithoutSentenceAudio, exerciseExplanations: false }]) });

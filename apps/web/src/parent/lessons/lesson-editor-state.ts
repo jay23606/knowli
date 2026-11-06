@@ -532,10 +532,19 @@ export function topRejectedReasons(
 }
 
 /**
- * Odrzucenia, których nie wyjaśniają wypisane powody: `rejectedCount` liczy
- * wszystkie odrzucenia generowania (kształt, walidacja puli, duplikaty), a
- * `rejectedReasons` tylko sprawdzanie słów z materiału — do tego lista pokazuje
- * najwyżej kilka powodów. Nigdy ujemna.
+ * Liczba odrzuconych ćwiczeń w wierszu licznika: większa z `rejectedCount` i sumy
+ * wszystkich `rejectedReasons`. Agent puli zapisuje w `rejectedReasons` każde
+ * odrzucenie w pętli generowania (kumulowane w runie), a w `rejectedCount` tylko
+ * usunięcia po przyjęciu — licznik nie może być mniejszy niż suma powodów pod nim.
+ */
+export function rejectedTotal(rejectedCount: number, reasons: Readonly<Record<string, number>> | undefined): number {
+  return Math.max(rejectedCount, Object.values(reasons ?? {}).reduce((sum, count) => sum + count, 0));
+}
+
+/**
+ * Odrzucenia, których nie wyjaśniają wypisane powody: różnica licznika
+ * ({@link rejectedTotal}) i sumy powodów pokazanych na liście (najwyżej kilka) —
+ * powody spoza pierwszej piątki i odrzucenia bez zapisanego powodu. Nigdy ujemna.
  */
 export function otherRejectedCount(rejectedCount: number, listed: readonly { count: number }[]): number {
   return Math.max(0, rejectedCount - listed.reduce((sum, { count }) => sum + count, 0));
@@ -549,6 +558,19 @@ export function otherRejectedCount(rejectedCount: number, listed: readonly { cou
  */
 export function formatRejectedReason(template: string, reason: string, count: number): string {
   return template.replace(/\{(reason|n)\}/gu, (_placeholder, name: string) => (name === "reason" ? reason : String(count)));
+}
+
+/** Poprawki agenta pod listą powodów odrzuceń (`cleanupCounts`): tylko niezerowe liczniki, w stałej kolejności. */
+export function cleanupLines(
+  counts: { hintsRemoved: number; variantsRemoved: number; quotesSnapped: number } | undefined,
+  templates: { hints: string; variants: string; quotes: string },
+): string[] {
+  if (counts === undefined) return [];
+  return [
+    [counts.hintsRemoved, templates.hints],
+    [counts.variantsRemoved, templates.variants],
+    [counts.quotesSnapped, templates.quotes],
+  ].flatMap(([n, template]) => (n as number) > 0 ? [(template as string).replace("{n}", String(n))] : []);
 }
 
 /** Applies an API preview only while it still describes this variant. No arithmetic in the client. */

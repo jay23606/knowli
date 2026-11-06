@@ -1,4 +1,14 @@
-import { CalculationSpecSchema, type CalculationSpec, type LengthUnit } from "@learning/contracts";
+import {
+  CalculationSpecSchema,
+  MAX_CALCULATION_DECIMALS,
+  MAX_TEMPLATE_FAMILY_ID_LENGTH,
+  type CalculationSpec,
+  type LengthUnit,
+} from "@learning/contracts";
+import type { z } from "zod";
+import { clip, issueFrom, type LessonRuleIssue } from "./rules/catalog";
+import { CORE_RULES } from "./rules/core-rules";
+import { MAX_TOLERANCE_PERCENT, MAX_TOLERANCE_SHARE } from "./rules/limits";
 
 /** Exact decimal fractions are private: no bigint crosses the JSON boundary. */
 type Fraction = { numerator: bigint; denominator: bigint };
@@ -71,15 +81,158 @@ function computeExact(spec: CalculationSpec): Fraction {
   }
 }
 
+/** tolerance > abs(result) / MAX_TOLERANCE_SHARE, compared without rounding either side. */
+function exceedsToleranceLimit(result: Fraction, tolerance: Fraction): boolean {
+  return tolerance.numerator * result.denominator * BigInt(MAX_TOLERANCE_SHARE)
+    > absolute(result.numerator) * tolerance.denominator;
+}
+
 function validatedCalculation(input: CalculationSpec): { spec: CalculationSpec; result: Fraction; tolerance: Fraction } {
   const spec = CalculationSpecSchema.parse(input);
   const result = computeExact(spec);
   const tolerance = fromNumber(spec.tolerance ?? 0);
-  // tolerance <= abs(result) / 100, compared without rounding either side.
-  if (tolerance.numerator * result.denominator * 100n > absolute(result.numerator) * tolerance.denominator) {
-    throw new Error("Tolerancja nie może przekraczać 1% wartości bezwzględnej wyniku.");
+  if (exceedsToleranceLimit(result, tolerance)) {
+    throw new Error(`Tolerancja nie może przekraczać ${MAX_TOLERANCE_PERCENT}% wartości bezwzględnej wyniku.`);
   }
   return { spec, result, tolerance };
+}
+
+// ---------------------------------------------------------------------------
+// Zgłoszenia reguł specyfikacji rachunku (spec katalogu reguł §4.4).
+// ---------------------------------------------------------------------------
+
+/** Fabryka zgłoszeń reguł rdzenia (rachunek). */
+const calculationIssue = issueFrom(CORE_RULES);
+
+/** Klucze specyfikacji i parametry każdego rodzaju — prosto ze schematu kontraktu. */
+const SPEC_KEYS: readonly string[] = Object.keys(CalculationSpecSchema.options[0].shape);
+const PARAM_KEYS: ReadonlyMap<string, readonly string[]> = new Map(
+  CalculationSpecSchema.options.map((option) => [option.shape.kind.value, Object.keys(option.shape.params.shape)] as const),
+);
+
+/** Ścieżka w specyfikacji jako pole ćwiczenia, np. `calculation.params.mapDistanceCm`. */
+function specField(path: readonly PropertyKey[]): string {
+  return ["calculation", ...path.map(String)].join(".");
+}
+
+function specValueAt(spec: unknown, path: readonly PropertyKey[]): unknown {
+  let current = spec;
+  for (const segment of path) {
+    if (current === null || typeof current !== "object") return undefined;
+    current = (current as Record<PropertyKey, unknown>)[segment];
+  }
+  return current;
+}
+
+/** Otrzymana wartość do `found`: napis w cudzysłowie, reszta jako wycięty JSON. */
+function shown(value: unknown): string {
+  if (value === undefined) return "nothing";
+  if (typeof value === "string") return clip(value);
+  return clip(JSON.stringify(value) ?? String(value), undefined, { quote: false });
+}
+
+/** Liczba miejsc dziesiętnych liczby z JSON (jak sprawdzenie kontraktu). */
+function decimalPlaces(value: number): number {
+  const [coefficient, exponent = "0"] = String(value).toLowerCase().split("e");
+  return (coefficient.split(".")[1]?.length ?? 0) - Number(exponent);
+}
+
+/** Co jest nie tak z parametrem odrzuconym przez sprawdzenie własne kontraktu (`refine`). */
+function customParamProblem(path: readonly PropertyKey[], value: unknown, spec: unknown): string {
+  const lower = specValueAt(spec, ["params", "lowerHeightM"]);
+  if (path[1] === "upperHeightM" && typeof value === "number" && typeof lower === "number" && value < lower) {
+    return `upperHeightM ${value} is below lowerHeightM ${lower}`;
+  }
+  if (typeof value === "number" && value < 0) {
+    return `${value} is negative`;
+  }
+  if (typeof value === "number" && decimalPlaces(value) > MAX_CALCULATION_DECIMALS) {
+    return `${value} has more than ${MAX_CALCULATION_DECIMALS} decimal places`;
+  }
+  return `got ${shown(value)}; fails the calculator check`;
+}
+
+/** Zgłoszenie reguły rachunku dla jednego błędu kontraktu specyfikacji. */
+function specIssue(issue: z.core.$ZodIssue, spec: unknown): LessonRuleIssue {
+  const field = specField(issue.path);
+  const value = specValueAt(spec, issue.path);
+  const [head] = issue.path;
+  if (issue.code === "unrecognized_keys") {
+    const kind = specValueAt(spec, ["kind"]);
+    const allowed = issue.path.length === 0 ? SPEC_KEYS : PARAM_KEYS.get(String(kind)) ?? [];
+    return calculationIssue("calculation.unknown_key", {
+      field,
+      pl: `${field}: niedozwolony klucz (${issue.keys.join(", ")})`,
+      found: `unknown key ${clip(issue.keys.join(", "))} in ${field}; allowed: ${allowed.join(", ") || "none"}`,
+    });
+  }
+  if (head === "tolerance") {
+    return calculationIssue("calculation.tolerance", {
+      pl: "calculation.tolerance: tolerancja to nieujemna liczba (albo brak pola)",
+      found: `tolerance ${shown(value)}; leave it out or use 0`,
+    });
+  }
+  if (head === "templateFamilyId") {
+    return calculationIssue("calculation.family_slug", {
+      pl: "calculation.templateFamilyId: identyfikator rodziny to małe litery i cyfry łączone „-”",
+      found: typeof value === "string" && [...value].length > MAX_TEMPLATE_FAMILY_ID_LENGTH
+        ? `templateFamilyId has ${[...value].length} characters, limit ${MAX_TEMPLATE_FAMILY_ID_LENGTH}`
+        : `templateFamilyId ${shown(value)} is not lowercase letters and digits joined by single "-"`,
+    });
+  }
+  const problem = (() => {
+    switch (issue.code) {
+      case "invalid_type":
+        return issue.path.length === 0
+          ? `calculation is not an object {kind, unit, params, templateFamilyId}; got ${shown(value)}`
+          : `got ${shown(value)}; expected ${issue.expected}`;
+      case "too_small":
+        return `got ${shown(value)}; expected at least ${issue.minimum}`;
+      case "too_big":
+        return `got ${shown(value)}; expected at most ${issue.maximum}`;
+      case "invalid_value":
+        return `got ${shown(value)}; expected one of ${issue.values.map(String).join(", ")}`;
+      case "invalid_union":
+        return head === "kind"
+          ? `got ${shown(value)}; expected one of ${[...PARAM_KEYS.keys()].join(", ")}`
+          : `got ${shown(value)}; matches none of the calculation kinds`;
+      case "custom":
+        return customParamProblem(issue.path, value, spec);
+      default:
+        return `got ${shown(value)}; fails the calculator check`;
+    }
+  })();
+  return calculationIssue("calculation.params", {
+    field,
+    pl: `${field}: nieprawidłowe parametry obliczenia`,
+    found: problem,
+  });
+}
+
+/**
+ * Zgłoszenia reguł specyfikacji rachunku (`calculation.*`) dla dowolnej wartości:
+ * kształt i granice kontraktu, a dla poprawnej specyfikacji tolerancja względem
+ * dokładnego wyniku. Pusta lista = kalkulator ją przyjmie. Czysta i nie rzuca;
+ * `null` tolerancji jest błędem (zamianę na brak pola robi materializacja).
+ */
+export function calculationIssues(spec: unknown): LessonRuleIssue[] {
+  const parsed = CalculationSpecSchema.safeParse(spec);
+  if (!parsed.success) {
+    return parsed.error.issues.map((issue) => specIssue(issue, spec));
+  }
+  const result = computeExact(parsed.data);
+  const tolerance = fromNumber(parsed.data.tolerance ?? 0);
+  if (!exceedsToleranceLimit(result, tolerance)) {
+    return [];
+  }
+  const unit = parsed.data.unit;
+  const limit = { numerator: absolute(result.numerator), denominator: result.denominator * BigInt(MAX_TOLERANCE_SHARE) };
+  return [calculationIssue("calculation.tolerance", {
+    pl: `calculation.tolerance: tolerancja przekracza ${MAX_TOLERANCE_PERCENT}% wartości bezwzględnej wyniku`,
+    found:
+      `tolerance ${formatFraction(tolerance)} ${unit}, limit ${formatFraction(limit)} ${unit} ` +
+      `(${MAX_TOLERANCE_PERCENT}% of the result ${formatFraction(result)} ${unit})`,
+  })];
 }
 
 export function computeCalculationAnswer(spec: CalculationSpec): { value: number; unit: LengthUnit; answer: string } {

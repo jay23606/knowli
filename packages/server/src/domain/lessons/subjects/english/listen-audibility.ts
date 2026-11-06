@@ -1,4 +1,6 @@
+import { clip, type LessonRuleIssue } from "../../rules/catalog";
 import type { LessonExerciseDraft } from "../../types";
+import { englishIssue } from "./rules";
 
 /**
  * Słyszalność różnicy opcji `lesson_listen_choice` w angielskiej mowie ciągłej
@@ -48,20 +50,24 @@ function differsByMergingS(a: string, b: string): boolean {
  * Błędy `lesson_listen_choice`, w którym opcje różnią się końcówką -s, a wyraz za
  * luką zaczyna się sybilantem — różnica byłaby w nagraniu niesłyszalna. Zdanie bez
  * dokładnie jednej luki pomija (zgłasza je ogólna walidacja typu).
+ * Zgłoszenie reguły `english.listen_sibilant_merge`: `pl` dla rodzica, `found` po angielsku.
  */
-export function listenChoiceSibilantErrors(ex: LessonExerciseDraft): string[] {
+export function listenChoiceSibilantErrors(ex: LessonExerciseDraft): LessonRuleIssue[] {
   const stem = ex.stem ?? "";
   if (ex.exerciseType !== "lesson_listen_choice" || (stem.match(/_{2,}/g) ?? []).length !== 1) return [];
   const nextWord = wordAfterGap(stem);
   if (nextWord === undefined || !startsWithSibilant(nextWord)) return [];
   const options = ex.options ?? [];
-  const errors: string[] = [];
+  const issues: LessonRuleIssue[] = [];
   for (let i = 0; i < options.length; i++) {
     for (let j = i + 1; j < options.length; j++) {
       if (differsByMergingS(options[i]!.text, options[j]!.text)) {
-        errors.push(`stem: opcje „${options[i]!.text}” i „${options[j]!.text}” różnią się końcówką -s/-es, która w nagraniu zlewa się z początkiem wyrazu „${nextWord}” (głoska s, z albo sz) — różnica niesłyszalna, zmień wyraz za luką`);
+        issues.push(englishIssue("english.listen_sibilant_merge", {
+          pl: `stem: opcje „${options[i]!.text}” i „${options[j]!.text}” różnią się końcówką -s/-es, która w nagraniu zlewa się z początkiem wyrazu „${nextWord}” (głoska s, z albo sz) — różnica niesłyszalna, zmień wyraz za luką`,
+          found: `options ${clip(options[i]!.text)} and ${clip(options[j]!.text)} differ only by the ending -s/-es, which merges into the following word ${clip(nextWord)} (s, z or sh sound) in speech`,
+        }));
       }
     }
   }
-  return errors;
+  return issues;
 }

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import type { Services } from "../../../config";
+import type { LessonAgentDeps, Services } from "../../../config";
 import { deckVersions, generationRuns } from "../../../db/schema";
 import { AppError } from "../../../errors";
-import { agentObjectivesOf, asAgentCapable } from "../../../domain/lessons/agent/capable";
+import { agentObjectivesOf } from "../../../domain/lessons/agent/capable";
 import { completeObjectivesOnLesson, finalLessonCheck } from "../../../domain/lessons/agent/status";
 import { cardExposureSources } from "../../../domain/lessons/card-exposure-sources";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
@@ -20,6 +20,8 @@ import {
 } from "./lesson-agent-checkpoint";
 import {
   acceptedInLessonOrder,
+  agentCheckStartLine,
+  agentRejectedReasons,
   generationGapsOf,
   lessonAgentRunInputFor,
   lessonAgentRunOutcome,
@@ -27,6 +29,7 @@ import {
   mergeAttemptIntoProgress,
   mergeGenerationGaps,
   outcomeObjectivesOf,
+  unwrittenRejectionCodes,
   type LessonAgentOutcome,
   type LessonGenerationGap,
 } from "./lesson-agent-outcome";
@@ -46,13 +49,13 @@ import {
 import { classifyLessonGenerationFailure, lessonRetryDelayMs } from "./lesson-generation-errors";
 import { LessonGenerationCancelledError, withLessonGenerationControl, type LessonGenerationControl } from "./lesson-generation-control";
 import { DEFAULT_LESSON_GENERATION_POLICY } from "./lesson-generation-policy";
-import { kindsOf, lessonAgentLimits, runLessonPoolAgent, type LessonPoolAgentResult, type SettledObjective } from "./lesson-pool-agent";
+import { emptyLessonPoolAgentStats, kindsOf, lessonAgentLimits, runLessonPoolAgent, type LessonPoolAgentResult, type SettledObjective } from "./lesson-pool-agent";
 import { DEFAULT_LESSON_AGENT_POLICY } from "./lesson-pool-agent-policy";
 
 /**
  * Ścieżka agenta w `executeLessonGeneration` (spec etapu 2a §7–§10): próba runu puli lekcji generowana
  * kierownikiem `runLessonPoolAgent` z punktem kontrolnym w wierszu runu, wynik próby z funkcji czystych
- * (`lesson-agent-outcome.ts`) i wspólny zapis do szkicu (`finalizeLessonPoolWrite`, bez krytyka).
+ * (`lesson-agent-outcome.ts`) i wspólny zapis do szkicu (`finalizeLessonPoolWrite`).
  * Granica transakcji: zapis do szkicu i podsumowanie punktu kontrolnego w jednej transakcji; zapisy
  * postępu w trakcie — osobno, pod strażą tożsamości próby. Logi `[lesson-agent]` bez treści ćwiczeń,
  * materiału, kart i tematów zdań.
@@ -86,7 +89,7 @@ function settledResult(settled: SettledObjective): LessonPoolAgentResult {
   return {
     planStatus: "not_needed",
     objectives: [settled],
-    stats: { submitted: 0, accepted: 0, rejectedByKind: {}, checkUnavailable: 0, checkerCalls: 0, invariantViolations: 0, refused: 0 },
+    stats: emptyLessonPoolAgentStats(),
     rejections: [],
     spentUsd: settled.spentUsd,
     unknownCostCalls: 0,
@@ -134,8 +137,8 @@ function writtenProgress(
 }
 
 /**
- * Postęp po porażce walidacji zapisu (odrzucone wszystkie przyjęte ćwiczenia): liczniki usunięć wyzerowane
- * (są już w kontekście szkicu), ćwiczenia zagadnień usunięte, a komplet bez ćwiczeń staje się `incomplete` —
+ * Postęp po porażce walidacji zapisu (odrzucone wszystkie przyjęte ćwiczenia): liczniki usunięć wyzerowane, kody odrzuceń
+ * oznaczone jako zapisane (są już w kontekście szkicu), ćwiczenia zagadnień usunięte, a komplet bez ćwiczeń staje się `incomplete` —
  * kolejna próba generuje je od nowa.
  */
 function discardedProgress(progress: LessonAgentProgress): LessonAgentProgress {
@@ -145,7 +148,7 @@ function discardedProgress(progress: LessonAgentProgress): LessonAgentProgress {
       { ...entry, exercises: [], ...(entry.status === "complete" ? { status: "incomplete" as const } : {}) },
     ]),
   );
-  return { ...progress, objectives, removedAfterAcceptance: 0, droppedObjectiveCount: 0 };
+  return { ...progress, objectives, removedAfterAcceptance: 0, droppedObjectiveCount: 0, cleanupCounts: {}, rejectionCodesWritten: { ...progress.rejectionCodes } };
 }
 
 /**
@@ -173,13 +176,14 @@ export async function executeLessonAgentGeneration(
     attempts: number;
     subject: SubjectModule;
     input: LessonRunInput;
+    /** Zależności agenta; dostępność sprawdza `executeLessonGeneration` zaraz po przejęciu runu. */
+    agent: LessonAgentDeps;
     runStartedAtMs: number;
     signal?: AbortSignal;
   },
 ): Promise<void> {
   const deps = requireGeneration(services);
-  const agentDeps = deps.lessonAgent;
-  if (agentDeps === undefined) throw new AppError("internal", { message: "lesson agent not configured" });
+  const agentDeps = args.agent;
   const { attempts, subject, input, signal } = args;
   const runId = args.run.id;
   const run: LessonRunIdentity = { runId, attempts, expectedEditNumber: args.run.expectedEditNumber!, deckVersionId: args.run.deckVersionId! };
@@ -250,17 +254,16 @@ export async function executeLessonAgentGeneration(
       ? (progress.objectives[addObjectiveId!]?.exercises.length ?? 0)
       : Object.values(progress.objectives).reduce((sum, entry) => sum + entry.exercises.length, 0);
 
-  /** Kontrola końcowa na całości i wspólny zapis do szkicu (§10), bez krytyka, z podsumowaniem w tej samej transakcji. */
+  /** Kontrola końcowa na całości i wspólny zapis do szkicu (§10) z podsumowaniem w tej samej transakcji. */
   const finalize = async (progress: LessonAgentProgress): Promise<void> => {
     const { topic, dynamicTopic } = lessonTopicOf(progress);
     const lessonOrder = topic.objectives.map((objective) => objective.id);
     const accepted = acceptedInLessonOrder(progress, mode === "add" ? [addObjectiveId!] : lessonOrder);
     const newExamples = mode === "add" ? {} : newExamplesOf(progress, lessonOrder);
-    const capable = asAgentCapable(subject);
     const agentObjectives = agentObjectivesOf(topic, kindsOf(dynamicTopic));
-    const limits = lessonAgentLimits(capable, topic, input.poolSize);
+    const limits = lessonAgentLimits(subject, topic, input.poolSize);
     const check = finalLessonCheck({
-      subject: capable,
+      subject,
       topic,
       objectives: agentObjectives,
       material: input.material,
@@ -278,7 +281,7 @@ export async function executeLessonAgentGeneration(
     let gaps: LessonGenerationGap[] = [];
     const completeOnWritten = (written: readonly LessonExerciseDraft[]): ReadonlySet<string> =>
       completeObjectivesOnLesson({
-        subject: capable,
+        subject,
         topic,
         objectives: agentObjectives,
         material: input.material,
@@ -300,7 +303,9 @@ export async function executeLessonAgentGeneration(
       newExamples,
       // Usunięcia po przyjęciu (bezpiecznik kierownika i kontrola końcowa), nie odrzucenia w pętli agenta.
       rejectedCount: progress.removedAfterAcceptance + check.removed,
-      rejectedReasons: {},
+      // Powody dla rodzica: kumulowane kody runu bez tych, które porażka walidacji już zapisała w szkicu.
+      rejectedReasons: agentRejectedReasons(unwrittenRejectionCodes(progress)),
+      ...(progress.cleanupCounts === undefined ? {} : { cleanupCounts: progress.cleanupCounts }),
       droppedObjectiveCount: progress.droppedObjectiveCount ?? 0,
     };
     const written = await finalizeLessonPoolWrite(services, {
@@ -342,18 +347,24 @@ export async function executeLessonAgentGeneration(
       return;
     }
     if (outcome.kind === "failed" && outcome.errorCode === "validation") {
-      // Jak `failValidation` potoku: liczniki trafiają do kontekstu szkicu (raport krytyka bez zmian). Postęp
-      // zostaje do „Ponów” z licznikami wyzerowanymi w tej samej transakcji — kolejny zapis do szkicu doliczy
-      // tylko nowe usunięcia, nie te już policzone w kontekście.
-      // `latest` dopiero po zatwierdzeniu: przy wycofanej transakcji zapis best-effort zostawia liczniki,
-      // których kontekst nie dostał.
-      const counted: LessonAgentProgress = { ...progress, removedAfterAcceptance: 0, droppedObjectiveCount: 0 };
+      // Liczniki trafiają do kontekstu szkicu. Postęp zostaje do „Ponów” z licznikami wyzerowanymi w tej
+      // samej transakcji — kolejny zapis do szkicu doliczy tylko nowe usunięcia, nie te już policzone
+      // w kontekście. `latest` dopiero po zatwierdzeniu: przy wycofanej transakcji zapis best-effort
+      // zostawia liczniki, których kontekst nie dostał.
+      const counted: LessonAgentProgress = {
+        ...progress,
+        removedAfterAcceptance: 0,
+        droppedObjectiveCount: 0,
+        cleanupCounts: {},
+        rejectionCodesWritten: { ...progress.rejectionCodes },
+      };
       await failLessonPoolValidation(services, {
         run,
         context: {
           newExamples: {},
           rejectedCount: progress.removedAfterAcceptance,
-          rejectedReasons: {},
+          rejectedReasons: agentRejectedReasons(unwrittenRejectionCodes(progress)),
+          ...(progress.cleanupCounts === undefined ? {} : { cleanupCounts: progress.cleanupCounts }),
           droppedObjectiveCount: progress.droppedObjectiveCount ?? 0,
         },
         onTransaction: (tx) => saveLessonAgentCheckpoint(tx, run, counted),
@@ -403,7 +414,7 @@ export async function executeLessonAgentGeneration(
     const emptyAttempt: LessonPoolAgentResult = {
       planStatus: "not_needed",
       objectives: [],
-      stats: { submitted: 0, accepted: 0, rejectedByKind: {}, checkUnavailable: 0, checkerCalls: 0, invariantViolations: 0, refused: 0 },
+      stats: emptyLessonPoolAgentStats(),
       rejections: [],
       spentUsd: begin.budgetSpentUsd,
       unknownCostCalls: 0,
@@ -430,6 +441,8 @@ export async function executeLessonAgentGeneration(
     console.log(
       `[lesson-agent] run=${runId} start mode=${mode} attempt=${attempts} resumed=${Object.keys(begin.objectives).length} pool=${input.poolSize} remainingMs=${remainingMs}`,
     );
+    // Stan kontroli etapu 2b (sędzia podpowiedzi, kontrola otwarta z graderem): jedna linia, bez treści.
+    console.log(agentCheckStartLine(runId, subject, agentDeps.grader !== undefined));
     // Kopia robocza do zapisów w trakcie; scalenie wyniku liczy się od `begin` (inaczej wydatek i histogram dwa razy).
     let working = begin;
     const result = await control.run((agentSignal) =>
@@ -437,6 +450,7 @@ export async function executeLessonAgentGeneration(
         {
           agent: agentDeps.agent,
           checker: agentDeps.checker,
+          ...(agentDeps.grader === undefined ? {} : { grader: agentDeps.grader }),
           subjects: services.subjects,
           policy: { ...agentDeps.policy, runTimeoutMs: remainingMs },
         },

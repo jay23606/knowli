@@ -305,12 +305,12 @@ export default function SourcePage({
   // pokaże własny komunikat z ponowieniem.
   const lessonKinds = sourceLessonKinds(catalogQuery.data);
   const lessonButtons = LESSON_BUTTONS.filter((button) => lessonKinds === null || lessonKinds.includes(button.kind));
-  // przedmiot z agentem puli (`checkService`) ma własne usługi i drugi model; krytyk lekcji go nie przegląda,
-  // więc jego komunikat zostaje tylko wtedy, gdy któryś przycisk prowadzi do przedmiotu potoku
+  // bez klucza OpenRouter na serwerze lekcja ze źródła nie ma jak się wygenerować
+  const generationUnavailable = catalogQuery.data?.lessonGenerationAvailable === false;
+  // przedmiot z agentem puli (`checkService`) ma własne usługi i drugi model
   const buttonServices = lessonButtons
     .map((button) => ({ kind: button.kind, info: subjectServiceInfo(sourceLessonSubject(catalogQuery.data, button.kind)) }))
     .filter(({ info }) => info.check !== null);
-  const showReviewService = lessonButtons.length > buttonServices.length;
 
   return (
     <Stack gap="lg" className="pp-editor pp-source-page" data-testid="source-page">
@@ -328,7 +328,7 @@ export default function SourcePage({
       <div className="pp-source-actions">
         {lessonButtons.map((button) => (
           <Button key={button.kind} size="md" variant={button.variant} leftSection={<ParentIcon name="graduation-cap" />}
-            data-testid={button.testId} disabled={catalogQuery.isPending}
+            data-testid={button.testId} disabled={catalogQuery.isPending || generationUnavailable}
             onClick={() => onNavigate(newLessonFromSource(source.id, button.kind))}>
             {button.label}
           </Button>
@@ -339,6 +339,11 @@ export default function SourcePage({
           {messages.sources.createVocabulary}
         </Button>
       </div>
+      {generationUnavailable && lessonButtons.length > 0 && (
+        <Text size="sm" className="pp-editor-muted" role="status" data-testid="source-generation-unavailable">
+          {messages.lessons.generationErrors.lesson_agent_unavailable}
+        </Text>
+      )}
       {lessonButtons.length === 0 && (
         <Text size="sm" className="pp-editor-muted" data-testid="source-no-lesson-subjects">{messages.sources.noLessonSubjects}</Text>
       )}
@@ -349,13 +354,9 @@ export default function SourcePage({
             <Text size="sm" className="pp-editor-muted" data-testid={`source-generation-service-${kind}`}>{info.generation}</Text>
           )}
           {info.check && <Text size="sm" className="pp-editor-muted" data-testid={`source-check-service-${kind}`}>{info.check}</Text>}
+          {info.openCheck && <Text size="sm" className="pp-editor-muted" data-testid={`source-open-check-service-${kind}`}>{info.openCheck}</Text>}
         </Stack>
       ))}
-      {showReviewService && catalogQuery.data?.reviewService && (
-        <Text size="sm" className="pp-editor-muted" data-testid="source-review-service">
-          {messages.lessons.reviewServiceInfo.replace("{service}", () => catalogQuery.data!.reviewService!)}
-        </Text>
-      )}
 
       {error && (
         <Alert ref={errorAlert} tabIndex={-1} color="red" variant="light" role="alert" data-testid="source-error" icon={<ParentIcon name="alert-triangle" />}>

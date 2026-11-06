@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findExposureLeaks, resolveGenerationLeaks } from "./exposure-leaks";
+import { findExposureLeaks, sameQuestionFamily } from "./exposure-leaks";
 import { englishChapterSubject } from "./subjects/english-chapter/module";
 import { englishGrammarSubject } from "./subjects/english-grammar/module";
 import { schoolSubject } from "./subjects/school/module";
@@ -72,6 +72,39 @@ describe("findExposureLeaks", () => {
         { index: 2, kind: "soft", source: { kind: "exercise", index: 0 } },
       ]);
     }
+  });
+
+  it("szkoła, familyRepeatsAllowed: rodzina pytań bez wpisów; pytanie spoza rodziny i inna rodzina nadal soft", () => {
+    const family = (familyId: string | undefined, objectiveId = A) =>
+      draft({ objectiveId, prompt: "Stolica Polski?", answer: "Warszawa", ...(familyId === undefined ? {} : { familyId }) });
+    for (const mode of MODES) {
+      const leaks = (exercises: LessonExerciseDraft[], objectiveOrder = [A]) =>
+        findExposureLeaks({ exercises, examples: {}, objectiveOrder, subject: schoolSubject, mode, familyRepeatsAllowed: true });
+      expect(leaks([family("f1"), family("f1"), family("f1")])).toEqual([]);
+      // Inna rodzina, brak rodziny albo pusta rodzina: zwykłe miękkie ujawnienie.
+      expect(leaks([family("f1"), family("f2")])).toEqual([{ index: 1, kind: "soft", source: { kind: "exercise", index: 0 } }]);
+      expect(leaks([family(undefined), family("f1")])).toEqual([{ index: 1, kind: "soft", source: { kind: "exercise", index: 0 } }]);
+      expect(leaks([family(" "), family(" ")])).toEqual([{ index: 1, kind: "soft", source: { kind: "exercise", index: 0 } }]);
+      // Ta sama nazwa rodziny w innym zagadnieniu to inna rodzina.
+      expect(leaks([family("f1", B), family("f1", A)], [B, A])).toEqual([{ index: 1, kind: "soft", source: { kind: "exercise", index: 0 } }]);
+      // Najwcześniejsze źródło z tej samej rodziny nie zasłania późniejszego źródła spoza rodziny.
+      expect(leaks([family("f1"), family(undefined), family("f1")])).toEqual([
+        { index: 1, kind: "soft", source: { kind: "exercise", index: 0 } },
+        { index: 2, kind: "soft", source: { kind: "exercise", index: 1 } },
+      ]);
+      // Źródła twarde (przykład karty) działają także w rodzinie.
+      expect(findExposureLeaks({
+        exercises: [family("f1"), family("f1")], examples: { [A]: ["Warszawa"] }, objectiveOrder: [A], subject: schoolSubject, mode, familyRepeatsAllowed: true,
+      }).map((leak) => leak.kind)).toEqual(["hard", "hard"]);
+    }
+  });
+
+  it("sameQuestionFamily: to samo zagadnienie i ta sama niepusta familyId", () => {
+    expect(sameQuestionFamily(draft({ familyId: "f1" }), draft({ familyId: "f1" }))).toBe(true);
+    expect(sameQuestionFamily(draft({ familyId: "f1" }), draft({ familyId: "f2" }))).toBe(false);
+    expect(sameQuestionFamily(draft({ familyId: "f1" }), draft({ familyId: "f1", objectiveId: B }))).toBe(false);
+    expect(sameQuestionFamily(draft({}), draft({}))).toBe(false);
+    expect(sameQuestionFamily(draft({ familyId: "" }), draft({ familyId: "" }))).toBe(false);
   });
 
   it.each(MODES)("„Posłuchaj i wybierz” (%s) z rozwiązanym zdaniem równym tłumaczeniu → hard", (mode) => {
@@ -169,154 +202,5 @@ describe("findExposureLeaks", () => {
         }),
       ).toEqual([]);
     }
-  });
-});
-
-describe("resolveGenerationLeaks", () => {
-  const base = { existingExamples: {}, newExamples: {}, objectiveOrder: [A], subject: englishChapterSubject } as const;
-
-  it("świeże tłumaczenie = świeża luka → tłumaczenie w droppedFresh, luka zostaje", () => {
-    const freshGap = gap("It's under the ___.", "bed");
-    const freshTranslation = translation("It's under the bed.");
-    const result = resolveGenerationLeaks({ ...base, existing: [], fresh: [freshGap, freshTranslation] });
-    expect(result.keptFresh).toEqual([freshGap]);
-    expect(result.droppedFresh).toEqual([freshTranslation]);
-  });
-
-  it("świeża luka i świeży wybór rozwiązują istniejące tłumaczenie → oba świeże w droppedFresh, istniejące zostaje", () => {
-    const existing = translation("It's under the bed.");
-    const freshGap = gap("It's under the ___.", "bed");
-    const freshChoice = draft({
-      exerciseType: "lesson_choice",
-      stem: "It's ___ the bed.",
-      options: [
-        { id: "a", text: "under" },
-        { id: "b", text: "on" },
-      ],
-      correctOption: "a",
-      answer: "under",
-    });
-    const unrelated = gap("I'm ___.", "hungry");
-    const result = resolveGenerationLeaks({ ...base, existing: [existing], fresh: [freshGap, freshChoice, unrelated] });
-    expect(result.droppedFresh).toEqual([freshGap, freshChoice]);
-    expect(result.keptFresh).toEqual([unrelated]);
-  });
-
-  it("nowy przykład równy istniejącemu tłumaczeniu → przykład odpada, droppedExampleCount 1; gdy to jedyny nowy przykład zagadnienia — klucza brak w keptNewExamples", () => {
-    const existing = translation("I'm hungry.");
-    const result = resolveGenerationLeaks({
-      ...base,
-      existing: [existing],
-      fresh: [],
-      existingExamples: { [A]: ["I'm happy."] },
-      newExamples: { [A]: ["I'm hungry."], [B]: ["I'm tired.", "I'm hungry!"] },
-    });
-    expect(result.droppedExampleCount).toBe(2);
-    expect(result.keptNewExamples).toEqual({ [B]: ["I'm tired."] });
-    expect(A in result.keptNewExamples).toBe(false);
-  });
-
-  it("nowy przykład ujawniający świeże tłumaczenie → świeże tłumaczenie w droppedFresh, przykład zostaje", () => {
-    const freshTranslation = translation("I'm tired.");
-    const result = resolveGenerationLeaks({
-      ...base,
-      existing: [],
-      fresh: [freshTranslation],
-      newExamples: { [B]: ["I'm tired."] },
-    });
-    expect(result.droppedFresh).toEqual([freshTranslation]);
-    expect(result.keptNewExamples).toEqual({ [B]: ["I'm tired."] });
-    expect(result.droppedExampleCount).toBe(0);
-  });
-
-  it("szkolna rodzina świeżych open_answer → nic nie usuwa", () => {
-    const family = [1, 2, 3].map(() => draft({ prompt: "Stolica Polski?", answer: "Warszawa" }));
-    const result = resolveGenerationLeaks({ ...base, subject: schoolSubject, existing: [], fresh: family });
-    expect(result.keptFresh).toEqual(family);
-    expect(result.droppedFresh).toEqual([]);
-    expect(result.droppedExampleCount).toBe(0);
-  });
-
-  it("ofiara i źródło istniejące → nic nie usuwa", () => {
-    const existing = [gap("It's under the ___.", "bed"), translation("It's under the bed.")];
-    const unrelated = gap("I'm ___.", "hungry");
-    const result = resolveGenerationLeaks({ ...base, existing, fresh: [unrelated] });
-    expect(result.keptFresh).toEqual([unrelated]);
-    expect(result.droppedFresh).toEqual([]);
-  });
-
-  describe("fixedSources", () => {
-    const withExamples = {
-      ...base,
-      existing: [],
-      existingExamples: { [A]: ["Old."] },
-      newExamples: { [A]: ["New one."] },
-    } as const;
-
-    it("stałe zdanie zagadnienia przeżywa zastąpienie przykładów nowymi → świeże tłumaczenie w droppedFresh, nowe przykłady bez zmian", () => {
-      const freshTranslation = translation("We have a cat");
-      const result = resolveGenerationLeaks({
-        ...withExamples,
-        fresh: [freshTranslation],
-        fixedSources: { [A]: ["We have a cat."] },
-      });
-      expect(result.droppedFresh).toEqual([freshTranslation]);
-      expect(result.keptFresh).toEqual([]);
-      expect(result.keptNewExamples).toEqual({ [A]: ["New one."] });
-      expect(result.droppedExampleCount).toBe(0);
-    });
-
-    it("bez fixedSources to samo tłumaczenie zostaje w keptFresh (dotychczasowe zachowanie)", () => {
-      const freshTranslation = translation("We have a cat");
-      const result = resolveGenerationLeaks({ ...withExamples, fresh: [freshTranslation] });
-      expect(result.keptFresh).toEqual([freshTranslation]);
-      expect(result.droppedFresh).toEqual([]);
-    });
-
-    it("pusty fixedSources daje wynik identyczny jak bez parametru", () => {
-      const fresh = [translation("We have a cat"), gap("I'm ___.", "hungry")];
-      expect(resolveGenerationLeaks({ ...withExamples, fresh, fixedSources: {} })).toEqual(
-        resolveGenerationLeaks({ ...withExamples, fresh }),
-      );
-    });
-
-    it("stałe źródła doklejają się do przykładów zagadnienia (konkatenacja), nie zastępują ich", () => {
-      const freshTranslation = translation("We have a cat");
-      const result = resolveGenerationLeaks({
-        ...base,
-        existing: [],
-        fresh: [freshTranslation],
-        existingExamples: { [A]: ["We have a cat."] },
-        newExamples: {},
-        fixedSources: { [A]: ["Card."] },
-      });
-      expect(result.droppedFresh).toEqual([freshTranslation]);
-      expect(result.keptFresh).toEqual([]);
-    });
-
-    it("zagadnienie bez przykładów: same stałe źródła wystarczają do odrzucenia", () => {
-      const freshTranslation = translation("We have a cat");
-      const result = resolveGenerationLeaks({
-        ...base,
-        existing: [],
-        fresh: [freshTranslation],
-        existingExamples: {},
-        fixedSources: { [A]: ["We have a cat."] },
-      });
-      expect(result.droppedFresh).toEqual([freshTranslation]);
-      expect(result.keptFresh).toEqual([]);
-    });
-
-    it("stałe zdanie nie wpływa na filtr nowych przykładów: nowy przykład równy stałemu zdaniu zostaje", () => {
-      const result = resolveGenerationLeaks({
-        ...base,
-        existing: [],
-        fresh: [],
-        newExamples: { [A]: ["We have a cat."] },
-        fixedSources: { [A]: ["We have a cat."] },
-      });
-      expect(result.keptNewExamples).toEqual({ [A]: ["We have a cat."] });
-      expect(result.droppedExampleCount).toBe(0);
-    });
   });
 });

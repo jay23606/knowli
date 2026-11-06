@@ -51,7 +51,7 @@ function list(name: string, value: string | undefined, pattern: RegExp = SLUG): 
 
 export function chatRequestExtrasFromEnv(
   env: Record<string, string | undefined>,
-  prefix: "UMIEM_LLM" | "UMIEM_GRADER" | "UMIEM_REVIEWER",
+  prefix: "UMIEM_LLM" | "UMIEM_GRADER",
 ): ChatRequestExtras {
   const extras: Record<string, unknown> = {};
 

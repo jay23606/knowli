@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import { createServices } from "../../../config";
 import { LessonDraftDtoSchema, type CalculationSpec } from "@learning/contracts";
 import { englishGrammarSubject } from "../../../domain/lessons/subjects/english-grammar/module";
+import { familyBase } from "../../../domain/lessons/keyword-families";
 import { validatePool } from "../../../domain/lessons/pool-validation";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
 import { validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
-import { buildDynamicTopicData, buildPoolInput, capListenChoiceOverflow, createLessonFromMaterial, createMaterialLesson, buildObjectiveCriteria, collectBatchExerciseMetadata, filterExercisesToRequestedObjective, minimumCountPerObjective, objectiveBatchCounts, isWellShapedRawExercise, lessonPayloadVersion, poolStageCounts, refineGeneratedDrafts, scopeFamiliesToRun, splitStages, stripParentAddedFlags, sumRejectedReasons, summarizeLessonPoolValidation, toExerciseDraft, trimToStageDeficits, withoutEmptyOptionalArrays, withoutOrphanKeywords, withoutInvalidExplanation, withoutVoiceToneUnlessAllowed, withSubjectObjectiveKinds } from "./lesson-drafts";
+import { buildDynamicTopicData, buildPoolInput, createLessonFromMaterial, createMaterialLesson, buildObjectiveCriteria, listenChoiceAllowance, minimumCountPerObjective, objectiveBatchCounts, isWellShapedRawExercise, lessonPayloadVersion, poolStageCounts, scopeFamiliesToRun, splitStages, stripParentAddedFlags, sumRejectedReasons, toExerciseDraft, withoutEmptyOptionalArrays, withoutOrphanKeywords, withoutInvalidExplanation, withoutVoiceToneUnlessAllowed, withSubjectObjectiveKinds } from "./lesson-drafts";
 import { buildLessonPayload } from "./lesson-payload";
 
 describe("calculation persistence and grading criteria", () => {
@@ -158,42 +159,6 @@ describe("P2-7: strażnik kształtu surowego ćwiczenia (isWellShapedRawExercise
     const wellShaped = raws.filter(isWellShapedRawExercise).map(toExerciseDraft);
     expect(wellShaped).toHaveLength(1);
     expect(validatePool(wellShaped, englishGrammarSubject, presentSimpleTopic()).valid.map((ex) => ex.answer)).toEqual(["plays"]);
-  });
-
-  it("collects metadata from a batch containing top-level null without throwing", () => {
-    expect(() => collectBatchExerciseMetadata([validChoiceRaw("plays"), null], true)).not.toThrow();
-    expect(collectBatchExerciseMetadata([validChoiceRaw("plays"), null], true).answers).toEqual(["plays"]);
-  });
-
-  it("rekordy bodźców partii uwzględniają polecenie tylko przy instructionIsStimulus", () => {
-    const raw = { ...validChoiceRaw("plays"), instructionPl: "Dziś pada śnieg." };
-    const plain = collectBatchExerciseMetadata([raw], true).exerciseRecords[0]!;
-    const withInstruction = collectBatchExerciseMetadata([raw], true, { instructionIsStimulus: true }).exerciseRecords[0]!;
-    expect(withInstruction.stimulus).toBe(JSON.stringify(["dziś pada śnieg.", plain.stimulus]));
-    expect(collectBatchExerciseMetadata([raw], true, {}).exerciseRecords[0]).toEqual(plain);
-  });
-
-  it("summarizes rejection rules and counts without logging answer text", () => {
-    const summary = summarizeLessonPoolValidation({
-      rawCount: 2,
-      shapeRejected: 0,
-      outOfScopeCount: 0,
-      rejectedExerciseCount: 1,
-      rejectedErrors: ["lesson_gap: answer secret-child-text does not match", "lesson_gap: answer other-secret does not match"],
-      duplicateCount: 0,
-      validCount: 0,
-    });
-    expect(summary).toContain("lesson_gap×2");
-    expect(summary).toContain("odrzucone=1");
-    expect(summary).not.toContain("secret-child-text");
-    expect(summary).not.toContain("other-secret");
-  });
-
-  it("rejects a well-shaped exercise returned for a different objective in this batch", () => {
-    const foreign = { ...validChoiceRaw("plays"), objectiveId: "english_grammar.present_simple.negative" };
-    const result = filterExercisesToRequestedObjective([validChoiceRaw("watches"), foreign, null], OBJECTIVE_ID);
-    expect(result.outOfScopeCount).toBe(1);
-    expect(result.exercises).toEqual([validChoiceRaw("watches"), null]);
   });
 
   it("GREEN: po odfiltrowaniu strażnikiem validatePool nie rzuca i zwraca poprawne", () => {
@@ -380,7 +345,7 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
   };
   const build = (subject: SubjectModule) => {
     const resolved = topic(subject);
-    return buildPoolInput(subject, resolved, resolved.objectives[0]!.id, 4, "material", undefined, true, []);
+    return buildPoolInput(subject, resolved, resolved.objectives[0]!.id, 4, "material", undefined, true);
   };
 
   it("groundingRequired wynika z sourceQuotes przedmiotu, nie z obecności validatePoolExtra", () => {
@@ -397,82 +362,39 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
     const grammarTopic = englishGrammarSubject.topics.find((t) => t.id === "present_simple")!;
     const withType = grammarTopic.objectives.find((o) => o.exerciseTypes.includes("lesson_listen_choice"))!;
     const withoutType = grammarTopic.objectives.find((o) => !o.exerciseTypes.includes("lesson_listen_choice"));
-    const input = buildPoolInput(englishGrammarSubject, grammarTopic, withType.id, 9, "material", undefined, true, []);
+    const input = buildPoolInput(englishGrammarSubject, grammarTopic, withType.id, 9, "material", undefined, true);
     expect(input.listenChoicePerObjective).toBe(2);
     // Dodatek leży poza podziałem etapów i licznością partii.
     expect(input.countPerObjective).toBe(9);
     expect(input.stageCounts).toEqual(poolStageCounts(englishGrammarSubject, withType.exerciseTypes, 9));
     if (withoutType) {
-      expect(buildPoolInput(englishGrammarSubject, grammarTopic, withoutType.id, 9, "material", undefined, true, [])).not.toHaveProperty("listenChoicePerObjective");
+      expect(buildPoolInput(englishGrammarSubject, grammarTopic, withoutType.id, 9, "material", undefined, true)).not.toHaveProperty("listenChoicePerObjective");
     }
     // Cel bez typu na liście (lista zawężona) nie dostaje pola.
     const narrowed: LessonTopic = {
       ...grammarTopic,
       objectives: grammarTopic.objectives.map((o) => ({ ...o, exerciseTypes: o.exerciseTypes.filter((type) => type !== "lesson_listen_choice") })),
     };
-    expect(buildPoolInput(englishGrammarSubject, narrowed, withType.id, 9, "material", undefined, true, [])).not.toHaveProperty("listenChoicePerObjective");
+    expect(buildPoolInput(englishGrammarSubject, narrowed, withType.id, 9, "material", undefined, true)).not.toHaveProperty("listenChoicePerObjective");
     // Przedmiot bez nagrań zdań feedbacku (szkoła) nie dostaje pola.
     expect(build(schoolSubject)).not.toHaveProperty("listenChoicePerObjective");
     // Przedmiot bez typu na liście, choć z nagraniami zdań, też nie.
     const noTypeSubject: SubjectModule = { ...englishGrammarSubject, exerciseTypes: englishGrammarSubject.exerciseTypes.filter((type) => type !== "lesson_listen_choice") };
-    expect(buildPoolInput(noTypeSubject, grammarTopic, withType.id, 9, "material", undefined, true, [])).not.toHaveProperty("listenChoicePerObjective");
+    expect(buildPoolInput(noTypeSubject, grammarTopic, withType.id, 9, "material", undefined, true)).not.toHaveProperty("listenChoicePerObjective");
   });
 
-  it("listenChoicePerObjective odejmuje ćwiczenia słuchowe celu już obecne w szkicu i partiach (0 → pole pominięte)", () => {
+  it("listenChoiceAllowance odejmuje obecne ćwiczenia słuchowe celu (0, gdy limit wyczerpany)", () => {
     const grammarTopic = englishGrammarSubject.topics.find((t) => t.id === "present_simple")!;
     const withType = grammarTopic.objectives.find((o) => o.exerciseTypes.includes("lesson_listen_choice"))!;
     const listenOf = (objectiveId: string, stimulus: string) => ({ objectiveId, exerciseType: "lesson_listen_choice", stimulus });
     const other = { objectiveId: withType.id, exerciseType: "lesson_choice", stimulus: "x" };
     const foreign = listenOf("english_grammar.other", "f");
-    const withExisting = (existing: { objectiveId: string; exerciseType: string; stimulus: string }[]) =>
-      buildPoolInput(englishGrammarSubject, grammarTopic, withType.id, 9, "material", undefined, true, [], existing);
-    expect(withExisting([other, foreign]).listenChoicePerObjective).toBe(2);
-    expect(withExisting([listenOf(withType.id, "a"), other]).listenChoicePerObjective).toBe(1);
-    expect(withExisting([listenOf(withType.id, "a"), listenOf(withType.id, "b")])).not.toHaveProperty("listenChoicePerObjective");
-    expect(withExisting([listenOf(withType.id, "a"), listenOf(withType.id, "b"), listenOf(withType.id, "c")])).not.toHaveProperty("listenChoicePerObjective");
-  });
-
-  it("capListenChoiceOverflow: najwyżej dozwolone ćwiczenia słuchowe i zamówiona liczba pozostałych na cel", () => {
-    const ex = (objectiveId: string, exerciseType: LessonExerciseDraft["exerciseType"], answer: string): LessonExerciseDraft =>
-      ({ objectiveId, exerciseType, answer, acceptedAnswers: [], focus: [] });
-    const exercises = [
-      ex("o1", "lesson_listen_choice", "l1"), ex("o1", "lesson_choice", "c1"), ex("o1", "lesson_listen_choice", "l2"),
-      ex("o1", "lesson_listen_choice", "l3"), ex("o1", "lesson_choice", "c2"), ex("o1", "lesson_choice", "c3"),
-      ex("o2", "lesson_listen_choice", "m1"), ex("o2", "lesson_choice", "d1"), ex("o2", "lesson_choice", "d2"),
-      ex("o3", "lesson_choice", "e1"), ex("o3", "lesson_choice", "e2"), ex("o3", "lesson_choice", "e3"),
-    ];
-    const limits = new Map([
-      ["o1", { count: 2, listen: 2 }],
-      // Dodatek nie przyznany (szkic ma już 2): bez nowych słuchowych, a pozostałe bez dodatkowego limitu.
-      ["o2", { count: 1, listen: 0 }],
-    ]);
-    const result = capListenChoiceOverflow(exercises, limits);
-    expect(result.kept.map((e) => e.answer)).toEqual(["l1", "c1", "l2", "c2", "d1", "d2", "e1", "e2", "e3"]);
-    expect(result.rejected.map((r) => r.exercise.answer)).toEqual(["l3", "c3", "m1"]);
-    for (const { errors } of result.rejected) {
-      expect(errors).toHaveLength(1);
-      expect(errors[0]).toMatch(/^exerciseType: /);
-    }
-  });
-
-  it("capListenChoiceOverflow: nadmiar ćwiczeń etapów przycina najpierw z etapów ponad zamówiony podział", () => {
-    const ex = (exerciseType: LessonExerciseDraft["exerciseType"], answer: string): LessonExerciseDraft =>
-      ({ objectiveId: "o1", exerciseType, answer, acceptedAnswers: [], focus: [] });
-    // Model oddał nadmiar etapu prowadzonego na początku; zamówione: 2 guided, 2 productive, 1 independent.
-    const exercises = [
-      ex("lesson_choice", "c1"), ex("lesson_choice", "c2"), ex("lesson_order", "c3"), ex("lesson_listen_choice", "l1"),
-      ex("lesson_gap", "g1"), ex("lesson_transform", "g2"), ex("lesson_open_answer", "o1"),
-    ];
-    const limits = new Map([["o1", { count: 5, listen: 2, stages: { guided: 2, productive: 2, independent: 1 } }]]);
-    const result = capListenChoiceOverflow(exercises, limits);
-    expect(result.kept.map((e) => e.answer)).toEqual(["c1", "c2", "l1", "g1", "g2", "o1"]);
-    expect(result.rejected.map((r) => r.exercise.answer)).toEqual(["c3"]);
-
-    // Gdy etapom brakuje ćwiczeń, wolne miejsca dobiera kolejność wejścia (bez zmiany limitu `count`).
-    const short = [ex("lesson_choice", "c1"), ex("lesson_choice", "c2"), ex("lesson_choice", "c3"), ex("lesson_choice", "c4"), ex("lesson_gap", "g1")];
-    const shortResult = capListenChoiceOverflow(short, limits);
-    expect(shortResult.kept.map((e) => e.answer)).toEqual(["c1", "c2", "c3", "c4", "g1"]);
-    expect(capListenChoiceOverflow([...short, ex("lesson_choice", "c5")], limits).rejected.map((r) => r.exercise.answer)).toEqual(["c5"]);
+    const allowance = (existing: { objectiveId: string; exerciseType: string; stimulus: string }[]) =>
+      listenChoiceAllowance(englishGrammarSubject, withType, existing);
+    expect(allowance([other, foreign])).toBe(2);
+    expect(allowance([listenOf(withType.id, "a"), other])).toBe(1);
+    expect(allowance([listenOf(withType.id, "a"), listenOf(withType.id, "b")])).toBe(0);
+    expect(allowance([listenOf(withType.id, "a"), listenOf(withType.id, "b"), listenOf(withType.id, "c")])).toBe(0);
   });
 
   it("przenosi reguły typów z profilu przedmiotu do profilu promptu, a brak reguł pomija pola", () => {
@@ -481,22 +403,13 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
     expect(withRules).not.toHaveProperty("objectivesRules");
     const bare = build({ ...schoolSubject, prompts: { ...schoolSubject.prompts, typeRules: undefined } }).promptProfile;
     expect(bare).not.toHaveProperty("typeRules");
-    expect(build(englishGrammarSubject).promptProfile).not.toHaveProperty("typeRules");
-  });
-
-  it("reguły przeglądu krytyka nie trafiają do profilu promptu generatora", () => {
-    for (const subject of [schoolSubject, englishGrammarSubject]) {
-      expect(subject.prompts.reviewRules).toBeTruthy();
-      const profile = build(subject).promptProfile;
-      expect(profile).not.toHaveProperty("reviewRules");
-      expect(JSON.stringify(profile)).not.toContain(subject.prompts.reviewRules!);
-    }
+    expect(build(englishGrammarSubject).promptProfile.typeRules).toEqual(englishGrammarSubject.prompts.typeRules);
   });
 
   describe("tematy zdań z zainteresowań dziecka", () => {
     const buildWith = (subject: SubjectModule, interests?: readonly string[]) => {
       const resolved = topic(subject);
-      return buildPoolInput(subject, resolved, resolved.objectives[0]!.id, 4, "material", undefined, true, [], [], interests);
+      return buildPoolInput(subject, resolved, resolved.objectives[0]!.id, 4, "material", undefined, true, interests);
     };
 
     it("przedmiot z regułą i niepusta lista: lista oraz reguła trafiają do wejścia", () => {
@@ -521,54 +434,20 @@ describe("buildPoolInput — opcje przedmiotu w wejściu generacji", () => {
   });
 });
 
-describe("buildPoolInput — opcje zdań do unikania i celu rundy", () => {
+describe("buildPoolInput — zdania do unikania", () => {
   const resolved = englishGrammarSubject.topics[0]!;
-  const build = (options?: Parameters<typeof buildPoolInput>[10]) =>
-    buildPoolInput(englishGrammarSubject, resolved, resolved.objectives[0]!.id, 4, "material", undefined, true, [], [], undefined, options);
+  const build = (options?: Parameters<typeof buildPoolInput>[8]) =>
+    buildPoolInput(englishGrammarSubject, resolved, resolved.objectives[0]!.id, 4, "material", undefined, true, undefined, options);
 
-  it("niepusta lista i cel trafiają do wejścia", () => {
-    const input = build({ avoidSentences: ["He plays football."], purpose: "stage_top_up" });
+  it("niepusta lista trafia do wejścia", () => {
+    const input = build({ avoidSentences: ["He plays football."] });
     expect(input.avoidSentences).toEqual(["He plays football."]);
-    expect(input.purpose).toBe("stage_top_up");
   });
 
-  it("brak opcji albo pusta lista: bez pól", () => {
+  it("brak opcji albo pusta lista: bez pola", () => {
     for (const input of [build(), build({}), build({ avoidSentences: [] })]) {
       expect(input).not.toHaveProperty("avoidSentences");
-      expect(input).not.toHaveProperty("purpose");
     }
-  });
-});
-
-describe("trimToStageDeficits (runda pod etap: najwyżej brak każdego etapu)", () => {
-  const exercise = (exerciseType: LessonExerciseDraft["exerciseType"], answer: string): LessonExerciseDraft => ({
-    exerciseType, objectiveId: "o1", answer, acceptedAnswers: [], focus: [],
-  });
-
-  it("zachowuje ćwiczenia do braku etapu w kolejności wejścia, nadwyżkę i etapy bez braku odrzuca z powodem", () => {
-    const input = [
-      exercise("lesson_open_answer", "a"),
-      exercise("lesson_choice", "b"),
-      exercise("lesson_open_answer", "c"),
-      exercise("lesson_gap", "d"),
-      exercise("lesson_open_answer", "e"),
-    ];
-    const result = trimToStageDeficits(input, { guided: 0, productive: 1, independent: 2 });
-    expect(result.kept.map((item) => item.answer)).toEqual(["a", "c", "d"]);
-    expect(result.rejected.map((item) => item.exercise.answer)).toEqual(["b", "e"]);
-    for (const item of result.rejected) expect(item.errors).toEqual(["exerciseType: ponad brak etapu"]);
-  });
-
-  it("typy spoza ścieżki etapów (słowa kluczowe, wybór ze słuchu) nie zajmują miejsca etapu i zawsze odpadają", () => {
-    const input = [
-      exercise("lesson_keywords", "k"),
-      exercise("lesson_listen_choice", "l"),
-      exercise("lesson_choice", "g"),
-    ];
-    const result = trimToStageDeficits(input, { guided: 1, productive: 0, independent: 0 });
-    expect(result.kept.map((item) => item.answer)).toEqual(["g"]);
-    expect(result.rejected.map((item) => item.exercise.answer)).toEqual(["k", "l"]);
-    for (const item of result.rejected) expect(item.errors).toEqual(["exerciseType: poza ścieżką etapów w dogenerowaniu"]);
   });
 });
 
@@ -662,70 +541,20 @@ describe("withSubjectObjectiveKinds (rodzaj zagadnienia zapisuje tylko przedmiot
   });
 });
 
-describe("refineGeneratedDrafts (czyszczenie świeżo wygenerowanej puli)", () => {
-  const gap = (answer: string): LessonExerciseDraft => ({
-    exerciseType: "lesson_gap", objectiveId: "o1", stem: `It's ___ today.`, answer, acceptedAnswers: [], focus: [answer],
-  });
-  const withRefine = (refine: NonNullable<SubjectModule["refineGeneratedPool"]>): SubjectModule =>
-    ({ ...englishGrammarSubject, refineGeneratedPool: refine });
-
-  it("przedmiot bez haka zwraca pulę bez zmian i bez odrzuceń", () => {
-    const drafts = [gap("a"), gap("b")];
-    expect(refineGeneratedDrafts(englishGrammarSubject, drafts, "material")).toEqual({
-      kept: drafts, rejectedCount: 0, rejectedReasons: {},
-    });
-    expect(refineGeneratedDrafts(schoolSubject, drafts, "material").kept).toEqual(drafts);
-  });
-
-  it("odrzucenia z haka zwiększają rejectedCount i są zliczone po powodzie", () => {
-    const drafts = [gap("raining"), gap("coat"), gap("snowing"), gap("hat")];
-    const subject = withRefine((all) => ({
-      kept: all.filter((d) => d.answer === "coat"),
-      rejected: [
-        { exercise: all[0]!, reason: "słowo spoza materiału: raining" },
-        { exercise: all[2]!, reason: "słowo spoza materiału: raining" },
-        { exercise: all[3]!, reason: "słowo spoza materiału: hat" },
-      ],
-    }));
-    const result = refineGeneratedDrafts(subject, drafts, "material");
-    expect(result.kept.map((d) => d.answer)).toEqual(["coat"]);
-    expect(result.rejectedCount).toBe(3);
-    expect(result.rejectedReasons).toEqual({ "słowo spoza materiału: raining": 2, "słowo spoza materiału: hat": 1 });
-  });
-
-  it("przekazuje hakowi materiał i szkice", () => {
-    const seen: { drafts: readonly LessonExerciseDraft[]; material: string }[] = [];
-    const drafts = [gap("a")];
-    refineGeneratedDrafts(withRefine((all, ctx) => { seen.push({ drafts: all, material: ctx.material }); return { kept: [...all], rejected: [] }; }),
-      drafts, "Clothes: coat, hat");
-    expect(seen).toEqual([{ drafts, material: "Clothes: coat, hat" }]);
-  });
-
+describe("sumRejectedReasons (liczniki powodów odrzuceń kolejnych przebiegów)", () => {
   it("powody o nazwach z prototypu obiektu (constructor, toString, __proto__) są liczone jak każde inne", () => {
-    const reasons = ["constructor", "toString", "__proto__", "__proto__", "hasOwnProperty"];
-    const drafts = reasons.map((_, index) => gap(`w${index}`));
-    const subject = withRefine((all) => ({ kept: [], rejected: all.map((exercise, index) => ({ exercise, reason: reasons[index]! })) }));
-    const result = refineGeneratedDrafts(subject, drafts, "m");
     const expected: [string, number][] = [["constructor", 1], ["toString", 1], ["__proto__", 2], ["hasOwnProperty", 1]];
-    expect(Object.entries(result.rejectedReasons)).toEqual(expected);
-    expect(result.rejectedCount).toBe(5);
-    // Zwykły obiekt (JSONB, DTO), którego prototypu nie podmienił klucz „__proto__”.
-    expect(Object.getPrototypeOf(result.rejectedReasons)).toBe(Object.prototype);
-    expect(LessonDraftDtoSchema.shape.rejectedReasons.safeParse(result.rejectedReasons).success).toBe(true);
-
-    // Kolejny przebieg sumuje liczniki odczytane z JSONB (JSON.parse daje własne pola, także „__proto__”).
-    const stored = JSON.parse(JSON.stringify(result.rejectedReasons)) as Record<string, number>;
-    const summed = sumRejectedReasons(stored, result.rejectedReasons);
+    // Liczniki odczytane z JSONB (JSON.parse daje własne pola, także „__proto__”).
+    const stored = JSON.parse('{"constructor":1,"toString":1,"__proto__":2,"hasOwnProperty":1}') as Record<string, number>;
+    expect(Object.entries(stored)).toEqual(expected);
+    const summed = sumRejectedReasons(stored, stored);
     expect(Object.entries(summed)).toEqual(expected.map(([reason, count]) => [reason, 2 * count]));
+    // Zwykły obiekt (JSONB, DTO), którego prototypu nie podmienił klucz „__proto__”.
     expect(Object.getPrototypeOf(summed)).toBe(Object.prototype);
-    expect(Object.entries(sumRejectedReasons(undefined, result.rejectedReasons))).toEqual(expected);
-  });
-
-  it("hak bez odrzuceń zwraca puste zliczenie", () => {
-    const drafts = [gap("a")];
-    expect(refineGeneratedDrafts(withRefine((all) => ({ kept: [...all], rejected: [] })), drafts, "m")).toEqual({
-      kept: drafts, rejectedCount: 0, rejectedReasons: {},
-    });
+    expect(LessonDraftDtoSchema.shape.rejectedReasons.safeParse(summed).success).toBe(true);
+    const first = sumRejectedReasons(undefined, stored);
+    expect(Object.entries(first)).toEqual(expected);
+    expect(Object.getPrototypeOf(first)).toBe(Object.prototype);
   });
 });
 
@@ -774,6 +603,12 @@ describe("scopeFamiliesToRun (dogenerowanie nie dołącza do istniejących rodzi
     expect(slug.length).toBeLessThanOrEqual(64);
     expect(slug).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
     expect(slug.endsWith("-r3f2a9c")).toBe(true);
+  });
+
+  it("familyBase z domeny zdejmuje ten sam sufiks (wspólny format `familyRunSuffix`)", () => {
+    const scope = "nonce:3f2a9c1e-0000-4000-8000-000000000000:2:0";
+    const open = scopeFamiliesToRun({ exerciseType: "lesson_open_answer", objectiveId: "o", answer: "a", acceptedAnswers: [], focus: [], familyId: "foto-def" }, scope);
+    expect(familyBase(open.familyId!, scope)).toBe("foto-def");
   });
 });
 

@@ -18,6 +18,7 @@ const FAILED_DECK_ID = "20000000-0000-4000-8000-0000000000f1";
 const BODY = "Unit 3 — Food\npizza — pizza\napple — jabłko\nI like pizza. Do you like apples?";
 
 const catalog = {
+  lessonGenerationAvailable: true,
   subjects: [
     { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] },
     { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, topics: [] },

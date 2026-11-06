@@ -3,6 +3,7 @@ import { validateEnglishGrammarExercise } from "./validators";
 import { presentSimpleV1 } from "./topics/present-simple";
 import { toBeV1 } from "./topics/to-be";
 import { validateLessonExercise } from "../../pool-validation";
+import { messagesOf } from "../../rules/catalog";
 import { englishGrammarSubject } from "./module";
 import type { LessonExerciseDraft } from "../../types";
 
@@ -601,13 +602,106 @@ describe("validateEnglishGrammarExercise — inne typy", () => {
       focus: ["plays"],
     };
     const errors = validateEnglishGrammarExercise(translated, presentSimpleV1);
-    expect(errors.some((error) => /prompt.*answer|bodziec.*odpowiedzi/i.test(error))).toBe(true);
+    expect(messagesOf(errors).some((error) => /prompt.*answer|bodziec.*odpowiedzi/i.test(error))).toBe(true);
     const acceptedLeak = validateEnglishGrammarExercise({
       ...translated,
       prompt: "SHE PLAYS FOOTBALL EVERY DAY!",
       answer: "She plays football daily.",
       acceptedAnswers: ["She plays football every day."],
     }, presentSimpleV1);
-    expect(acceptedLeak.some((error) => /prompt.*answer|bodziec.*odpowiedzi/i.test(error))).toBe(true);
+    expect(messagesOf(acceptedLeak).some((error) => /prompt.*answer|bodziec.*odpowiedzi/i.test(error))).toBe(true);
+  });
+});
+
+describe("validateEnglishGrammarExercise — zgłoszenia reguł katalogu gramatyki", () => {
+  const AFF = "english_grammar.to_be.affirmative_forms";
+  const beGap = (stem: string, answer: string, overrides: Partial<LessonExerciseDraft> = {}): LessonExerciseDraft => ({
+    exerciseType: "lesson_gap",
+    objectiveId: AFF,
+    stem,
+    hint: "be",
+    answer,
+    acceptedAnswers: [],
+    focus: [answer],
+    ...overrides,
+  });
+
+  it("forma niezgodna z podmiotem: id reguły, pole, pl bez zmian i obie wartości w found", () => {
+    const [issue, ...rest] = validateEnglishGrammarExercise(beGap("She ___ happy.", "are"), toBeV1);
+    expect(rest).toEqual([]);
+    expect(issue).toEqual({
+      rule: "grammar.be_form_subject",
+      field: "answer",
+      pl: "lesson_gap: forma „are” nie pasuje do podmiotu (poprawnie: is)",
+      found: '"are" uses "are", but the subject requires "is"',
+    });
+  });
+
+  it("wariant w acceptedAnswers wskazuje swoje pole, a pl zachowuje etykietę", () => {
+    const issues = validateEnglishGrammarExercise(beGap("She ___ happy.", "is", { acceptedAnswers: ["are"] }), toBeV1);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      rule: "grammar.be_form_subject",
+      field: "acceptedAnswers",
+      pl: "acceptedAnswers: forma „are” nie pasuje do podmiotu (poprawnie: is)",
+    });
+  });
+
+  it("skrót krótkiej odpowiedzi i biegunowość mają osobne reguły", () => {
+    const short = validateEnglishGrammarExercise(
+      beGap("Yes, I ___.", "I'm", { objectiveId: "english_grammar.to_be.short_answers" }),
+      toBeV1,
+    );
+    expect(short.map((issue) => issue.rule)).toContain("grammar.be_short_answer_contraction");
+    const polarity = validateEnglishGrammarExercise(beGap("She ___ happy.", "isn't"), toBeV1);
+    expect(polarity.map((issue) => issue.rule)).toEqual(["grammar.be_negative_in_affirmative_objective"]);
+    expect(polarity[0]!.found).toContain('"isn\'t"');
+  });
+
+  it("piktogram: odpowiedź z zaimkiem spoza obrazka niesie oba zaimki w found", () => {
+    const ex: LessonExerciseDraft = {
+      exerciseType: "lesson_choice",
+      objectiveId: AFF,
+      stem: "___ is happy.",
+      visualSubject: "girl",
+      answer: "He",
+      acceptedAnswers: [],
+      focus: ["He"],
+      options: [{ id: "a", text: "He" }, { id: "b", text: "She" }],
+      correctOption: "a",
+    };
+    const issues = validateEnglishGrammarExercise(ex, toBeV1);
+    expect(issues.map((issue) => issue.rule)).toEqual(["grammar.visual_answer_pronoun", "grammar.visual_option_pronoun"]);
+    expect(issues[0]!.found).toBe('the answer starts with "he", the picture (girl) requires "she"');
+  });
+
+  it("bodziec tłumaczenia równy wariantowi: found niesie bodziec i wariant", () => {
+    const issues = validateEnglishGrammarExercise({
+      exerciseType: "lesson_open_answer",
+      objectiveId: "english_grammar.present_simple.third_person_s",
+      prompt: "She plays football.",
+      answer: "She plays tennis.",
+      acceptedAnswers: ["she plays football!"],
+      focus: [],
+    }, presentSimpleV1);
+    expect(issues).toEqual([
+      expect.objectContaining({
+        rule: "grammar.translation_prompt_equals_answer",
+        field: "prompt",
+        found: 'prompt "She plays football." equals the answer "she plays football!"',
+      }),
+    ]);
+  });
+
+  it("forma czasownika w Present Simple: found niesie odpowiedź i bezokolicznik", () => {
+    const issues = validateEnglishGrammarExercise(gap("play", "played"), presentSimpleV1);
+    expect(issues).toEqual([
+      expect.objectContaining({
+        rule: "grammar.gap_present_simple_form",
+        field: "answer",
+        pl: "lesson_gap: odpowiedź „played” nie jest formą czasownika „play” w Present Simple",
+        found: 'answer "played" is not a Present Simple form of the verb "play"',
+      }),
+    ]);
   });
 });

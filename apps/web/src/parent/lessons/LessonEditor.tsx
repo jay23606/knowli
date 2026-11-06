@@ -21,9 +21,8 @@ import DeckSessionTaskBudgetSettings from "../DeckSessionTaskBudgetSettings";
 import type { EditorLeaveState } from "../useParentLeaveGuard";
 import { orpc } from "../query-client";
 import LessonSupervisionPanel from "./LessonSupervisionPanel";
-import LessonReviewBanner from "./LessonReviewBanner";
 import { GenerationGapBadge, LessonGenerationGapsAlert } from "./LessonGenerationGaps";
-import LessonExerciseCard, { leakNoticeFor, reviewNoticeFor, type CalculationControls, type ExerciseReviewNotice, type LeakNotice } from "./LessonExerciseCard";
+import LessonExerciseCard, { leakNoticeFor, type CalculationControls, type LeakNotice } from "./LessonExerciseCard";
 import ArchiveLessonDialog from "./ArchiveLessonDialog";
 import LessonSourceNote from "./LessonSourceNote";
 import LessonStorySection from "./LessonStorySection";
@@ -38,8 +37,10 @@ import "./lesson-panels.css";
 import {
   createLessonSnapshot,
   applyCalculationPreview,
+  cleanupLines,
   formatRejectedReason,
   otherRejectedCount,
+  rejectedTotal,
   groupCalculationFamilies,
   groupExercisesByObjectiveAndStage,
   keywordsAnswerOf,
@@ -334,6 +335,10 @@ export default function LessonEditor({
   const catalogQuery = useQuery(orpc.lessonCatalog.get.queryOptions());
   const catalog = catalogQuery.data ?? null;
   const catalogError = catalogQuery.error;
+  // bez klucza OpenRouter na serwerze agent nie wystartuje: „Dogeneruj” i ponowienie runu lekcji są wyłączone
+  // (run historyjki nie korzysta z agenta, więc jego ponowienie zostaje)
+  const generationUnavailable = catalog?.lessonGenerationAvailable === false;
+  const generationUnavailableText = messages.lessons.generationErrors.lesson_agent_unavailable!;
   useEffect(() => {
     if (catalogError) setError(errorMessage(catalogError));
   }, [catalogError]);
@@ -564,7 +569,7 @@ export default function LessonEditor({
   };
 
   const retry = async () => {
-    if (!deck?.generation || busyRef.current || dirty.current || conflict) return;
+    if (!deck?.generation || busyRef.current || dirty.current || conflict || generationUnavailable) return;
     const runId = deck.generation.id;
     setBusyState(true);
     setError(null);
@@ -579,7 +584,7 @@ export default function LessonEditor({
   };
 
   const regenerate = async (objectiveId: string) => {
-    if (!draft || busyRef.current || regenLock.current || generating || isDirty) return;
+    if (!draft || busyRef.current || regenLock.current || generating || isDirty || generationUnavailable) return;
     regenLock.current = true;
     const count = regenCounts[objectiveId] ?? 4;
     setBusyState(true);
@@ -698,8 +703,15 @@ export default function LessonEditor({
     ?? topic?.objectives.find((objective) => objective.id === objectiveId);
   // Powody odrzuceń przy generowaniu (zliczenia bez danych dziecka) — rodzic widzi, czy dogenerować.
   const rejectedReasons = topRejectedReasons(active?.rejectedReasons);
-  // Odrzucenia spoza wypisanych powodów (inna walidacja albo powody poza listą) — rodzic widzi całą skalę.
-  const otherRejected = otherRejectedCount(active?.rejectedCount ?? 0, rejectedReasons);
+  const cleanup = cleanupLines(active?.cleanupCounts, {
+    hints: messages.lessons.cleanupHints,
+    variants: messages.lessons.cleanupVariants,
+    quotes: messages.lessons.cleanupQuotes,
+  });
+  // Licznik nie mniejszy niż suma powodów (agent: powody z pętli, `rejectedCount` tylko usunięcia po przyjęciu).
+  const rejectedShown = rejectedTotal(active?.rejectedCount ?? 0, active?.rejectedReasons);
+  // Odrzucenia spoza wypisanych powodów (powody poza listą albo bez powodu) — rodzic widzi całą skalę.
+  const otherRejected = otherRejectedCount(rejectedShown, rejectedReasons);
   const indexByClientKey = new Map((form?.exercises ?? []).map((ex, index) => [ex.clientKey, index]));
   const groups = form ? groupExercisesByObjectiveAndStage(form.exercises, active?.objectiveIds ?? []) : [];
 
@@ -804,7 +816,10 @@ export default function LessonEditor({
   const forcedObjectives = groups.filter((g) => g.stages.some((s) => errorsIn(s.exercises) > 0)).map((g) => g.objectiveId);
   const forcedStages = groups.flatMap((g) => g.stages.filter((s) => errorsIn(s.exercises) > 0).map((s) => stageKey(g.objectiveId, s.stage)));
   const exerciseCount = form?.exercises.length ?? 0;
-  const regenDisabled = busy || generating || isDirty;
+  const regenDisabled = busy || generating || isDirty || generationUnavailable;
+  // Powód wyłączenia „Dogeneruj”: wiersz pod listą powodów, a przy nieudanym albo zawieszonym runie ten sam tekst w alercie runu.
+  const regenUnavailableShown = editable && generationUnavailable && groups.length > 0 && deck?.generation?.state !== "failed" && !(generating && deck?.generation?.state === "running");
+  const regenDescribedBy = generationUnavailable ? (regenUnavailableShown ? "regen-unavailable" : "generation-unavailable") : undefined;
 
   // klucz: identyfikator ćwiczenia (przeżywa zapis, który nadaje nowe klucze klienta), dla nowych — klucz klienta
   const toggleCard = (key: string) => setOpenCards((current) => {
@@ -847,11 +862,6 @@ export default function LessonEditor({
   cardActionsRef.current = { toggle: toggleCard, mutate: mutateExercise, remove: removeExercise, play: playAsset, showSource };
 
   const leakByExercise = new Map((active?.exposureLeaks ?? []).map((leak) => [leak.exerciseId, leak]));
-  // Wpisy kontroli jakości (serwer zostawia tylko ćwiczenia, których zapisana treść nie zmieniła się od kontroli).
-  const reviewChangedByExercise = new Map((active?.review?.changed ?? []).map((entry) => [entry.exerciseId, entry]));
-  const reviewNoteByExercise = new Map((active?.review?.notes ?? []).map((entry) => [entry.exerciseId, entry]));
-  const reviewNotice = (ex: EditableLessonExercise): ExerciseReviewNotice | null =>
-    ex.id === undefined ? null : reviewNoticeFor(reviewChangedByExercise.get(ex.id), reviewNoteByExercise.get(ex.id));
   /** Ostrzeżenie o ujawnionym rozwiązaniu ćwiczenia; źródło spoza formularza (usunięte) → prośba o zapis. */
   const leakNotice = (ex: EditableLessonExercise): LeakNotice | null => {
     const leak = ex.id === undefined ? undefined : leakByExercise.get(ex.id);
@@ -891,7 +901,6 @@ export default function LessonEditor({
         open={openCards.has(ex.id ?? ex.clientKey) || changed || errors !== undefined}
         changed={changed}
         leak={leakNotice(ex)}
-        review={reviewNotice(ex)}
         hadAudio={savedAudio !== null}
         errors={errors}
         audio={asset ? { state: asset.state, assetId: asset.assetId ?? null } : null}
@@ -1060,6 +1069,7 @@ export default function LessonEditor({
                   </Menu.Target>
                   <Menu.Dropdown>
                     <Menu.Item leftSection={<ParentIcon name="refresh" />} data-testid={`regen-open-${group.objectiveId}`} disabled={regenDisabled}
+                      aria-describedby={regenDescribedBy}
                       onClick={() => setRegenTarget(group.objectiveId)}>
                       {messages.lessons.regenerateMenu}
                     </Menu.Item>
@@ -1067,7 +1077,7 @@ export default function LessonEditor({
                 </Menu>
               ) : (
                 <Button size="md" variant="subtle" leftSection={<ParentIcon name="refresh" />} data-testid={`regen-open-${group.objectiveId}`}
-                  disabled={regenDisabled} onClick={() => setRegenTarget(group.objectiveId)}>
+                  disabled={regenDisabled} aria-describedby={regenDescribedBy} onClick={() => setRegenTarget(group.objectiveId)}>
                   {messages.lessons.regenerateMenu}
                 </Button>
               ))}
@@ -1278,8 +1288,8 @@ export default function LessonEditor({
         deckId={deckId}
         childrenList={childrenList}
         gradingModel={deck.grading.available ? (deck.grading.model ?? null) : null}
-        {...(deck.reviewService ? { reviewService: deck.reviewService } : {})}
         onRegenerate={draft ? (objectiveId) => void regenerate(objectiveId) : undefined}
+        {...(generationUnavailable ? { regenerateUnavailable: generationUnavailableText } : {})}
       />
     </Stack>
   );
@@ -1339,9 +1349,10 @@ export default function LessonEditor({
                 <>
                   <Text size="sm">{messages.lessons.stalledGenerationHint}</Text>
                   <Button size="md" variant="default" data-testid="retry-stalled-generation" leftSection={<ParentIcon name="refresh" />}
-                    disabled={busy || isDirty || conflict} onClick={retry}>
+                    disabled={busy || isDirty || conflict || generationUnavailable} aria-describedby={generationUnavailable ? "generation-unavailable" : undefined} onClick={retry}>
                     {messages.lessons.retryGeneration}
                   </Button>
+                  {generationUnavailable && <Text size="sm" id="generation-unavailable" data-testid="generation-unavailable">{generationUnavailableText}</Text>}
                 </>
               )}
             </Stack>
@@ -1350,16 +1361,19 @@ export default function LessonEditor({
         {deck?.generation?.state === "failed" && (
           <Alert color="red" variant="light" data-testid="generation-failed">
             <Stack gap="xs" align="flex-start">
-              <Text size="sm">{generationFailure}</Text>
-              <Button size="md" variant="default" data-testid="generation-retry" leftSection={<ParentIcon name="refresh" />} onClick={retry}>
+              {/* ten sam tekst (run bez agenta) pokazujemy raz — jako komunikat o niedostępnym generowaniu */}
+              {!(generationUnavailable && generationFailure === generationUnavailableText) && <Text size="sm">{generationFailure}</Text>}
+              <Button size="md" variant="default" data-testid="generation-retry" leftSection={<ParentIcon name="refresh" />}
+                disabled={generationUnavailable} aria-describedby={generationUnavailable ? "generation-unavailable" : undefined} onClick={retry}>
                 {messages.lessons.retryGeneration}
               </Button>
+              {generationUnavailable && <Text size="sm" id="generation-unavailable" data-testid="generation-unavailable">{generationUnavailableText}</Text>}
             </Stack>
           </Alert>
         )}
         {gradingDisabled(deck) && <Alert color="gray" variant="light" data-testid="grading-disabled">{messages.lessons.gradingDisabled}</Alert>}
-        {active && active.rejectedCount > 0 && (
-          <Text size="sm" className="pp-editor-muted" data-testid="rejected-count">{messages.lessons.rejectedCount.replace("{n}", String(active.rejectedCount))}</Text>
+        {active && rejectedShown > 0 && (
+          <Text size="sm" className="pp-editor-muted" data-testid="rejected-count">{messages.lessons.rejectedCount.replace("{n}", String(rejectedShown))}</Text>
         )}
         {rejectedReasons.length > 0 && (
           <div>
@@ -1374,8 +1388,19 @@ export default function LessonEditor({
             </ul>
           </div>
         )}
+        {cleanup.length > 0 && (
+          <div>
+            <Text size="sm" className="pp-editor-muted" id="cleanup-counts-label" data-testid="cleanup-counts-label">{messages.lessons.cleanupLabel}</Text>
+            <ul className="pp-lesson-rejected-reasons pp-editor-muted" aria-labelledby="cleanup-counts-label" data-testid="cleanup-counts">
+              {cleanup.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          </div>
+        )}
         {draft?.generationGaps && <LessonGenerationGapsAlert gaps={draft.generationGaps} />}
-        {active?.review && <LessonReviewBanner review={active.review} />}
+        {/* „Dogeneruj” jest wyłączone — powód obok (przy nieudanym runie ten sam tekst jest już w alercie wyżej) */}
+        {regenUnavailableShown && (
+          <Text size="sm" className="pp-editor-muted" id="regen-unavailable" data-testid="regen-unavailable">{generationUnavailableText}</Text>
+        )}
         {error && !showActionBar && errorAlert}
 
         {conflict && (
@@ -1419,6 +1444,7 @@ export default function LessonEditor({
         {regenTarget && (
           <Stack gap="md">
             <Text size="sm" fw={600}>{objectiveMeta(regenTarget)?.titlePl ?? regenTarget}</Text>
+            {generationUnavailable && <Text size="sm" id="regen-modal-unavailable" data-testid="regen-modal-unavailable">{generationUnavailableText}</Text>}
             <NumberInput size="md" label={messages.lessons.regenerateCount} description={messages.lessons.regenerateHint}
               data-testid={`regen-count-${regenTarget}`} min={1} max={60} allowDecimal={false} allowNegative={false} clampBehavior="none" maw={200}
               value={regenCounts[regenTarget] ?? 4}
@@ -1426,6 +1452,7 @@ export default function LessonEditor({
             <Group justify="flex-end" gap="sm">
               <Button size="md" variant="default" onClick={() => setRegenTarget(null)}>{messages.lessons.regenerateCancel}</Button>
               <Button size="md" data-testid={`regen-submit-${regenTarget}`} disabled={regenDisabled || !regenCountValid(regenCounts[regenTarget] ?? 4)}
+                aria-describedby={generationUnavailable ? "regen-modal-unavailable" : undefined}
                 onClick={() => {
                   const objectiveId = regenTarget;
                   setRegenTarget(null);

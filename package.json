@@ -5,7 +5,6 @@
   "description": "Knowli / Umiem! — prywatna, self-hostowana aplikacja rodzinna do nauki",
   "packageManager": "pnpm@10.34.6",
   "scripts": {
-    "report:exposure-leaks": "node apps/worker/node_modules/tsx/dist/cli.mjs scripts/report-exposure-leaks.mts",
     "eval:school-grader": "node apps/worker/node_modules/tsx/dist/cli.mjs scripts/evaluate-school-grader.mts",
     "eval:tts-styles": "node apps/worker/node_modules/tsx/dist/cli.mjs scripts/sample-tts-styles.mts",
     "eval:dictation-stt": "node apps/worker/node_modules/tsx/dist/cli.mjs scripts/evaluate-dictation-stt.mts",
@@ -15,7 +14,6 @@
     "test:mcp": "uv sync --locked --project integrations/umiem-mcp --group hermes-test && uv run --locked --project integrations/umiem-mcp --group hermes-test python -m unittest discover -s integrations/umiem-mcp/tests -p test_*.py",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "probe:chapter": "vitest run --config vitest.probe.config.ts tests/probes/chapter-generation.probe.test.ts",
-    "probe:review": "vitest run --config vitest.probe.config.ts tests/probes/lesson-review.probe.test.ts",
     "probe:agent": "vitest run --config vitest.probe.config.ts tests/probes/agent-generation.probe.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:shards": "node scripts/run-e2e-shards.cjs",

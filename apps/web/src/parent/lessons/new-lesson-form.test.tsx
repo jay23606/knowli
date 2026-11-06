@@ -43,7 +43,7 @@ const grammar = {
 const school = { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] };
 const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, offersListenChoice: true, topics: [] };
 
-const catalog = { subjects: [grammar, school, chapter] } as unknown as SubjectCatalogDto;
+const catalog = { lessonGenerationAvailable: true, subjects: [grammar, school, chapter] } as unknown as SubjectCatalogDto;
 
 const values = (overrides: Partial<NewLessonValues> = {}): NewLessonValues => ({
   ...initialLessonValues(catalog),
@@ -52,12 +52,12 @@ const values = (overrides: Partial<NewLessonValues> = {}): NewLessonValues => ({
 });
 
 /** Formularz z wczytanym katalogiem, w którym pierwszym przedmiotem jest podany (renderowanie statyczne nie wykonuje zapytań). */
-function renderWithCatalog(first: unknown, extras: { children?: unknown[]; generationService?: string; reviewService?: string } = {}): string {
+function renderWithCatalog(first: unknown, extras: { children?: unknown[]; generationService?: string; available?: boolean } = {}): string {
   const queryClient = new QueryClient();
   queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, {
+    lessonGenerationAvailable: extras.available ?? true,
     subjects: [first],
     ...(extras.generationService ? { generationService: extras.generationService } : {}),
-    ...(extras.reviewService ? { reviewService: extras.reviewService } : {}),
   } as unknown as SubjectCatalogDto);
   if (extras.children) queryClient.setQueryData(orpc.children.list.queryOptions().queryKey, extras.children as never);
   return renderParentMarkup(<NewLessonForm onCreated={vi.fn()} onCancel={vi.fn()} registerEditorState={vi.fn()} />, queryClient);
@@ -430,28 +430,14 @@ describe("NewLessonForm", () => {
       expect(buildCommand(values(), path, undefined, ["dinozaury"]).command).toMatchObject({ interests: ["dinozaury"] });
     });
 
-    it("informacja o automatycznej kontroli jakości tylko, gdy katalog podaje jej usługę", () => {
-      const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
-      const withReview = renderWithCatalog(grammar, { reviewService: REVIEW });
-      expect(withReview).toContain('data-testid="lesson-review-service"');
-      expect(withReview).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
-      for (const first of [grammar, school, chapter]) {
-        expect(renderWithCatalog(first)).not.toContain('data-testid="lesson-review-service"');
-      }
-      // tematy zdań: notka wspomina kontrolę jakości (gdy włączona)
-      expect(messages.lessons.themesService).toContain("automatyczna kontrola jakości");
-      expect(messages.lessons.themesServiceUnknown).toContain("automatyczna kontrola jakości");
-    });
-
     describe("przedmiot z agentem puli (checkService)", () => {
       // model agenta, potem usługa UMIEM_LLM (etap zagadnień / historyjka) — ta sama co katalogowa
       const GEN = ["openrouter.ai · google/gemini-3.8-pro", SERVICE];
       const CHECK = "openrouter.ai · deepseek/deepseek-v4.1-flash-1017";
-      const REVIEW = "openrouter.ai · anthropic/claude-sonnet-5.5";
       const agentGrammar = { ...grammar, generationServices: GEN, checkService: CHECK };
 
-      it("wariant bez materiału: usługi generowania z katalogu przedmiotu, drugi model, bez krytyka", () => {
-        const markup = renderWithCatalog(agentGrammar, { generationService: SERVICE, reviewService: REVIEW });
+      it("wariant bez materiału: usługi generowania z katalogu przedmiotu, drugi model", () => {
+        const markup = renderWithCatalog(agentGrammar, { generationService: SERVICE });
         expect(markup).toContain('data-testid="lesson-check-service"');
         expect(markup).toContain(messages.lessons.checkServiceInfo.replace("{service}", CHECK));
         expect(markup).not.toContain(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
@@ -460,14 +446,23 @@ describe("NewLessonForm", () => {
         expect(markup).toContain(messages.lessons.themesService.replace("{service}", GEN[0]!));
         expect(markup).not.toContain(messages.lessons.themesService.replace("{service}", GEN.join(", ")));
         expect(markup).not.toContain(messages.lessons.themesService.replace("{service}", SERVICE));
-        expect(markup).not.toContain('data-testid="lesson-review-service"');
       });
 
       it("wariant z materiałem (checkServiceIncludesMaterial)", () => {
-        const markup = renderWithCatalog({ ...school, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true }, { reviewService: REVIEW });
+        const markup = renderWithCatalog({ ...school, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true });
         expect(markup).toContain(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
         expect(markup).not.toContain(messages.lessons.checkServiceInfo.replace("{service}", CHECK));
-        expect(markup).not.toContain('data-testid="lesson-review-service"');
+      });
+
+      it("ocena pytań otwartych: komunikat pod komunikatem drugiego modelu; bez openCheckService go nie ma", () => {
+        const OPEN = "openrouter.ai · google/gemini-3.8-flash";
+        const withOpen = renderWithCatalog({ ...school, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true, openCheckService: OPEN });
+        expect(withOpen).toContain('data-testid="lesson-open-check-service"');
+        expect(withOpen).toContain(messages.lessons.checkServiceInfoWithMaterial.replace("{service}", CHECK));
+        expect(withOpen).toContain(messages.lessons.openCheckServiceInfo.replace("{service}", OPEN));
+        expect(withOpen.indexOf('data-testid="lesson-check-service"')).toBeLessThan(withOpen.indexOf('data-testid="lesson-open-check-service"'));
+        const without = renderWithCatalog({ ...school, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true });
+        expect(without).not.toContain('data-testid="lesson-open-check-service"');
       });
 
       it("jedna usługa generowania: liczba pojedyncza", () => {
@@ -476,9 +471,9 @@ describe("NewLessonForm", () => {
         expect(markup).not.toContain(messages.lessons.generationServicesInfo.replace("{service}", GEN[0]!));
       });
 
-      it("przedmiot potoku: komunikat krytyka, bez komunikatów agenta", () => {
-        const markup = renderWithCatalog(grammar, { generationService: SERVICE, reviewService: REVIEW });
-        expect(markup).toContain(messages.lessons.reviewServiceInfo.replace("{service}", REVIEW));
+      it("bez agenta (lessonGenerationAvailable: false) przedmiot nie ma usług agenta: usługa tematów zdań z katalogu, bez komunikatów agenta", () => {
+        // Przy dostępnym agencie katalog podaje usługi agenta dla każdego przedmiotu — przedmiot bez nich jest tylko przy `false`.
+        const markup = renderWithCatalog(grammar, { generationService: SERVICE, available: false });
         expect(markup).toContain(messages.lessons.themesService.replace("{service}", SERVICE));
         expect(markup).not.toContain('data-testid="lesson-check-service"');
         expect(markup).not.toContain('data-testid="lesson-generation-service"');
@@ -507,6 +502,36 @@ describe("NewLessonForm", () => {
       expect(markup).not.toContain("{service}");
     });
 
+    it("notka o usłudze nie wspomina o automatycznej kontroli jakości, a o ocenie odpowiedzi tak", () => {
+      for (const [key, markup] of [
+        ["themesService", renderWithCatalog(grammar, { children: [ola], generationService: SERVICE })],
+        ["themesServiceUnknown", renderWithCatalog(grammar, { children: [ola] })],
+      ] as const) {
+        expect(markup, key).not.toMatch(/kontrol[aię] jakości/i);
+        expect(messages.lessons[key], key).not.toMatch(/kontrol[aię] jakości/i);
+        expect(messages.lessons[key], key).toContain("usługa oceniająca odpowiedzi");
+      }
+      expect(messages.lessons.themesService).toContain("{service}");
+    });
+
+    it("notka o tematach wymienia drugi model sprawdzający, który dostaje gotowe zdania", () => {
+      expect(messages.lessons.themesService).toBe(
+        "Tematy zdań trafią do usługi: {service}. Z profilu wysyłamy tylko tematy — bez imienia i roku urodzenia. Drugi model sprawdzający ćwiczenia dostaje gotowe zdania, nie listę tematów. Zdania z tymi tematami może też zobaczyć usługa oceniająca odpowiedzi.",
+      );
+      expect(messages.lessons.themesServiceUnknown).toContain("Tematy zdań trafią do usługi generującej.");
+      expect(messages.lessons.themesServiceUnknown).toContain("Drugi model sprawdzający ćwiczenia dostaje gotowe zdania, nie listę tematów.");
+    });
+
+    it("komunikat o niedostępnym generowaniu: tylko przy lessonGenerationAvailable false", () => {
+      expect(messages.lessons.generationErrors.lesson_agent_unavailable).toBe(
+        "Generowanie lekcji wymaga klucza OpenRouter w konfiguracji serwera. Po dodaniu klucza ponów generowanie.",
+      );
+      const off = renderWithCatalog(grammar, { available: false });
+      expect(off).toContain('data-testid="lesson-generation-unavailable"');
+      expect(off).toContain(messages.lessons.generationErrors.lesson_agent_unavailable);
+      expect(renderWithCatalog(grammar)).not.toContain('data-testid="lesson-generation-unavailable"');
+    });
+
     it("sekcja ukryta dla rozdziału, szkoły i przedmiotu bez flagi", () => {
       for (const subject of [chapter, school, { ...grammar, acceptsInterests: false }]) {
         const markup = renderWithCatalog(subject, { children: [ola] });
@@ -529,10 +554,10 @@ describe("NewLessonForm", () => {
         vi.unstubAllGlobals();
       });
 
-      function renderInteractive(children: unknown[] | "error" = [ola, adam], initialSubjectId?: string) {
+      function renderInteractive(children: unknown[] | "error" = [ola, adam], initialSubjectId?: string, available = true) {
         const registerEditorState = vi.fn();
         const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, retryOnMount: false } } });
-        queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, catalog);
+        queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, { ...catalog, lessonGenerationAvailable: available });
         if (children === "error") {
           // błąd odczytu listy dzieci: bez danych i bez ponownego pobrania przy montowaniu
           queryClient.getQueryCache().build(queryClient, orpc.children.list.queryOptions()).setState({
@@ -550,7 +575,7 @@ describe("NewLessonForm", () => {
             </MantineProvider>
           </QueryClientProvider>,
         );
-        return { registerEditorState };
+        return { registerEditorState, queryClient };
       }
       const pills = () => Array.from(document.querySelectorAll("[data-testid='lesson-themes'] .mantine-Pill-root")).map((el) => el.textContent?.trim());
       const insertButton = (id: string) => screen.getByTestId(`lesson-themes-insert-${id}`) as HTMLButtonElement;
@@ -669,6 +694,34 @@ describe("NewLessonForm", () => {
         fireEvent.click(screen.getByTestId("lesson-create-submit"));
         await waitFor(() => expect(lessonsApi.create).toHaveBeenCalledTimes(2));
         expect(lessonsApi.create.mock.calls[1]![0]).toMatchObject({ deckId: lessonsApi.create.mock.calls[0]![0].deckId, interests: ["dinozaury", "Minecraft"] });
+      });
+
+      it("bez klucza (lessonGenerationAvailable: false): komunikat i wyłączona wysyłka mimo poprawnych danych", async () => {
+        renderInteractive([ola, adam], undefined, false);
+        fireEvent.change(screen.getByTestId("lesson-material"), { target: { value: "He plays football." } });
+        expect(screen.getByTestId("lesson-generation-unavailable").textContent).toContain(messages.lessons.generationErrors.lesson_agent_unavailable);
+        expect((screen.getByTestId("lesson-create-submit") as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(screen.getByTestId("lesson-create-submit"));
+        expect(lessonsApi.create).not.toHaveBeenCalled();
+      });
+
+      it("z kluczem: bez komunikatu, wysyłka działa", async () => {
+        renderInteractive();
+        fireEvent.change(screen.getByTestId("lesson-material"), { target: { value: "He plays football." } });
+        expect(screen.queryByTestId("lesson-generation-unavailable")).toBeNull();
+        expect((screen.getByTestId("lesson-create-submit") as HTMLButtonElement).disabled).toBe(false);
+      });
+
+      it("niewysłane polecenie (hasPending) też jest zablokowane, gdy klucza brakuje", async () => {
+        lessonsApi.create.mockResolvedValueOnce({});
+        const { queryClient } = renderInteractive();
+        fireEvent.change(screen.getByTestId("lesson-material"), { target: { value: "He plays football." } });
+        fireEvent.click(screen.getByTestId("lesson-create-submit"));
+        await waitFor(() => expect(screen.getByTestId("api-error").textContent).toContain(messages.lessons.createUncertain));
+        expect((screen.getByTestId("lesson-create-submit") as HTMLButtonElement).disabled).toBe(false);
+        queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, { ...catalog, lessonGenerationAvailable: false });
+        await waitFor(() => expect(screen.queryByTestId("lesson-generation-unavailable")).not.toBeNull());
+        expect((screen.getByTestId("lesson-create-submit") as HTMLButtonElement).disabled).toBe(true);
       });
 
       it("zmiana przedmiotu na rozdział ukrywa sekcję", async () => {

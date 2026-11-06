@@ -1068,7 +1068,7 @@ describe("parent oRPC router — work-card", () => {
 });
 
 describe("parent oRPC router — lesson-catalog i lessons", () => {
-  const catalog = { subjects: [] };
+  const catalog = { lessonGenerationAvailable: true, subjects: [] };
   const lessonCommand = {
     deckId,
     subjectId: "english",

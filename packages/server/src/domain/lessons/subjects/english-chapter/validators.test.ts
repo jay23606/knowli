@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { V3_EXERCISE_FIELDS, validateLessonExercise, validatePool } from "../../pool-validation";
+import { clip, messagesOf } from "../../rules/catalog";
 import type { DynamicTopicData, LessonExerciseDraft } from "../../types";
 import { englishChapterSubject } from "./module";
 import { GENERIC_CHAPTER_INSTRUCTIONS, refineChapterPool, TRANSLATION_INSTRUCTION, UNSOLICITED_V3_FIELDS, validateChapterExercise } from "./validators";
@@ -33,6 +34,9 @@ const DATA: DynamicTopicData = {
   ],
 };
 const TOPIC = englishChapterSubject.buildDynamicTopic!(DATA);
+
+/** Komunikaty dla rodzica z walidatora rozdziału (napisy sprzed katalogu reguł). */
+const chapterMessages = (ex: LessonExerciseDraft) => messagesOf(validateChapterExercise(ex, TOPIC));
 
 function choice(overrides: Partial<LessonExerciseDraft> = {}): LessonExerciseDraft {
   return {
@@ -131,13 +135,13 @@ function cloze(overrides: Partial<LessonExerciseDraft> = {}): LessonExerciseDraf
 describe("validateChapterExercise", () => {
   it("przepuszcza poprawny wybór, lukę, układankę, tekst z lukami i tłumaczenie — także w pełnej walidacji ćwiczenia", () => {
     for (const ex of [choice(), gap(), order(), cloze(), openAnswer()]) {
-      expect(validateChapterExercise(ex, TOPIC), ex.exerciseType).toEqual([]);
+      expect(chapterMessages(ex), ex.exerciseType).toEqual([]);
       expect(validateLessonExercise(ex, englishChapterSubject, TOPIC), ex.exerciseType).toEqual([]);
     }
   });
 
   it("wymaga dokładnie jednej luki w zdaniu wyboru", () => {
-    const stemErrors = (ex: LessonExerciseDraft) => validateChapterExercise(ex, TOPIC).filter((e) => e.startsWith("stem:"));
+    const stemErrors = (ex: LessonExerciseDraft) => chapterMessages(ex).filter((e) => e.startsWith("stem:"));
     expect(stemErrors(choice({ stem: "It's ____ and __ today." }))).toHaveLength(1);
     expect(stemErrors(choice({ stem: "It's sunny today." }))).toHaveLength(1);
     expect(stemErrors(choice({ stem: undefined }))).toHaveLength(1);
@@ -171,7 +175,7 @@ describe("validateChapterExercise", () => {
     ["cloze", cloze],
   ] as const)("%s: polecenie musi nieść polskie zdanie-bodziec", (_name, make) => {
     const instructionErrors = (instructionPl: string | undefined) =>
-      validateChapterExercise(make({ instructionPl }), TOPIC).filter((e) => e.startsWith("instructionPl:"));
+      chapterMessages(make({ instructionPl })).filter((e) => e.startsWith("instructionPl:"));
     expect(instructionErrors(undefined)).toHaveLength(1);
     expect(instructionErrors("  Wybierz.  ")).toHaveLength(1); // krótsze niż 12 znaków po trim
     for (const generic of GENERIC_CHAPTER_INSTRUCTIONS) {
@@ -188,7 +192,7 @@ describe("validateChapterExercise", () => {
     ["cloze", cloze],
   ] as const)("%s: bodziec to zdanie, po którym jest dalszy tekst (granica zdania)", (_name, make) => {
     const instructionErrors = (instructionPl: string) =>
-      validateChapterExercise(make({ instructionPl }), TOPIC).filter((e) => e.startsWith("instructionPl:"));
+      chapterMessages(make({ instructionPl })).filter((e) => e.startsWith("instructionPl:"));
     for (const good of ["Mam na sobie zielony kapelusz. Wybierz słowo.", "Ułóż zdanie: Mam na sobie różowy płaszcz.", "Czy pada deszcz? Wpisz brakujące słowo."]) {
       expect(instructionErrors(good), good).toEqual([]);
     }
@@ -204,15 +208,15 @@ describe("validateChapterExercise", () => {
 
   it("tłumaczenie wymaga niepustego polecenia (inaczej dziecko widzi tylko tytuł zagadnienia)", () => {
     const instructionErrors = (instructionPl: string | undefined) =>
-      validateChapterExercise(openAnswer({ instructionPl }), TOPIC).filter((e) => e.startsWith("instructionPl:"));
+      chapterMessages(openAnswer({ instructionPl })).filter((e) => e.startsWith("instructionPl:"));
     expect(instructionErrors(undefined)).toHaveLength(1);
     expect(instructionErrors("   ")).toHaveLength(1);
     expect(instructionErrors(TRANSLATION_INSTRUCTION)).toEqual([]);
   });
 
   it("odrzuca pole hint (bodziec jest w poleceniu, kartkówka usuwa hint)", () => {
-    expect(validateChapterExercise(gap({ hint: "sun" }), TOPIC).some((e) => e.startsWith("hint:"))).toBe(true);
-    expect(validateChapterExercise(choice({ hint: "pogoda" }), TOPIC).some((e) => e.startsWith("hint:"))).toBe(true);
+    expect(chapterMessages(gap({ hint: "sun" })).some((e) => e.startsWith("hint:"))).toBe(true);
+    expect(chapterMessages(choice({ hint: "pogoda" })).some((e) => e.startsWith("hint:"))).toBe(true);
   });
 
   it("odrzuca dwa klocki o tym samym tekście po normalizacji", () => {
@@ -229,7 +233,7 @@ describe("validateChapterExercise", () => {
       ],
       answer: "I'm wearing a hat and a coat",
     });
-    expect(validateChapterExercise(twoA, TOPIC).some((e) => e.startsWith("items:"))).toBe(true);
+    expect(chapterMessages(twoA).some((e) => e.startsWith("items:"))).toBe(true);
   });
 
   it("odpowiedź i wariant dłuższe niż 120 znaków odpadają w pełnej walidacji — jednym komunikatem", () => {
@@ -244,6 +248,71 @@ describe("validateChapterExercise", () => {
   });
 });
 
+describe("zgłoszenia reguł katalogu rozdziału", () => {
+  const issuesOf = (ex: LessonExerciseDraft) => validateChapterExercise(ex, TOPIC);
+
+  it("luka w zdaniu wyboru: reguła, pole i found z liczbą luk", () => {
+    expect(issuesOf(choice({ stem: "It's ____ and __ today." }))).toEqual([
+      expect.objectContaining({
+        rule: "chapter.stem_single_gap",
+        field: "stem",
+        found: `stem ${clip("It's ____ and __ today.")} has 2 gaps, expected exactly one`,
+      }),
+    ]);
+  });
+
+  it("bodziec w poleceniu: found z poleceniem albo informacją o jego braku", () => {
+    expect(issuesOf(gap({ instructionPl: "Wybierz słowo" }))[0]).toMatchObject({
+      rule: "chapter.instruction_stimulus",
+      field: "instructionPl",
+      found: `instructionPl ${clip("Wybierz słowo")} carries no Polish stimulus sentence`,
+    });
+    expect(issuesOf(gap({ instructionPl: undefined }))[0]?.found).toBe("instructionPl is missing");
+  });
+
+  it("tłumaczenie bez polecenia, podpowiedź i powtórzony klocek mają własne reguły", () => {
+    expect(issuesOf(openAnswer({ instructionPl: undefined }))).toEqual([
+      expect.objectContaining({ rule: "chapter.translation_instruction_required", field: "instructionPl" }),
+    ]);
+    expect(issuesOf(gap({ hint: "sun" }))).toEqual([
+      expect.objectContaining({ rule: "chapter.hint_not_allowed", field: "hint", found: `hint ${clip("sun")} is set, but this subject has no hints` }),
+    ]);
+    const twoA = order({
+      instructionPl: "Ułóż zdanie: Mam na sobie kapelusz.",
+      items: [{ id: "i1", text: "a" }, { id: "i2", text: "A" }, { id: "i3", text: "hat" }],
+    });
+    expect(issuesOf(twoA)).toEqual([
+      expect.objectContaining({
+        rule: "chapter.order_items_distinct",
+        field: "items[1].text",
+        found: `items[1] ${clip("A")} repeats items[0] ${clip("a")}`,
+      }),
+    ]);
+  });
+
+  it("odrzucenie słownikowe: reguła, ścieżka pola i found z elementem oraz słowem", () => {
+    const material = "Weather: It's raining. It's sunny.";
+    const outside = refineChapterPool([choice({ options: [{ id: "a", text: "raining" }, { id: "b", text: "snowing" }] })], { material });
+    expect(outside.rejected[0]!.issues).toEqual([
+      expect.objectContaining({
+        rule: "chapter.word_outside_material",
+        field: "options[1].text",
+        pl: "słowo spoza materiału: snowing",
+        found: `options[1].text ${clip("snowing")} contains the word ${clip("snowing")}, which is not in the material`,
+      }),
+    ]);
+    const functionOnly = refineChapterPool([gap({ answer: "the", focus: ["the"] })], { material });
+    expect(functionOnly.rejected[0]!.issues).toEqual([
+      expect.objectContaining({
+        rule: "chapter.function_words_only",
+        field: "answer",
+        pl: "tylko słowa pomocnicze: the",
+        found: `answer ${clip("the")} consists only of function words`,
+      }),
+    ]);
+  });
+});
+
 describe("refineChapterPool (walidacja słownikowa świeżej puli)", () => {
   const MATERIAL = "Weather: It's raining. It's sunny. It's windy. Clothes: boots, coat, hat, T-shirt. I'm wearing a coat.";
 
@@ -251,7 +320,7 @@ describe("refineChapterPool (walidacja słownikowa świeżej puli)", () => {
     const bad = choice({ options: [{ id: "a", text: "raining" }, { id: "b", text: "snowing" }] });
     const result = refineChapterPool([bad], { material: MATERIAL });
     expect(result.kept).toEqual([]);
-    expect(result.rejected).toEqual([{ exercise: bad, reason: "słowo spoza materiału: snowing" }]);
+    expect(result.rejected.map((r) => ({ exercise: r.exercise, issues: messagesOf(r.issues) }))).toEqual([{ exercise: bad, issues: ["słowo spoza materiału: snowing"] }]);
   });
 
   it("usuwa wariant tłumaczenia spoza materiału i zostawia ćwiczenie", () => {
@@ -265,7 +334,7 @@ describe("refineChapterPool (walidacja słownikowa świeżej puli)", () => {
     const kept = refineChapterPool([gap({ acceptedAnswers: ["sunny", "bright"] })], { material: MATERIAL });
     expect(kept.kept.map((ex) => ex.acceptedAnswers)).toEqual([["sunny"]]);
     const rejected = refineChapterPool([gap({ answer: "foggy", focus: ["foggy"] })], { material: MATERIAL });
-    expect(rejected.rejected.map((r) => r.reason)).toEqual(["słowo spoza materiału: foggy"]);
+    expect(rejected.rejected.map((r) => r.issues[0]?.pl)).toEqual(["słowo spoza materiału: foggy"]);
   });
 
   it("usuwa WSZYSTKIE niezamówione pola v3 z modelu i zostawia ćwiczenie, także z wariantami", () => {
@@ -357,7 +426,7 @@ describe("refineChapterPool (walidacja słownikowa świeżej puli)", () => {
     });
     const result = refineChapterPool([match, group, cloze, badOrder], { material: MATERIAL });
     expect(result.kept).toEqual([]);
-    expect(result.rejected.map((r) => r.reason)).toEqual([
+    expect(result.rejected.map((r) => r.issues[0]?.pl)).toEqual([
       "słowo spoza materiału: cloudy",
       "słowo spoza materiału: scarf",
       "słowo spoza materiału: gloves",
@@ -370,20 +439,20 @@ describe("refineChapterPool (walidacja słownikowa świeżej puli)", () => {
 
   it("element bez słowa treści ma osobny powód „tylko słowa pomocnicze”", () => {
     const articles = choice({ stem: "I'm wearing ___ coat.", options: [{ id: "a", text: "a" }, { id: "b", text: "the" }] });
-    expect(refineChapterPool([articles], { material: MATERIAL }).rejected.map((r) => r.reason)).toEqual([
+    expect(refineChapterPool([articles], { material: MATERIAL }).rejected.map((r) => r.issues[0]?.pl)).toEqual([
       "tylko słowa pomocnicze: a",
     ]);
     // Także przyimki, operatory i zaimki wskazujące (review Task 5).
     for (const texts of [["in", "on", "at"], ["do", "does"], ["this", "that"], ["It's", "He's"]]) {
       const ex = choice({ stem: "___ coat.", options: texts.map((text, index) => ({ id: `o${index}`, text })) });
-      expect(refineChapterPool([ex], { material: MATERIAL }).rejected[0]?.reason, texts.join("/")).toBe(`tylko słowa pomocnicze: ${texts[0]!.toLowerCase()}`);
+      expect(refineChapterPool([ex], { material: MATERIAL }).rejected[0]?.issues[0]?.pl, texts.join("/")).toBe(`tylko słowa pomocnicze: ${texts[0]!.toLowerCase()}`);
     }
   });
 
   it("ogranicza długość powodu do 80 znaków (słowo modelu nie tworzy dowolnie długich kluczy)", () => {
     const word = "x".repeat(200);
     const result = refineChapterPool([choice({ options: [{ id: "a", text: "raining" }, { id: "b", text: word }] })], { material: MATERIAL });
-    const reason = result.rejected[0]!.reason;
+    const reason = result.rejected[0]!.issues[0]!.pl;
     expect([...reason].length).toBeLessThanOrEqual(80);
     expect(reason.startsWith("słowo spoza materiału: xxx")).toBe(true);
     expect(reason.endsWith("…")).toBe(true);
@@ -400,7 +469,7 @@ describe("refineChapterPool (walidacja słownikowa świeżej puli)", () => {
     const bad = listen({ options: [{ id: "a", text: "raining" }, { id: "b", text: "snowing" }] });
     const result = refineChapterPool([bad], { material: MATERIAL });
     expect(result.kept).toEqual([]);
-    expect(result.rejected).toEqual([{ exercise: bad, reason: "słowo spoza materiału: snowing" }]);
+    expect(result.rejected.map((r) => ({ exercise: r.exercise, issues: messagesOf(r.issues) }))).toEqual([{ exercise: bad, issues: ["słowo spoza materiału: snowing"] }]);
   });
 
   it("wybór ze słuchu nie zawęża wariantów odpowiedzi (nie jest typem wariantowym)", () => {
@@ -427,7 +496,7 @@ describe("wybór ze słuchu w przedmiocie rozdziału", () => {
       answer: "cats",
       focus: ["cats"],
     });
-    expect(validateChapterExercise(merging, TOPIC).some((e) => e.includes("różnica niesłyszalna"))).toBe(true);
+    expect(chapterMessages(merging).some((e) => e.includes("różnica niesłyszalna"))).toBe(true);
   });
 });
 

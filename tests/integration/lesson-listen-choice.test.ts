@@ -2,14 +2,15 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   authorizeDisclosure, completePresentation, createChild, createLesson, createServices, endSession, executeLessonGeneration, FakeAnswerGrader, fakeGraderDeps,
-  nextTask, publishLessonDraft, readLessonDeck, regenerateObjective, startSession, submitAttempt,
+  nextTask, publishLessonDraft, readGeneration, readLessonDeck, regenerateObjective, startSession, submitAttempt,
 } from "@learning/server";
-import type { LessonPoolInput } from "@learning/server";
 import type { LessonDraftDto, TaskDto } from "@learning/contracts";
 import { lessonWorld, type LessonWorldOptions } from "../fixtures/lesson-world";
-import { buildTestServices, ManualClock, startLegacyTrainingSession, testDatabase, truncateCoreTables } from "./helpers";
+import { buildTestServices, ManualClock, rejectionCodesOf, startLegacyTrainingSession, testDatabase, truncateCoreTables } from "./helpers";
 import { fakeGeneration } from "./fakes";
 import { markTtsReady } from "./school-lesson-audio-helpers";
+import type { FakeAgentStep, FakeObjectiveScript } from "../../packages/server/src/providers/fake-lesson-agent";
+import { fakeObjectiveExercises } from "../../packages/server/src/providers/fake-lesson-pool";
 
 /**
  * Ćwiczenie „Posłuchaj i wybierz” (`lesson_listen_choice`): rodzic widzi stan
@@ -54,46 +55,80 @@ async function sentenceAssetId(revisionId: string): Promise<string> {
   )).rows[0]!.asset_id;
 }
 
-/** Fake LLM z podmienionym wejściem partii (np. „model” ignoruje limit) i zapisem wejść. */
-async function generationWith(rewrite: (input: LessonPoolInput) => LessonPoolInput) {
-  const fakes = await fakeGeneration();
+/**
+ * Fake agenta ze scenariuszami czytanymi przy każdym wywołaniu: zagadnienie bez wpisu idzie generatorem
+ * fake'a, a test może dopisać scenariusz przed kolejnym runem.
+ */
+async function generationWithScripts() {
+  const scripts: Record<string, FakeObjectiveScript> = {};
+  const fakes = await fakeGeneration({ agent: { generate: {}, objectives: scripts } });
   cleanup.push(fakes.dispose);
-  const inputs: LessonPoolInput[] = [];
-  const llm = Object.create(fakes.llm) as typeof fakes.llm;
-  llm.generateLessonPool = (input: LessonPoolInput) => {
-    inputs.push(input);
-    return fakes.llm.generateLessonPool(rewrite(input));
-  };
-  const services = createServices({ db, clock: new ManualClock(), media: fakes.settings, generation: { ...fakes.deps, llm } });
-  return { services, inputs };
+  const services = createServices({ db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps });
+  return { services, scripts, agent: fakes.agent };
 }
 
 const GRAMMAR_MATERIAL = "He plays football. She reads books. She watches TV.";
+const OBJECTIVE_SLUG = "third_person_s";
+const LISTEN_ANSWERS = ["plays", "reads", "watches", "football", "books"] as const;
+
+/** `count` ćwiczeń „Posłuchaj i wybierz” zagadnienia z rozłącznymi zdaniami (jak zgłoszenie modelu ignorującego limit). */
+function listenChoices(count: number): Record<string, unknown>[] {
+  return LISTEN_ANSWERS.slice(0, count).map((answer, index) => ({
+    exerciseType: "lesson_listen_choice",
+    objectiveId: OBJECTIVE,
+    stem: `Listen and choose: ___ (L${index + 1}).`,
+    answer,
+    acceptedAnswers: [],
+    focus: [answer],
+    options: [{ id: "a", text: answer }, { id: "b", text: "window" }],
+    correctOption: "a",
+  }));
+}
+
+/**
+ * Krok scenariusza: najpierw nadmiar słuchowych, potem zgłoszenie generatora fake'a (z jego słuchowymi)
+ * i opcjonalnie druga partia etapów z innym przesunięciem numeracji (nadmiar etapów).
+ */
+function listenFlood(extraStages: boolean): FakeAgentStep {
+  return {
+    build: (input) => {
+      const generated = fakeObjectiveExercises(input, 8_000);
+      const surplus = extraStages
+        ? fakeObjectiveExercises(input, 8_500).exercises.filter((exercise) => (exercise as { exerciseType?: string }).exerciseType !== "lesson_listen_choice")
+        : [];
+      return {
+        exercises: [...listenChoices(5), ...generated.exercises, ...surplus],
+        ...(generated.examples === undefined ? {} : { examples: generated.examples }),
+      };
+    },
+  };
+}
 
 describe("generowanie — limit ćwiczeń słuchowych na regułę", () => {
-  it("model zwracający 5 ćwiczeń słuchowych i nadmiar etapów: zostają najwyżej 2 słuchowe i zamówiona liczba pozostałych", async () => {
-    const { services, inputs } = await generationWith((input) => ({
-      ...input,
-      listenChoicePerObjective: 5,
-      stageCounts: { ...input.stageCounts, guided: input.stageCounts.guided + 2 },
-    }));
+  it("model zgłaszający 5 ćwiczeń słuchowych i nadmiar etapów: zostaje najwyżej dodatek słuchowy, nadmiar odrzucony limitami", async () => {
+    const { services, scripts, agent } = await generationWithScripts();
+    scripts[OBJECTIVE_SLUG] = [listenFlood(true)];
     const run = await createLesson(services, {
       subjectId: "english_grammar", topicId: "present_simple", objectiveIds: [OBJECTIVE],
       material: GRAMMAR_MATERIAL, poolSize: 20, clientRequestId: randomUUID(),
     });
     await executeLessonGeneration(services, run.runId);
+    expect((await readGeneration(services, run.runId)).state).toBe("succeeded");
     const draft = (await readLessonDeck(services, run.deckId)).draft!;
-    expect(inputs).toHaveLength(1);
-    expect(inputs[0]!.listenChoicePerObjective).toBe(2);
+    expect(agent.calls).toHaveLength(1);
+    const targets = agent.calls[0]!.input.targets;
+    expect(targets.listenAllowance).toBe(2);
+    expect(listenOf(draft)).toHaveLength(targets.listenAllowance);
     const ofObjective = draft.exercises.filter((exercise) => exercise.objectiveId === OBJECTIVE);
-    expect(listenOf(draft)).toHaveLength(2);
-    expect(ofObjective.filter((exercise) => exercise.exerciseType !== "lesson_listen_choice")).toHaveLength(inputs[0]!.countPerObjective);
-    // 3 nadmiarowe słuchowe + 2 nadmiarowe ćwiczenia etapów są odrzuceniami szkicu.
-    expect(draft.rejectedCount).toBeGreaterThanOrEqual(5);
+    expect(ofObjective.length).toBeLessThanOrEqual(targets.maxExercises);
+    // 3 nadmiarowe słuchowe z nadmiaru i 2 słuchowe generatora oraz nadmiar etapów są odrzuceniami przy przyjęciu.
+    const codes = await rejectionCodesOf(run.runId);
+    expect(codes.limit_listen).toBe(5);
+    expect(codes.limit_full).toBeGreaterThanOrEqual(1);
   });
 
-  it("dogenerowanie reguły, która ma już 2 ćwiczenia słuchowe, nie dodaje kolejnych (prompt bez dodatku, nadmiar odrzucony)", async () => {
-    const { services, inputs } = await generationWith((input) => (inputs.length > 1 ? { ...input, listenChoicePerObjective: 2 } : input));
+  it("dogenerowanie reguły, która ma już 2 ćwiczenia słuchowe, nie dodaje kolejnych (bez dodatku, nadmiar odrzucony)", async () => {
+    const { services, scripts, agent } = await generationWithScripts();
     const run = await createLesson(services, {
       subjectId: "english_grammar", topicId: "present_simple", objectiveIds: [OBJECTIVE],
       material: GRAMMAR_MATERIAL, poolSize: 20, clientRequestId: randomUUID(),
@@ -101,15 +136,18 @@ describe("generowanie — limit ćwiczeń słuchowych na regułę", () => {
     await executeLessonGeneration(services, run.runId);
     const before = (await readLessonDeck(services, run.deckId)).draft!;
     expect(listenOf(before)).toHaveLength(2);
+    scripts[OBJECTIVE_SLUG] = [listenFlood(false)];
     const topUp = await regenerateObjective(services, {
       deckId: run.deckId, objectiveId: OBJECTIVE, count: 4, expectedEditNumber: before.editNumber, clientRequestId: randomUUID(),
     });
     await executeLessonGeneration(services, topUp.runId);
+    expect((await readGeneration(services, topUp.runId)).state).toBe("succeeded");
     const after = (await readLessonDeck(services, run.deckId)).draft!;
-    expect(inputs).toHaveLength(2);
-    expect(inputs[1]).not.toHaveProperty("listenChoicePerObjective");
+    expect(agent.calls).toHaveLength(2);
+    expect(agent.calls[1]!.input.targets.listenAllowance).toBe(0);
     expect(after.exercises.length).toBeGreaterThan(before.exercises.length);
     expect(listenOf(after)).toHaveLength(2);
+    expect((await rejectionCodesOf(topUp.runId)).limit_listen).toBeGreaterThanOrEqual(5);
   });
 });
 

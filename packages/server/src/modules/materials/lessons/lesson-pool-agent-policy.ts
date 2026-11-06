@@ -15,14 +15,24 @@ export interface LessonAgentPolicy {
   /** Miejsca semafora checkera: jedno na wywołanie `solve` albo `judgeVariants`. */
   readonly checkerConcurrency: number;
   readonly checkerTimeoutMs: number;
+  /** Limit jednego żądania modelu generatora i planisty; po przekroczeniu jedno ponowienie kroku. */
+  readonly callTimeoutMs: number;
   /** Liczony od faktycznego startu podagenta. */
   readonly objectiveTimeoutMs: number;
-  /** Agent nie trwa dłużej niż kontroler runu potoku. */
+  /** Agent nie trwa dłużej niż kontroler runu (`withLessonGenerationControl`). */
   readonly runTimeoutMs: number;
   /** Budżet wyczerpany przy wydatku ≥ `runBudgetUsd`. */
   readonly runBudgetUsd: number;
   /** Szacunek kosztu żądania o nieznanym koszcie (`record(null)`). */
   readonly unknownCallEstimateUsd: number;
+  /** Miejsca osobnego semafora gradera kontroli otwartej (etap 2b §7.2); bez env. */
+  readonly graderConcurrency: number;
+  /** Limit etapu 2 paczki (grader) liczony od startu etapu; po nim pozycje niesprawdzone. */
+  readonly graderStageTimeoutMs: number;
+  /** Szacunek kosztu wywołania gradera o nieznanym koszcie (zamiast `unknownCallEstimateUsd`). */
+  readonly unknownGraderCallEstimateUsd: number;
+  /** Wyłącznik gradera po tylu kolejnych porażkach (błąd, termin, werdykt odrzucony walidacją). */
+  readonly graderBreakerThreshold: number;
 }
 
 export const DEFAULT_LESSON_AGENT_POLICY: LessonAgentPolicy = {
@@ -31,17 +41,22 @@ export const DEFAULT_LESSON_AGENT_POLICY: LessonAgentPolicy = {
   concurrency: 4,
   checkerConcurrency: 4,
   checkerTimeoutMs: 90_000,
+  callTimeoutMs: 90_000,
   objectiveTimeoutMs: 300_000,
   runTimeoutMs: DEFAULT_LESSON_GENERATION_POLICY.runTimeoutMs,
   runBudgetUsd: 1,
   unknownCallEstimateUsd: 0.02,
+  graderConcurrency: 4,
+  graderStageTimeoutMs: 30_000,
+  unknownGraderCallEstimateUsd: 0.002,
+  graderBreakerThreshold: 3,
 };
 
 /** Powody przerwania terminem runu i zagadnienia (`deadlineSignal`). */
 export const RUN_TIMEOUT_REASON = "run_timeout";
 export const OBJECTIVE_TIMEOUT_REASON = "objective_timeout";
 
-/** Porażka planu albo zagadnienia: kod i ponawialność z klasyfikacji potoku. */
+/** Porażka planu albo zagadnienia: kod i ponawialność z klasyfikacji błędów generacji (`classifyLessonGenerationFailure`). */
 export interface AgentFailure {
   readonly errorCode: string;
   readonly retryable: boolean;

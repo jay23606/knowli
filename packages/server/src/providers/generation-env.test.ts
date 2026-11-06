@@ -1,7 +1,29 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withConfigDefaults } from "../config-defaults";
 import { createGenerationDepsFromEnv, generationPublicServiceFromEnv, imageProviderFromEnv } from "./generation-env";
-import { FakeLessonReviewer } from "./fake";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+describe("UMIEM_FAKE_HOLD_FILE (bramka fake'ów E2E)", () => {
+  it("trafia do fake TTS: synteza czeka, dopóki plik bramki istnieje", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "knowli-hold-env-"));
+    const holdFile = join(dir, "hold");
+    try {
+      writeFileSync(holdFile, "");
+      const deps = createGenerationDepsFromEnv({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_FAKE_HOLD_FILE: holdFile, MEDIA_ROOT: join(dir, "media") })!;
+      let settled = false;
+      const call = deps.tts.synthesize({ text: "monday", locale: "en-GB", voice: "v", format: "mp3" } as never).then(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(settled).toBe(false);
+      rmSync(holdFile);
+      await call;
+      expect(settled).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 import { createTestRecorder } from "./usage/test-recorder";
 
 /**
@@ -438,31 +460,21 @@ describe("createGenerationDepsFromEnv — zapis kosztów mediów (usage)", () =>
   });
 });
 
-describe("createGenerationDepsFromEnv — krytyk lekcji (reviewer)", () => {
-  it("tryb fake: ENABLED=true → FakeLessonReviewer i ready; bez ENABLED → disabled", () => {
-    const on = createGenerationDepsFromEnv(withConfigDefaults({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_ENABLED: "true" }));
-    expect(on!.reviewer!.state).toBe("ready");
-    expect(on!.reviewer!.provider).toBeInstanceOf(FakeLessonReviewer);
-    expect(on!.reviewer!.policy.concurrency).toBe(3);
-    const off = createGenerationDepsFromEnv(withConfigDefaults({ UMIEM_FAKE_PROVIDERS: "1" }));
-    expect(off!.reviewer!.state).toBe("disabled");
-    expect(off!.reviewer!.provider).toBeUndefined();
-  });
-
-  it("tryb fake: wyłączony krytyk nie czyta limitów (błędna liczba nie rzuca), włączony ją waliduje", () => {
-    const off = createGenerationDepsFromEnv(withConfigDefaults({ UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_CONCURRENCY: "abc" }));
-    expect(off!.reviewer!.state).toBe("disabled");
-    expect(off!.reviewer!.policy.concurrency).toBe(3);
+describe("createGenerationDepsFromEnv — dawny krytyk lekcji (UMIEM_REVIEWER_*)", () => {
+  it("pozostawione, także błędne, UMIEM_REVIEWER_* są ignorowane", () => {
     expect(() => createGenerationDepsFromEnv(withConfigDefaults({
       UMIEM_FAKE_PROVIDERS: "1", UMIEM_REVIEWER_ENABLED: "true", UMIEM_REVIEWER_CONCURRENCY: "abc",
-    }))).toThrow(/UMIEM_REVIEWER_CONCURRENCY/);
+    }))).not.toThrow();
   });
 
-  it("realna ścieżka: domyślnie disabled; ENABLED=true + OPENROUTER_API_KEY → ready", () => {
-    const base = { OPENROUTER_API_KEY: "sk-or-v1-shared", OPENAI_API_KEY: "sk-main" };
-    expect(createGenerationDepsFromEnv(withConfigDefaults(base))!.reviewer!.state).toBe("disabled");
-    const ready = createGenerationDepsFromEnv(withConfigDefaults({ ...base, UMIEM_REVIEWER_ENABLED: "true" }));
-    expect(ready!.reviewer!.state).toBe("ready");
-    expect(ready!.reviewer!.provider!.model).toBe("anthropic/claude-sonnet-5.5");
+  it("wariant produkcyjny: błędne UMIEM_REVIEWER_* nie zatrzymują składania", () => {
+    expect(() => createGenerationDepsFromEnv(withConfigDefaults({
+      OPENROUTER_API_KEY: "sk-or-v1-shared", OPENAI_API_KEY: "sk-main",
+      UMIEM_REVIEWER_ENABLED: "true", UMIEM_REVIEWER_CONCURRENCY: "0", UMIEM_REVIEWER_REASONING: "turbo",
+    }))).not.toThrow();
+  });
+
+  it("wartości domyślne nie zawierają UMIEM_REVIEWER_*", () => {
+    expect(withConfigDefaults({})).not.toHaveProperty("UMIEM_REVIEWER_ENABLED");
   });
 });

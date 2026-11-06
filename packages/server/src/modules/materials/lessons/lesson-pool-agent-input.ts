@@ -1,21 +1,21 @@
 import type { ObjectiveAgentLimits } from "../../../domain/lessons/agent/admission";
-import type { AgentCapableSubject } from "../../../domain/lessons/agent/capable";
-import { allExamples, orderedLesson, type LessonAgentState } from "../../../domain/lessons/agent/state";
+import { allExamples, orderedEntries, orderedLesson, type LessonAgentState } from "../../../domain/lessons/agent/state";
 import { avoidSentencesFor } from "../../../domain/lessons/avoid-sentences";
-import { lessonPoolMinimums } from "../../../domain/lessons/lesson-coverage";
-import type { AgentObjective, LessonTopic } from "../../../domain/lessons/types";
+import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE, lessonPoolMinimums } from "../../../domain/lessons/lesson-coverage";
+import type { AgentObjective, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import type { LessonObjectiveAgentInput, LlmLessonStageCounts } from "../../../ports/ai";
 import { buildPoolInput, poolStageCounts } from "./lesson-drafts";
 
 /**
  * Wejście podagenta zagadnienia (spec etapu 1 §6.1, §7): pola promptu z
- * `buildPoolInput` z liczbami z `targets` (jedyne źródło liczb), lista zdań do
- * unikania i zdania kart CAŁEJ lekcji z bieżącego stanu (w chwili startu
- * podagenta) oraz dopiski przedmiotu (`promptNotes`). Czysta funkcja nad
- * przekazanymi danymi.
+ * `buildPoolInput` (z księgą reguł zagadnienia) z liczbami z `targets` (jedyne
+ * źródło liczb, także minima publikacji), lista zdań do unikania i zdania kart
+ * CAŁEJ lekcji z bieżącego stanu (w chwili startu podagenta). Pozycja zagadnienia
+ * i liczba jego ćwiczeń w stanie (`objective.index`, `objective.existingCount`)
+ * służą wyłącznie fake'owi agenta. Czysta funkcja nad przekazanymi danymi.
  */
 export interface ObjectiveAgentInputArgs {
-  readonly subject: AgentCapableSubject;
+  readonly subject: SubjectModule;
   readonly topic: LessonTopic;
   readonly state: LessonAgentState;
   readonly objective: AgentObjective;
@@ -27,6 +27,7 @@ export interface ObjectiveAgentInputArgs {
   /** `true` = przykłady kart są ustalone (plan albo wznowienie); w porcie pole `objective.examplesFromPlan`. */
   readonly examplesFixed: boolean;
   readonly maxSteps: number;
+  readonly callTimeoutMs: number;
   /**
    * Liczby promptu wyliczone przez wołającego zamiast z `limits` — tryb „dodaj N” (spec etapu 2a §6.4):
    * podział etapów z braków etapów i `remaining` (bez `fixed` i bez podnoszenia etapu samodzielnego),
@@ -40,11 +41,11 @@ function cardsText(objective: AgentObjective): string {
 }
 
 /**
- * Podział etapów zagadnienia dla modelu: podział partii potoku z etapem samodzielnym podniesionym do
+ * Podział etapów zagadnienia dla modelu: podział `poolStageCounts` z etapem samodzielnym podniesionym do
  * minimum publikacji z rezerwą (`independentReserve`) — tego samego progu, którego wymaga
  * `objectiveStatus`. Pozostałe etapy bez zmian, więc suma może przekroczyć `targetCount`.
  */
-function agentStageCounts(subject: AgentCapableSubject, objective: AgentObjective, targetCount: number) {
+function agentStageCounts(subject: SubjectModule, objective: AgentObjective, targetCount: number) {
   const split = poolStageCounts(subject, objective.exerciseTypes, targetCount);
   const independent = Math.max(split.independent, lessonPoolMinimums(subject).independent + subject.agentPolicy.independentReserve);
   return { ...split, independent };
@@ -63,18 +64,16 @@ export function objectiveAgentInput(args: ObjectiveAgentInputArgs): LessonObject
     args.material,
     args.instruction,
     args.graderAvailable,
-    [],
-    [],
     args.interests,
     { avoidSentences: avoidSentencesFor({ examples, exercises: orderedLesson(state), subject }) },
   );
-  // Ten sam podział w prompcie co w `targets`; liczba partii = suma etapów (prompt: „podział obejmuje N ćwiczeń”).
+  // Ten sam podział w prompcie co w `targets`; liczba ćwiczeń = suma etapów (prompt: „podział obejmuje N ćwiczeń”).
   const pool = { ...base, stageCounts: stages, countPerObjective: stages.guided + stages.productive + stages.independent };
   // Wymagane typy po filtrze typów zagadnienia (jak w statusie); pusta grupa nie jest wymaganiem.
   const requiredTypes = (subject.agentPolicy.requiredTypes?.(objective) ?? [])
     .map((group) => group.filter((type) => objective.exerciseTypes.includes(type)))
     .filter((group) => group.length > 0);
-  const promptNotes = subject.agentPolicy.promptNotes ?? [];
+  const minima = lessonPoolMinimums(subject);
   return {
     pool,
     objective: {
@@ -83,6 +82,8 @@ export function objectiveAgentInput(args: ObjectiveAgentInputArgs): LessonObject
       ...(objective.kind === undefined ? {} : { kind: objective.kind }),
       cards: objective.cards,
       examplesFromPlan: args.examplesFixed,
+      index: state.objectives.findIndex((item) => item.id === objective.id),
+      existingCount: orderedEntries(state).filter((entry) => entry.objectiveId === objective.id).length,
     },
     otherObjectives: state.objectives
       .filter((other) => other.id !== objective.id)
@@ -94,8 +95,15 @@ export function objectiveAgentInput(args: ObjectiveAgentInputArgs): LessonObject
       ...limits,
       targetCount,
       ...(args.promptTargets === undefined ? {} : { listenAllowance: args.promptTargets.listenAllowance }),
+      publicationMinima: {
+        guided: minima.guided,
+        productive: minima.productive,
+        independent: minima.independent,
+        // Różne pytania otwarte wymaga przedmiot z payloadem v3 (`distinctOpenAnswerGaps` pokrycia publikacji).
+        ...(subject.usesV3Payload === true ? { distinctOpenAnswers: DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE } : {}),
+      },
     },
     maxSteps: args.maxSteps,
-    ...(promptNotes.length === 0 ? {} : { promptNotes: [...promptNotes] }),
+    callTimeoutMs: args.callTimeoutMs,
   };
 }

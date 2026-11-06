@@ -10,6 +10,7 @@ import type {
 import { schoolAgentPolicy } from "./agent-policy";
 import { schoolPrompts } from "./prompts";
 import { validateSchoolExercise, validateSchoolPool } from "./validators";
+import { SCHOOL_RULES } from "./rules";
 
 /**
  * Przedmiot `school` — przedmioty szkolne z materiału rodzica. Katalog w kodzie
@@ -103,4 +104,5 @@ export const schoolSubject: SubjectModule = {
   validatePoolExtra: validateSchoolPool,
   // Polityka agenta puli: typy ślepe, sanityzacja i bramka podpowiedzi pytań otwartych.
   agentPolicy: schoolAgentPolicy,
+  rules: SCHOOL_RULES,
 };

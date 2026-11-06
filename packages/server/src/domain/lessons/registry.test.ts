@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createSubjectRegistry } from "./registry";
 import { historyLikeSubject } from "./testing/history-like-subject";
+import { testAgentPolicy } from "./testing/test-agent-policy";
+import { createProductionSubjectRegistry } from "./subjects";
 import type { LessonTopic, SubjectModule } from "./types";
 
 function cloneData<T>(value: T): T {
@@ -19,6 +21,41 @@ describe("createSubjectRegistry", () => {
     const registry = createSubjectRegistry([historyLikeSubject]);
     expect(registry.getSubject("test_history")).toBe(historyLikeSubject);
     expect(registry.listSubjects()).toEqual([historyLikeSubject]);
+  });
+
+  it("odrzuca przedmiot bez polityki agenta, nazywając pole i przedmiot", () => {
+    const withoutPolicy = { ...historyLikeSubject, agentPolicy: undefined } as unknown as SubjectModule;
+    expect(() => createSubjectRegistry([withoutPolicy])).toThrow(/agentPolicy/);
+    expect(() => createSubjectRegistry([withoutPolicy])).toThrow(/test_history/);
+  });
+
+  it("historyLikeSubject ma wspólną politykę testową", () => {
+    expect(historyLikeSubject.agentPolicy).toBe(testAgentPolicy);
+  });
+
+  it("każdy przedmiot produkcyjny ma politykę agenta", () => {
+    for (const subject of createProductionSubjectRegistry().listSubjects()) {
+      expect(subject.agentPolicy, subject.id).toBeDefined();
+    }
+  });
+
+  it("odrzuca przedmiot bez katalogu reguł", () => {
+    const withoutRules = { ...historyLikeSubject, rules: undefined } as unknown as SubjectModule;
+    expect(() => createSubjectRegistry([withoutRules])).toThrow(/rules/);
+  });
+
+  it("odrzuca ten sam id reguły w dwóch przedmiotach z różnymi wpisami", () => {
+    const rule = { field: "answer", kind: "reject", description: "Shared fixture." } as const;
+    const first: SubjectModule = { ...historyLikeSubject, rules: { "shared.fixture": rule } };
+    const second: SubjectModule = { ...historyLikeSubject, id: "test_history_2", rules: { "shared.fixture": { ...rule } } };
+    expect(() => createSubjectRegistry([first, second])).toThrow(/shared\.fixture.*test_history_2.*test_history/);
+  });
+
+  it("dopuszcza wspólny obiekt wpisu reguły w dwóch przedmiotach", () => {
+    const shared = { "shared.fixture": { field: "answer", kind: "reject", description: "Shared fixture." } } as const;
+    const first: SubjectModule = { ...historyLikeSubject, rules: shared };
+    const second: SubjectModule = { ...historyLikeSubject, id: "test_history_2", rules: { ...shared } };
+    expect(createSubjectRegistry([first, second]).listSubjects()).toHaveLength(2);
   });
 
   it("odrzuca zduplikowane id przedmiotów", () => {

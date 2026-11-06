@@ -49,8 +49,8 @@ import {
 } from "../../../domain/lessons/evaluate";
 import type { GraderInput } from "../../../ports/ai";
 import { withUsageScope } from "../../../ports/usage";
-import type { LearningObjective, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
-import { BASE_ERROR_CATEGORIES } from "../../../domain/lessons/base-error-categories";
+import type { LearningObjective, LessonTopic, SchoolCriteria, SubjectModule } from "../../../domain/lessons/types";
+import { lessonGraderInput } from "../../materials";
 import { letterSegments } from "../../../domain/lessons/letter-segments";
 import {
   projectObjectiveProgress,
@@ -120,13 +120,7 @@ interface LessonTaskAnswerKey extends LessonAnswerKey {
   /** Zadanie następcze „Skróć odpowiedź”: oryginał, do którego należy poprawka. */
   revisionOf?: RevisionOf;
   /** Kryteria v3 odpowiedzi otwartej szkoły (z payloadu rewizji; prywatne). */
-  schoolCriteria?: {
-    requiredElements: { id: string; text: string }[];
-    supplementaryElements: string[];
-    commonErrors?: string[];
-    expectedForm?: string;
-    sourceQuotes: string[];
-  };
+  schoolCriteria?: SchoolCriteria;
   objectiveSnapshot?: {
     objectiveTitlePl?: string;
     topicId?: string;
@@ -470,15 +464,6 @@ function resolveObjective(services: Services, key: LessonTaskAnswerKey): { subje
   throw new AppError("internal", { message: `lesson objective missing: ${key.subjectId}/${key.objectiveId}` });
 }
 
-/** Etykiety kategorii dla celu: bazowe ∪ przedmiotu ∪ tematu, po kodzie. */
-function categoryLabels(subject: SubjectModule, topic: LessonTopic): Map<string, string> {
-  const labels = new Map<string, string>();
-  for (const category of BASE_ERROR_CATEGORIES) labels.set(category.code, category.labelPl);
-  for (const category of subject.errorCategories) labels.set(category.code, category.labelPl);
-  for (const category of topic.extraErrorCategories) labels.set(category.code, category.labelPl);
-  return labels;
-}
-
 /**
  * Deterministyczny klucz cache z odpowiedzi dziecka: pierwszy wariant sekwencji
  * z normalizatora przedmiotu, tokeny złączone spacją. Ten sam materiał (ta sama
@@ -492,44 +477,31 @@ function normalizedAnswerKey(services: Services, key: LessonTaskAnswerKey, text:
   return first ? first.join(" ") : text.trim().toLowerCase();
 }
 
-/** Buduje wejście modelu z profilu przedmiotu i ćwiczenia (odpowiedź jako dane). */
-function buildGraderInput(
+/**
+ * Buduje wejście modelu z profilu przedmiotu i ćwiczenia (odpowiedź jako dane).
+ * Odczyt publicznego promptu i prywatnego klucza zostaje tutaj; składanie
+ * `GraderInput` jest wspólne z kontrolą agenta puli (`lessonGraderInput`).
+ * Eksport tylko na potrzeby testu zgodności (poza barrelem).
+ */
+export function buildGraderInput(
   services: Services,
   task: TaskRow,
   key: LessonTaskAnswerKey,
   childAnswer: string,
 ): GraderInput {
   const { subject, topic, objective } = resolveObjective(services, key);
-  const labels = categoryLabels(subject, topic);
   const prompt = task.publicPrompt as { instructionPl?: string; stem?: string; statement?: string; prompt?: string; stemWithGap?: string } | null;
-  const instruction = prompt?.instructionPl ?? "";
-  const stimulus = prompt?.stem ?? prompt?.stemWithGap ?? prompt?.statement ?? prompt?.prompt ?? null;
-  const school = key.schoolCriteria
-    ? {
-        question: stimulus ?? instruction,
-        modelAnswer: key.answer,
-        requiredElements: key.schoolCriteria.requiredElements.map((el) => ({ ...el })),
-        supplementaryElements: [...key.schoolCriteria.supplementaryElements],
-        commonErrors: [...(key.schoolCriteria.commonErrors ?? [])],
-        expectedForm: key.schoolCriteria.expectedForm ?? "explanation",
-        sourceQuotes: [...key.schoolCriteria.sourceQuotes],
-      }
-    : undefined;
-  return {
-    subjectTitle: subject.titlePl,
-    topicTitle: topic.titlePl,
-    roleProfile: { gradingRole: subject.prompts.gradingRole, almostDefinition: subject.prompts.almostDefinition },
-    instruction,
-    stimulus,
-    objective: {
-      description: objective.descriptionEn,
-      errorCategories: objective.errorCategories.map((code) => ({ code, label: labels.get(code) ?? code })),
-    },
-    acceptedAnswers: [key.answer, ...key.acceptedAnswers],
-    // Limit ścieżki szkolnej 600 znaków (odpowiedzi otwarte), lekcje bez zmian 200.
-    childAnswer: childAnswer.slice(0, school ? 600 : 200),
-    ...(school ? { school } : {}),
-  };
+  return lessonGraderInput({
+    subject,
+    topic,
+    objective,
+    instruction: prompt?.instructionPl ?? "",
+    stimulus: prompt?.stem ?? prompt?.stemWithGap ?? prompt?.statement ?? prompt?.prompt ?? null,
+    answer: key.answer,
+    acceptedAnswers: key.acceptedAnswers,
+    schoolCriteria: key.schoolCriteria,
+    answerText: childAnswer,
+  });
 }
 
 /** Kategorie dozwolone w werdykcie dla tego celu (do `validateVerdict`). */

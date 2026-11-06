@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MAX_LESSON_TEXT_LENGTH, messages, type LessonDraftDto, type LessonPromptAudioDto } from "@learning/contracts";
-import LessonExerciseCard, { leakNoticeFor, reviewNoticeFor, type ExerciseReviewNotice, type LeakNotice } from "./LessonExerciseCard";
+import LessonExerciseCard, { leakNoticeFor, type LeakNotice } from "./LessonExerciseCard";
 import { createLessonSnapshot } from "./lesson-editor-state";
 import { renderParentMarkup } from "../test-render";
 
@@ -26,7 +26,6 @@ function render(
   sentenceAudio: LessonPromptAudioDto | null,
   {
     open = false, editable = true, explanations = false, errors = undefined as string[] | undefined, changed = false, leak = null as LeakNotice | null,
-    review = null as ExerciseReviewNotice | null,
   } = {},
 ): string {
   const draft = {
@@ -36,7 +35,7 @@ function render(
   } as unknown as LessonDraftDto;
   const ex = createLessonSnapshot(draft, () => "k").form.exercises[0]!;
   return renderParentMarkup(
-    <LessonExerciseCard ex={ex} index={0} editable={editable} busy={false} open={open} changed={changed} leak={leak} review={review} onShowSource={vi.fn()} hadAudio={false} errors={errors}
+    <LessonExerciseCard ex={ex} index={0} editable={editable} busy={false} open={open} changed={changed} leak={leak} onShowSource={vi.fn()} hadAudio={false} errors={errors}
       audio={null} voiceTones={{ styleEnabled: true }} promptAudio={null} explanations={explanations} explanationAudio={null} sentenceAudio={sentenceAudio} lessonDraftId={draft.id} deckId={draft.deckId}
       itemRevisionId="rev" audioLocked={false} calculation={null} onToggle={vi.fn()} onMutate={vi.fn()} onRemove={vi.fn()} onPlay={vi.fn()} />,
   );
@@ -195,74 +194,14 @@ describe("LessonExerciseCard: ujawnione rozwiązanie", () => {
     });
   });
 
+  it("z ujawnieniem opis karty wskazuje tekst ostrzeżenia", () => {
+    const leak: LeakNotice = { kind: "hard", message: "M", show: null };
+    const markup = render(null, { leak });
+    expect(markup).toContain('aria-describedby="exercise-leak-0-text"');
+  });
+
   it("bez ujawnienia: brak ostrzeżenia i powiązania aria-describedby", () => {
     const markup = render(null);
     expect(markup).not.toContain("exercise-leak-0");
-  });
-});
-
-describe("LessonExerciseCard: automatyczna kontrola jakości", () => {
-  const changedEntry = { exerciseId: "x", category: "ambiguous" as const, reasonPl: "Dwie poprawne odpowiedzi.", beforePl: "He ___ → plays", addedVariants: ["is playing", "plays"] };
-  const noteEntry = { exerciseId: "x", category: "too_hard" as const, reasonPl: "Trudne słowo.", fixRejected: false };
-
-  it("reviewNoticeFor składa teksty z katalogu komunikatów", () => {
-    expect(reviewNoticeFor(undefined, undefined)).toBeNull();
-    expect(reviewNoticeFor(changedEntry, undefined)).toEqual({
-      changed: true,
-      lines: [
-        messages.lessons.reviewChangedReason.replace("{category}", messages.lessons.reviewCategory.ambiguous!).replace("{reason}", "Dwie poprawne odpowiedzi."),
-        messages.lessons.reviewChangedBefore.replace("{before}", "He ___ → plays"),
-        messages.lessons.reviewAddedVariants.replace("{variants}", "is playing, plays"),
-      ],
-    });
-    expect(reviewNoticeFor(undefined, { ...noteEntry, fixRejected: true })).toEqual({
-      changed: false,
-      lines: [
-        messages.lessons.reviewNote.replace("{category}", messages.lessons.reviewCategory.too_hard!).replace("{reason}", "Trudne słowo."),
-        messages.lessons.reviewNoteFixRejected,
-      ],
-    });
-  });
-
-  it("poprawione automatycznie: plakietka i notka z poprzednią treścią, opis karty przez aria-describedby", () => {
-    const markup = render(null, { review: reviewNoticeFor({ ...changedEntry, addedVariants: [] }, undefined) });
-    expect(markup).toContain('data-testid="exercise-review-badge-0"');
-    expect(markup).toContain(messages.lessons.reviewChangedBadge);
-    expect(markup).toContain('data-testid="exercise-review-0"');
-    expect(markup).toContain("Poprawka kontroli (niejednoznaczne): Dwie poprawne odpowiedzi.");
-    expect(markup).not.toContain("Uwaga kontroli");
-    expect(markup).toContain("Było: He ___ → plays");
-    expect(markup).not.toContain("Dodane warianty");
-    expect(markup).toContain('aria-describedby="exercise-review-0-text"');
-    expect(markup).not.toContain('role="alert"');
-  });
-
-  it("uwaga bez poprawki: notka bez plakietki; poprawka odrzucona ma dodatkowy wiersz", () => {
-    const plain = render(null, { review: reviewNoticeFor(undefined, noteEntry) });
-    expect(plain).toContain('data-testid="exercise-review-0"');
-    expect(plain).toContain("Uwaga kontroli (może być za trudne): Trudne słowo.");
-    expect(plain).not.toContain('data-testid="exercise-review-badge-0"');
-    expect(plain).not.toContain(messages.lessons.reviewNoteFixRejected);
-    const rejected = render(null, { review: reviewNoticeFor(undefined, { ...noteEntry, fixRejected: true }) });
-    expect(rejected).toContain(messages.lessons.reviewNoteFixRejected);
-  });
-
-  it("z ujawnieniem i uwagą kontroli opis karty wskazuje oba teksty", () => {
-    const leak: LeakNotice = { kind: "hard", message: "M", show: null };
-    const markup = render(null, { leak, review: reviewNoticeFor(undefined, noteEntry) });
-    expect(markup).toContain('aria-describedby="exercise-leak-0-text exercise-review-0-text"');
-  });
-
-  it("powód z „{snippet}” i „{reason}” trafia do notki bez ponownego podstawiania", () => {
-    const notice = reviewNoticeFor({ ...changedEntry, reasonPl: "Patrz {reason} {snippet}.", beforePl: "{variants}", addedVariants: [] }, undefined)!;
-    expect(notice.lines).toEqual([
-      "Poprawka kontroli (niejednoznaczne): Patrz {reason} {snippet}.",
-      "Było: {variants}",
-    ]);
-  });
-
-  it("bez raportu: brak plakietki i notki", () => {
-    const markup = render(null);
-    expect(markup).not.toContain("exercise-review-");
   });
 });

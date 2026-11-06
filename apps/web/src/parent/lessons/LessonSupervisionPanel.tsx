@@ -117,7 +117,11 @@ function SchoolProgress({ objective }: { objective: ObjectiveProgressDto }) {
   );
 }
 
-function ObjectiveCard({ objective, onRegenerate }: { objective: ObjectiveProgressDto; onRegenerate?: (objectiveId: string) => void }) {
+function ObjectiveCard({ objective, onRegenerate, regenerateUnavailable }: {
+  objective: ObjectiveProgressDto;
+  onRegenerate?: (objectiveId: string) => void;
+  regenerateUnavailable?: string;
+}) {
   const id = objective.objectiveId;
   return (
     <Paper component="article" withBorder radius="md" p="md" className="pp-sup-card" data-testid={`progress-${id}`}>
@@ -139,9 +143,13 @@ function ObjectiveCard({ objective, onRegenerate }: { objective: ObjectiveProgre
               <Text size="sm">{messages.lessons.poolExhausted}</Text>
               {onRegenerate && (
                 <Button size="md" variant="light" data-testid={`pool-regen-${id}`} leftSection={<ParentIcon name="refresh" />}
-                  onClick={() => onRegenerate(id)}>
+                  disabled={regenerateUnavailable !== undefined}
+                  aria-describedby={regenerateUnavailable !== undefined ? `pool-regen-unavailable-${id}` : undefined} onClick={() => onRegenerate(id)}>
                   {messages.lessons.poolExhaustedAction}
                 </Button>
+              )}
+              {onRegenerate && regenerateUnavailable !== undefined && (
+                <Text size="sm" id={`pool-regen-unavailable-${id}`} data-testid={`pool-regen-unavailable-${id}`}>{regenerateUnavailable}</Text>
               )}
             </Stack>
           </Alert>
@@ -190,17 +198,17 @@ export default function LessonSupervisionPanel({
   deckId,
   childrenList,
   gradingModel,
-  reviewService,
   onRegenerate,
+  regenerateUnavailable,
 }: {
   deckId: string;
   childrenList: ChildDto[];
   /** Nazwa modelu oceniającego (gdy dostępny) — do tekstu o providerze. */
   gradingModel: string | null;
-  /** Etykieta usługi automatycznej kontroli jakości (gdy włączona) — informacja obok modelu oceniającego. */
-  reviewService?: string;
   /** Dogenerowanie ćwiczeń dla celu z wyczerpaną pulą (reużywa akcji edytora). */
   onRegenerate?: (objectiveId: string) => void;
+  /** Powód, dla którego dogenerowanie jest niedostępne (np. brak klucza na serwerze); przycisk wyłączony, powód pod nim. */
+  regenerateUnavailable?: string;
 }) {
   const queryClient = useQueryClient();
   const [childId, setChildId] = useState<string | null>(childrenList[0]?.id ?? null);
@@ -262,11 +270,6 @@ export default function LessonSupervisionPanel({
           <Text size="sm" mt={4} className="pp-editor-muted" data-testid="grading-provider">
             {gradingModel ? fill(messages.lessons.gradingProvider, { model: gradingModel }) : messages.lessons.gradingProviderNone}
           </Text>
-          {reviewService && (
-            <Text size="sm" mt={4} className="pp-editor-muted" data-testid="review-service">
-              {messages.lessons.reviewServiceInfo.replace("{service}", () => reviewService)}
-            </Text>
-          )}
         </div>
 
         {childrenList.length > 0 && (
@@ -297,7 +300,8 @@ export default function LessonSupervisionPanel({
               </Text>
             )}
             {progress.map((objective) => (
-              <ObjectiveCard key={objective.objectiveId} objective={objective} {...(onRegenerate ? { onRegenerate } : {})} />
+              <ObjectiveCard key={objective.objectiveId} objective={objective} {...(onRegenerate ? { onRegenerate } : {})}
+                {...(regenerateUnavailable !== undefined ? { regenerateUnavailable } : {})} />
             ))}
           </Stack>
         )}

@@ -1,6 +1,7 @@
-import type { AgentCapableSubject } from "../agent/capable";
 import type { LessonExerciseDraft, SubjectAgentPolicy, SubjectModule } from "../types";
+import type { LessonRuleIssue } from "../rules/catalog";
 import { historyLikeSubject } from "./history-like-subject";
+import { testIssue } from "./test-issue";
 
 /**
  * Przedmiot testowy agenta puli (poza skanem domeny, bo importuje przedmioty):
@@ -17,7 +18,7 @@ function defaultPolicy(subject: SubjectModule): SubjectAgentPolicy {
     checkerNeedsMaterial: false,
     independentReserve: 1,
     slack: 2,
-    rejectionTexts: { leakVictim: "leak victim", leakSource: "leak source" },
+    ruleNotes: { "lesson.leak": "leak victim", "lesson.leak_source": "leak source" },
   };
 }
 
@@ -25,19 +26,19 @@ function defaultPolicy(subject: SubjectModule): SubjectAgentPolicy {
 export function withAgentPolicy(
   subject: SubjectModule,
   policy: Partial<SubjectAgentPolicy> = {},
-): AgentCapableSubject {
+): SubjectModule {
   return { ...subject, agentPolicy: { ...defaultPolicy(subject), ...policy } };
 }
 
 function refineGeneratedPool(drafts: readonly LessonExerciseDraft[]): {
   kept: LessonExerciseDraft[];
-  rejected: { exercise: LessonExerciseDraft; reason: string }[];
+  rejected: { exercise: LessonExerciseDraft; issues: readonly LessonRuleIssue[] }[];
 } {
   const kept: LessonExerciseDraft[] = [];
-  const rejected: { exercise: LessonExerciseDraft; reason: string }[] = [];
+  const rejected: { exercise: LessonExerciseDraft; issues: readonly LessonRuleIssue[] }[] = [];
   for (const draft of drafts) {
     if (draft.answer === "REFINE-REJECT") {
-      rejected.push({ exercise: draft, reason: "refine reject" });
+      rejected.push({ exercise: draft, issues: [testIssue("refine reject")] });
       continue;
     }
     kept.push(
@@ -50,15 +51,15 @@ function refineGeneratedPool(drafts: readonly LessonExerciseDraft[]): {
 }
 
 /** Rodzina żyje w obrębie zagadnienia (jak `validateSchoolPool` i `withoutOrphanKeywords`). */
-function validatePoolExtra(drafts: readonly LessonExerciseDraft[]): ReadonlyMap<number, readonly string[]> {
-  const errors = new Map<number, readonly string[]>();
+function validatePoolExtra(drafts: readonly LessonExerciseDraft[]): ReadonlyMap<number, readonly LessonRuleIssue[]> {
+  const errors = new Map<number, readonly LessonRuleIssue[]>();
   const familyKey = (draft: LessonExerciseDraft) => JSON.stringify([draft.objectiveId, draft.familyId]);
   const openFamilies = new Set(
     drafts.flatMap((draft) => (draft.exerciseType === "lesson_open_answer" && draft.familyId ? [familyKey(draft)] : [])),
   );
   drafts.forEach((draft, index) => {
     if (draft.exerciseType !== "lesson_keywords") return;
-    if (!draft.familyId || !openFamilies.has(familyKey(draft))) errors.set(index, ["keywords without open-answer family"]);
+    if (!draft.familyId || !openFamilies.has(familyKey(draft))) errors.set(index, [testIssue("keywords without open-answer family")]);
   });
   return errors;
 }
@@ -70,4 +71,4 @@ const base: SubjectModule = {
   refineGeneratedPool,
 };
 
-export const agentTestSubject: AgentCapableSubject = withAgentPolicy(base);
+export const agentTestSubject: SubjectModule = withAgentPolicy(base);

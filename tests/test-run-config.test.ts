@@ -9,6 +9,7 @@ describe("readTestRunConfig", () => {
     expect(a.integrationContainerPrefix).not.toBe(b.integrationContainerPrefix);
     expect(a.e2eContainer).not.toBe(b.e2eContainer);
     expect(a.worldFile).not.toBe(b.worldFile);
+    expect(a.fakeHoldFile).not.toBe(b.fakeHoldFile);
     expect(a.outputDir).not.toBe(b.outputDir);
     expect(a.outputDir).toBe("test-results/run-a");
     expect(a.workerHealthPort).not.toBe(b.workerHealthPort);
@@ -25,6 +26,7 @@ describe("readTestRunConfig", () => {
       e2ePort: 24500,
       workerHealthPort: 9301,
       worldFile: "tests/e2e/.world.json",
+      fakeHoldFile: "tests/e2e/.fake-hold",
       outputDir: "test-results",
       e2eWebMode: "start",
       e2eSkipBuild: false,

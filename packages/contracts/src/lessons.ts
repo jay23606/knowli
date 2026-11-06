@@ -25,15 +25,33 @@ export const MAX_LESSON_ANSWER_LENGTH = 300;
 export const MAX_SOURCE_QUOTE_LENGTH = 600;
 /** Limit materiału zestawu szkolnego (gramatyka zostaje przy 8000). */
 export const MAX_SCHOOL_MATERIAL_LENGTH = 16000;
-const MAX_ACCEPTED_ANSWERS = 40;
-const MIN_OPTIONS = 2;
-const MAX_OPTIONS = 4;
-const MIN_ORDER_ITEMS = 3;
-const MAX_ORDER_ITEMS = 10;
-const MIN_NOTICE_SENTENCES = 2;
-const MAX_NOTICE_SENTENCES = 3;
-const MIN_NOTICE_SEGMENTS = 1;
-const MAX_NOTICE_SEGMENTS = 15;
+/** Maksymalna liczba wariantów `acceptedAnswers`. */
+export const MAX_ACCEPTED_ANSWERS = 40;
+/** Zakres liczby opcji w typach z zamkniętym wyborem. */
+export const MIN_OPTIONS = 2;
+export const MAX_OPTIONS = 4;
+/** Zakres liczby elementów w `lesson_order`. */
+export const MIN_ORDER_ITEMS = 3;
+export const MAX_ORDER_ITEMS = 10;
+/** `lesson_notice`: zakres liczby zdań i segmentów-słów na zdanie. */
+export const MIN_NOTICE_SENTENCES = 2;
+export const MAX_NOTICE_SENTENCES = 3;
+export const MIN_NOTICE_SEGMENTS = 1;
+export const MAX_NOTICE_SEGMENTS = 15;
+/** Payload v3 przedmiotów szkolnych: elementy wymagane (1–6) i uzupełniające (≤ 4), typowe błędy (≤ 4). */
+export const MIN_REQUIRED_ELEMENTS = 1;
+export const MAX_REQUIRED_ELEMENTS = 6;
+export const MAX_SUPPLEMENTARY_ELEMENTS = 4;
+export const MAX_COMMON_ERRORS = 4;
+/** Identyfikator rodziny pytań. */
+export const MAX_FAMILY_ID_LENGTH = 64;
+/** Cytaty źródłowe ćwiczenia szkolnego: 1–3, każdy co najmniej 10 znaków (uziemienie w materiale). */
+export const MIN_SOURCE_REFS = 1;
+export const MAX_SOURCE_REFS = 3;
+export const MIN_SOURCE_QUOTE_LENGTH = 10;
+/** Identyfikatory elementu wymaganego i grupy (`lesson_group`). */
+export const MAX_ELEMENT_ID_LENGTH = 40;
+export const MAX_GROUP_ID_LENGTH = 40;
 /** Trener precyzji (`lesson_keywords`): 4–6 pojęć do wyboru, z czego 2–3 kluczowe, każde ≤ 40 znaków. */
 export const MIN_KEYWORD_OPTIONS = 4;
 export const MAX_KEYWORD_OPTIONS = 6;
@@ -110,14 +128,16 @@ export const SubjectCatalogDtoSchema = z.object({
     offersListenChoice: z.boolean().optional(),
     /**
      * Etykiety usług (host · model), do których trafia materiał przy generowaniu tego przedmiotu
-     * (agent puli, a w szkole także usługa etapu zagadnień); brak = przedmiot bez nadpisania,
-     * obowiązuje katalogowe `generationService`.
+     * (agent puli, a w szkole także usługa etapu zagadnień); brak = generowanie lekcji niedostępne
+     * (`lessonGenerationAvailable: false`).
      */
     generationServices: z.array(z.string().min(1)).min(1).optional(),
     /** Etykieta drugiego modelu, który rozwiązuje gotowe ćwiczenia na próbę (agent puli); brak = bez kontroli rozwiązywaniem. */
     checkService: z.string().min(1).optional(),
     /** Czy do drugiego modelu trafia też materiał lekcji (polityka checkera przedmiotu); ma sens przy `checkService`. */
     checkServiceIncludesMaterial: z.boolean().optional(),
+    /** Etykieta usługi oceny odpowiedzi próbnych do pytań otwartych (grader; agent puli, kontrola otwarta); brak = bez tej kontroli. */
+    openCheckService: z.string().min(1).optional(),
     topics: z.array(z.object({
       id: z.string().min(1),
       version: z.number().int().positive(),
@@ -132,16 +152,16 @@ export const SubjectCatalogDtoSchema = z.object({
     }).strict()),
   }).strict()),
   /**
-   * Skonfigurowana etykieta usługi generującej lekcje (host · model, z env procesu web);
-   * parent-facing, do informacji o tematach zdań. To opis konfiguracji, nie dowód, że
-   * generowanie jest dostępne; brak = etykiety nie da się ustalić.
+   * Czy generowanie lekcji jest dostępne (worker ma agenta puli: klucz OpenRouter albo tryb fake).
+   * `false` = formularz i ponowienia generowania lekcji pokazują komunikat zamiast działać.
+   */
+  lessonGenerationAvailable: z.boolean(),
+  /**
+   * Skonfigurowana etykieta usługi `UMIEM_LLM` (host · model, z env procesu web): etap zagadnień
+   * szkoły, historyjka gramatyki i awaryjny adresat tematów zdań. To opis konfiguracji, nie dowód,
+   * że generowanie jest dostępne (o tym mówi `lessonGenerationAvailable`); brak = etykiety nie da się ustalić.
    */
   generationService: z.string().min(1).optional(),
-  /**
-   * Etykieta usługi automatycznej kontroli jakości lekcji (host · model), gdy krytyk jest włączony
-   * i skonfigurowany; brak = kontrola wyłączona albo nieskonfigurowana.
-   */
-  reviewService: z.string().min(1).optional(),
 }).strict();
 export type SubjectCatalogDto = z.infer<typeof SubjectCatalogDtoSchema>;
 
@@ -355,7 +375,7 @@ export const LessonExpectedFormSchema = z.enum(["short", "one_sentence", "explan
 export type LessonExpectedFormDto = z.infer<typeof LessonExpectedFormSchema>;
 
 const RequiredElementSchema = z.object({
-  id: z.string().min(1).max(40),
+  id: z.string().min(1).max(MAX_ELEMENT_ID_LENGTH),
   text: text,
 }).strict();
 
@@ -385,12 +405,12 @@ export const LessonExerciseInputSchema = z.object({
   correctOption: z.string().min(1).optional(),
   items: z.array(ExerciseItemSchema).min(MIN_ORDER_ITEMS).max(MAX_ORDER_ITEMS).optional(),
   questionType: LessonQuestionTypeSchema.optional(),
-  requiredElements: z.array(RequiredElementSchema).min(1).max(6).optional(),
-  supplementaryElements: z.array(text).max(4).optional(),
-  commonErrors: z.array(text).max(4).optional(),
+  requiredElements: z.array(RequiredElementSchema).min(MIN_REQUIRED_ELEMENTS).max(MAX_REQUIRED_ELEMENTS).optional(),
+  supplementaryElements: z.array(text).max(MAX_SUPPLEMENTARY_ELEMENTS).optional(),
+  commonErrors: z.array(text).max(MAX_COMMON_ERRORS).optional(),
   expectedForm: LessonExpectedFormSchema.optional(),
-  familyId: z.string().min(1).max(64).optional(),
-  sourceRefs: z.array(SourceRefSchema).min(1).max(3).optional(),
+  familyId: z.string().min(1).max(MAX_FAMILY_ID_LENGTH).optional(),
+  sourceRefs: z.array(SourceRefSchema).min(MIN_SOURCE_REFS).max(MAX_SOURCE_REFS).optional(),
   calculation: CalculationSpecSchema.optional(),
   /** `lesson_keywords`: pojęcia do wyboru i identyfikatory kluczowych (klucz tylko dla serwera i rodzica). */
   keywordOptions: z.array(z.object({ id: z.string().min(1), text: z.string().min(1).max(MAX_KEYWORD_LENGTH) }).strict())
@@ -405,13 +425,13 @@ export const LessonExerciseInputSchema = z.object({
   extraRight: z.array(z.string().min(1).max(MAX_MATCH_RIGHT_LENGTH)).max(MAX_MATCH_EXTRA).optional(),
   /** `lesson_group`: grupy (`id` — slug w obrębie ćwiczenia). */
   groups: z.array(z.object({
-    id: z.string().min(1).max(40),
+    id: z.string().min(1).max(MAX_GROUP_ID_LENGTH),
     label: z.string().min(1).max(MAX_GROUP_LABEL_LENGTH),
   }).strict()).min(MIN_GROUPS).max(MAX_GROUPS).optional(),
   /** `lesson_group`: elementy z przynależnością do grupy (klucz tylko dla serwera i rodzica). */
   groupItems: z.array(z.object({
     text: z.string().min(1).max(MAX_GROUP_ITEM_LENGTH),
-    groupId: z.string().min(1).max(40),
+    groupId: z.string().min(1).max(MAX_GROUP_ID_LENGTH),
   }).strict()).min(MIN_GROUP_ITEMS).max(MAX_GROUP_ITEMS).optional(),
   /** `lesson_cloze`: tekst z lukami (ciąg 2+ podkreśleń w miejscu luki). */
   clozeText: z.string().min(1).max(MAX_CLOZE_TEXT_LENGTH).optional(),
@@ -512,65 +532,6 @@ export const LessonStorySchema = z.object({
 }).strict();
 export type LessonStoryDto = z.infer<typeof LessonStorySchema>;
 
-/** Kategorie ustaleń automatycznej kontroli jakości (lustro `REVIEW_CATEGORIES` z domeny serwera). */
-export const REVIEW_CATEGORY_VALUES = [
-  "ambiguous",
-  "wrong_answer",
-  "leaked_solution",
-  "unsuitable_content",
-  "missing_variant",
-  "unnatural_language",
-  "unclear_instruction",
-  "wrong_explanation",
-  "off_material",
-  "too_hard",
-  "other",
-] as const;
-export const ReviewCategorySchema = z.enum(REVIEW_CATEGORY_VALUES);
-export type ReviewCategoryDto = z.infer<typeof ReviewCategorySchema>;
-
-/** Powód, dla którego kontrola nie sprawdziła zagadnienia. */
-export const ReviewReasonSchema = z.enum(["disabled", "not_configured", "failed", "timeout", "limit"]);
-export type ReviewReasonDto = z.infer<typeof ReviewReasonSchema>;
-
-/**
- * Raport automatycznej kontroli jakości szkicu lekcji (spec etapu przeglądu, PR 2) dla rodzica.
- * `changed`/`notes` tylko dla istniejących ćwiczeń, których zapisana treść nie zmieniła się od
- * kontroli; `toppedUp` to łączna liczba ćwiczeń dogenerowanych pod brakujące etapy. Bez odcisków
- * i danych dziecka.
- */
-export const LessonReviewDtoSchema = z.object({
-  status: z.enum(["reviewed", "partial", "unreviewed"]),
-  model: z.string().optional(),
-  objectives: z.array(z.object({
-    objectiveId: z.string(),
-    title: z.string(),
-    status: z.enum(["reviewed", "unreviewed", "suspicious"]),
-    reason: ReviewReasonSchema.optional(),
-  }).strict()),
-  changed: z.array(z.object({
-    exerciseId: UuidSchema,
-    category: ReviewCategorySchema,
-    reasonPl: z.string(),
-    beforePl: z.string(),
-    addedVariants: z.array(z.string()),
-  }).strict()),
-  dropped: z.array(z.object({
-    objectiveTitle: z.string(),
-    category: ReviewCategorySchema,
-    reasonPl: z.string(),
-    snippet: z.string(),
-  }).strict()),
-  notes: z.array(z.object({
-    exerciseId: UuidSchema,
-    category: ReviewCategorySchema,
-    reasonPl: z.string(),
-    fixRejected: z.boolean(),
-  }).strict()),
-  toppedUp: z.number().int().nonnegative(),
-}).strict();
-export type LessonReviewDto = z.infer<typeof LessonReviewDtoSchema>;
-
 /**
  * Luka po generowaniu agentem puli (spec etapu 2a §11): zagadnienie, które agent zostawił
  * niepełne (`incomplete`) albo nieudane (`failed`), lub niepełne dogenerowanie (`add_short`:
@@ -624,6 +585,16 @@ export const LessonDraftDtoSchema = z.object({
    * `refineGeneratedPool`) z licznikami; tekst powodu jest dla rodzica, bez danych dziecka.
    */
   rejectedReasons: z.record(z.string(), z.number().int().positive()).optional(),
+  /**
+   * Oczyszczenia agenta puli przy przyjmowaniu ćwiczeń (sumy po przebiegach tej wersji): usunięte podpowiedzi
+   * pytań otwartych, usunięte warianty odpowiedzi i cytaty wyrównane do materiału. Same liczby, bez treści;
+   * brak pola = nic nie oczyszczono.
+   */
+  cleanupCounts: z.object({
+    hintsRemoved: z.number().int().nonnegative(),
+    variantsRemoved: z.number().int().nonnegative(),
+    quotesSnapped: z.number().int().nonnegative(),
+  }).strict().optional(),
   /** Zagadnienia odrzucone/pominięte na etapie generowania tematu (zestawy szkolne). */
   droppedObjectiveCount: z.number().int().nonnegative().optional(),
   coverage: z.array(CoverageGapDtoSchema),
@@ -636,13 +607,8 @@ export const LessonDraftDtoSchema = z.object({
   /** Nagranie lektora historyjki (odsłuch i „Nagraj ponownie”); brak pola = brak nagrania. Tylko do odczytu. */
   storyAudio: LessonPromptAudioDtoSchema.optional(),
   /**
-   * Raport automatycznej kontroli jakości; brak pola = brak raportu, wersja opublikowana
-   * albo kontrola wyłączona dla wszystkich zagadnień.
-   */
-  review: LessonReviewDtoSchema.optional(),
-  /**
    * Zagadnienia do uzupełnienia po częściowym generowaniu agentem puli; brak pola = pula pełna,
-   * generowanie potokiem albo wersja opublikowana.
+   * szkic sprzed agenta (dawny potok) albo wersja opublikowana.
    */
   generationGaps: z.array(LessonGenerationGapDtoSchema).min(1).optional(),
 });
@@ -685,8 +651,6 @@ export const LessonDeckDtoSchema = z.object({
     available: z.boolean(),
     model: z.string().min(1).optional(),
   }),
-  /** Etykieta usługi automatycznej kontroli jakości (jak w katalogu); brak = kontrola wyłączona. */
-  reviewService: z.string().min(1).optional(),
 });
 export type LessonDeckDto = z.infer<typeof LessonDeckDtoSchema>;
 

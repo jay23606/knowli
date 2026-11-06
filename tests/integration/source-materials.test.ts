@@ -643,7 +643,8 @@ describe("źródła — tabela i przypadki użycia (integracja)", () => {
 
         await executeLessonGeneration(world, runId);
         expect((await readGeneration(world, runId)).state).toBe("succeeded");
-        expect(fakes.llm.objectiveRequests.map((request) => request.material)).toEqual([CHAPTER_TEXT]);
+        // Zagadnienia rozdziału układa planer agenta (nie generator zagadnień LLM).
+        expect(fakes.agent.planCalls.map((call) => call.input.material)).toEqual([CHAPTER_TEXT]);
         const draft = (await readLessonDeck(world, deckId)).draft!;
         expect(draft.exercises.length).toBeGreaterThan(0);
 
@@ -656,7 +657,7 @@ describe("źródła — tabela i przypadki użycia (integracja)", () => {
         });
         await executeLessonGeneration(world, regeneration.runId);
         expect((await readGeneration(world, regeneration.runId)).state).toBe("succeeded");
-        expect(fakes.llm.lessonRequests.at(-1)!.material).toBe(CHAPTER_TEXT);
+        expect(fakes.agent.calls.at(-1)!.input.pool.material).toBe(CHAPTER_TEXT);
         expect(await readLessonDeck(world, deckId)).not.toHaveProperty("source");
       } finally {
         await fakes.dispose();

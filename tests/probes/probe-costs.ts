@@ -1,18 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { DEFAULT_LESSON_AGENT_POLICY, type LessonAgentPolicy } from "../../packages/server/src/modules/materials/lessons/lesson-pool-agent-policy";
 import { isOpenRouterEndpoint } from "../../packages/server/src/providers/chat-request-options";
 
 /**
  * Narzędzia płatnych prób (`*.probe.test.ts`): rejestr kosztów (`costs.json` poza repozytorium),
- * szacunek kosztu generowania, kontrola hosta usługi i drobne pomocniki odczytu. Bez wywołań modelu;
- * testy w `probe-costs.test.ts` (konfiguracja unit). Żadna funkcja nie pisze na konsolę.
+ * koszty przebiegu agenta puli (per operacja, per run, do rejestru), kontrola hosta usługi i drobne
+ * pomocniki odczytu. Bez wywołań modelu; testy w `probe-costs.test.ts` (konfiguracja unit). Żadna
+ * funkcja nie pisze na konsolę. Szacunek przed próbą generowania lekcji daje `probePreflight`
+ * (`probe-preflight.ts`: budżet runu agenta).
  */
 
-/** Szacunek kosztu jednego generowania (wszystkie wywołania przebiegu) — kontrola limitu. */
-export const GENERATION_ESTIMATE_USD = 0.4;
-/** Zmierzony koszt poniżej tylu USD na wywołanie uznajemy za niepełny (`usage.cost` brak w części odpowiedzi) — wpisujemy szacunek. */
-export const MIN_MEASURED_USD_PER_CALL = 0.005;
 /** Limit łączny prób dla nowego rejestru kosztów. */
 export const DEFAULT_COST_CAP_USD = 10;
 
@@ -38,19 +37,170 @@ export interface CostLedger {
   entries: CostEntry[];
 }
 
-/** Szacunek przed uruchomieniem: liczba generowań × koszt jednego. */
-export function estimateProbeCostUsd(input: { generations: number }): number {
-  return input.generations * GENERATION_ESTIMATE_USD;
+// ---------------------------------------------------------------------------------------------
+// Koszty przebiegu agenta puli lekcji (zdarzenia `UsageEvent` z recordera próby)
+
+/** Zdarzenie kosztu próby: operacja i koszt z `usage` oraz run generacji, w którym padło (`null` = poza runem). */
+export interface ProbeCostEvent {
+  readonly operation?: string;
+  readonly providerCostUsd?: number;
+  readonly runId: string | null;
+}
+
+export interface OperationCost {
+  calls: number;
+  /** Suma kosztów zwróconych przez dostawcę (`usage.cost`). */
+  costUsd: number;
+  /** Wywołania bez `usage.cost`. */
+  unknownCostCalls: number;
+}
+
+/** Operacje liczone do budżetu runu agenta: kroki agenta (`agent_*`) i kontrole (`check_*`, także `check_grade`). */
+export function isAgentRunOperation(operation: string | undefined): boolean {
+  return operation !== undefined && (operation.startsWith("agent_") || operation.startsWith("check_"));
+}
+
+function hasCost(event: ProbeCostEvent): boolean {
+  return typeof event.providerCostUsd === "number" && Number.isFinite(event.providerCostUsd);
+}
+
+/** Koszt per operacja (`agent_plan`, `agent_objective`, `check_*`, `check_grade`, `lesson_objectives`…); brak nazwy → `unknown`. */
+export function costByOperation(events: readonly ProbeCostEvent[]): Record<string, OperationCost> {
+  const result: Record<string, OperationCost> = {};
+  for (const event of events) {
+    const entry = (result[event.operation ?? "unknown"] ??= { calls: 0, costUsd: 0, unknownCostCalls: 0 });
+    entry.calls += 1;
+    if (hasCost(event)) entry.costUsd = round6(entry.costUsd + event.providerCostUsd!);
+    else entry.unknownCostCalls += 1;
+  }
+  return result;
+}
+
+/** Szacunek kosztu wywołania bez `usage.cost` (jak kierownik agenta: osobno grader). */
+export interface AgentCostEstimates {
+  readonly unknownCallUsd: number;
+  readonly unknownGraderCallUsd: number;
 }
 
 /**
- * Koszt do rejestru: zmierzony (`usage.cost`), a gdy były wywołania, a koszt jest nieznany albo
- * mniejszy niż `MIN_MEASURED_USD_PER_CALL` × wywołania (część odpowiedzi bez `usage.cost`) — szacunek
- * z flagą `estimated` (lepiej przeszacować wydatki niż wpisać zero).
+ * Szacunki z polityki, z którą run faktycznie działa (`lessonAgentPolicyFromEnv(env)`), uzupełnionej
+ * wartościami domyślnymi kierownika — te same liczby, którymi kierownik liczy budżet runu.
  */
-export function ledgerCost(input: { measuredUsd: number; calls: number; fallbackUsd: number }): { costUsd: number; estimated: boolean } {
-  if (input.calls > 0 && !(input.measuredUsd >= input.calls * MIN_MEASURED_USD_PER_CALL)) return { costUsd: input.fallbackUsd, estimated: true };
-  return { costUsd: Math.max(0, input.measuredUsd), estimated: false };
+export function agentCostEstimates(policy: Partial<Pick<LessonAgentPolicy, "unknownCallEstimateUsd" | "unknownGraderCallEstimateUsd">>): AgentCostEstimates {
+  const merged = { ...DEFAULT_LESSON_AGENT_POLICY, ...policy };
+  return { unknownCallUsd: merged.unknownCallEstimateUsd, unknownGraderCallUsd: merged.unknownGraderCallEstimateUsd };
+}
+
+function estimateOf(event: ProbeCostEvent, estimates: AgentCostEstimates): number {
+  return event.operation === "check_grade" ? estimates.unknownGraderCallUsd : estimates.unknownCallUsd;
+}
+
+export interface RunCost {
+  runId: string | null;
+  /** Suma zmierzonych `agent_*` i `check_*`. */
+  agentUsd: number;
+  /** `agentUsd` plus szacunek za wywołania `agent_*`/`check_*` bez `usage.cost` — to porównujemy z budżetem runu. */
+  agentEstimatedUsd: number;
+  /** Etap zagadnień szkoły (`lesson_objectives`, UMIEM_LLM) — poza budżetem agenta. */
+  lessonObjectivesUsd: number;
+  otherUsd: number;
+  calls: number;
+  unknownCostCalls: number;
+  budgetUsd: number;
+  /** Koszt agenta (zmierzony + szacunek nieznanych) powyżej budżetu runu (porażka przebiegu kontrolnego, spec §6.4). */
+  overBudget: boolean;
+}
+
+/**
+ * Koszt per run (w kolejności pierwszego zdarzenia): agent i kontrole względem budżetu, `lesson_objectives` osobno.
+ * Wywołanie agenta albo kontroli bez `usage.cost` liczy się do porównania z budżetem szacunkiem kierownika
+ * (jak w {@link agentLedgerCost}) — inaczej run ponad budżet przez wywołania bez kosztu wyglądałby na zgodny.
+ */
+export function runCosts(events: readonly ProbeCostEvent[], budgetUsd: number, estimates: AgentCostEstimates): RunCost[] {
+  const runs = new Map<string | null, RunCost>();
+  for (const event of events) {
+    let run = runs.get(event.runId);
+    if (run === undefined) {
+      run = { runId: event.runId, agentUsd: 0, agentEstimatedUsd: 0, lessonObjectivesUsd: 0, otherUsd: 0, calls: 0, unknownCostCalls: 0, budgetUsd, overBudget: false };
+      runs.set(event.runId, run);
+    }
+    run.calls += 1;
+    const agentOperation = isAgentRunOperation(event.operation);
+    if (!hasCost(event)) {
+      run.unknownCostCalls += 1;
+      if (agentOperation) run.agentEstimatedUsd = round6(run.agentEstimatedUsd + estimateOf(event, estimates));
+      continue;
+    }
+    const usd = event.providerCostUsd!;
+    if (agentOperation) {
+      run.agentUsd = round6(run.agentUsd + usd);
+      run.agentEstimatedUsd = round6(run.agentEstimatedUsd + usd);
+    } else if (event.operation === "lesson_objectives") run.lessonObjectivesUsd = round6(run.lessonObjectivesUsd + usd);
+    else run.otherUsd = round6(run.otherUsd + usd);
+  }
+  return [...runs.values()].map((run) => ({ ...run, overBudget: run.agentEstimatedUsd > budgetUsd + 1e-9 }));
+}
+
+/**
+ * Koszt próby agenta do rejestru: zmierzony `usage.cost` plus — dla każdego wywołania bez
+ * kosztu — szacunek kierownika (`unknownCallEstimateUsd`, dla `check_grade`
+ * `unknownGraderCallEstimateUsd`), wtedy z flagą `estimated` (lepiej przeszacować niż wpisać zero).
+ */
+export function agentLedgerCost(events: readonly ProbeCostEvent[], estimates: AgentCostEstimates): { costUsd: number; estimated: boolean } {
+  let costUsd = 0;
+  let estimated = false;
+  for (const event of events) {
+    if (hasCost(event)) {
+      costUsd += Math.max(0, event.providerCostUsd!);
+      continue;
+    }
+    estimated = true;
+    costUsd += estimateOf(event, estimates);
+  }
+  return { costUsd: round6(costUsd), estimated };
+}
+
+/**
+ * Zdarzenia do rozliczenia przy wpisie rejestru: wszystkie jeszcze nierozliczone. Próba wykonuje
+ * runy po kolei, więc poza zdarzeniami bieżącego runu są to wyłącznie wywołania bez zakresu runu
+ * (`runId: null`) i spóźnione zakończenia wcześniejszego runu (żądanie przerwane terminem kończy się
+ * po rozliczeniu, a `withUsageScope` niesie jego run) — pieniądze są wydane, więc trafiają do
+ * rozliczanego wpisu zamiast zniknąć z rejestru.
+ */
+export function unsettledEvents<T extends ProbeCostEvent>(events: readonly T[], settled: ReadonlySet<T>): T[] {
+  return events.filter((event) => !settled.has(event));
+}
+
+/**
+ * Wykonuje `body`, a po nim ZAWSZE (także gdy `body` rzuciło) `settle` — rozliczenie spóźnionych
+ * zakończeń przerwanych żądań, żeby rejestr nigdy nie zaniżał wydanych pieniędzy. Błąd `body` jest
+ * ponownie rzucany bez zmian; błąd `settle` (gdy `onSettleError` go nie pochłonie) rzucany tylko wtedy,
+ * gdy `body` nic nie rzuciło.
+ */
+export async function withLateSettlement(body: () => Promise<void>, settle: () => void, onSettleError?: (error: unknown) => void): Promise<void> {
+  let failure: { error: unknown } | undefined;
+  try {
+    await body();
+  } catch (error) {
+    failure = { error };
+  }
+  try {
+    settle();
+  } catch (settleError) {
+    onSettleError?.(settleError);
+    if (failure === undefined) throw settleError;
+  }
+  if (failure !== undefined) throw failure.error;
+}
+
+/**
+ * Błąd próby do ponownego rzucenia: klasa i — gdy to identyfikator — kod `AppError`, bez komunikatu
+ * (komunikat walidacji może cytować materiał albo odpowiedź modelu, a Vitest wypisuje go na konsolę).
+ */
+export function sanitizedProbeError(error: unknown, label: string): Error {
+  const code = (error as { code?: unknown } | null)?.code;
+  const safeCode = typeof code === "string" && /^[a-z][a-z0-9_]{0,63}$/iu.test(code) ? ` kod=${code}` : "";
+  return new Error(`${label}: wyjątek ${errorClassOf(error)}${safeCode} (komunikat pominięty — może cytować materiał)`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

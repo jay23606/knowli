@@ -7,30 +7,74 @@
 import { MAX_LESSON_TEXT_LENGTH } from "@learning/contracts";
 import { sentenceCount } from "../tts-style";
 import { normalizeTargetText } from "../target-key";
+import { clip, issueFrom, messagesOf, type LessonRuleIssue } from "./rules/catalog";
+import { CORE_RULES } from "./rules/core-rules";
 import type { SubjectModule } from "./types";
 
+const coreIssue = issueFrom(CORE_RULES);
+
 /**
- * Błędy treści wyjaśnienia (pusta lista = poprawne). Tekst jest zwykły i czytany głosem:
- * po przycięciu niepusty, ≤ `MAX_LESSON_TEXT_LENGTH` znaków (jak pozostałe pola tekstowe ćwiczenia), bez łamania wiersza i znaczników `*`/`_`, dokładnie
- * jedno zdanie. Komunikaty (po polsku, dla rodzica) mają prefiks `explanationPl:`.
+ * Zgłoszenia reguł `explanation.*` dla treści wyjaśnienia (pusta lista = poprawne). Tekst jest
+ * zwykły i czytany głosem: po przycięciu niepusty, ≤ `MAX_LESSON_TEXT_LENGTH` znaków (jak
+ * pozostałe pola tekstowe ćwiczenia), bez łamania wiersza i znaczników `*`/`_`, dokładnie
+ * jedno zdanie. Komunikaty `pl` (po polsku, dla rodzica) mają prefiks `explanationPl:`.
  */
-export function explanationTextErrors(text: string): string[] {
+export function explanationIssues(text: string): LessonRuleIssue[] {
   const trimmed = text.trim();
-  if (trimmed === "") return ["explanationPl: wyjaśnienie nie może być puste"];
-  const errors: string[] = [];
-  if ([...trimmed].length > MAX_LESSON_TEXT_LENGTH) {
-    errors.push(`explanationPl: przekracza ${MAX_LESSON_TEXT_LENGTH} znaków`);
+  if (trimmed === "") {
+    return [coreIssue("explanation.empty", { pl: "explanationPl: wyjaśnienie nie może być puste", found: "blank text" })];
+  }
+  const issues: LessonRuleIssue[] = [];
+  const length = [...trimmed].length;
+  if (length > MAX_LESSON_TEXT_LENGTH) {
+    issues.push(coreIssue("explanation.max_length", {
+      pl: `explanationPl: przekracza ${MAX_LESSON_TEXT_LENGTH} znaków`,
+      found: `${length} characters, limit ${MAX_LESSON_TEXT_LENGTH}`,
+    }));
   }
   if (/[\r\n]/u.test(trimmed)) {
-    errors.push("explanationPl: wyjaśnienie nie może zawierać łamania wiersza");
+    issues.push(coreIssue("explanation.line_break", {
+      pl: "explanationPl: wyjaśnienie nie może zawierać łamania wiersza",
+      found: `line break in ${clip(trimmed)}`,
+    }));
   }
   if (/[*_]/u.test(trimmed)) {
-    errors.push("explanationPl: zwykły tekst bez znaczników (* i _)");
+    issues.push(coreIssue("explanation.markup", {
+      pl: "explanationPl: zwykły tekst bez znaczników (* i _)",
+      found: `markup character in ${clip(trimmed)}`,
+    }));
   }
-  if (sentenceCount(trimmed) !== 1) {
-    errors.push("explanationPl: wyjaśnienie ma mieć dokładnie jedno zdanie");
+  const sentences = sentenceCount(trimmed);
+  if (sentences !== 1) {
+    issues.push(coreIssue("explanation.one_sentence", {
+      pl: "explanationPl: wyjaśnienie ma mieć dokładnie jedno zdanie",
+      found: `${sentences} sentences in ${clip(trimmed)}`,
+    }));
   }
-  return errors;
+  return issues;
+}
+
+/**
+ * Noty wyjaśnienia usuniętego z wyjścia modelu (ścieżka agenta): te same reguły `explanation.*` co
+ * walidacja (przedmiot bez wyjaśnień — `explanation.not_allowed`), z `found` „removed: …”, żeby model
+ * wiedział, że ćwiczenie przyjęto bez pola i dlaczego. Pusta lista = wyjaśnienie zostaje.
+ */
+export function explanationRemovalNotes(
+  text: string,
+  subject: Pick<SubjectModule, "id" | "exerciseExplanations">,
+): LessonRuleIssue[] {
+  const issues = subject.exerciseExplanations
+    ? explanationIssues(text)
+    : [coreIssue("explanation.not_allowed", {
+        pl: `explanationPl: wyjaśnienie błędu niedozwolone dla przedmiotu „${subject.id}”`,
+        found: "this subject does not show error explanations",
+      })];
+  return issues.map((issue) => ({ ...issue, found: `removed: ${issue.found ?? issue.pl}` }));
+}
+
+/** Błędy treści wyjaśnienia jako komunikaty dla rodzica (`explanationIssues`; pusta lista = poprawne). */
+export function explanationTextErrors(text: string): string[] {
+  return messagesOf(explanationIssues(text));
 }
 
 /** Tekst ekspozycji i klucz `target_key` ćwiczenia, jak w `exposure-key.ts`. */

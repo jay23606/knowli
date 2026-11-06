@@ -7,9 +7,11 @@ import {
   filledClozeOf,
   formatRejectedReason,
   otherRejectedCount,
+  rejectedTotal,
   syncGapAnswers,
   applyCalculationPreview,
   groupCalculationFamilies,
+  cleanupLines,
   groupExercisesByObjectiveAndStage,
   lessonThemesPatch,
   lessonExerciseChanged,
@@ -660,6 +662,20 @@ describe("topRejectedReasons (powody odrzuceń przy generowaniu)", () => {
   });
 });
 
+describe("cleanupLines (poprawki agenta przy przyjmowaniu)", () => {
+  const templates = { hints: "podpowiedzi: {n}", variants: "warianty: {n}", quotes: "cytaty: {n}" };
+
+  it("wypisuje tylko niezerowe liczniki w stałej kolejności", () => {
+    expect(cleanupLines({ hintsRemoved: 5, variantsRemoved: 18, quotesSnapped: 0 }, templates)).toEqual(["podpowiedzi: 5", "warianty: 18"]);
+    expect(cleanupLines({ hintsRemoved: 0, variantsRemoved: 0, quotesSnapped: 2 }, templates)).toEqual(["cytaty: 2"]);
+  });
+
+  it("brak pola albo same zera daje pustą listę", () => {
+    expect(cleanupLines(undefined, templates)).toEqual([]);
+    expect(cleanupLines({ hintsRemoved: 0, variantsRemoved: 0, quotesSnapped: 0 }, templates)).toEqual([]);
+  });
+});
+
 describe("otherRejectedCount (odrzucenia spoza wypisanych powodów)", () => {
   const listed = [{ reason: "słowo spoza materiału: raining", count: 3 }, { reason: "tylko słowa pomocnicze: the", count: 2 }];
 
@@ -675,6 +691,34 @@ describe("otherRejectedCount (odrzucenia spoza wypisanych powodów)", () => {
 
   it("nigdy nie jest ujemna (liczniki z kilku przebiegów mogą się rozjechać)", () => {
     expect(otherRejectedCount(3, listed)).toBe(0);
+  });
+});
+
+describe("rejectedTotal (licznik odrzuceń zgodny z listą powodów)", () => {
+  it("szkic agenta: powody z pętli generowania przewyższają rejectedCount (usunięcia po przyjęciu) — licznik to suma powodów", () => {
+    const reasons = {
+      "rozwiązanie widoczne wcześniej": 12,
+      "drugi model rozwiązał inaczej": 5,
+      "zły format ćwiczenia": 2,
+      "za dużo ćwiczeń w etapie": 1,
+      "podpowiedź zdradza odpowiedź": 1,
+      "niepoprawny wariant odpowiedzi": 1,
+    };
+    const total = rejectedTotal(1, reasons);
+    expect(total).toBe(22);
+    // Pięć wypisanych powodów (12+5+2+1+1) i jeden poza listą — „inne powody: 1”, nic nie znika.
+    const shown = topRejectedReasons(reasons);
+    expect(otherRejectedCount(total, shown)).toBe(1);
+  });
+
+  it("rejectedCount większy niż suma powodów zostaje licznikiem (odrzucenia bez zapisanego powodu)", () => {
+    expect(rejectedTotal(12, { "powód A": 3, "powód B": 2 })).toBe(12);
+    expect(otherRejectedCount(rejectedTotal(12, { "powód A": 3, "powód B": 2 }), topRejectedReasons({ "powód A": 3, "powód B": 2 }))).toBe(7);
+  });
+
+  it("bez powodów licznik to rejectedCount", () => {
+    expect(rejectedTotal(0, undefined)).toBe(0);
+    expect(rejectedTotal(4, {})).toBe(4);
   });
 });
 

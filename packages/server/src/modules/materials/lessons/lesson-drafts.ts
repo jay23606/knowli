@@ -11,7 +11,7 @@ import {
   type MaterialLessonCommand,
   type SchoolLessonCommand,
 } from "@learning/contracts";
-import type { Clock, Services } from "../../../config";
+import { isLessonAgentAvailable, type Clock, type Services } from "../../../config";
 import type { Executor, Tx } from "../../../db/client";
 import {
   deckVersions,
@@ -23,28 +23,23 @@ import {
   skillVersions,
 } from "../../../db/schema";
 import { AppError } from "../../../errors";
-import { avoidSentencesFor } from "../../../domain/lessons/avoid-sentences";
-import { cardExposureSources } from "../../../domain/lessons/card-exposure-sources";
 import { explanationTextErrors } from "../../../domain/lessons/exercise-explanation";
 import { lessonExerciseTargetKey } from "../../../domain/lessons/exposure-key";
-import { resolveGenerationLeaks } from "../../../domain/lessons/exposure-leaks";
-import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE, stageDeficits, type StageDeficits } from "../../../domain/lessons/lesson-coverage";
-import { mergeReviewReport, type LessonReviewReport } from "../../../domain/lessons/review-report";
+import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE } from "../../../domain/lessons/lesson-coverage";
 import {
   DEFAULT_LESSON_POLICY,
   defaultPoolSize,
   type StageMix,
 } from "../../../domain/lessons/lesson-policy";
 import { materialCreationMode } from "../../../domain/lessons/material-creation";
-import { keywordsAnswer, MAX_TEXT_LENGTH, validatePool } from "../../../domain/lessons/pool-validation";
-import { withoutOrphanKeywords } from "../../../domain/lessons/keyword-families";
-import { outsideStagePath, stageOf } from "../../../domain/lessons/stages";
+import { keywordsAnswer } from "../../../domain/lessons/pool-validation";
+import { hasLenientRawShape } from "../../../domain/lessons/raw-shape";
+import { familyRunSuffix, withoutOrphanKeywords } from "../../../domain/lessons/keyword-families";
+import { messagesOf } from "../../../domain/lessons/rules/catalog";
+import { lessonRuleBook, ruleBookContextFor, ruleTextContextOf } from "../../../domain/lessons/rules/rule-book";
 import {
-  lessonExerciseIdentity,
   lessonExerciseStimulus,
-  lessonExerciseStimulusRecord,
   lessonIdentityOptionsOf,
-  type LessonExerciseIdentityOptions,
   type LessonExerciseStimulus,
 } from "../../../domain/lessons/exercise-identity";
 import type {
@@ -56,7 +51,7 @@ import type {
 } from "../../../domain/lessons/types";
 import { solvedSentencesOf, storyCollisions, type LessonStory } from "../../../domain/lessons/story";
 import type { LessonPoolInput, LlmLessonStageCounts, LlmProvider } from "../../../ports/ai";
-import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
+import { validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
 import {
   claimQueuedRun,
   enqueueGenerationRun,
@@ -65,32 +60,23 @@ import {
   supersedeLessonRuns,
   type LESSON_STORY_PURPOSE,
 } from "../generation-runs";
-import { MAX_AUTOMATIC_ATTEMPTS, requireGeneration } from "../generation-runtime";
-import { classifyLessonGenerationFailure, lessonRetryDelayMs } from "./lesson-generation-errors";
-import {
-  assertLessonGenerationFinalizationAllowed,
-  LessonGenerationCancelledError,
-  withLessonGenerationControl,
-  type LessonGenerationControl,
-} from "./lesson-generation-control";
+import { requireGeneration } from "../generation-runtime";
+import { assertLessonGenerationFinalizationAllowed, type LessonGenerationControl } from "./lesson-generation-control";
 import { executeLessonAgentGeneration } from "./lesson-agent-generation";
-import { lessonGeneratorFor } from "./lesson-agent-outcome";
-import { DEFAULT_LESSON_GENERATION_POLICY, type LessonGenerationPolicy } from "./lesson-generation-policy";
 import { reconcileDraftAssetsTx } from "../media-reconciliation";
 import { committedRetryAfterSourceChange, lockSourceMaterialForCopy } from "../source-materials";
 import { buildLessonPayload } from "./lesson-payload";
-import { acceptFreshLessonPool } from "./lesson-pool-acceptance";
-import { reviewFreshExercises, reviewRunReport, type ReviewPhaseResult } from "./lesson-review";
 import { executeLessonStoryGeneration, queueLessonStoryRunTx } from "./lesson-story-generation";
 
 /**
  * Generowanie i zapis szkicu lekcji (design „Generowanie puli (worker)”).
  * `createLesson` tworzy deck lekcji + wersję draft + run `lesson` idempotentnie
  * (wspólny `enqueueGenerationRun` ze ścieżką słówek). `executeLessonGeneration`
- * woła port `generateLessonPool` partiami per cel, waliduje pulę w domenie
- * (`validatePool`) i zapisuje poprawne ćwiczenia pod blokadą wersji, przechodząc
- * `draft → review`. Ścieżka słówek pozostaje nietknięta: ten moduł nie dotyka
- * `applyItems` ani VOCABULARY_SKILLS.
+ * przejmuje run i przekazuje go agentowi puli (`executeLessonAgentGeneration`,
+ * jedyny generator od etapu 3 #237); wspólny zapis `finalizeLessonPoolWrite`
+ * dopisuje przyjęte ćwiczenia pod blokadą wersji, przechodząc `draft → review`.
+ * Ścieżka słówek pozostaje nietknięta: ten moduł nie dotyka `applyItems` ani
+ * VOCABULARY_SKILLS.
  */
 
 /** Kontekst lekcji zapisany w `deck_versions.lesson_context`. */
@@ -113,12 +99,12 @@ export interface LessonContext {
   rejectedCount: number;
   /** Powody odrzuceń z czyszczenia świeżej puli (`refineGeneratedPool`) z licznikami; bez danych dziecka. */
   rejectedReasons?: Record<string, number>;
+  /** Oczyszczenia agenta puli przy przyjmowaniu (`hintsRemoved`, `variantsRemoved`, `quotesSnapped`), sumowane między przebiegami; same liczby. */
+  cleanupCounts?: Record<string, number>;
   /** Zagadnienia odrzucone/pominięte na etapie generowania tematu (szkoła; panel rodzica). */
   droppedObjectiveCount?: number;
   /** Historyjka na koniec sesji (przedmioty z `lessonStory`); zapisuje ją run historyjki albo rodzic. */
   story?: LessonStory;
-  /** Raport automatycznej kontroli jakości (krytyk) z przebiegów generowania tej wersji; nie przechodzi do nowej wersji. */
-  review?: LessonReviewReport;
   /** Zagadnienia do uzupełnienia po częściowym generowaniu agentem (panel rodzica); bez treści. */
   generationGaps?: LessonGenerationGap[];
 }
@@ -151,8 +137,12 @@ export interface LessonRunInput {
   topicTitlePl?: string;
   /** Migawka tematu dynamicznego (dogenerowanie zestawu szkolnego). */
   dynamicTopic?: DynamicTopicData;
-  /** Dogenerowanie jednego celu: nowe ćwiczenia dopisujemy, nie czyścimy. */
-  regenerate?: { objectiveId: string; count: number; existingAnswers: string[]; existingExercises?: LessonExerciseStimulus[] };
+  /**
+   * Dogenerowanie jednego celu: nowe ćwiczenia dopisujemy, nie czyścimy. Runy z kolejki sprzed etapu 3
+   * mogą mieć tu jeszcze pola potoku (odpowiedzi i bodźce istniejących ćwiczeń) — wejście jest
+   * rzutowane, agent ich nie czyta.
+   */
+  regenerate?: { objectiveId: string; count: number };
   /** Run historyjki (`LESSON_STORY_PURPOSE`); brak = generowanie puli ćwiczeń. */
   purpose?: typeof LESSON_STORY_PURPOSE;
 }
@@ -463,10 +453,10 @@ export function splitStages(count: number, mix: StageMix = DEFAULT_LESSON_POLICY
 }
 
 /**
- * Podział partii na etapy dla jednego celu. Rachunek dzieli etap samodzielny
- * z pytaniami otwartymi, a te mają twarde minimum publikacji — gdy etap
- * samodzielny ma tylko tyle miejsc, ile wynosi minimum, jedno miejsce przechodzi
- * z etapu produktywnego (o ile ten zachowa swoje minimum). Budżet partii bez zmian.
+ * Podział liczby ćwiczeń celu na etapy (`targets` kierownika agenta). Rachunek dzieli
+ * etap samodzielny z pytaniami otwartymi, a te mają twarde minimum publikacji — gdy
+ * etap samodzielny ma tylko tyle miejsc, ile wynosi minimum, jedno miejsce przechodzi
+ * z etapu produktywnego (o ile ten zachowa swoje minimum). Łączna liczba bez zmian.
  */
 export function poolStageCounts(
   subject: SubjectModule,
@@ -500,8 +490,8 @@ export function minimumCountPerObjective(subject: SubjectModule): number {
 }
 
 /**
- * Liczby ćwiczeń partii per cel. Zamówiona pula dzieli się dokładnie (część
- * całkowita + reszta), więc suma partii jej nie przekracza. Wyjątek: gdy pula
+ * Liczby ćwiczeń per cel. Zamówiona pula dzieli się dokładnie (część
+ * całkowita + reszta), więc suma liczb celów jej nie przekracza. Wyjątek: gdy pula
  * jest mniejsza niż (liczba celów × minimum publikacji), każdy cel dostaje
  * minimum — inaczej szkic byłby niepublikowalny; nadwyżkę loguje wywołujący.
  */
@@ -517,160 +507,30 @@ export function objectiveBatchCounts(poolSize: number, objectiveCount: number, s
   });
 }
 
-/** Partie pełnej generacji; nadwyżkę ponad zamówioną pulę (minimum publikacji) zapisuje w logu. */
-function batchesForObjectives(
-  objectiveIds: readonly string[],
-  poolSize: number,
-  subject: SubjectModule,
-  runId: string,
-): { objectiveId: string; count: number; existingAnswers: string[]; existingExercises: LessonExerciseStimulus[] }[] {
-  const counts = objectiveBatchCounts(poolSize, objectiveIds.length, subject);
-  const total = counts.reduce((sum, count) => sum + count, 0);
-  if (total > poolSize) {
-    console.log(`[lesson] run=${runId} pula podniesiona do minimum publikacji: ${total} zamiast ${poolSize} (cele=${objectiveIds.length})`);
-  }
-  return objectiveIds.map((objectiveId, index) => ({ objectiveId, count: counts[index]!, existingAnswers: [], existingExercises: [] }));
-}
-
 /** Najwięcej ćwiczeń `lesson_listen_choice` na cel w szkicu — dodatek ponad podział etapów (decyzja #198). */
 const LISTEN_CHOICE_PER_OBJECTIVE = 2;
 
-/** Powód odrzucenia świeżego ćwiczenia z rozwiązaniem widocznym wcześniej (klucz `rejectedReasons`, widoczny dla rodzica). */
-const EXPOSURE_LEAK_REASON = "rozwiązanie widoczne wcześniej";
 /** Powód odrzucenia świeżych słów kluczowych, których rodzina pytań otwartych odpadła (klucz `rejectedReasons`). */
 const ORPHAN_KEYWORDS_REASON = "ćwiczenie bez rodziny pytań otwartych";
-/** Powód usunięcia świeżego ćwiczenia przez krytyka (klucz `rejectedReasons`, widoczny dla rodzica). */
-const REVIEW_DROP_REASON = "odrzucone przez kontrolę jakości";
-/** Rezerwa finalizacji (walidacja i zapis) przed terminem fazy przeglądu (spec etapu przeglądu §6.1). */
-const REVIEW_FINALIZATION_RESERVE_MS = 30_000;
 
 /**
  * Ile ćwiczeń słuchowych generator może jeszcze dodać do celu: limit na cel minus ćwiczenia
- * słuchowe tego celu już w szkicu (dogenerowanie) i we wcześniejszych partiach runu. 0, gdy
- * przedmiot nie nagrywa zdań albo typ nie leży na liście celu.
+ * słuchowe tego celu już obecne (`present`; agent podaje `[]` i ćwiczenia szkicu odejmuje sam). 0, gdy przedmiot
+ * nie nagrywa zdań albo typ nie leży na liście celu.
  */
 export function listenChoiceAllowance(
   subject: SubjectModule,
   objective: { id: string; exerciseTypes: readonly string[] },
-  existingExercises: readonly LessonExerciseStimulus[],
+  present: readonly LessonExerciseStimulus[],
 ): number {
-  if (!subject.ttsForFeedbackSentence || !subject.exerciseTypes.includes("lesson_listen_choice") || !objective.exerciseTypes.includes("lesson_listen_choice")) {
-    return 0;
-  }
-  const existing = existingExercises.filter((exercise) => exercise.objectiveId === objective.id && exercise.exerciseType === "lesson_listen_choice").length;
-  return Math.max(0, LISTEN_CHOICE_PER_OBJECTIVE - existing);
+  if (!listenChoiceAvailable(subject, objective)) return 0;
+  const listened = present.filter((exercise) => exercise.objectiveId === objective.id && exercise.exerciseType === "lesson_listen_choice").length;
+  return Math.max(0, LISTEN_CHOICE_PER_OBJECTIVE - listened);
 }
 
-/** Limity jednego celu w runie: zamówiona liczba ćwiczeń etapów i przyznany dodatek słuchowy. */
-export interface ObjectiveGenerationLimits {
-  readonly count: number;
-  readonly listen: number;
-  /** Zamówiony podział `count` na etapy; przy przycinaniu nadmiaru chroni etapy niedoreprezentowane. */
-  readonly stages?: LlmLessonStageCounts;
-}
-
-/**
- * Ćwiczenia etapów celu, które mieszczą się w `count`: najpierw każdy etap do zamówionej
- * liczby, potem wolne miejsca w kolejności wejścia (typy bez kwoty, np. karty, i braki etapów).
- */
-function withinStageQuotas(
-  candidates: readonly LessonExerciseDraft[],
-  limit: ObjectiveGenerationLimits,
-): Set<LessonExerciseDraft> {
-  if (candidates.length <= limit.count) return new Set(candidates);
-  const quotas = limit.stages ?? { guided: 0, productive: 0, independent: 0 };
-  const used = { guided: 0, productive: 0, independent: 0 };
-  const selected = new Set<LessonExerciseDraft>();
-  for (const exercise of candidates) {
-    const stage = stageOf(exercise.exerciseType);
-    if (outsideStagePath(exercise.exerciseType) || !(stage in quotas)) continue;
-    const key = stage as keyof LlmLessonStageCounts;
-    if (used[key] < quotas[key] && selected.size < limit.count) {
-      used[key] += 1;
-      selected.add(exercise);
-    }
-  }
-  for (const exercise of candidates) {
-    if (selected.size >= limit.count) break;
-    selected.add(exercise);
-  }
-  return selected;
-}
-
-/**
- * Egzekwuje dodatek słuchowy po walidacji: na cel najwyżej `listen` nowych ćwiczeń
- * `lesson_listen_choice`, a gdy dodatek przyznano (`listen > 0`), najwyżej `count` pozostałych —
- * podniesiony w prompcie limit partii nie może dać dodatkowych ćwiczeń etapów. Słuchowe zachowują
- * pierwsze wystąpienia; z pozostałych odpadają najpierw ćwiczenia etapów ponad zamówiony podział
- * (`stages`), dalej kolejność wejścia. Nadmiar wraca jako odrzucenia z powodem.
- */
-export function capListenChoiceOverflow(
-  exercises: readonly LessonExerciseDraft[],
-  limits: ReadonlyMap<string, ObjectiveGenerationLimits>,
-): { kept: LessonExerciseDraft[]; rejected: { exercise: LessonExerciseDraft; errors: string[] }[] } {
-  const listenSeen = new Map<string, number>();
-  const allowedOther = new Map<string, Set<LessonExerciseDraft>>();
-  for (const [objectiveId, limit] of limits) {
-    if (limit.listen <= 0) continue;
-    const candidates = exercises.filter((exercise) => exercise.objectiveId === objectiveId && exercise.exerciseType !== "lesson_listen_choice");
-    allowedOther.set(objectiveId, withinStageQuotas(candidates, limit));
-  }
-  const kept: LessonExerciseDraft[] = [];
-  const rejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
-  for (const exercise of exercises) {
-    const limit = limits.get(exercise.objectiveId);
-    if (exercise.exerciseType === "lesson_listen_choice") {
-      const seen = listenSeen.get(exercise.objectiveId) ?? 0;
-      const allowed = limit?.listen ?? 0;
-      if (seen >= allowed) {
-        rejected.push({ exercise, errors: [`exerciseType: ponad limit ${LISTEN_CHOICE_PER_OBJECTIVE} ćwiczeń „lesson_listen_choice” na regułę (wolne miejsca: ${allowed})`] });
-        continue;
-      }
-      listenSeen.set(exercise.objectiveId, seen + 1);
-    } else if (limit !== undefined && !(allowedOther.get(exercise.objectiveId)?.has(exercise) ?? true)) {
-      rejected.push({ exercise, errors: [`exerciseType: ćwiczenie ponad zamówioną liczbę ${limit.count} dla reguły`] });
-      continue;
-    }
-    kept.push(exercise);
-  }
-  return { kept, rejected };
-}
-
-/** Błąd nadwyżki rundy pod etap ponad brak (log walidacji, jak przycięcie limitów celu). */
-const STAGE_TOP_UP_EXCESS_ERROR = "exerciseType: ponad brak etapu";
-/** Błąd ćwiczenia spoza ścieżki etapów w rundzie pod etap (runda zamawia tylko braki etapów). */
-const STAGE_TOP_UP_OUTSIDE_PATH_ERROR = "exerciseType: poza ścieżką etapów w dogenerowaniu";
-
-/** Zapas czasu przed deadlinem przebiegu, który zostaje po wywołaniu rundy na walidację i zapis. */
-const STAGE_TOP_UP_MARGIN_MS = 30_000;
-
-/**
- * Przycina przyjęte ćwiczenia rundy pod etap do braków: z każdego etapu najwyżej jego brak
- * (kolejność wejścia); nadwyżka i ćwiczenia spoza etapów z brakiem odpadają z powodem.
- * Typy spoza ścieżki etapów (słowa kluczowe, wybór ze słuchu) odpadają zawsze — nie zajmują
- * miejsca etapu, a runda zamawia wyłącznie braki etapów.
- */
-export function trimToStageDeficits(
-  exercises: readonly LessonExerciseDraft[],
-  deficits: StageDeficits,
-): { kept: LessonExerciseDraft[]; rejected: { exercise: LessonExerciseDraft; errors: string[] }[] } {
-  const used = { guided: 0, productive: 0, independent: 0 };
-  const kept: LessonExerciseDraft[] = [];
-  const rejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
-  for (const exercise of exercises) {
-    if (outsideStagePath(exercise.exerciseType)) {
-      rejected.push({ exercise, errors: [STAGE_TOP_UP_OUTSIDE_PATH_ERROR] });
-      continue;
-    }
-    const stage = stageOf(exercise.exerciseType);
-    if ((stage === "guided" || stage === "productive" || stage === "independent") && used[stage] < deficits[stage]) {
-      used[stage] += 1;
-      kept.push(exercise);
-    } else {
-      rejected.push({ exercise, errors: [STAGE_TOP_UP_EXCESS_ERROR] });
-    }
-  }
-  return { kept, rejected };
+/** Czy cel może mieć ćwiczenia `lesson_listen_choice`: przedmiot nagrywa zdania, a typ leży na liście przedmiotu i celu. */
+function listenChoiceAvailable(subject: SubjectModule, objective: { exerciseTypes: readonly string[] }): boolean {
+  return subject.ttsForFeedbackSentence && subject.exerciseTypes.includes("lesson_listen_choice") && objective.exerciseTypes.includes("lesson_listen_choice");
 }
 
 /** Czysta reguła rodzin słów kluczowych żyje w domenie (używa jej też agent puli); reeksport dla obecnych wywołujących. */
@@ -702,16 +562,19 @@ export function buildPoolInput(
   material: string,
   instruction: string | undefined,
   graderAvailable: boolean,
-  existingAnswers: readonly string[],
-  existingExercises: readonly LessonExerciseStimulus[] = [],
   interests?: readonly string[],
-  options: { readonly avoidSentences?: readonly string[]; readonly purpose?: LessonPoolInput["purpose"] } = {},
+  options: { readonly avoidSentences?: readonly string[] } = {},
 ): LessonPoolInput {
   // Tematy i reguła ich użycia idą do modelu razem albo wcale (reguła należy do przedmiotu).
   const interestsRule = subject.prompts.interestsRule;
   const withInterests = interestsRule !== undefined && interests !== undefined && interests.length > 0;
   const objective = topic.objectives.find((o) => o.id === objectiveId)!;
-  const listenAllowance = listenChoiceAllowance(subject, objective, existingExercises);
+  const listenAllowance = listenChoiceAllowance(subject, objective, []);
+  // Księga reguł: typy celu (bez wyboru ze słuchu, gdy cel go nie dostaje — prompt go wtedy nie wymienia)
+  // i dostępność typu słuchowego, nie wolne miejsce w przydziale (reguły puli dotyczą też istniejących zdań).
+  const listenChoice = listenChoiceAvailable(subject, objective);
+  const ruleTypes = objective.exerciseTypes.filter((type) => listenChoice || type !== "lesson_listen_choice");
+  const ruleBook = lessonRuleBook(subject, ruleBookContextFor(subject, topic.id, objective.id, ruleTypes, listenChoice));
   return {
     subjectId: subject.id,
     subjectTitle: subject.titlePl,
@@ -740,19 +603,18 @@ export function buildPoolInput(
     ...(withInterests ? { interests: [...interests] } : {}),
     countPerObjective: count,
     stageCounts: poolStageCounts(subject, objective.exerciseTypes, count),
-    // Wybór ze słuchu to dodatek poza podziałem etapów i liczbą partii: tylko przedmiot z nagraniami zdań
-    // i cel, którego lista zawiera typ, pomniejszony o ćwiczenia słuchowe celu już w szkicu/partiach.
+    // Wybór ze słuchu to dodatek poza podziałem etapów i liczbą ćwiczeń celu: tylko przedmiot z nagraniami zdań
+    // i cel, którego lista zawiera typ (ćwiczenia słuchowe już w szkicu odejmuje agent w swoich limitach).
     ...(listenAllowance > 0 ? { listenChoicePerObjective: listenAllowance } : {}),
     ...(subject.usesV3Payload === true ? { minDistinctOpenAnswers: DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE } : {}),
     graderAvailable,
     groundingRequired: subject.sourceQuotes === true,
+    answerMaxLength: ruleTextContextOf(subject).answerMaxLength,
     deduplication: subject.poolDeduplication ?? "answer",
     voiceTones: subject.ttsForPrompts === true,
     exerciseExplanations: subject.exerciseExplanations,
-    ...(existingAnswers.length > 0 ? { existingAnswers: [...existingAnswers] } : {}),
-    ...(existingExercises.length > 0 ? { existingExercises: [...existingExercises] } : {}),
     ...(options.avoidSentences !== undefined && options.avoidSentences.length > 0 ? { avoidSentences: [...options.avoidSentences] } : {}),
-    ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
+    ruleBook,
   };
 }
 
@@ -932,7 +794,7 @@ export function withoutEmptyOptionalArrays(draft: LessonExerciseDraft): LessonEx
  * nowej partii dostają więc sufiks runu i pozostają wewnątrz niej.
  */
 export function scopeFamiliesToRun(draft: LessonExerciseDraft, runId: string): LessonExerciseDraft {
-  const suffix = `-r${runId.replace(/[^0-9a-f]/gi, "").slice(0, 6).toLowerCase()}`;
+  const suffix = familyRunSuffix(runId);
   // Cut before the suffix without leaving a dangling "-" (templateFamilyId is a strict slug).
   const scoped = (slug: string) => {
     let base = slug.slice(0, 64 - suffix.length);
@@ -961,28 +823,10 @@ export function splitByPoolExtra(
   const extraRejected: { exercise: LessonExerciseDraft; errors: string[] }[] = [];
   drafts.forEach((draft, index) => {
     const errs = extra.get(index);
-    if (errs && errs.length > 0) extraRejected.push({ exercise: draft, errors: [...errs] });
+    if (errs && errs.length > 0) extraRejected.push({ exercise: draft, errors: messagesOf(errs) });
     else kept.push(draft);
   });
   return { kept, extraRejected };
-}
-
-/**
- * Czyści świeżo wygenerowaną pulę hakiem przedmiotu `refineGeneratedPool` i
- * zlicza odrzucenia po powodzie (dla panelu rodzica; powody bez danych dziecka).
- * Wołana wyłącznie w generacji (także dogenerowaniu) — nie przy edycji rodzica
- * ani publikacji. Przedmiot bez haka zwraca pulę bez zmian i bez zliczeń.
- */
-export function refineGeneratedDrafts(
-  subject: SubjectModule,
-  drafts: readonly LessonExerciseDraft[],
-  material: string,
-): { kept: LessonExerciseDraft[]; rejectedCount: number; rejectedReasons: Record<string, number> } {
-  if (!subject.refineGeneratedPool) return { kept: [...drafts], rejectedCount: 0, rejectedReasons: {} };
-  const refined = subject.refineGeneratedPool(drafts, { material });
-  const counts = new Map<string, number>();
-  for (const { reason } of refined.rejected) counts.set(reason, (counts.get(reason) ?? 0) + 1);
-  return { kept: refined.kept, rejectedCount: refined.rejected.length, rejectedReasons: Object.fromEntries(counts) };
 }
 
 /**
@@ -1024,122 +868,15 @@ export function lessonPayloadVersion(ex: LessonExerciseDraft, subject: SubjectMo
     : 2;
 }
 /**
- * Schemat KSZTAŁTU surowego ćwiczenia z portu (nie semantyki). Chroni dalszą
- * walidację semantyczną (`validatePool`) przed rekordami, których tablice mają
- * zły typ elementów (np. `options=[null,{…}]`) — bez tego `validateOptions`
- * dereferencuje `null.text` i rzuca `TypeError`, wywracając cały run zamiast
- * odrzucić jeden rekord (wymóg 2.5). Sprawdzamy tylko to, co faza semantyczna
- * dereferencuje: elementy `options`/`items` muszą być `{id,text}`, a
- * `noticeSegments` musi być tablicą tablic napisów. Pozostałe pola pozostają
- * domeną `validateLessonExercise`. `passthrough` — nie odrzucamy pól dodatkowych.
- *
- * Pola opcjonalne są `nullish`, bo structured outputs (json_schema strict)
- * zwraca KAŻDE pole schematu, z `null` dla nie dotyczących typu — brak pola
- * i jawny `null` muszą przejść tak samo (`toExerciseDraft` nulla pomija).
- */
-const optionShapeSchema = z.object({ id: z.string(), text: z.string() }).passthrough();
-const rawExerciseShapeSchema = z
-  .object({
-    exerciseType: z.string(),
-    objectiveId: z.string(),
-    answer: z.string(),
-    acceptedAnswers: z.array(z.string()).nullish(),
-    focus: z.array(z.string()).nullish(),
-    instructionPl: z.string().nullish(),
-    stem: z.string().nullish(),
-    statement: z.string().nullish(),
-    prompt: z.string().nullish(),
-    hint: z.string().nullish(),
-    // `explanationPl` celowo poza strażnikiem: zły typ znaczy „brak wyjaśnienia”
-    // (`sanitizedExplanation`), nie odrzucenie całego ćwiczenia.
-    transformId: z.string().nullish(),
-    correctOption: z.string().nullish(),
-    options: z.array(optionShapeSchema).nullish(),
-    items: z.array(optionShapeSchema).nullish(),
-    keywordOptions: z.array(optionShapeSchema).nullish(),
-    keyOptionIds: z.array(z.string()).nullish(),
-    noticeSegments: z.array(z.array(z.string())).nullish(),
-    pairs: z.array(z.object({ left: z.string(), right: z.string() }).passthrough()).nullish(),
-    extraRight: z.array(z.string()).nullish(),
-    groups: z.array(z.object({ id: z.string(), label: z.string() }).passthrough()).nullish(),
-    groupItems: z.array(z.object({ text: z.string(), groupId: z.string() }).passthrough()).nullish(),
-    clozeText: z.string().nullish(),
-    gapAnswers: z.array(z.string()).nullish(),
-    extraWords: z.array(z.string()).nullish(),
-  })
-  .passthrough();
-
-/**
- * Czy surowy obiekt ma bezpieczny KSZTAŁT do walidacji semantycznej. Rekord o
- * złym kształcie jest odrzucany (liczony do `rejectedCount`), nie rzuca. Nie
- * maskuje realnych błędów treści — sprawdza wyłącznie kształt pól tablicowych,
- * które faza semantyczna dereferencuje.
+ * Czy surowy obiekt ma bezpieczny KSZTAŁT do walidacji semantycznej (łagodny
+ * strażnik punktu kontrolnego, dzisiejsza semantyka — `hasLenientRawShape` w
+ * domenie). Rekord o złym kształcie jest odrzucany (liczony do `rejectedCount`),
+ * nie rzuca. Nie maskuje realnych błędów treści — sprawdza wyłącznie kształt pól,
+ * które faza semantyczna dereferencuje. Ścieżka agenta ze zgłoszeniami reguł:
+ * `rawShapeIssues` (`domain/lessons/raw-shape.ts`).
  */
 export function isWellShapedRawExercise(raw: unknown): boolean {
-  if (raw === null || typeof raw !== "object") {
-    return false;
-  }
-  return rawExerciseShapeSchema.safeParse(raw).success;
-}
-
-export function collectBatchExerciseMetadata(
-  exercises: unknown[],
-  deduplicateByExercise: boolean,
-  identityOptions: LessonExerciseIdentityOptions = {},
-): {
-  answers: string[];
-  exerciseRecords: LessonExerciseStimulus[];
-} {
-  const answers: string[] = [];
-  const exerciseRecords: LessonExerciseStimulus[] = [];
-  for (const exercise of exercises) {
-    if (!isWellShapedRawExercise(exercise)) continue;
-    const answer = (exercise as { answer?: unknown }).answer;
-    if (typeof answer === "string" && answer.trim() !== "") answers.push(answer);
-    if (deduplicateByExercise) {
-      exerciseRecords.push(lessonExerciseStimulusRecord(toExerciseDraft(exercise), identityOptions));
-    }
-  }
-  return { answers, exerciseRecords };
-}
-
-export function filterExercisesToRequestedObjective(exercises: unknown[], objectiveId: string): {
-  exercises: unknown[];
-  outOfScopeCount: number;
-} {
-  const accepted: unknown[] = [];
-  let outOfScopeCount = 0;
-  for (const exercise of exercises) {
-    const returnedObjective = exercise && typeof exercise === "object"
-      ? (exercise as { objectiveId?: unknown }).objectiveId
-      : undefined;
-    if (typeof returnedObjective === "string" && returnedObjective !== objectiveId) outOfScopeCount += 1;
-    else accepted.push(exercise);
-  }
-  return { exercises: accepted, outOfScopeCount };
-}
-
-export function summarizeLessonPoolValidation(input: {
-  rawCount: number;
-  shapeRejected: number;
-  outOfScopeCount: number;
-  rejectedExerciseCount: number;
-  rejectedErrors: readonly string[];
-  duplicateCount: number;
-  validCount: number;
-  /** Odrzucone przez `refineGeneratedPool` (nie niosą reguł walidacji puli). */
-  refineRejected?: number;
-}): string {
-  const ruleCounts = new Map<string, number>();
-  for (const error of input.rejectedErrors) {
-    const rule = /^([a-z][a-z0-9_]*):/i.exec(error)?.[1] ?? "other";
-    ruleCounts.set(rule, (ruleCounts.get(rule) ?? 0) + 1);
-  }
-  const refineRejected = input.refineRejected ?? 0;
-  if (refineRejected > 0) ruleCounts.set("czyszczenie", refineRejected);
-  const reasons = [...ruleCounts.entries()].map(([rule, count]) => `${rule}×${count}`).join(", ") || "-";
-  const rejected = input.shapeRejected + input.outOfScopeCount + input.rejectedExerciseCount + input.duplicateCount + refineRejected;
-  return `surowe=${input.rawCount} zły_kształt=${input.shapeRejected} obcy_cel=${input.outOfScopeCount} odrzucone=${rejected} ważne=${input.validCount}; reguły: ${reasons}`;
+  return hasLenientRawShape(raw);
 }
 
 /** Sanityzacja pól v3 surowego ćwiczenia: tylko poprawnie uformowane wpisy. */
@@ -1286,8 +1023,7 @@ async function nextPosition(tx: Tx, versionId: string): Promise<number> {
  * pierwszej generacji, i do dogenerowania celu. Osobny od `applyItems` słówek:
  * lekcje mają jedną umiejętność (`objective`) i inny payload, więc współdzielenie
  * pętli słówek (iterującej VOCABULARY_SKILLS) zmieniłoby zachowanie słówek —
- * zapis jest celowo osobny (udokumentowane w raporcie). Zwraca identyfikatory
- * elementów (`learning_items.id`) w kolejności wejścia (raport kontroli jakości).
+ * zapis jest celowo osobny (udokumentowane w raporcie).
  */
 export async function applyLessonExercises(
   tx: Tx,
@@ -1295,12 +1031,10 @@ export async function applyLessonExercises(
   subject: SubjectModule,
   topicVersion: number | undefined,
   exercises: readonly LessonExerciseDraft[],
-): Promise<string[]> {
+): Promise<void> {
   let position = await nextPosition(tx, version.id);
-  const itemIds: string[] = [];
   for (const ex of exercises) {
     const itemId = randomUUID();
-    itemIds.push(itemId);
     await tx.insert(learningItems).values({ id: itemId, deckId: version.deckId, kind: "lesson_exercise" });
     const skillVersionId = randomUUID();
     const { criteria, criteriaHash } = buildObjectiveCriteria(ex, subject, topicVersion);
@@ -1331,18 +1065,6 @@ export async function applyLessonExercises(
     });
     position += 1;
   }
-  return itemIds;
-}
-
-/** Odpowiedzi kanoniczne już w szkicu (dla dogenerowania bez duplikatów). */
-async function existingAnswersOf(tx: Tx, versionId: string): Promise<string[]> {
-  const rows = await tx
-    .select({ payload: itemRevisions.payload })
-    .from(itemRevisions)
-    .where(eq(itemRevisions.deckVersionId, versionId));
-  return rows
-    .map((r) => (r.payload as { answer?: string }).answer)
-    .filter((a): a is string => typeof a === "string");
 }
 
 /**
@@ -1363,197 +1085,6 @@ export async function orderedDraftExercises(db: Executor, deckVersionId: string)
   });
 }
 
-/** Funkcjonalne bodźce ćwiczeń już zapisanych w wersji szkicu. */
-async function existingExercisesOf(tx: Executor, versionId: string, subject: SubjectModule): Promise<LessonExerciseStimulus[]> {
-  const rows = await tx
-    .select({ payload: itemRevisions.payload })
-    .from(itemRevisions)
-    .where(eq(itemRevisions.deckVersionId, versionId));
-  return rows.flatMap(({ payload }) => {
-    if (!payload || typeof payload !== "object") return [];
-    const value = payload as Record<string, unknown>;
-    if (typeof value.objectiveId !== "string" || typeof value.exerciseType !== "string" || typeof value.answer !== "string") return [];
-    const exercise = toExerciseDraft(value);
-    return [lessonExerciseStimulusRecord(exercise, lessonIdentityOptionsOf(subject))];
-  });
-}
-
-interface StageTopUpContext {
-  readonly runId: string;
-  readonly llm: ReturnType<typeof requireGeneration>["llm"];
-  readonly subject: SubjectModule;
-  readonly topic: LessonTopic;
-  readonly input: LessonRunInput;
-  readonly graderAvailable: boolean;
-  readonly policy: LessonGenerationPolicy;
-  readonly runDeadlineAtMs: number;
-  readonly signal?: AbortSignal;
-  readonly assertCurrent: () => Promise<boolean>;
-  /** Zagadnienia przebiegu (kolejność partii) — runda sprawdza braki tylko u nich. */
-  readonly objectiveIds: readonly string[];
-  /** Kolejność zagadnień lekcji dla reguły ujawnień i pokrycia. */
-  readonly objectiveOrder: readonly string[];
-  readonly existingDrafts: readonly LessonExerciseDraft[];
-  /** Ćwiczenia przyjęte z partii głównej (po regule ujawnień). */
-  readonly kept: readonly LessonExerciseDraft[];
-  /** Końcowe przykłady kart (szkic z zachowanymi nowymi); runda ich nie zmienia. */
-  readonly examples: Readonly<Record<string, readonly string[]>>;
-  /**
-   * Zdania z kart rozdziału (`cardExposureSources`): stałe źródła reguły twardej i podpowiedź
-   * `avoidSentences` rundy; nie są przykładami kart, więc nie wpływają na pokrycie ani zapis.
-   */
-  readonly cardSources: Readonly<Record<string, readonly string[]>>;
-  /** Bodźce i odpowiedzi surowych ćwiczeń partii głównej (advisory „nie powtarzaj”, numeracja fake'a). */
-  readonly runStimuli: readonly LessonExerciseStimulus[];
-  readonly runAnswers: readonly string[];
-  /** Faza przeglądu krytyka dla świeżych ćwiczeń rundy (istniejące = szkic + przyjęte wcześniej). */
-  readonly review: (fresh: readonly LessonExerciseDraft[], existing: readonly LessonExerciseDraft[]) => Promise<ReviewPhaseResult>;
-  /** Czas zostawiany na wywołanie krytyka po wywołaniu generatora rundy (0 bez krytyka). */
-  readonly reviewReserveMs: number;
-}
-
-/** Bodźce bez powtórzeń (przyjęte ćwiczenia runu są też wśród jego surowych bodźców). */
-function uniqueStimuli(records: readonly LessonExerciseStimulus[]): LessonExerciseStimulus[] {
-  const seen = new Set<string>();
-  return records.filter((record) => {
-    const key = JSON.stringify([record.objectiveId, record.exerciseType, record.stimulus]);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-/**
- * Runda dogenerowania pod brakujący etap (spec etapu przeglądu lekcji): po partii głównej
- * i regule ujawnień każde zagadnienie przebiegu z brakiem pokrycia dostaje jedno wywołanie
- * zamawiające dokładnie braki etapów. Własny zakres kontroli z resztą budżetu przebiegu
- * i miękkim limitem żądania: błąd albo przekroczenie limitu kończy rundę bez wpływu na run
- * (zostaje to, co już przyjęte). Anulowanie (edycja rodzica, zamknięcie procesu) przechodzi
- * dalej. Przykłady z odpowiedzi rundy są pomijane.
- */
-async function stageTopUpRound(ctx: StageTopUpContext): Promise<{
-  added: LessonExerciseDraft[];
-  rejectedCount: number;
-  rejectedReasons: Record<string, number>;
-  reviews: ReviewPhaseResult[];
-  toppedUp: LessonReviewReport["toppedUp"];
-}> {
-  const { runId, subject, topic, input } = ctx;
-  const kept: LessonExerciseDraft[] = [...ctx.kept];
-  const added: LessonExerciseDraft[] = [];
-  const reviews: ReviewPhaseResult[] = [];
-  const toppedUp: LessonReviewReport["toppedUp"] = [];
-  let rejectedCount = 0;
-  let rejectedReasons: Record<string, number> = {};
-  const deficitsOf = (objectiveId: string) =>
-    stageDeficits({ subject, exercises: [...ctx.existingDrafts, ...kept], examples: ctx.examples, objectiveIds: ctx.objectiveOrder }, objectiveId);
-  const total = (deficits: StageDeficits) => deficits.guided + deficits.productive + deficits.independent;
-  if (!ctx.objectiveIds.some((objectiveId) => total(deficitsOf(objectiveId)) > 0)) {
-    return { added, rejectedCount, rejectedReasons, reviews, toppedUp };
-  }
-  const byExercise = subject.poolDeduplication === "exercise";
-  const identityOptions = lessonIdentityOptionsOf(subject);
-  const runStimuli = [...ctx.runStimuli];
-  const runAnswers = [...ctx.runAnswers];
-  try {
-    await withLessonGenerationControl({
-      ...ctx.policy,
-      runTimeoutMs: Math.max(1, ctx.runDeadlineAtMs - Date.now()),
-      signal: ctx.signal,
-      assertCurrent: ctx.assertCurrent,
-    }, async (control) => {
-      for (const objectiveId of ctx.objectiveIds) {
-        const deficits = deficitsOf(objectiveId);
-        const count = total(deficits);
-        if (count === 0) continue;
-        if (ctx.runDeadlineAtMs - Date.now() < ctx.policy.requestTimeoutMs + STAGE_TOP_UP_MARGIN_MS + ctx.reviewReserveMs) {
-          console.log(`[lesson] run=${runId} dogenerowanie pod etap: pominięte: brak czasu`);
-          return;
-        }
-        const existing = [...ctx.existingDrafts, ...kept];
-        // Wybór ze słuchu to dodatek partii głównej, nie etap: runda go nie zamawia.
-        const { listenChoicePerObjective: _listen, ...base } = buildPoolInput(
-          subject,
-          topic,
-          objectiveId,
-          count,
-          input.material,
-          input.instruction,
-          ctx.graderAvailable,
-          byExercise ? [] : [...new Set([...existing.map((exercise) => exercise.answer), ...runAnswers])],
-          byExercise ? uniqueStimuli([...existing.map((exercise) => lessonExerciseStimulusRecord(exercise, identityOptions)), ...runStimuli]) : [],
-          input.interests,
-          { avoidSentences: avoidSentencesFor({ examples: mergeExamples(ctx.examples, ctx.cardSources), exercises: existing, subject }), purpose: "stage_top_up" },
-        );
-        const poolInput: LessonPoolInput = { ...base, countPerObjective: count, stageCounts: { ...deficits } };
-        // callSoft sam sprawdza aktualność runu przed żądaniem i po nim.
-        const result = await control.callSoft((signal) => ctx.llm.generateLessonPool(poolInput, signal));
-        const scoped = filterExercisesToRequestedObjective(result.exercises, objectiveId);
-        const metadata = collectBatchExerciseMetadata(scoped.exercises, byExercise, identityOptions);
-        runAnswers.push(...metadata.answers);
-        runStimuli.push(...metadata.exerciseRecords);
-        const fresh = acceptFreshLessonPool({
-          rawExercises: scoped.exercises,
-          subject,
-          topic,
-          material: input.material,
-          familyScope: `${runId}-t`,
-          existingDrafts: existing,
-          existingAnswers: new Set(existing.map((exercise) => exercise.answer)),
-          existingExerciseIdentities: new Set(existing.map((exercise) => lessonExerciseIdentity(exercise, identityOptions))),
-          // Bez kwot etapów: przycięcie do braków robi niżej trimToStageDeficits.
-          objectiveLimits: new Map([[objectiveId, { count, listen: 0 }]]),
-        });
-        const trimmed = trimToStageDeficits(fresh.accepted, deficits);
-        // Krytyk ocenia tylko ćwiczenia rundy; reguła twarda działa na jego wyniku (także bez krytyka).
-        const reviewed = await ctx.review(trimmed.kept, existing);
-        reviews.push(reviewed);
-        const leaks = resolveGenerationLeaks({
-          existing,
-          fresh: reviewed.exercises,
-          existingExamples: ctx.examples,
-          newExamples: {},
-          fixedSources: ctx.cardSources,
-          objectiveOrder: ctx.objectiveOrder,
-          subject,
-        });
-        const orphans = withoutOrphanKeywords(existing, leaks.keptFresh);
-        kept.push(...orphans.kept);
-        added.push(...orphans.kept);
-        const leakRejected = leaks.droppedFresh.length;
-        rejectedCount += fresh.shapeRejected + scoped.outOfScopeCount + fresh.refineRejected + fresh.rejected.length +
-          trimmed.rejected.length + fresh.duplicateCount + reviewed.droppedCount + leakRejected + orphans.dropped;
-        rejectedReasons = sumRejectedReasons(
-          sumRejectedReasons(rejectedReasons, fresh.refinedReasons),
-          {
-            ...reasonCount(REVIEW_DROP_REASON, reviewed.droppedCount),
-            ...reasonCount(EXPOSURE_LEAK_REASON, leakRejected),
-            ...reasonCount(ORPHAN_KEYWORDS_REASON, orphans.dropped),
-          },
-        );
-        if (orphans.kept.length > 0) toppedUp.push({ objectiveId, ...stageCountsOf(orphans.kept) });
-        console.log(
-          `[lesson] run=${runId} dogenerowanie pod etap: zagadnienie=${objectiveId.split(".").at(-1)} guided=${deficits.guided} productive=${deficits.productive} independent=${deficits.independent} przyjęte=${orphans.kept.length}`,
-        );
-      }
-    });
-  } catch (error) {
-    if (error instanceof LessonGenerationCancelledError) throw error;
-    console.error(`[lesson] run=${runId} dogenerowanie pod etap: błąd=${classifyLessonGenerationFailure(error).errorCode}`);
-  }
-  return { added, rejectedCount, rejectedReasons, reviews, toppedUp };
-}
-
-/** Liczby ćwiczeń etapów (raport `toppedUp`); typy spoza ścieżki etapów pominięte. */
-function stageCountsOf(exercises: readonly LessonExerciseDraft[]): { guided: number; productive: number; independent: number } {
-  const counts = { guided: 0, productive: 0, independent: 0 };
-  for (const exercise of exercises) {
-    const stage = stageOf(exercise.exerciseType);
-    if (!outsideStagePath(exercise.exerciseType) && (stage === "guided" || stage === "productive" || stage === "independent")) counts[stage] += 1;
-  }
-  return counts;
-}
-
 /** Bieżąca próba runu puli: straż zapisu (stan `running`, ta sama próba i ten sam numer edycji szkicu). */
 export interface LessonRunIdentity {
   readonly runId: string;
@@ -1569,7 +1100,15 @@ export interface LessonPoolWriteContext {
   /** Odrzucenia tej próby; sumowane z licznikiem poprzedniego kontekstu (wspólny zapis dolicza kolizje z historyjką i słowa kluczowe). */
   readonly rejectedCount: number;
   readonly rejectedReasons: Record<string, number>;
+  /** Oczyszczenia tej próby (ścieżka agenta); sumowane z poprzednim kontekstem jak `rejectedReasons`. */
+  readonly cleanupCounts?: Record<string, number>;
   readonly droppedObjectiveCount: number;
+}
+
+/** Kontekst z doliczonymi oczyszczeniami próby; bez nich (albo same zera) pole zostaje, jakie było. */
+function withCleanupCounts(next: LessonContext, prev: LessonContext, added: Record<string, number> | undefined): LessonContext {
+  const cleanupCounts = sumRejectedReasons(prev.cleanupCounts, added ?? {});
+  return Object.values(cleanupCounts).some((count) => count > 0) ? { ...next, cleanupCounts } : next;
 }
 
 /**
@@ -1577,14 +1116,6 @@ export interface LessonPoolWriteContext {
  * szkicu po odrzuceniach samego zapisu (kolizje z historyjką, słowa kluczowe bez rodziny); puste przy porażce.
  */
 type LessonContextExtension = (next: LessonContext, written: readonly LessonExerciseDraft[]) => LessonContext;
-
-/** Raport kontroli jakości przebiegu scalony z raportem szkicu (wołany w transakcji zapisu, po zapisie ćwiczeń). */
-type LessonPoolReview = (
-  tx: Tx,
-  versionId: string,
-  previous: LessonReviewReport | undefined,
-  saved: readonly { readonly draft: LessonExerciseDraft; readonly exerciseId: string }[],
-) => Promise<LessonReviewReport>;
 
 type LessonPoolWriteOutcome = "succeeded" | "failed_validation" | "superseded" | "gone";
 
@@ -1621,31 +1152,27 @@ export async function markLessonRun(
 
 /**
  * Kontekst szkicu po porażce walidacji: liczniki próby (plus odrzucenia samego zapisu) zsumowane
- * z poprzednimi i raport kontroli jakości — bez `review` raport w kontekście zostaje bez zmian.
+ * z poprzednimi.
  */
-async function failedValidationContext(
-  tx: Tx,
-  versionId: string,
+function failedValidationContext(
   prevContext: LessonContext,
   context: LessonPoolWriteContext,
   writeRejected: number,
   rejectedReasons: Record<string, number>,
-  review: LessonPoolReview | undefined,
   extendContext: LessonContextExtension | undefined,
-): Promise<LessonContext> {
-  const next: LessonContext = {
+): LessonContext {
+  const next = withCleanupCounts({
     ...prevContext,
     rejectedCount: (prevContext.rejectedCount ?? 0) + context.rejectedCount + writeRejected,
     ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
     droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + context.droppedObjectiveCount,
-    ...(review === undefined ? {} : { review: await review(tx, versionId, prevContext.review, []) }),
-  };
+  }, prevContext, context.cleanupCounts);
   return extendContext === undefined ? next : extendContext(next, []);
 }
 
 /**
- * Porażka walidacji (0 nowych ćwiczeń): nawet wtedy rodzic widzi skalę odrzuceń i usunięcia kontroli
- * jakości — zapisujemy liczniki i raport do kontekstu (ta sama straż wersji co przy finalizacji).
+ * Porażka walidacji (0 nowych ćwiczeń): nawet wtedy rodzic widzi skalę odrzuceń — zapisujemy
+ * liczniki do kontekstu (ta sama straż wersji co przy finalizacji).
  * `onTransaction` (ścieżka agenta) działa w tej samej transakcji, przed zmianą stanu runu.
  */
 export async function failLessonPoolValidation(
@@ -1653,7 +1180,6 @@ export async function failLessonPoolValidation(
   args: {
     run: LessonRunIdentity;
     context: LessonPoolWriteContext;
-    review?: LessonPoolReview;
     extendContext?: LessonContextExtension;
     onTransaction?: (tx: Tx) => Promise<void>;
   },
@@ -1666,7 +1192,7 @@ export async function failLessonPoolValidation(
     if (version && version.state !== "published" && version.editNumber === run.expectedEditNumber) {
       const prevContext = (version.lessonContext ?? {}) as unknown as LessonContext;
       const rejectedReasons = sumRejectedReasons(prevContext.rejectedReasons, args.context.rejectedReasons);
-      const nextContext = await failedValidationContext(tx, version.id, prevContext, args.context, 0, rejectedReasons, args.review, args.extendContext);
+      const nextContext = failedValidationContext(prevContext, args.context, 0, rejectedReasons, args.extendContext);
       await tx
         .update(deckVersions)
         .set({ lessonContext: nextContext as unknown as Record<string, unknown> })
@@ -1678,12 +1204,12 @@ export async function failLessonPoolValidation(
 }
 
 /**
- * Wspólny zapis puli do szkicu (potok i ścieżka agenta): jedna transakcja pod blokadami wersja → run.
+ * Wspólny zapis puli agenta do szkicu: jedna transakcja pod blokadami wersja → run.
  * Straże (bieżąca próba, termin finalizacji, wersja szkicu), odrzucenie kolizji z historyjką i słów
  * kluczowych bez rodziny, zapis ćwiczeń, `lesson_context` z licznikami zsumowanymi z poprzednimi,
  * uzgodnienie mediów, podbicie numeru edycji, anulowanie innych runów, kolejka historyjki, stan
- * `review` i sukces runu. `onSuccessTransaction` tylko w gałęzi sukcesu, przed podbiciem numeru edycji
- * (bez niego — potok — sukces zeruje `agent_checkpoint`);
+ * wersji `review` i sukces runu. `onSuccessTransaction` (podsumowanie punktu kontrolnego) tylko w gałęzi
+ * sukcesu, przed podbiciem numeru edycji;
  * `onFailedValidationTransaction` tylko w gałęzi porażki walidacji (zapis odrzucił wszystko), przed zmianą
  * stanu runu.
  * „superseded” zwraca też, gdy run nie jest już bieżącą próbą (wtedy bez zmiany stanu runu).
@@ -1698,11 +1224,9 @@ export async function finalizeLessonPoolWrite(
     existingDrafts: readonly LessonExerciseDraft[];
     accepted: readonly LessonExerciseDraft[];
     context: LessonPoolWriteContext;
-    /** Brak = raport krytyka w kontekście zostaje bez zmian (ścieżka agenta). */
-    review?: LessonPoolReview;
-    /** Ścieżka agenta: dodatkowe pola kontekstu i zapisy w tej samej transakcji (sukces albo porażka walidacji). */
+    /** Dodatkowe pola kontekstu i zapisy w tej samej transakcji (sukces albo porażka walidacji). */
     extendContext?: LessonContextExtension;
-    onSuccessTransaction?: (tx: Tx) => Promise<void>;
+    onSuccessTransaction: (tx: Tx) => Promise<void>;
     onFailedValidationTransaction?: (tx: Tx) => Promise<void>;
     finalizationDeadlineAtMs: number;
     signal?: AbortSignal;
@@ -1748,9 +1272,7 @@ export async function finalizeLessonPoolWrite(
       reasonCount(ORPHAN_KEYWORDS_REASON, writeOrphans.dropped),
     );
     if (accepted.length === 0) {
-      const failedContext = await failedValidationContext(
-        tx, version.id, prevContext, context, writeRejected, rejectedReasons, args.review, args.extendContext,
-      );
+      const failedContext = failedValidationContext(prevContext, context, writeRejected, rejectedReasons, args.extendContext);
       await tx
         .update(deckVersions)
         .set({ lessonContext: failedContext as unknown as Record<string, unknown> })
@@ -1759,45 +1281,34 @@ export async function finalizeLessonPoolWrite(
       await markLessonRun(tx, services.clock, run, "failed", "validation");
       return "failed_validation";
     }
-    const itemIds = await applyLessonExercises(
+    await applyLessonExercises(
       tx,
       { id: version.id, deckId: version.deckId },
       subject,
       args.topicVersion,
       accepted,
     );
-    // Raport kontroli jakości: wpisy przebiegu scalone z poprzednimi; listy ćwiczeń tylko dla żywych elementów wersji.
-    const review = args.review === undefined
-      ? undefined
-      : await args.review(tx, version.id, prevContext.review, accepted.map((draft, index) => ({ draft, exerciseId: itemIds[index]! })));
     // Uzupełnienie lesson_context: przykłady i licznik odrzuconych (sumujemy przy
     // dogenerowaniu). lesson_context jest niezmienny dopiero po publikacji.
     // Pełna generacja zastępuje pulę: luki poprzedniego generowania agentem są nieaktualne (ścieżka
     // agenta dopisuje bieżące w `extendContext`); dogenerowanie zostawia luki innych zagadnień.
     const { generationGaps: _staleGaps, ...prevWithoutGaps } = prevContext;
-    const baseContext: LessonContext = {
+    const baseContext = withCleanupCounts({
       ...(args.regenerate ? prevContext : prevWithoutGaps),
       ...(context.dynamicTopic ? { dynamicTopic: context.dynamicTopic, objectiveIds: context.dynamicTopic.objectives.map((o) => o.id) } : {}),
       examples: { ...prevContext.examples, ...context.newExamples },
       rejectedCount: (prevContext.rejectedCount ?? 0) + context.rejectedCount + writeRejected,
       ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
       droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + context.droppedObjectiveCount,
-      ...(review === undefined ? {} : { review }),
-    };
+    }, prevContext, context.cleanupCounts);
     const nextContext = args.extendContext === undefined ? baseContext : args.extendContext(baseContext, accepted);
     await tx
       .update(deckVersions)
       .set({ lessonContext: nextContext as unknown as Record<string, unknown> })
       .where(eq(deckVersions.id, version.id));
     await reconcileDraftAssetsTx(tx, services, version);
-    // Zapis ścieżki agenta w tej samej transakcji (wiersz runu zablokowany wyżej). Potok czyści punkt
-    // kontrolny: postęp agenta z wcześniejszej próby (przedmiot zdjęty z listy agenta) to treść ćwiczeń,
-    // która po sukcesie nie ma już zastosowania.
-    if (args.onSuccessTransaction !== undefined) {
-      await args.onSuccessTransaction(tx);
-    } else {
-      await tx.update(generationRuns).set({ agentCheckpoint: null }).where(eq(generationRuns.id, run.runId));
-    }
+    // Zapis ścieżki agenta w tej samej transakcji (wiersz runu zablokowany wyżej).
+    await args.onSuccessTransaction(tx);
     const nextEditNumber = version.editNumber + 1;
     await tx.update(deckVersions).set({ editNumber: nextEditNumber }).where(eq(deckVersions.id, version.id));
     if (args.regenerate) {
@@ -1825,7 +1336,7 @@ export async function finalizeLessonPoolWrite(
 }
 
 /**
- * Tożsamość runu w bazie (partie, runda pod etap, kierownik agenta): edycja rodzica, retry albo
+ * Tożsamość runu w bazie (kierownik agenta, przejęcie runu): edycja rodzica, retry albo
  * publikacja ją zmieniają — run nadal `running` w tej próbie, a wersja szkicu ma ten numer edycji.
  */
 export async function lessonRunIsCurrent(db: Executor, run: LessonRunIdentity): Promise<boolean> {
@@ -1839,7 +1350,7 @@ export async function lessonRunIsCurrent(db: Executor, run: LessonRunIdentity): 
 }
 
 /**
- * Etap zagadnień przedmiotu dynamicznego bez planera (szkoła; potok i ścieżka agenta): jedno żądanie
+ * Etap zagadnień przedmiotu dynamicznego bez planera (szkoła; ścieżka agenta): jedno żądanie
  * `generateLessonObjectives`, budowa i walidacja tematu jak przy zapisie. `droppedObjectiveCount` —
  * zagadnienia odrzucone przy budowie (panel rodzica).
  */
@@ -1859,7 +1370,6 @@ export async function generateDynamicObjectives(
         ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
         generationRole: subject.prompts.generationRole,
         voiceTones: subject.ttsForPrompts === true,
-        ...(subject.prompts.objectivesRules === undefined ? {} : { objectivesRules: subject.prompts.objectivesRules }),
       },
       signal,
     ),
@@ -1904,446 +1414,37 @@ export async function executeLessonGeneration(services: Services, runId: string,
     markLessonRun(db, services.clock, lessonRun, state, errorCode, nextAttemptAt);
   const input = run.input as unknown as LessonRunInput;
   const subject = services.subjects.getSubject(input.subjectId);
-  // Wybór ścieżki przy każdej próbie (spec etapu 2a §3), z rejestru bez I/O. Agent sam rozlicza limit
-  // prób (wyczerpane próby z postępem → zapis bez wywołań modelu), więc wybór zapada przed nim.
-  if (subject !== undefined && lessonGeneratorFor(subject, deps.lessonAgent) === "agent") {
-    if (!(await lessonRunIsCurrent(services.db, lessonRun))) {
-      await markCurrentRun(services.db, "superseded", null);
-      return;
-    }
-    await executeLessonAgentGeneration(services, {
-      run,
-      attempts,
-      subject,
-      input,
-      runStartedAtMs,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    });
-    return;
-  }
-  if (attempts > MAX_AUTOMATIC_ATTEMPTS) {
-    await markCurrentRun(services.db, "failed", "attempts_exhausted");
-    return;
-  }
-
-  // Do not spend an LLM request on a run invalidated by a parent edit/retry.
-  // The final write still rechecks the edit number under a row lock.
-  const currentVersion = (await services.db.select({ editNumber: deckVersions.editNumber, state: deckVersions.state, lessonContext: deckVersions.lessonContext })
-    .from(deckVersions).where(eq(deckVersions.id, run.deckVersionId!)))[0];
-  if (!currentVersion || currentVersion.state === "published" || currentVersion.editNumber !== run.expectedEditNumber) {
-    await markCurrentRun(services.db, "superseded", null);
-    return;
-  }
-
-  // Temat dynamiczny: migawka z kontekstu (dogenerowanie) albo do wygenerowania
-  // w etapie zagadnień tego runu (pierwsza generacja zestawu szkolnego).
-  let dynamicTopicData: DynamicTopicData | undefined = input.dynamicTopic;
-  let droppedObjectiveCount = 0;
-  let topic: LessonTopic | undefined = subject
-    ? resolveLessonTopic(services.subjects, input)?.topic
-    : undefined;
-  const needsDynamicObjectives =
-    subject?.buildDynamicTopic !== undefined && !input.regenerate && dynamicTopicData === undefined;
-  if (!subject || (!topic && !needsDynamicObjectives)) {
+  if (subject === undefined) {
     await markCurrentRun(services.db, "failed", "validation");
     return;
   }
-  // Czy model oceniający będzie dostępny przy odpowiedzi (proces web)? Worker
-  // liczy to z tego samego env co web (`graderConfigured`, wspólny .env w
-  // Compose) i wstrzykuje w GenerationDeps. To steruje tylko PREFERENCJĄ
-  // typów przy generacji (closed/gap, gdy brak modelu), nie oceną.
-  const graderAvailable = services.generation?.graderAvailable === true;
-
-  // Runy dogenerowania utworzone przed wprowadzeniem polityki exercise mają
-  // tylko existingAnswers. Dla gramatyki odbudowujemy bodźce z bieżącego szkicu.
-  const legacyExistingExercises = subject.poolDeduplication === "exercise" && input.regenerate && input.regenerate.existingExercises === undefined
-    ? await existingExercisesOf(services.db, input.deckVersionId, subject)
-    : [];
-  // Szkic przed partiami (poza transakcją; zapis i tak sprawdza editNumber pod blokadą,
-  // więc edycja rodzica w międzyczasie unieważnia run): przykłady kart i ćwiczenia szkicu
-  // dla reguły ujawnionych rozwiązań. Dogenerowanie dopisuje do szkicu: krzyżowa reguła
-  // ćwiczeń słuchowych też widzi ćwiczenia już w szkicu (inaczej konflikt zdania
-  // z odpowiedzią tekstową wyszedłby dopiero przy publikacji).
-  const draftContext = (currentVersion.lessonContext ?? {}) as unknown as Partial<LessonContext>;
-  const draftExamples: Record<string, string[]> = draftContext.examples ?? {};
-  const existingDrafts = input.regenerate ? await orderedDraftExercises(services.db, input.deckVersionId) : [];
-
-  // Partie per cel: albo dogenerowanie jednego celu, albo pełna pula.
-  let batches: { objectiveId: string; count: number; existingAnswers: string[]; existingExercises: LessonExerciseStimulus[] }[] = input.regenerate
-    ? [
-        {
-          objectiveId: input.regenerate.objectiveId,
-          count: input.regenerate.count,
-          existingAnswers: input.regenerate.existingAnswers,
-          existingExercises: input.regenerate.existingExercises ?? legacyExistingExercises,
-        },
-      ]
-    : needsDynamicObjectives
-      ? []
-      : batchesForObjectives(input.objectiveIds, input.poolSize, subject, runId);
-
-  const rawExercises: unknown[] = [];
-  let rawExerciseCount = 0;
-  let outOfScopeCount = 0;
-  // Odpowiedzi kanoniczne z wcześniejszych partii tej samej generacji: późniejsze
-  // cele dostają je jako `existingAnswers` ("Do NOT repeat…"), więc pełna
-  // generacja wielocelowa też omija duplikaty między partiami — walidacja fazy 2
-  // pozostaje egzekwatorem (advisory list z surowych odpowiedzi, deduplikowana).
-  const earlierAnswers: string[] = [];
-  const earlierExercises: LessonExerciseStimulus[] = [];
-  // Ćwiczenia wcześniejszych partii jako szkice (rozwiązania do listy zdań do unikania).
-  const earlierDrafts: LessonExerciseDraft[] = [];
-  // Limity celów runu (zamówiona liczba i przyznany dodatek słuchowy) — egzekwowane po walidacji.
-  const objectiveLimits = new Map<string, ObjectiveGenerationLimits>();
-  const examples: Record<string, string[]> = {};
-  // Zdania z kart rozdziału (ustawiane po rozwiązaniu tematu): dziecko widzi je jako gotowe rozwiązania.
-  // Idą tylko do podpowiedzi `avoidSentences` i jako stałe źródła reguły twardej — nie do zapisanych
-  // przykładów ani pokrycia.
-  let cardSources: Record<string, string[]> = {};
-  const executionPolicy = deps.lessonExecution ?? DEFAULT_LESSON_GENERATION_POLICY;
-  const runDeadlineAtMs = runStartedAtMs + executionPolicy.runTimeoutMs;
-  // Tożsamość runu w bazie (partie i runda pod etap): edycja rodzica, retry albo publikacja ją zmieniają.
-  const runIsCurrent = (): Promise<boolean> => lessonRunIsCurrent(services.db, lessonRun);
-  console.log(
-    `[lesson] generacja run=${runId} deck=${input.deckId} cele=${batches.length} próba=${attempts} pula=${input.poolSize} model=${deps.llm.model}`,
-  );
-  try {
-    await withLessonGenerationControl({
-      ...executionPolicy,
-      signal: options.signal,
-      assertCurrent: runIsCurrent,
-    }, async (control) => {
-    if (needsDynamicObjectives) {
-      const objectivesStage = await generateDynamicObjectives(deps.llm, control, subject, input);
-      const storedData = objectivesStage.data;
-      dynamicTopicData = storedData;
-      topic = subject.buildDynamicTopic!(storedData);
-      batches = batchesForObjectives(storedData.objectives.map((objective) => objective.id), input.poolSize, subject, runId);
-      console.log(`[lesson] run=${runId} etap zagadnień: cele=${batches.length}`);
-      droppedObjectiveCount = objectivesStage.droppedObjectiveCount;
-      if (droppedObjectiveCount > 0) {
-        console.log(`[lesson] run=${runId} etap zagadnień: porzucone=${droppedObjectiveCount}`);
-      }
-    }
-    const activeTopic = topic;
-    if (!activeTopic) {
-      throw new AppError("validation", { message: "lesson topic unresolved" });
-    }
-    cardSources = cardExposureSources(subject, activeTopic);
-    for (const batch of batches) {
-      await control.assertCurrent();
-      const batchStartedAtMs = Date.now();
-      const poolInput = buildPoolInput(
-        subject,
-        activeTopic,
-        batch.objectiveId,
-        batch.count,
-        input.material,
-        input.instruction,
-        graderAvailable,
-        subject.poolDeduplication === "exercise"
-          ? []
-          : [...new Set([...batch.existingAnswers, ...earlierAnswers])],
-        subject.poolDeduplication === "exercise"
-          ? [...batch.existingExercises, ...earlierExercises]
-          : [],
-        input.interests,
-        {
-          // Rozwiązania widziane wcześniej (przykłady kart, szkic i wcześniejsze partie): generator ich nie
-          // powtarza w ćwiczeniach samodzielnych — podpowiedź, egzekwuje ją reguła twarda po generacji.
-          avoidSentences: avoidSentencesFor({
-            examples: mergeExamples(mergeExamples(draftExamples, examples), cardSources),
-            exercises: [...existingDrafts, ...earlierDrafts],
-            subject,
-          }),
-        },
-      );
-      // Kwoty etapów tylko przy pełnej generacji: przy dogenerowaniu `stageCounts` dzieli same nowe
-      // ćwiczenia i nie zna braków szkicu, więc mogłyby odrzucić akurat brakujący etap — tam decyduje kolejność.
-      objectiveLimits.set(batch.objectiveId, {
-        count: batch.count,
-        listen: poolInput.listenChoicePerObjective ?? 0,
-        ...(input.regenerate ? {} : { stages: poolInput.stageCounts }),
-      });
-      const result = await control.call((signal) => deps.llm.generateLessonPool(poolInput, signal));
-      await control.assertCurrent();
-      console.log(`[lesson] run=${runId} partia=${batch.objectiveId} durationMs=${Date.now() - batchStartedAtMs}`);
-      rawExerciseCount += result.exercises.length;
-      const scoped = filterExercisesToRequestedObjective(result.exercises, batch.objectiveId);
-      outOfScopeCount += scoped.outOfScopeCount;
-      rawExercises.push(...scoped.exercises);
-      const metadata = collectBatchExerciseMetadata(scoped.exercises, subject.poolDeduplication === "exercise", lessonIdentityOptionsOf(subject));
-      earlierAnswers.push(...metadata.answers);
-      earlierExercises.push(...metadata.exerciseRecords);
-      earlierDrafts.push(...scoped.exercises.filter(isWellShapedRawExercise).map(toExerciseDraft));
-      const rawExamples = result.examples;
-      for (const objectiveId of [batch.objectiveId]) {
-        const list = rawExamples && typeof rawExamples === "object" ? rawExamples[objectiveId] : undefined;
-        if (!Array.isArray(list)) continue;
-        examples[objectiveId] = list.filter((line): line is string => typeof line === "string" && line.trim().length > 0 && line.trim().length <= MAX_TEXT_LENGTH)
-          .map((line) => line.trim()).slice(0, 3);
-      }
-    }
-    });
-  } catch (error) {
-    if (error instanceof LessonGenerationCancelledError) {
-      if (error.reason === "shutdown") await markCurrentRun(services.db, "queued", null, null);
-      return;
-    }
-    const failure = classifyLessonGenerationFailure(error);
-    console.error(`[lesson] run=${runId} błąd partii LLM: kod=${failure.errorCode} retryable=${failure.retryable} próba=${attempts}`);
-    if (!failure.retryable) {
-      await markCurrentRun(services.db, "failed", failure.errorCode);
-    } else if (attempts >= MAX_AUTOMATIC_ATTEMPTS) {
-      await markCurrentRun(services.db, "failed", "attempts_exhausted");
-    } else {
-      const delay = lessonRetryDelayMs(attempts, failure.retryAfterMs, Math.random);
-      const nextAttemptAt = new Date(services.clock.now().getTime() + delay);
-      console.log(`[lesson] run=${runId} retryDelayMs=${delay} nextAttemptAt=${nextAttemptAt.toISOString()}`);
-      await markCurrentRun(services.db, "queued", failure.errorCode, nextAttemptAt);
-    }
+  // Agent jest jedynym generatorem puli (etap 3): bez jego zależności (brak klucza OpenRouter) run kończy się
+  // od razu po przejęciu — bez odczytu punktu kontrolnego i bez wywołań modeli; „Ponów” po dodaniu klucza go wznawia.
+  const lessonAgent = deps.lessonAgent;
+  if (!isLessonAgentAvailable(lessonAgent)) {
+    await markCurrentRun(services.db, "failed", "lesson_agent_unavailable");
     return;
   }
-
-  // Faza przeglądu krytyka (spec etapu przeglądu §6.1): gotowy krytyk wydłuża termin finalizacji
-  // o własny budżet; wywołania krytyka kończą się 30 s przed nim. Bez krytyka terminy jak dotąd.
-  const reviewer = deps.reviewer;
-  const reviewerReady = reviewer?.state === "ready" && reviewer.provider !== undefined;
-  const phaseDeadlineAtMs = reviewerReady ? runDeadlineAtMs + reviewer.policy.phaseBudgetMs : runDeadlineAtMs;
-  const reviewDeadlineAtMs = phaseDeadlineAtMs - REVIEW_FINALIZATION_RESERVE_MS;
-  const reviewCallsLeft = { value: reviewer?.policy.maxCallsPerRun ?? 0 };
-
-  // Walidacja puli w domenie: pojedyncze reguły + duplikaty, także wobec
-  // odpowiedzi już w szkicu (existingAnswers z partii dogenerowania). Najpierw
-  // strażnik KSZTAŁTU: rekord o złym kształcie tablic (np. options=[null,…])
-  // jest odrzucany pojedynczo (liczony do rejectedCount), zamiast rzucać
-  // TypeError w walidacji semantycznej i wywracać cały run (wymóg 2.5).
-  // Całość walidacji + zapisu w terminalnym try/catch: nawet nieprzewidziany
-  // wyjątek rozlicza run (failed/validation), nie zostawia go w stanie running.
-  try {
-    assertLessonGenerationFinalizationAllowed(phaseDeadlineAtMs, options.signal);
-    if (!topic) {
-      await markCurrentRun(services.db, "failed", "validation");
-      return;
-    }
-    const activeTopic = topic;
-    const fresh = acceptFreshLessonPool({
-      rawExercises,
-      subject,
-      topic,
-      material: input.material,
-      familyScope: input.regenerate ? runId : null,
-      existingDrafts,
-      existingAnswers: new Set(batches.flatMap((b) => b.existingAnswers)),
-      existingExerciseIdentities: new Set(batches.flatMap((b) => b.existingExercises).map((exercise) =>
-        JSON.stringify([exercise.objectiveId, exercise.exerciseType, exercise.stimulus]),
-      )),
-      objectiveLimits,
-    });
-    const { shapeRejected, droppedAcceptedVariants, droppedExplanations, rejected } = fresh;
-    const dupAgainstExisting = fresh.duplicateCount;
-    // Reguła twarda (spec etapu przeglądu §5.2): świeże ćwiczenie samodzielne z rozwiązaniem
-    // widocznym wcześniej (przykład karty, ćwiczenie niesamodzielne) odpada; ćwiczenia szkicu
-    // są nietykalne — odpadają wtedy świeże źródła i nowe przykłady.
-    const objectiveOrder = input.regenerate ? (draftContext.objectiveIds ?? input.objectiveIds) : batches.map((batch) => batch.objectiveId);
-    // Końcowe przykłady kart: nowe przykłady ujawniające istniejące ćwiczenie odpadają (nie zależy od świeżych ćwiczeń).
-    const finalExamples: Record<string, string[]> = {
-      ...draftExamples,
-      ...resolveGenerationLeaks({ existing: existingDrafts, fresh: [], existingExamples: draftExamples, newExamples: examples, objectiveOrder, subject }).keptNewExamples,
-    };
-    const objectiveContext = (objectiveId: string) => {
-      const objective = activeTopic.objectives.find((candidate) => candidate.id === objectiveId);
-      const kind = dynamicTopicData?.objectives.find((candidate) => candidate.id === objectiveId)?.kind;
-      return {
-        title: objective?.titlePl ?? "",
-        ...(kind === undefined ? {} : { kind }),
-        card: (objective?.cards ?? []).map((card) => `${card.title}: ${card.body}`).join("\n"),
-      };
-    };
-    const reviewPhase = (phaseFresh: readonly LessonExerciseDraft[], phaseExisting: readonly LessonExerciseDraft[]) =>
-      reviewFreshExercises({
-        reviewer,
-        subject,
-        topic: activeTopic,
-        material: input.material,
-        fresh: phaseFresh,
-        existing: phaseExisting,
-        examples: finalExamples,
-        objectiveOrder,
-        objectiveContext,
-        callsLeft: reviewCallsLeft,
-        reviewDeadlineAtMs,
-        cancelPollMs: executionPolicy.cancelPollMs,
-        assertCurrent: runIsCurrent,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-        runId,
-      });
-    // Krytyk (spec §5, kroki 5–6) przed regułą twardą: poprawka może usunąć ujawnienie.
-    const mainReview = await reviewPhase(fresh.accepted, existingDrafts);
-    const reviewPhases: ReviewPhaseResult[] = [mainReview];
-    const leaks = resolveGenerationLeaks({
-      existing: existingDrafts,
-      fresh: mainReview.exercises,
-      existingExamples: draftExamples,
-      newExamples: examples,
-      fixedSources: cardSources,
-      objectiveOrder,
-      subject,
-    });
-    // Słowa kluczowe, których rodzina pytań otwartych odpadła (reguła twarda, przycięcie), też odpadają.
-    const orphans = withoutOrphanKeywords(existingDrafts, leaks.keptFresh);
-    let uniqueValid = orphans.kept;
-    const leakRejected = leaks.droppedFresh.length;
-    let rejectedCount = shapeRejected + outOfScopeCount + fresh.refineRejected + rejected.length + dupAgainstExisting +
-      mainReview.droppedCount + leakRejected + orphans.dropped;
-    let runRejectedReasons = sumRejectedReasons(fresh.refinedReasons, {
-      ...reasonCount(REVIEW_DROP_REASON, mainReview.droppedCount),
-      ...reasonCount(EXPOSURE_LEAK_REASON, leakRejected),
-      ...reasonCount(ORPHAN_KEYWORDS_REASON, orphans.dropped),
-    });
-    let toppedUp: LessonReviewReport["toppedUp"] = [];
-
-    console.log(
-      `[lesson] run=${runId} walidacja puli: ${summarizeLessonPoolValidation({
-        rawCount: rawExerciseCount,
-        shapeRejected,
-        outOfScopeCount,
-        rejectedExerciseCount: rejected.length,
-        rejectedErrors: rejected.flatMap((item) => item.errors),
-        duplicateCount: dupAgainstExisting,
-        validCount: uniqueValid.length,
-        refineRejected: fresh.refineRejected,
-      })}`,
-    );
-    if (leakRejected > 0 || leaks.droppedExampleCount > 0) {
-      console.log(`[lesson] run=${runId} ujawnienia: usunięte=${leakRejected} przykłady=${leaks.droppedExampleCount}`);
-    }
-    if (orphans.dropped > 0) {
-      console.log(`[lesson] run=${runId} słowa kluczowe bez rodziny pytań otwartych: usunięte=${orphans.dropped}`);
-    }
-    // Porzucone warianty redundantne nie są odrzuceniem (nie trafiają do
-    // rejectedCount ani podsumowania) — sama linia z licznikiem, bez treści
-    // wariantów, żeby incydenty tej klasy były widoczne w logach workera.
-    if (droppedAcceptedVariants > 0) {
-      console.log(`[lesson] run=${runId} sanityzacja wariantów: porzucone=${droppedAcceptedVariants}`);
-    }
-    if (droppedExplanations > 0) {
-      console.log(`[lesson] run=${runId} porzucone wyjaśnienia=${droppedExplanations}`);
-    }
-
-    // Raport kontroli jakości przebiegu scalony z raportem szkicu; listy ćwiczeń tylko dla żywych elementów
-    // wersji (wołać po zapisie ćwiczeń). Także przy porażce walidacji — rodzic widzi usunięcia krytyka.
-    const mergedReview = async (
-      tx: Tx,
-      versionId: string,
-      previous: LessonReviewReport | undefined,
-      saved: readonly { readonly draft: LessonExerciseDraft; readonly exerciseId: string }[],
-    ): Promise<LessonReviewReport> => {
-      const liveIds = new Set(
-        (await tx.select({ itemId: itemRevisions.itemId }).from(itemRevisions).where(eq(itemRevisions.deckVersionId, versionId))).map((row) => row.itemId),
-      );
-      const runReport = reviewRunReport({
-        phases: reviewPhases,
-        saved,
-        subject,
-        toppedUp,
-        ...(reviewerReady ? { model: reviewer.provider!.model } : {}),
-      });
-      return mergeReviewReport(previous, runReport, liveIds);
-    };
-
-    // Wynik próby do kontekstu szkicu — liczniki czytane w chwili zapisu (runda pod etap je zwiększa).
-    const writeContext = (): LessonPoolWriteContext => ({
-      ...(dynamicTopicData ? { dynamicTopic: dynamicTopicData } : {}),
-      newExamples: leaks.keptNewExamples,
-      rejectedCount,
-      rejectedReasons: runRejectedReasons,
-      droppedObjectiveCount,
-    });
-    // Porażka walidacji (0 nowych ćwiczeń): liczniki i raport krytyka i tak trafiają do kontekstu.
-    const failValidation = () => failLessonPoolValidation(services, { run: lessonRun, context: writeContext(), review: mergedReview });
-
-    // Runda pod brakujący etap (spec etapu przeglądu lekcji): po regule ujawnień, przed zapisem.
-    // Pełna generacja bez przyjętych ćwiczeń kończy się porażką bez rundy; ręczne dogenerowanie
-    // do niepustego szkicu dostaje rundę także wtedy, gdy partia główna nic nie dała.
-    const stageTopUpEnabled = executionPolicy.stageTopUp !== false;
-    if (uniqueValid.length === 0 && !(stageTopUpEnabled && existingDrafts.length > 0)) {
-      await failValidation();
-      return;
-    }
-    if (stageTopUpEnabled) {
-      const topUp = await stageTopUpRound({
-        runId,
-        llm: deps.llm,
-        subject,
-        topic,
-        input,
-        graderAvailable,
-        policy: executionPolicy,
-        runDeadlineAtMs: phaseDeadlineAtMs,
-        signal: options.signal,
-        assertCurrent: runIsCurrent,
-        objectiveIds: batches.map((batch) => batch.objectiveId),
-        objectiveOrder,
-        existingDrafts,
-        kept: uniqueValid,
-        examples: finalExamples,
-        cardSources,
-        runStimuli: earlierExercises,
-        runAnswers: earlierAnswers,
-        review: reviewPhase,
-        // Pełny limit krytyka plus rezerwa finalizacji (okno krytyka kończy się 30 s przed deadline'em fazy).
-        reviewReserveMs: reviewerReady ? reviewer.policy.timeoutMs + REVIEW_FINALIZATION_RESERVE_MS : 0,
-      });
-      uniqueValid = [...uniqueValid, ...topUp.added];
-      rejectedCount += topUp.rejectedCount;
-      runRejectedReasons = sumRejectedReasons(runRejectedReasons, topUp.rejectedReasons);
-      reviewPhases.push(...topUp.reviews);
-      toppedUp = topUp.toppedUp;
-    }
-    if (uniqueValid.length === 0) {
-      await failValidation();
-      return;
-    }
-
-    await finalizeLessonPoolWrite(services, {
-      run: lessonRun,
-      subject,
-      topicVersion: input.topicVersion,
-      regenerate: Boolean(input.regenerate),
-      existingDrafts,
-      accepted: uniqueValid,
-      context: writeContext(),
-      review: mergedReview,
-      finalizationDeadlineAtMs: phaseDeadlineAtMs,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    });
-    console.log(`[lesson] run=${runId} zakończony durationMs=${Date.now() - runStartedAtMs}`);
-  } catch (error) {
-    // Nieprzewidziany wyjątek walidacji/zapisu NIE może zostawić runu „running”.
-    // Rozliczamy terminalnie: wyczerpane próby → attempts_exhausted, inaczej
-    // validation (błąd kształtu/treści puli, nie błąd przejściowy providera).
-    if (error instanceof LessonGenerationCancelledError) {
-      // Anulowanie rundy pod etap (edycja rodzica, zamknięcie procesu) — nie jest błędem zapisu.
-      if (error.reason === "shutdown") await markCurrentRun(services.db, "queued", null, null);
-      return;
-    }
-    console.error(`[lesson] run=${runId} nieprzewidziany błąd walidacji/zapisu: kod=validation_or_write`);
-    if (classifyLessonGenerationFailure(error).errorCode === "provider_timeout") {
-      await markCurrentRun(services.db, "failed", "provider_timeout");
-    } else if (attempts >= MAX_AUTOMATIC_ATTEMPTS) {
-      await markCurrentRun(services.db, "failed", "attempts_exhausted");
-    } else {
-      await markCurrentRun(services.db, "failed", "validation");
-    }
+  if (!(await lessonRunIsCurrent(services.db, lessonRun))) {
+    await markCurrentRun(services.db, "superseded", null);
     return;
   }
+  // Agent sam rozlicza limit prób (wyczerpane próby z postępem → zapis bez wywołań modelu).
+  await executeLessonAgentGeneration(services, {
+    run,
+    attempts,
+    subject,
+    input,
+    agent: lessonAgent,
+    runStartedAtMs,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
 }
 
 /**
  * Dogenerowanie ćwiczeń jednego celu w istniejącym szkicu (design „Generowanie
- * puli”). Nowy run `lesson` z `existingAnswers` istniejących ćwiczeń szkicu;
- * dopisuje ćwiczenia, nie usuwa istniejących. Idempotentne po `clientRequestId`.
+ * puli”). Nowy run `lesson` z zagadnieniem i liczbą; agent czyta ćwiczenia szkicu
+ * przy wykonaniu, dopisuje nowe, nie usuwa istniejących. Idempotentne po `clientRequestId`.
  */
 export async function regenerateObjective(
   services: Services,
@@ -2388,10 +1489,7 @@ export async function regenerateObjective(
       if (!context.subjectId || !context.objectiveIds?.includes(args.objectiveId)) {
         throw new AppError("validation", { message: "objective not in lesson" });
       }
-      const subject = services.subjects.getSubject(context.subjectId);
-      if (!subject) throw new AppError("validation", { message: "unknown subject" });
-      const existingAnswers = subject.poolDeduplication === "exercise" ? [] : await existingAnswersOf(tx, version.id);
-      const existingExercises = subject.poolDeduplication === "exercise" ? await existingExercisesOf(tx, version.id, subject) : [];
+      if (!services.subjects.getSubject(context.subjectId)) throw new AppError("validation", { message: "unknown subject" });
       const runId = randomUUID();
       const runInput: LessonRunInput = {
         deckId: args.deckId,
@@ -2406,7 +1504,7 @@ export async function regenerateObjective(
         ...(context.interests === undefined ? {} : { interests: context.interests }),
         ...(context.subjectTitlePl === undefined ? {} : { subjectTitlePl: context.subjectTitlePl }),
         ...(context.dynamicTopic === undefined ? {} : { dynamicTopic: context.dynamicTopic }),
-        regenerate: { objectiveId: args.objectiveId, count: args.count, existingAnswers, existingExercises },
+        regenerate: { objectiveId: args.objectiveId, count: args.count },
       };
       await tx.insert(generationRuns).values({
         id: runId,

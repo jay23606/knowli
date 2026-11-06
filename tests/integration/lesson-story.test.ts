@@ -22,6 +22,9 @@ import {
 import type { LessonCommand, LessonExerciseInput } from "@learning/contracts";
 import { ManualClock, testDatabase } from "./helpers";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
+import type { FakeObjectiveScript } from "../../packages/server/src/providers/fake-lesson-agent";
+import { fakeObjectiveExercises } from "../../packages/server/src/providers/fake-lesson-pool";
+import type { LessonObjectiveAgentInput } from "../../packages/server/src/ports/ai";
 
 import { GenerationProviderError } from "../../packages/server/src/ports/generation-error";
 import { solvedSentencesOf } from "../../packages/server/src/domain/lessons/story";
@@ -30,6 +33,8 @@ import { latestLessonStoryRun } from "../../packages/server/src/modules/material
 
 const { pool, db } = testDatabase();
 const OBJECTIVE = "english_grammar.present_simple.third_person_s";
+/** Slug zagadnienia — klucz scenariusza fake'a agenta. */
+const OBJECTIVE_SLUG = "third_person_s";
 
 async function query<T>(sql: string, params: unknown[] = []): Promise<T[]> {
   const result = await pool.query(sql, params);
@@ -105,6 +110,17 @@ const PARENT_STORY = {
   ],
 };
 
+/** Krok fake'a agenta: zgłoszenie generatora fake'a z dodatkowymi ćwiczeniami (np. kolizją z historyjką). */
+function generatedWith(extra: LessonExerciseInput[]): { build: (input: LessonObjectiveAgentInput) => { exercises: unknown[]; examples?: unknown } } {
+  return {
+    build: (input) => {
+      const generated = fakeObjectiveExercises(input, 9_000);
+      // Dodatkowe na początku: agent przyjmuje je przed limitem zagadnienia, a kolizję z historyjką odrzuca zapis.
+      return { exercises: [...extra, ...generated.exercises], ...(generated.examples === undefined ? {} : { examples: generated.examples }) };
+    },
+  };
+}
+
 /** DTO ćwiczenia → wejście patcha (schemat wejścia jest `strict`). */
 function stripToInput(ex: Record<string, unknown>): LessonExerciseInput {
   // Nagrania pytania, zdania i wyjaśnienia (`promptAudio`, `sentenceAudio`, `explanationAudio`) są tylko do odczytu i nie wracają w patchu.
@@ -167,14 +183,16 @@ describe("run historyjki lekcji (integracja)", () => {
   });
 
   async function generatedGrammarLesson(clock = new ManualClock()) {
-    const fakes = await fakeGeneration();
+    // Scenariusze fake'a agenta czytane przy każdym wywołaniu (test może dopisać scenariusz dogenerowania).
+    const scripts: Record<string, FakeObjectiveScript> = {};
+    const fakes = await fakeGeneration({ agent: { generate: {}, objectives: scripts } });
     disposers.push(fakes.dispose);
     const services = lessonServices(fakes, clock);
     const { runId, deckId } = await createLesson(services, command());
     await executeLessonGeneration(services, runId);
     const versionId = (await readGeneration(services, runId)).deckVersionId!;
     const [storyRun] = await storyRuns(versionId);
-    return { fakes, services, clock, lessonRunId: runId, deckId, versionId, storyRunId: storyRun?.id };
+    return { fakes, scripts, services, clock, lessonRunId: runId, deckId, versionId, storyRunId: storyRun?.id };
   }
 
   async function generatedSchoolLesson() {
@@ -543,19 +561,19 @@ describe("run historyjki lekcji (integracja)", () => {
   });
   /** Pełny run lekcji kończy się porażką (błąd konfiguracji providera): wersja bez ćwiczeń. */
   async function failedFullLesson() {
-    const fakes = await fakeGeneration();
+    // Scenariusze fake'a agenta czytane przy każdym wywołaniu: po usunięciu wpisu zagadnienie wraca do generatora.
+    const scripts: Record<string, FakeObjectiveScript> = {
+      [OBJECTIVE_SLUG]: [{ throw: new GenerationProviderError("configuration", { status: 400 }) }],
+    };
+    const fakes = await fakeGeneration({ agent: { generate: {}, objectives: scripts } });
     disposers.push(fakes.dispose);
     const services = lessonServices(fakes);
-    const original = fakes.llm.generateLessonPool.bind(fakes.llm);
-    fakes.llm.generateLessonPool = async () => {
-      throw new GenerationProviderError("configuration", { status: 400 });
-    };
     const { runId, deckId } = await createLesson(services, command());
     await executeLessonGeneration(services, runId);
     expect((await readGeneration(services, runId)).state).toBe("failed");
-    fakes.llm.generateLessonPool = original;
+    delete scripts[OBJECTIVE_SLUG];
     const versionId = (await readGeneration(services, runId)).deckVersionId!;
-    return { fakes, services, lessonRunId: runId, deckId, versionId };
+    return { fakes, scripts, services, lessonRunId: runId, deckId, versionId };
   }
 
   /** Run historyjki wstawiony wprost (stan, którego nie da się dziś osiągnąć przyciskiem bez puli). */
@@ -587,17 +605,14 @@ describe("run historyjki lekcji (integracja)", () => {
   });
 
   it("retrying a failed top-up run keeps the active story run", async () => {
-    const { fakes, services, deckId, versionId, storyRunId } = await generatedGrammarLesson();
-    const original = fakes.llm.generateLessonPool.bind(fakes.llm);
-    fakes.llm.generateLessonPool = async () => {
-      throw new GenerationProviderError("configuration", { status: 400 });
-    };
+    const { scripts, services, deckId, versionId, storyRunId } = await generatedGrammarLesson();
+    scripts[OBJECTIVE_SLUG] = [{ throw: new GenerationProviderError("configuration", { status: 400 }) }];
     const regen = await regenerateObjective(services, {
       deckId, objectiveId: OBJECTIVE, count: 4, expectedEditNumber: 2, clientRequestId: randomUUID(),
     });
     await executeLessonGeneration(services, regen.runId);
     expect((await readGeneration(services, regen.runId)).state).toBe("failed");
-    fakes.llm.generateLessonPool = original;
+    delete scripts[OBJECTIVE_SLUG];
 
     await retryGeneration(services, regen.runId);
 
@@ -720,21 +735,14 @@ describe("run historyjki lekcji (integracja)", () => {
   });
 
   it("retried full run keeps the parent story and rejects exercises that solve its sentences", async () => {
-    const { fakes, services, lessonRunId, deckId, versionId } = await failedFullLesson();
+    const { scripts, services, lessonRunId, deckId, versionId } = await failedFullLesson();
     // Dziś nieosiągalne przez API (patch historyjki podbija editNumber, więc ponowienie
     // pełnego runu daje conflict) — niezmiennik bariery pilnujemy dla każdego zapisu puli.
     await pool.query(
       `update learning_app.deck_versions set lesson_context = lesson_context || jsonb_build_object('story', $2::jsonb) where id = $1`,
       [versionId, JSON.stringify(PARENT_STORY)],
     );
-    const original = fakes.llm.generateLessonPool.bind(fakes.llm);
-    fakes.llm.generateLessonPool = async (input) => {
-      const result = await original(input);
-      return {
-        ...result,
-        exercises: [{ ...SHE_PLAYS_GAP, stem: "Tom ___ a small dog.", answer: "has", focus: ["has"] }, ...result.exercises],
-      };
-    };
+    scripts[OBJECTIVE_SLUG] = [generatedWith([{ ...SHE_PLAYS_GAP, stem: "Tom ___ a small dog.", answer: "has", focus: ["has"] }])];
 
     await retryGeneration(services, lessonRunId);
     await executeLessonGeneration(services, lessonRunId);
@@ -1018,20 +1026,13 @@ describe("run historyjki lekcji (integracja)", () => {
   });
 
   it("regenerated exercise colliding with story is rejected and counted", async () => {
-    const { fakes, services, deckId, versionId, storyRunId } = await generatedGrammarLesson();
+    const { scripts, services, deckId, versionId, storyRunId } = await generatedGrammarLesson();
     await executeLessonGeneration(services, storyRunId!);
     const story = (await versionRow(versionId)).lesson_context.story as { sentences: string[] };
     expect(story.sentences[0]).toBe("Sam has a red bike.");
     const before = (await readLessonDeck(services, deckId)).draft!;
-    // Pula dogenerowania: zwykłe ćwiczenia fake + luka, której rozwiązanie to zdanie historyjki.
-    const original = fakes.llm.generateLessonPool.bind(fakes.llm);
-    fakes.llm.generateLessonPool = async (input) => {
-      const result = await original(input);
-      return {
-        ...result,
-        exercises: [...result.exercises, { ...SHE_PLAYS_GAP, stem: "Sam ___ a red bike.", answer: "has", focus: ["has"] }],
-      };
-    };
+    // Zgłoszenie dogenerowania: zwykłe ćwiczenia fake + luka, której rozwiązanie to zdanie historyjki.
+    scripts[OBJECTIVE_SLUG] = [generatedWith([{ ...SHE_PLAYS_GAP, stem: "Sam ___ a red bike.", answer: "has", focus: ["has"] }])];
 
     const regen = await regenerateObjective(services, {
       deckId, objectiveId: OBJECTIVE, count: 4, expectedEditNumber: 2, clientRequestId: randomUUID(),
@@ -1047,13 +1048,10 @@ describe("run historyjki lekcji (integracja)", () => {
   });
 
   it("top-up whose only exercise collides with story fails validation and counts the rejection", async () => {
-    const { fakes, services, deckId, versionId, storyRunId } = await generatedGrammarLesson();
+    const { scripts, services, deckId, versionId, storyRunId } = await generatedGrammarLesson();
     await executeLessonGeneration(services, storyRunId!);
     const before = (await readLessonDeck(services, deckId)).draft!;
-    fakes.llm.generateLessonPool = async () => ({
-      exercises: [{ ...SHE_PLAYS_GAP, stem: "Sam ___ a red bike.", answer: "has", focus: ["has"] }],
-      examples: {},
-    });
+    scripts[OBJECTIVE_SLUG] = [{ submit: { exercises: [{ ...SHE_PLAYS_GAP, stem: "Sam ___ a red bike.", answer: "has", focus: ["has"] }] } }];
 
     const regen = await regenerateObjective(services, {
       deckId, objectiveId: OBJECTIVE, count: 4, expectedEditNumber: 2, clientRequestId: randomUUID(),
@@ -1066,6 +1064,7 @@ describe("run historyjki lekcji (integracja)", () => {
     expect(after.editNumber).toBe(2);
     expect(after.exercises).toHaveLength(before.exercises.length);
     expect(after.rejectedCount).toBe(before.rejectedCount + 1);
+
     expect((await versionRow(versionId)).lesson_context.story).toBeDefined();
   });
 });

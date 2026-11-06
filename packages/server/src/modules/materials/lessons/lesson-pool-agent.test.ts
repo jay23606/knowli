@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../../errors";
 import { A, B, choice, gap, open, subject as fixtureSubject, topic } from "../../../domain/lessons/testing/agent-admission-fixtures";
 import { withAgentPolicy } from "../../../domain/lessons/testing/agent-test-subject";
-import { historyLikeSubject } from "../../../domain/lessons/testing/history-like-subject";
 import { chapterAgentPolicy } from "../../../domain/lessons/subjects/english-chapter/agent-policy";
 import { englishChapterSubject } from "../../../domain/lessons/subjects/english-chapter/module";
 import { englishGrammarSubject } from "../../../domain/lessons/subjects/english-grammar/module";
@@ -11,6 +10,7 @@ import { schoolSubject } from "../../../domain/lessons/subjects/school/module";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import type { LessonAgentPlanInput, LessonPoolAgentProvider, RunCostSink } from "../../../ports/ai";
 import { GenerationProviderError } from "../../../ports/generation-error";
+import { FakeAnswerGrader } from "../../../providers/fake";
 import {
   FakeExerciseChecker,
   FakeLessonPoolAgent,
@@ -20,6 +20,7 @@ import {
 import { objectiveBatchCounts } from "./lesson-drafts";
 import { classifyLessonGenerationFailure } from "./lesson-generation-errors";
 import { runLessonPoolAgent, type LessonPoolAgentRunInput, type SettledObjective } from "./lesson-pool-agent";
+import { DEFAULT_LESSON_AGENT_POLICY } from "./lesson-pool-agent-policy";
 
 /** Temat fixture'ów: dwa zagadnienia (A, B) z wszystkimi typami przedmiotu testowego. */
 const SLUG_A = A.split(".").at(-1)!;
@@ -143,6 +144,21 @@ describe("runLessonPoolAgent — przebieg zagadnień", () => {
     expect(result.objectives[1]).toMatchObject({ objectiveId: B, status: "complete" });
   });
 
+  it("limit żądania przekroczony także po ponowieniu (timeout adaptera) → incomplete jak po terminie, przyjęte ćwiczenia zostają", async () => {
+    const partial: FakeAgentStep = { submit: { exercises: fullBatch(A, 0).slice(0, 3), examples: ["Przykład karty 0."] } };
+    const { agent, deps } = setup({
+      agent: { objectives: { [SLUG_A]: [partial, { throw: new GenerationProviderError("timeout") }], [SLUG_B]: completeScript(B, 100) } },
+    });
+    const result = await runLessonPoolAgent(deps, runInput(), never);
+    expect(agent.calls[0]!.input.callTimeoutMs).toBe(DEFAULT_LESSON_AGENT_POLICY.callTimeoutMs);
+    expect(result.objectives[0]).toMatchObject({ objectiveId: A, status: "incomplete" });
+    expect(result.objectives[0]!.failure).toBeUndefined();
+    expect(result.objectives[0]!.exercises).toHaveLength(3);
+    expect(result.objectives[1]).toMatchObject({ objectiveId: B, status: "complete" });
+    const lines = vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
+    expect(lines).toContain(`[lesson-agent] run=run-1 obj=${SLUG_A} call_timeout`);
+  });
+
   it("błąd kodu przy budowaniu wejścia podagenta odrzuca run (nie jest awarią dostawcy `failed`)", async () => {
     const bug = new Error("prompt builder bug");
     // `topic.transforms` czyta tylko budowanie wejścia podagenta (`buildPoolInput`) i widok checkera (tu nieużywany).
@@ -207,15 +223,35 @@ describe("runLessonPoolAgent — przebieg zagadnień", () => {
     });
     const result = await runLessonPoolAgent(deps, runInput(), never);
     const lines = log.mock.calls.map((call) => String(call[0])).filter((line) => line.startsWith("[lesson-agent]"));
-    // Kolejność zakończenia (B rzuca od razu); porównanie bez kolejności.
+    // Kolejność zakończenia (B rzuca od razu); porównanie bez kolejności. Odrzucenie: kod, typ i id reguł, bez treści.
+    const rejection = result.rejections[0]!;
     expect([...lines].sort()).toEqual([
-      `[lesson-agent] run=run-1 obj=${SLUG_A} status=incomplete steps=1 accepted=1 rejected=${result.rejections[0]!.code}:1 costUsd=0.0200`,
-      `[lesson-agent] run=run-1 obj=${SLUG_B} status=failed error=provider steps=1 accepted=0 rejected=- costUsd=0.0200`,
+      `[lesson-agent] run=run-1 obj=${SLUG_A} rejected code=${rejection.code} type=lesson_choice rules=${rejection.ruleIds.join(",")}`,
+      `[lesson-agent] run=run-1 obj=${SLUG_A} status=incomplete steps=1 accepted=1 rejected=${rejection.code}:1 hintsRemoved=0 variantsRemoved=0 quotesSnapped=0 costUsd=0.0200`,
+      `[lesson-agent] run=run-1 obj=${SLUG_B} status=failed error=provider steps=1 accepted=0 rejected=- hintsRemoved=0 variantsRemoved=0 quotesSnapped=0 costUsd=0.0200`,
     ]);
+    expect(rejection.ruleIds.length).toBeGreaterThan(0);
     const detail = result.rejections[0]!.detail;
     expect(detail.length).toBeGreaterThan(0);
     for (const line of lines) expect(line).not.toContain(detail);
     expect(lines.join("\n")).not.toContain("Pytanie numer");
+  });
+
+  it("prywatność logów: odrzucenie z cytatem treści w `found` loguje tylko kod, id reguł i typ — bez `found`, `pl` i treści", async () => {
+    const quoted = { ...choice(A, 1), options: [{ id: "a", text: "CYTAT-MARKER" }, { id: "b", text: "CYTAT-MARKER" }], correctOption: "a", answer: "CYTAT-MARKER" };
+    const { deps } = setup({ agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [quoted] } }], [SLUG_B]: [] } } });
+    const result = await runLessonPoolAgent(deps, runInput(), never);
+    const rejection = result.rejections.find((entry) => entry.objectiveId === A)!;
+    // Powód dla modelu cytuje treść ćwiczenia (found), więc test sprawdza właściwy przypadek.
+    expect(rejection.detail).toContain("CYTAT-MARKER");
+    const written = (["log", "error", "warn", "info", "debug"] as const).flatMap((method) =>
+      vi.isMockFunction(console[method]) ? vi.mocked(console[method]).mock.calls.map((call) => call.map(String).join(" ")) : [],
+    );
+    expect(written.join("\n")).not.toContain("CYTAT-MARKER");
+    for (const line of written) expect(line).not.toContain(rejection.detail);
+    const line = written.find((entry) => entry.includes(" rejected code="))!;
+    expect(line).toBe(`[lesson-agent] run=run-1 obj=${SLUG_A} rejected code=${rejection.code} type=lesson_choice rules=${rejection.ruleIds.join(",")}`);
+    expect(line).not.toMatch(/[ąćęłńóśźż]/iu);
   });
 
   it("prywatność: do checkera nie trafiają polecenie, tematy zdań, karty, przykłady ani materiał", async () => {
@@ -287,32 +323,22 @@ describe("runLessonPoolAgent — przebieg zagadnień", () => {
     expect(result.objectives[0]!.missing).toContain("independent: 0 of 3");
   });
 
-  it("promptNotes z polityki przedmiotu: szkoła dostaje dopisek o podpowiedzi, przedmiot bez dopisków — brak pola", async () => {
-    expect(schoolAgentPolicy.promptNotes).toEqual(["Hint only for lesson_open_answer: the hint field must be null for every other exercise type."]);
-    const noted = withAgentPolicy(plain, { promptNotes: schoolAgentPolicy.promptNotes });
-    const withNotes = setup({ subjects: [noted] });
-    await runLessonPoolAgent(withNotes.deps, runInput({ subjectId: noted.id }), never);
-    for (const call of withNotes.agent.calls) expect(call.input.promptNotes).toEqual(schoolAgentPolicy.promptNotes);
-
-    const without = setup();
-    await runLessonPoolAgent(without.deps, runInput(), never);
-    for (const call of without.agent.calls) expect(call.input).not.toHaveProperty("promptNotes");
-    expect(englishGrammarSubject.agentPolicy?.promptNotes).toBeUndefined();
-    expect(englishChapterSubject.agentPolicy?.promptNotes).toBeUndefined();
+  it("wejście podagenta niesie księgę reguł zagadnienia i minima publikacji; bez promptNotes", async () => {
+    const run = setup();
+    await runLessonPoolAgent(run.deps, runInput(), never);
+    expect(run.agent.calls.length).toBeGreaterThan(0);
+    for (const call of run.agent.calls) {
+      expect(call.input).not.toHaveProperty("promptNotes");
+      expect(call.input.pool.ruleBook.general.length + call.input.pool.ruleBook.types.length).toBeGreaterThan(0);
+      expect(call.input.targets.publicationMinima).toEqual(expect.objectContaining({ guided: expect.any(Number), independent: expect.any(Number) }));
+    }
+    for (const subject of [schoolSubject, englishGrammarSubject, englishChapterSubject]) {
+      expect(subject.agentPolicy).not.toHaveProperty("promptNotes");
+    }
   });
 });
 
 describe("runLessonPoolAgent — przedmiot i źródło zagadnień", () => {
-  it("przedmiot bez polityki agenta → AppError validation bez wywołań", async () => {
-    const { agent, checker, deps } = setup({ subjects: [historyLikeSubject] });
-    const error = await runLessonPoolAgent(deps, runInput({ subjectId: historyLikeSubject.id }), never).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(AppError);
-    expect((error as AppError).code).toBe("validation");
-    expect(agent.calls).toEqual([]);
-    expect(agent.planCalls).toEqual([]);
-    expect(checker.solveCalls).toEqual([]);
-  });
-
   it("nieznany przedmiot w rejestrze → AppError validation bez wywołań", async () => {
     const { agent, deps } = setup();
     await expect(runLessonPoolAgent(deps, runInput({ subjectId: "unknown_subject" }), never)).rejects.toMatchObject({
@@ -1002,5 +1028,125 @@ describe("runLessonPoolAgent — hak planu, przykłady początkowe i porażki (e
     expect(result.objectives[0]!.failure).toEqual({ errorCode: "provider_rate_limit", retryable: true, retryAfterMs: 5000 });
     expect(result.objectives[1]).toMatchObject({ objectiveId: B, status: "failed" });
     expect(result.objectives[1]!.failure).toEqual({ errorCode: "provider_configuration", retryable: false });
+  });
+});
+
+describe("runLessonPoolAgent — grader kontroli otwartej (etap 2b)", () => {
+  // Przedmiot testowy z listami szkoły: sędzia podpowiedzi i kontrola otwarta dla pytań otwartych.
+  const school = withAgentPolicy(fixtureSubject, {
+    blindSolveTypes: schoolAgentPolicy.blindSolveTypes,
+    variantCheckTypes: schoolAgentPolicy.variantCheckTypes,
+    hintJudgeTypes: schoolAgentPolicy.hintJudgeTypes!,
+    openAnswerCheckTypes: schoolAgentPolicy.openAnswerCheckTypes!,
+    checkerNeedsMaterial: true,
+    ruleNotes: schoolAgentPolicy.ruleNotes!,
+  });
+  const ELEMENTS = [
+    { id: "e1", text: "Wisła" },
+    { id: "e2", text: "płynie przez Kraków" },
+  ];
+  const IDS = ELEMENTS.map((element) => element.id);
+  const correctVerdict = {
+    knowledge: "correct",
+    precision: "concise",
+    matchedElementIds: IDS,
+    missingElementIds: [],
+    incorrectStatements: [],
+    redundantFragments: [],
+    offTopicFragments: [],
+    confusedConcepts: [],
+    note: "",
+  };
+  const schoolOpen = (objectiveId: string, n: number, extra: Partial<LessonExerciseDraft> = {}): LessonExerciseDraft => ({
+    ...open(objectiveId, `Pytanie otwarte numer ${n}?`, `odpowiedź wzorcowa ${n}`),
+    requiredElements: ELEMENTS,
+    ...extra,
+  });
+  const withGrader = (grader: FakeAnswerGrader) => ({ grader: { provider: grader, timeoutMs: 60_000 } });
+  const schoolInput = (overrides: Partial<LessonPoolAgentRunInput> = {}) => runInput({ subjectId: school.id, skipObjectives: [B], ...overrides });
+  const graderLines = () =>
+    vi.mocked(console.log).mock.calls.map((call) => String(call[0])).filter((line) => line.includes("grader_unavailable"));
+
+  it("deps.grader dociera do narzędzi, a liczniki kontroli trafiają do stats", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: correctVerdict });
+    const { checker, deps } = setup({
+      subjects: [school],
+      agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [schoolOpen(A, 1, { hint: "Pomyśl o rzekach." })] } }] } },
+    });
+    const result = await runLessonPoolAgent({ ...deps, ...withGrader(grader) }, schoolInput(), never);
+    expect(grader.requests).toHaveLength(2);
+    expect(checker.openCalls).toHaveLength(1);
+    expect(result.objectives[0]!.exercises).toHaveLength(1);
+    expect(result.stats).toMatchObject({
+      hintChecks: 1,
+      openChecks: 1,
+      graderCalls: 2,
+      hintUnavailable: 0,
+      openUnavailable: 0,
+      graderErrors: 0,
+      graderInvalidVerdicts: 0,
+    });
+    // Grader nie wlicza się do wywołań checkera (sędzia + rozwiązujący otwarte).
+    expect(result.stats.checkerCalls).toBeGreaterThan(0);
+  });
+
+  it("bez deps.grader kontrola otwarta nie dotyczy, a liczniki gradera zostają zerowe", async () => {
+    const { checker, deps } = setup({
+      subjects: [school],
+      agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [schoolOpen(A, 1)] } }] } },
+    });
+    const result = await runLessonPoolAgent(deps, schoolInput(), never);
+    expect(checker.openCalls).toHaveLength(0);
+    expect(result.stats).toMatchObject({ openChecks: 0, graderCalls: 0 });
+    expect(result.objectives[0]!.exercises).toHaveLength(1);
+  });
+
+  it("jedna instancja AgentCheckRun na run: pamięć kontroli działa między zagadnieniami", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: correctVerdict });
+    const same = (objectiveId: string) => schoolOpen(objectiveId, 1);
+    const { checker, deps } = setup({
+      subjects: [school],
+      // Jedno zagadnienie naraz: wynik pierwszego trafia do pamięci runu, zanim drugie wyśle to samo ćwiczenie.
+      agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [same(A)] } }], [SLUG_B]: [{ submit: { exercises: [same(B)] } }] } },
+    });
+    const result = await runLessonPoolAgent(
+      { ...deps, ...withGrader(grader), policy: { concurrency: 1 } },
+      schoolInput({ skipObjectives: [] }),
+      never,
+    );
+    expect(result.objectives.map((objective) => objective.objectiveId)).toEqual([A, B]);
+    // To samo ćwiczenie w dwóch zagadnieniach: jedno `solveOpen` i jedna para wywołań gradera.
+    expect(checker.openCalls).toHaveLength(1);
+    expect(grader.requests).toHaveLength(2);
+    expect(result.stats.openChecks).toBe(1);
+  });
+
+  it("wyłącznik gradera: grader_unavailable w logu dokładnie raz na run, kontrola otwarta wyłączona do końca", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ error: "boom" });
+    const { checker, deps } = setup({
+      subjects: [school],
+      agent: {
+        objectives: {
+          [SLUG_A]: [1, 2, 3, 4].map((n) => ({ submit: { exercises: [schoolOpen(A, n)] } })),
+        },
+      },
+    });
+    const result = await runLessonPoolAgent({ ...deps, ...withGrader(grader) }, schoolInput(), never);
+    expect(graderLines()).toEqual(["[lesson-agent] run=run-1 grader_unavailable"]);
+    // Trzecia i czwarta paczka po otwarciu wyłącznika: bez `solveOpen` i bez wywołań gradera.
+    expect(checker.openCalls).toHaveLength(2);
+    expect(result.stats.graderErrors).toBe(grader.requests.length);
+    expect(result.stats.openUnavailable).toBe(2);
+    expect(result.objectives[0]!.exercises).toHaveLength(4);
+  });
+
+  it("bez awarii gradera nie ma logu grader_unavailable", async () => {
+    const grader = new FakeAnswerGrader().onDefault({ raw: correctVerdict });
+    const { deps } = setup({
+      subjects: [school],
+      agent: { objectives: { [SLUG_A]: [{ submit: { exercises: [schoolOpen(A, 1)] } }] } },
+    });
+    await runLessonPoolAgent({ ...deps, ...withGrader(grader) }, schoolInput(), never);
+    expect(graderLines()).toEqual([]);
   });
 });

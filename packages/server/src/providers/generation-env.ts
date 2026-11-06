@@ -1,12 +1,12 @@
 import type { GenerationDeps } from "../config";
-import { FakeLessonReviewer, fakeGenerationDeps } from "./fake";
+import { fakeGenerationDeps } from "./fake";
 import { createLocalMediaStore } from "./media/local";
 import { createOpenAiImageProvider } from "./images/openai";
 import { createOpenAiLlmProvider, DEFAULT_BASE_URL as LLM_DEFAULT_BASE_URL, DEFAULT_MODEL as LLM_DEFAULT_MODEL } from "./openai/llm";
 import { chatRequestExtrasFromEnv } from "./chat-request-options";
 import { createOpenAiTtsProvider } from "./openai/tts";
 import { endpointKeyFromEnv, isOpenRouterKey, isSecureOpenRouterEndpoint } from "./openrouter-key";
-import { defaultReviewerPolicy, graderConfigured, reviewerEnabled, reviewerFromEnv, reviewerPolicyFromEnv, type ReviewerDeps } from "../config";
+import { graderConfigured } from "../config";
 import type { UsageRecorder } from "../ports/usage";
 import { lessonGenerationPolicyFromEnv } from "../modules/materials/lessons/lesson-generation-policy";
 
@@ -122,11 +122,14 @@ export function imageProviderFromEnv(
     : undefined;
 }
 
-/** Tryb fake: krytyk `ready` z fake'iem tylko przy jawnym `UMIEM_REVIEWER_ENABLED=true`. */
-function fakeReviewerFromEnv(env: Record<string, string | undefined>): ReviewerDeps {
-  return reviewerEnabled(env)
-    ? { state: "ready", provider: new FakeLessonReviewer(), policy: reviewerPolicyFromEnv(env) }
-    : { state: "disabled", policy: defaultReviewerPolicy() };
+/**
+ * Opóźnienie fake'owej generacji lekcji (tryb `UMIEM_FAKE_PROVIDERS=1`):
+ * `UMIEM_FAKE_LESSON_DELAY_MS`, inaczej `UMIEM_FAKE_DELAY_MS`; wartość nieliczbowa → 0.
+ * Wspólne dla fake LLM (etap zagadnień szkoły i historyjka) i fake agenta puli (`providers/lesson-agent-env.ts`).
+ */
+export function fakeLessonDelayMsFromEnv(env: Record<string, string | undefined>): number {
+  const delayMs = Number(env.UMIEM_FAKE_LESSON_DELAY_MS ?? env.UMIEM_FAKE_DELAY_MS ?? 0);
+  return Number.isFinite(delayMs) ? delayMs : 0;
 }
 
 /**
@@ -135,7 +138,7 @@ function fakeReviewerFromEnv(env: Record<string, string | undefined>): ReviewerD
  * undefined i proces wykonawczy nie wystartuje. Nazwy providerów w env muszą
  * zgadzać się z faktycznymi adapterami, bo wchodzą do fingerprintów mediów.
  *
- * LLM (materiał: zestawy słówek i pule ćwiczeń lekcji) konfigurują opcjonalne,
+ * LLM (materiał: zestawy słówek, etap zagadnień szkoły i historyjka lekcji; same ćwiczenia lekcji pisze agent puli, `lesson-agent-env.ts`) konfigurują opcjonalne,
  * niezależne `UMIEM_LLM_MODEL`/`UMIEM_LLM_BASE_URL`/`UMIEM_LLM_API_KEY` z
  * fallbackami do wartości domyślnych adaptera i `OPENAI_API_KEY` (ten ostatni
  * tylko dla api.openai.com, patrz {@link openAiCompatibleEndpointFromEnv}) — wzorzec jak
@@ -156,16 +159,16 @@ export function createGenerationDepsFromEnv(
   const lessonExecution = lessonGenerationPolicyFromEnv(env);
   if (env.UMIEM_FAKE_PROVIDERS === "1") {
     const delayMs = Number(env.UMIEM_FAKE_DELAY_MS ?? 0);
-    const lessonDelayMs = Number(env.UMIEM_FAKE_LESSON_DELAY_MS ?? env.UMIEM_FAKE_DELAY_MS ?? 0);
     return {
       ...fakeGenerationDeps(mediaStore, {
         delayMs: Number.isFinite(delayMs) ? delayMs : 0,
-        lessonDelayMs: Number.isFinite(lessonDelayMs) ? lessonDelayMs : 0,
+        lessonDelayMs: fakeLessonDelayMsFromEnv(env),
+        // bramka E2E: plik wstrzymuje fake'owe generowanie zestawu i mediów (fake.ts)
+        ...(env.UMIEM_FAKE_HOLD_FILE ? { holdFile: env.UMIEM_FAKE_HOLD_FILE } : {}),
       }),
       lessonExecution,
       // tryb fake nie wymaga konfiguracji gradera (web bierze wtedy fake gradera)
       graderAvailable: false,
-      reviewer: fakeReviewerFromEnv(env),
     };
   }
   const apiKey = openAiKeyFromEnv(env);
@@ -187,6 +190,5 @@ export function createGenerationDepsFromEnv(
     mediaStore,
     lessonExecution,
     graderAvailable: graderConfigured(env),
-    reviewer: reviewerFromEnv(env, usage),
   };
 }

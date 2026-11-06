@@ -15,7 +15,6 @@ import {
   type LessonDraftDto,
   type LessonExerciseInput,
   type LessonGenerationGapDto,
-  type LessonReviewDto,
   type LessonStoryDto,
   type SubjectCatalogDto,
 } from "@learning/contracts";
@@ -42,7 +41,6 @@ import { poolCoverage, validatePool, withoutRedundantAcceptedVariants } from "..
 import { solvedSentencesOf, validateLessonStory, type LessonStory } from "../../../domain/lessons/story";
 import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import { resolveLessonTopic, validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
-import { statusFromObjectives, type LessonReviewReport } from "../../../domain/lessons/review-report";
 import { assertAssetPublishable, mediaPendingError, reconcileBeforePublish, reconcileDraftAssetsTx, reconcileLessonStoryAssetTx } from "../media-reconciliation";
 import { copyRevisionsSkillsAssets } from "../decks";
 import { supersedeFailedLessonStoryRuns, supersedeLessonRuns } from "../generation-runs";
@@ -57,7 +55,6 @@ import { buildObjectiveCriteria, lessonPayloadVersion, splitByPoolExtra, toExerc
 import { buildLessonPayload } from "./lesson-payload";
 import { latestLessonRunOfPurpose, latestLessonStoryRun } from "./lesson-story-generation";
 import { readLessonAudioStates } from "./lesson-prompt-audio";
-import { exerciseFingerprint } from "./lesson-fingerprint";
 
 /**
  * API rodzica dla lekcji (zadanie 11). Cienka logika serwerowa za routerem:
@@ -79,6 +76,7 @@ interface LessonContextView {
   examples: Record<string, string[]>;
   rejectedCount: number;
   rejectedReasons?: Record<string, number>;
+  cleanupCounts?: Record<string, number>;
   droppedObjectiveCount?: number;
   material: string;
   subjectTitlePl?: string;
@@ -87,8 +85,6 @@ interface LessonContextView {
   story?: LessonStory;
   /** Migawka tematów zdań (przedmioty z `interestsRule`); brak klucza = bez tematów. */
   interests?: string[];
-  /** Raport automatycznej kontroli jakości szkicu (PR 2 etapu przeglądu); brak = bez raportu. */
-  review?: LessonReviewReport;
   /** Zagadnienia do uzupełnienia po częściowym generowaniu agentem puli; brak klucza = pula pełna. */
   generationGaps?: LessonGenerationGap[];
 }
@@ -103,13 +99,13 @@ export function readLessonContext(raw: Record<string, unknown> | null): LessonCo
     examples: ctx.examples ?? {},
     rejectedCount: ctx.rejectedCount ?? 0,
     ...(ctx.rejectedReasons && Object.keys(ctx.rejectedReasons).length > 0 ? { rejectedReasons: ctx.rejectedReasons } : {}),
+    ...(ctx.cleanupCounts && Object.values(ctx.cleanupCounts).some((count) => count > 0) ? { cleanupCounts: ctx.cleanupCounts } : {}),
     ...(ctx.droppedObjectiveCount ? { droppedObjectiveCount: ctx.droppedObjectiveCount } : {}),
     material: ctx.material ?? "",
     ...(ctx.subjectTitlePl ? { subjectTitlePl: ctx.subjectTitlePl } : {}),
     ...(ctx.dynamicTopic ? { dynamicTopic: ctx.dynamicTopic } : {}),
     ...(ctx.story ? { story: ctx.story } : {}),
     ...(ctx.interests?.length ? { interests: [...ctx.interests] } : {}),
-    ...(ctx.review ? { review: ctx.review } : {}),
     ...(ctx.generationGaps?.length ? { generationGaps: ctx.generationGaps } : {}),
   };
 }
@@ -117,7 +113,7 @@ export function readLessonContext(raw: Record<string, unknown> | null): LessonCo
 /**
  * Luki generowania agentem dla rodzica: tylko edytowalny szkic (wersja opublikowana jest niezmienna,
  * rodzic nie ma czego uzupełnić) i tylko zagadnienia bieżącego tematu (rodzic mógł usunąć zagadnienie —
- * jego luki nie da się uzupełnić, jak wpisów raportu kontroli jakości); kopia bez współdzielenia obiektów z kontekstem.
+ * jego luki nie da się uzupełnić); kopia bez współdzielenia obiektów z kontekstem.
  */
 export function generationGapsDto(context: LessonContextView, published: boolean): LessonGenerationGapDto[] | undefined {
   if (published) return undefined;
@@ -130,55 +126,6 @@ export function generationGapsDto(context: LessonContextView, published: boolean
     ...(gap.added === undefined ? {} : { added: gap.added }),
     ...(gap.requested === undefined ? {} : { requested: gap.requested }),
   }));
-}
-
-/**
- * Raport kontroli jakości dla rodzica: `changed`/`notes` tylko dla ćwiczeń, które są w wersji
- * i których zapisany payload ma ten sam odcisk co przy kontroli (po edycji rodzica wpis jest
- * nieaktualny); zagadnienia, usunięcia i dogenerowania tylko dla zagadnień bieżącego tematu (rodzic mógł
- * usunąć zagadnienie), z tytułami zamiast identyfikatorów i statusem liczonym od nowa; bez odcisków.
- * `undefined`, gdy kontrola była wyłączona dla wszystkich (pozostałych) zagadnień (zachowanie jak bez krytyka).
- */
-function reviewDto(
-  report: LessonReviewReport,
-  currentFingerprints: ReadonlyMap<string, string>,
-  objectiveTitles: ReadonlyMap<string, string>,
-): LessonReviewDto | undefined {
-  const inTopic = (entry: { objectiveId: string }) => objectiveTitles.has(entry.objectiveId);
-  const title = (objectiveId: string) => objectiveTitles.get(objectiveId)!;
-  const objectives = report.objectives.filter(inTopic);
-  if (objectives.every((objective) => objective.reason === "disabled")) return undefined;
-  const current = (entry: { exerciseId: string; fingerprint: string }) => currentFingerprints.get(entry.exerciseId) === entry.fingerprint;
-  return {
-    status: statusFromObjectives(objectives),
-    ...(report.model === undefined ? {} : { model: report.model }),
-    objectives: objectives.map((objective) => ({
-      objectiveId: objective.objectiveId,
-      title: title(objective.objectiveId),
-      status: objective.status,
-      ...(objective.reason === undefined ? {} : { reason: objective.reason }),
-    })),
-    changed: report.changed.filter(current).map((entry) => ({
-      exerciseId: entry.exerciseId,
-      category: entry.category,
-      reasonPl: entry.reasonPl,
-      beforePl: entry.beforePl,
-      addedVariants: [...entry.addedVariants],
-    })),
-    dropped: report.dropped.filter(inTopic).map((entry) => ({
-      objectiveTitle: title(entry.objectiveId),
-      category: entry.category,
-      reasonPl: entry.reasonPl,
-      snippet: entry.snippet,
-    })),
-    notes: report.notes.filter(current).map((entry) => ({
-      exerciseId: entry.exerciseId,
-      category: entry.category,
-      reasonPl: entry.reasonPl,
-      fixRejected: entry.fixRejected,
-    })),
-    toppedUp: report.toppedUp.filter(inTopic).reduce((sum, entry) => sum + entry.guided + entry.productive + entry.independent, 0),
-  };
 }
 
 /** Historyjka domeny → DTO (kopia, bez współdzielenia tablic `readonly`). */
@@ -230,15 +177,15 @@ function offersListenChoice(subject: SubjectModule): boolean {
 }
 
 /**
- * Usługi widoczne dla rodzica przy przedmiocie obsługiwanym przez agenta puli (spec etapu 2a §11):
+ * Usługi widoczne dla rodzica przy przedmiocie (spec etapu 2a §11; agent generuje każdy przedmiot):
  * model agenta, a gdy do `UMIEM_LLM` idzie etap zagadnień (temat dynamiczny bez planera z polityki)
- * albo run historyjki (przedmiot z `lessonStory`), także ta usługa; drugi model (checker) i informacja, czy dostaje materiał. Przedmiot poza listą
- * agenta albo bez polityki — bez pól (obowiązuje katalogowe `generationService`).
+ * albo run historyjki (przedmiot z `lessonStory`), także ta usługa; drugi model (checker) i informacja,
+ * czy dostaje materiał. Bez agenta (generowanie lekcji niedostępne) — bez pól.
  */
 function agentServicesOf(services: Services, subject: SubjectModule) {
   const agent = services.lessonAgentPublic;
   const policy = subject.agentPolicy;
-  if (!agent || !policy || !agent.subjects.has(subject.id)) return {};
+  if (!agent) return {};
   const stageService = services.generationService;
   const topicsFromMaterial = materialCreationMode(subject) !== undefined && policy.planCoverage === undefined;
   // Krok poza agentem z materiałem lekcji: etap zagadnień albo run historyjki po nowej puli (oba przez `UMIEM_LLM`).
@@ -250,13 +197,17 @@ function agentServicesOf(services: Services, subject: SubjectModule) {
     generationServices,
     checkService: agent.checkService,
     checkServiceIncludesMaterial: policy.checkerNeedsMaterial,
+    // ocena odpowiedzi próbnych do pytań otwartych: tylko przedmiot z takimi typami i skonfigurowany grader
+    ...(policy.openAnswerCheckTypes?.length && agent.openCheckService ? { openCheckService: agent.openCheckService } : {}),
   };
 }
 
 export function lessonCatalog(services: Services): SubjectCatalogDto {
   return {
+    // Opis agenta jest w web przy kluczu OpenRouter albo w trybie fake — wtedy worker z tym samym env ma agenta, jeśli wystartuje
+    // (np. błędny limit `UMIEM_LESSON_AGENT_*` zatrzymuje start workera, a web go nie sprawdza; `lessonAgentPublicFromEnv`).
+    lessonGenerationAvailable: services.lessonAgentPublic !== undefined,
     ...(services.generationService ? { generationService: services.generationService } : {}),
-    ...(services.reviewService ? { reviewService: services.reviewService } : {}),
     subjects: services.subjects.listSubjects().map((subject) => {
       const latestByTopic = new Map<string, LessonTopic>();
       for (const topic of subject.topics) {
@@ -408,9 +359,8 @@ async function readLessonDraftDto(
   // Ujawnione rozwiązania (spec etapu przeglądu lekcji §8): tylko edytowalny szkic — wersja opublikowana
   // jest niezmienna, więc rodzic nie ma czego poprawić; indeksy z domeny mapujemy na id ćwiczeń.
   // Miękkie powtórzenie w rodzinie pytań szkoły (ta sama rodzina w tym samym zagadnieniu) to zamierzona
-  // struktura, nie błąd rodzica: bez ostrzeżenia, choć pokrycie nadal liczy rodzinę raz.
-  const sameFamily = (a: LessonExerciseDraft, b: LessonExerciseDraft) =>
-    a.objectiveId === b.objectiveId && a.familyId !== undefined && a.familyId.trim() !== "" && a.familyId === b.familyId;
+  // struktura, nie błąd rodzica: bez ostrzeżenia, choć pokrycie nadal liczy rodzinę raz (ta sama reguła
+  // co przyjęcie agenta puli).
   const exposureLeaks: ExposureLeakDto[] = draftSubject && !published
     ? findExposureLeaks({
         exercises: drafts,
@@ -418,8 +368,8 @@ async function readLessonDraftDto(
         objectiveOrder: context.objectiveIds,
         subject: draftSubject,
         mode: "coverage",
+        familyRepeatsAllowed: true,
       })
-        .filter((leak) => !(leak.kind === "soft" && leak.source.kind === "exercise" && sameFamily(drafts[leak.index]!, drafts[leak.source.index]!)))
         .map((leak) => ({
           exerciseId: revisions[leak.index]!.itemId,
           kind: leak.kind,
@@ -428,17 +378,6 @@ async function readLessonDraftDto(
             : { kind: "exercise" as const, exerciseId: revisions[leak.source.index]!.itemId },
         }))
     : [];
-  // Raport kontroli jakości: tylko edytowalny szkic (wersja opublikowana jest niezmienna, rodzic nie ma czego poprawić).
-  let review: LessonReviewDto | undefined;
-  if (context.review && !published) {
-    const titles = new Map((resolveLessonTopic(services.subjects, context)?.topic.objectives ?? []).map((o) => [o.id, o.titlePl] as const));
-    review = reviewDto(
-      context.review,
-      new Map(revisions.map((r) => [r.itemId, exerciseFingerprint(r.payload)])),
-      titles,
-    );
-  }
-
   const generationGaps = generationGapsDto(context, published);
 
   return {
@@ -495,10 +434,12 @@ async function readLessonDraftDto(
     ...(audio.story ? { storyAudio: audio.story } : {}),
     rejectedCount: context.rejectedCount,
     ...(context.rejectedReasons ? { rejectedReasons: context.rejectedReasons } : {}),
+    ...(context.cleanupCounts
+      ? { cleanupCounts: { hintsRemoved: context.cleanupCounts.hintsRemoved ?? 0, variantsRemoved: context.cleanupCounts.variantsRemoved ?? 0, quotesSnapped: context.cleanupCounts.quotesSnapped ?? 0 } }
+      : {}),
     ...(context.droppedObjectiveCount ? { droppedObjectiveCount: context.droppedObjectiveCount } : {}),
     coverage,
     ...(exposureLeaks.length > 0 ? { exposureLeaks } : {}),
-    ...(review ? { review } : {}),
     ...(generationGaps ? { generationGaps } : {}),
   };
 }
@@ -574,8 +515,6 @@ async function readLessonDeckSnapshot(db: Executor, services: Services, id: stri
     // Wymaganie 10.1: provider oceny dowolnych odpowiedzi (nazwa modelu z
     // konfiguracji, bez sekretów). `available=false` steruje komunikatem rodzica.
     grading: services.grader ? { available: true, model: services.grader.provider.model } : { available: false },
-    // Etykieta usługi kontroli jakości lekcji (bez sekretów); brak = kontrola wyłączona.
-    ...(services.reviewService ? { reviewService: services.reviewService } : {}),
   };
 }
 

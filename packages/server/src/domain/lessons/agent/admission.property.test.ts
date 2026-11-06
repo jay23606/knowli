@@ -4,7 +4,7 @@ import { keywordsAnswer, validateLessonExercise, validatePool } from "../pool-va
 import { schoolSubject } from "../subjects/school/module";
 import { choice, gap, keywords, listen, open, subject as testSubject, topic as testTopic } from "../testing/agent-admission-fixtures";
 import { withAgentPolicy } from "../testing/agent-test-subject";
-import type { LessonExerciseDraft, LessonTopic } from "../types";
+import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../types";
 import {
   admitBatch,
   precheckBatch,
@@ -12,11 +12,14 @@ import {
   submitExamples,
   type AdmitEntry,
   type AgentCheckContext,
+  type AgentHintVerdict,
   type CandidateChecks,
   type CheckResult,
   type ObjectiveAgentLimits,
+  type OpenCheckOutcome,
+  type OpenGraded,
 } from "./admission";
-import { agentObjectivesOf, type AgentCapableSubject } from "./capable";
+import { agentObjectivesOf } from "./capable";
 import { allExamples, createLessonAgentState, orderedLesson, poolOf, type LessonAgentState, type LessonAgentStateInput } from "./state";
 
 /**
@@ -73,7 +76,7 @@ const SCHOOL_MATERIAL =
 const SCHOOL_QUOTES = ["Mieszko I przyjął chrzest w 966 roku.", "Stolicą państwa było Gniezno.", "Żoną Mieszka była Dąbrówka."] as const;
 
 interface World {
-  readonly subject: AgentCapableSubject;
+  readonly subject: SubjectModule;
   readonly topic: LessonTopic;
   readonly material: string;
   /** Losowy szkic zagadnienia ze słownika (może łamać reguły — wtedy odpada w kroku 2). */
@@ -232,6 +235,8 @@ function lessonFindings(state: LessonAgentState, ctx: AgentCheckContext) {
     objectiveOrder: state.objectives.map((objective) => objective.id),
     subject: ctx.subject,
     mode: "coverage",
+    // Powtórzenie w rodzinie pytań nie jest ujawnieniem (ta sama reguła co ostrzeżenia szkicu dla rodzica).
+    familyRepeatsAllowed: true,
   }).map((leak) => lesson[leak.index]!);
   const pool = validatePool(lesson, ctx.subject, state.topic, { existingExercises: [] }).rejected.map((item) => item.exercise);
   const extra = [...(ctx.subject.validatePoolExtra?.(lesson, { material: ctx.material }) ?? [])]
@@ -247,7 +252,37 @@ function randomChecks(rng: Rng, draft: LessonExerciseDraft): CandidateChecks {
   const solve: CheckResult<readonly string[]> =
     roll < 70 ? { kind: "na" } : roll < 85 ? { kind: "unavailable" } : { kind: "done", value: [rng.chance(0.5) ? draft.answer : rng.pick(ANSWERS)] };
   const variants: CheckResult<readonly boolean[]> = rng.chance(0.85) ? { kind: "na" } : { kind: "unavailable" };
-  return { solve, variants };
+  const hint = randomHint(rng);
+  const open = randomOpen(rng, draft);
+  return { solve, variants, hint, open };
+}
+
+function randomHint(rng: Rng): CheckResult<AgentHintVerdict> {
+  const roll = rng.int(100);
+  if (roll < 60) return { kind: "na" };
+  if (roll < 70) return { kind: "unavailable" };
+  if (roll < 85) return { kind: "done", value: { verdict: "ok" } };
+  return { kind: "done", value: { verdict: rng.pick(["unsupported", "language", "reveals"] as const), reason: "losowy powód" } };
+}
+
+function randomOpen(rng: Rng, draft: LessonExerciseDraft): CheckResult<OpenCheckOutcome> {
+  const roll = rng.int(100);
+  if (roll < 60) return { kind: "na" };
+  if (roll < 70) return { kind: "unavailable" };
+  const graded = (knowledge: OpenGraded["knowledge"]): OpenGraded => ({
+    answer: draft.answer,
+    knowledge,
+    missing: knowledge === "partial" ? ["brakujący element"] : [],
+    wrong: knowledge === "incorrect" ? ["błędne stwierdzenie"] : [],
+  });
+  const knowledge = rng.pick(["correct", "correct", "partial", "incorrect"] as const);
+  return { kind: "done", value: { answers: [graded("correct"), graded(knowledge)] } };
+}
+
+/** Wynik kontroli, który musi odrzucić kandydata (podpowiedź albo otwarta nieprzyjęta). */
+function rejectsCandidate(checks: CandidateChecks): boolean {
+  if (checks.hint.kind === "done" && checks.hint.value.verdict !== "ok") return true;
+  return checks.open.kind === "done" && checks.open.value.answers.some((answer) => answer.knowledge !== "correct");
 }
 
 /** Zbiera kody odrzuceń do zbioru wołającego (bez stanu modułu: wynik nie zależy od kolejności testów). */
@@ -277,7 +312,7 @@ function randomOperation(
       const other = objectiveId === first ? second : first;
       const otherDrafts = Array.from({ length: 1 + rng.int(2) }, () => world.draft(rng, other));
       const otherPrechecked = precheckBatch(current, other, otherDrafts, ctx);
-      const interleaved = admitBatch(current, other, otherPrechecked, otherPrechecked.map(() => ({ solve: { kind: "na" }, variants: { kind: "na" } }) as const), ctx);
+      const interleaved = admitBatch(current, other, otherPrechecked, otherPrechecked.map(() => ({ solve: { kind: "na" }, variants: { kind: "na" }, hint: { kind: "na" }, open: { kind: "na" } }) as const), ctx);
       record(codes, interleaved.results);
       current = interleaved.state;
       onStep(current, `admit ${other} [${otherDrafts.map(label).join(", ")}] (między precheck a admit)`);
@@ -285,6 +320,16 @@ function randomOperation(
     const checks = prechecked.map((entry, index) => randomChecks(rng, entry.pass ? entry.draft : drafts[index]!));
     const admitted = admitBatch(current, objectiveId, prechecked, checks, ctx);
     record(codes, admitted.results);
+    // Odrzucenie przez sędziego podpowiedzi albo kontrolę otwartą nigdy nie dodaje ćwiczenia do stanu.
+    admitted.results.forEach((entry, index) => {
+      if (!rejectsCandidate(checks[index]!)) return;
+      if ("accepted" in entry) {
+        expect.fail(`kandydat ${index} przyjęty mimo odrzucenia przez hint/open (${label(drafts[index]!)})`);
+      }
+    });
+    // Pula rośnie dokładnie o liczbę przyjętych: odrzucony (także przez hint/open) nic nie dokłada.
+    const acceptedCount = admitted.results.filter((entry) => "accepted" in entry).length;
+    expect(poolOf(admitted.state, objectiveId).length - poolOf(current, objectiveId).length).toBe(acceptedCount);
     onStep(admitted.state, `admit ${objectiveId} [${drafts.map(label).join(", ")}]`);
     return admitted.state;
   }
