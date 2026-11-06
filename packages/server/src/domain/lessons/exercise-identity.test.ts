@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lessonExerciseIdentity, lessonExerciseStimulus, lessonExerciseStimulusRecord } from "./exercise-identity";
+import { lessonExerciseIdentity, lessonExerciseStimulus } from "./exercise-identity";
 import type { LessonExerciseDraft } from "./types";
 
 function exercise(overrides: Partial<LessonExerciseDraft>): LessonExerciseDraft {
@@ -128,8 +128,6 @@ describe("lessonExerciseIdentity — polecenie jako bodziec (instructionIsStimul
     const first = gap("Dziś pada śnieg.");
     expect(lessonExerciseStimulus(first, withInstruction))
       .toBe(JSON.stringify(["dziś pada śnieg.", lessonExerciseStimulus(first)]));
-    expect(lessonExerciseStimulusRecord(first, withInstruction).stimulus).toBe(lessonExerciseStimulus(first, withInstruction));
-    expect(lessonExerciseStimulusRecord(first).stimulus).toBe(lessonExerciseStimulus(first));
   });
 
   it("z opcją brak polecenia daje pusty składnik, nie błąd", () => {

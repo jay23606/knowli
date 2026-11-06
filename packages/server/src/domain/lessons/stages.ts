@@ -43,11 +43,3 @@ export const ASSESSED_STAGES: readonly LessonStage[] = ["guided", "productive", 
 export function stageOf(type: LessonExerciseType): LessonStage {
   return STAGE_BY_TYPE[type];
 }
-
-/**
- * Czy typ ćwiczenia jest oceniany. Karta (`lesson_card`) jest prezentacją bez
- * oceny; każdy inny typ (w tym wskazanie) ma werdykt.
- */
-export function isAssessed(type: LessonExerciseType): boolean {
-  return type !== "lesson_card";
-}

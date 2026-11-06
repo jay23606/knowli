@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ASSESSED_STAGES, isAssessed, outsideStagePath, stageOf, STAGE_BY_TYPE } from "./stages";
+import { ASSESSED_STAGES, outsideStagePath, stageOf, STAGE_BY_TYPE } from "./stages";
 import type { LessonExerciseType } from "./types";
 
 const ALL_TYPES: LessonExerciseType[] = [
@@ -50,15 +50,6 @@ describe("lesson_listen_choice", () => {
     expect(outsideStagePath("lesson_keywords")).toBe(true);
     for (const type of ALL_TYPES.filter((t) => t !== "lesson_listen_choice" && t !== "lesson_keywords")) {
       expect(outsideStagePath(type)).toBe(false);
-    }
-  });
-});
-
-describe("isAssessed", () => {
-  it("karta nie jest oceniana; pozostałe typy są", () => {
-    expect(isAssessed("lesson_card")).toBe(false);
-    for (const type of ALL_TYPES.filter((type) => type !== "lesson_card")) {
-      expect(isAssessed(type)).toBe(true);
     }
   });
 });

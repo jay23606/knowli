@@ -104,11 +104,3 @@ export function lessonExerciseIdentity(exercise: LessonExerciseDraft, options: L
     lessonExerciseStimulus(exercise, options),
   ]);
 }
-
-export function lessonExerciseStimulusRecord(exercise: LessonExerciseDraft, options: LessonExerciseIdentityOptions = {}): LessonExerciseStimulus {
-  return {
-    objectiveId: exercise.objectiveId,
-    exerciseType: exercise.exerciseType,
-    stimulus: lessonExerciseStimulus(exercise, options),
-  };
-}

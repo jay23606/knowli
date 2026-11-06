@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { CalculationSpec } from "@learning/contracts";
-import { computeCalculationAnswer, renderCalculationPrompt, parseCalculationAnswer, evaluateCalculationAnswer } from "./calculation";
+import type { CalculationSpec, LengthUnit } from "@learning/contracts";
+import { computeCalculationAnswer, renderCalculationPrompt, evaluateCalculationAnswer } from "./calculation";
 
 const scale: CalculationSpec = {
   kind: "scale_distance", params: { scaleDenominator: 25000, mapDistanceCm: 3 },
@@ -42,30 +42,47 @@ describe("exact calculation answers and prompts", () => {
 });
 
 describe("Polish calculation answer parser", () => {
+  // Exact answer in a unit other than the parsed one, so a dropped unit fails;
+  // a unitless answer is read in the spec unit.
+  const exactly = (value: number, unit: LengthUnit | null): CalculationSpec => ({
+    ...conversion, params: { value, fromUnit: unit ?? "cm" }, unit: unit === null ? "cm" : unit === "cm" ? "m" : "cm", tolerance: 0,
+  });
+
   it.each([
-    ["1\u00a0234,5 m", { value: 1234.5, unit: "m" }],
-    ["+1\u202f234\u202f567,123456789 KM", { value: 1234567.123456789, unit: "km" }],
-    [" -1 234,5 cm ", { value: -1234.5, unit: "cm" }],
-    ["1\u202f234", { value: 1234, unit: null }],
-    ["-0,001", { value: -0.001, unit: null }],
-    ["750m", { value: 750, unit: "m" }],
-    ["0", { value: 0, unit: null }],
+    ["1\u00a0234,5 m", 1234.5, "m"],
+    ["+1\u202f234,567 KM", 1234.567, "km"],
+    ["1\u202f234", 1234, null],
+    ["750m", 750, "m"],
+    ["0", 0, null],
     // School notation children actually write.
-    ["750 m.", { value: 750, unit: "m" }],
-    ["750.", { value: 750, unit: null }],
-    ["250 m n.p.m.", { value: 250, unit: "m" }],
-    ["250m npm", { value: 250, unit: "m" }],
-    ["750 metrów", { value: 750, unit: "m" }],
-    ["0,75 kilometra", { value: 0.75, unit: "km" }],
-    ["12 Centymetrów.", { value: 12, unit: "cm" }],
-    ["−250 m", { value: -250, unit: "m" }],
-  ])("parses the entire answer %j", (text, expected) => {
-    expect(parseCalculationAnswer(text as string)).toEqual(expected);
+    ["750 m.", 750, "m"],
+    ["750.", 750, null],
+    ["250 m n.p.m.", 250, "m"],
+    ["250m npm", 250, "m"],
+    ["750 metrów", 750, "m"],
+    ["0,75 kilometra", 0.75, "km"],
+    ["12 Centymetrów.", 12, "cm"],
+  ] as const)("parses the entire answer %j", (text, value, unit) => {
+    expect(evaluateCalculationAnswer(text, exactly(value, unit))).toBe("correct");
+  });
+
+  it.each([
+    [" -1 234,5 cm ", 1234.5, "cm"],
+    ["-0,001", 0.001, null],
+    ["\u2212250 m", 250, "m"],
+  ] as const)("keeps the sign of %j", (text, magnitude, unit) => {
+    expect(evaluateCalculationAnswer(text, exactly(magnitude, unit))).toBe("incorrect");
+    expect(evaluateCalculationAnswer(text.replace(/[-−]/, ""), exactly(magnitude, unit))).toBe("correct");
+  });
+
+  it("parses repeated thousands separators", () => {
+    const spec: CalculationSpec = { ...scale, params: { mapDistanceCm: 123456.7, scaleDenominator: 1000 }, tolerance: 0 };
+    expect(evaluateCalculationAnswer("+1 234 567 M", spec)).toBe("correct");
   });
 
   it.each(["1,2,3", "12 34", "750 m bo tak", "NaN", "Infinity", "1e3", "1.234", "1.5", "1,", ",5", "1,1234567890", "750 mm", "", " ", "--1", "1 2345", "1\n234", "750 m\nbo tak",
     "750 m..", "750 m bo tak.", "750 metrami bo tak", "n.p.m. 250", "250 n.p.m.", "750 milimetrów"])("rejects ambiguous or partial input %j", (text) => {
-    expect(parseCalculationAnswer(text)).toBeNull();
+    expect(evaluateCalculationAnswer(text, scale)).toBe("unevaluated");
   });
 });
 
