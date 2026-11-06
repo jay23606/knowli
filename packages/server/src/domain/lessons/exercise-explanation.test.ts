@@ -16,6 +16,10 @@ describe("explanationTextErrors", () => {
     expect(explanationTextErrors("Np. he plays.")).toEqual([]);
   });
 
+  it("wielokropek ramy w cudzysłowie nie dzieli zdania", () => {
+    expect(explanationTextErrors("Zdanie „There's a … in the …” mówi, gdzie jest przedmiot.")).toEqual([]);
+  });
+
   it("odrzuca tekst pusty lub same spacje", () => {
     const errors = explanationTextErrors("  ");
     expect(errors).toHaveLength(1);

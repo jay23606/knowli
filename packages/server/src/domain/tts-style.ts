@@ -14,16 +14,39 @@ export type TtsStyle = TtsRoleStyle | LessonVoiceTone;
  */
 const ABBREVIATION_DOT = /(?<![\p{L}\d])(np|itp|itd|tzn|tzw|tj|m\.in|p\.n\.e|n\.e|r|w|ok|godz|dr|prof|tys|mln|mld|św|ul|ks)\.(?=\s)/giu;
 
+const QUOTE_CLOSER: Record<string, string> = { "„": "”", "\"": "\"", "«": "»" };
+
+/**
+ * Wielokropek wewnątrz domkniętego cudzysłowu („…”, "…", «…») to luka ramy, a nie koniec zdania — chyba że po
+ * nim zaczyna się wielką literą nowe zdanie („Cisza… Słychać sowę.”). Skan jednoprzebiegowy (regex z `[^”]*`
+ * miałby kwadratowy czas przy niedomkniętym cudzysłowie); niedomknięty cudzysłów niczego nie maskuje.
+ */
+function maskQuotedEllipsis(text: string): string {
+  let closer: string | undefined;
+  let masked = "";
+  let quoteStart = 0;
+  for (const char of text.replace(/\.{3,}/g, "…")) {
+    if (closer === undefined) {
+      closer = QUOTE_CLOSER[char];
+      quoteStart = masked.length;
+    } else if (char === closer) {
+      closer = undefined;
+      masked = masked.slice(0, quoteStart) + masked.slice(quoteStart).replace(/…(?!\s\p{Lu})/gu, "\uE001");
+    }
+    masked += char;
+  }
+  return masked;
+}
+
 /**
  * Liczba zdań w tekście nagrania (spec tonu TTS §4.3): po normalizacji odstępów zdanie to fragment
  * zakończony `.`, `!`, `?` lub `…` (albo końcem tekstu). Ciąg znaków kończących, np. „…?”, to jedna granica;
  * znak kończący liczy się, gdy po nim jest odstęp lub koniec tekstu (kropka w „3.5” ani w skrócie
- * „np.”, „itp.”, „m.in.” nie dzieli).
+ * „np.”, „itp.”, „m.in.” nie dzieli). Wielokropek wewnątrz cudzysłowu („There's a … in the …”) to luka ramy,
+ * nie koniec zdania.
  */
 export function sentenceCount(text: string): number {
-  return text
-    .replace(/\s+/g, " ")
-    .trim()
+  return maskQuotedEllipsis(text.replace(/\s+/g, " ").trim())
     .replace(ABBREVIATION_DOT, "$1\uE000")
     .split(/[.!?…]+(?=\s|$)/)
     .filter((fragment) => /[^\s.!?…]/.test(fragment))
