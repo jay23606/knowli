@@ -45,6 +45,7 @@ const lesson = {
 };
 
 const catalog = {
+  lessonGenerationAvailable: true,
   subjects: [{
     id: "english_grammar", titlePl: "Gramatyka angielska", creation: "catalog", subjectTitleRequired: false,
     topics: [{
@@ -59,7 +60,7 @@ const catalog = {
 
 interface Calls { requests: Array<{ method: string; path: string; body: unknown }> }
 
-async function openLesson(page: Page, options: { data?: typeof lesson } = {}): Promise<Calls> {
+async function openLesson(page: Page, options: { data?: typeof lesson; catalogData?: unknown } = {}): Promise<Calls> {
   const data = options.data ?? lesson;
   const calls: Calls = { requests: [] };
   await page.route("**/api/v1/parent/**", (route) => {
@@ -68,7 +69,12 @@ async function openLesson(page: Page, options: { data?: typeof lesson } = {}): P
     const path = new URL(request.url()).pathname;
     calls.requests.push({ method, path, body: method === "GET" ? null : request.postDataJSON() });
     if (path.endsWith("/login")) return route.fulfill({ json: { authenticated: true, setupRequired: false } });
-    if (path.endsWith("/lesson-catalog")) return route.fulfill({ json: catalog });
+    if (path.endsWith("/lesson-catalog")) return route.fulfill({ json: options.catalogData ?? catalog });
+    if (path.endsWith(`/lessons/${deckId}/progress`)) {
+      return route.fulfill({ json: [{
+        objectiveId: OBJ_A, titlePl: "Końcówka -s w 3. osobie", status: "learning", lastIndependentAt: null, nextReviewAt: null, poolExhausted: true, topErrors: [],
+      }] });
+    }
     if (path.endsWith("/children")) return route.fulfill({ json: [{ id: childId, displayName: "Ala", avatarKey: "fox", recordingMode: "hold", canRead: true, interests: [] }] });
     if (path.endsWith("/decks")) return route.fulfill({ json: [{ deckId, title: lesson.title, state: "published", kind: "lesson", editableVersionId: draftId, publishedVersionId: publishedId }] });
     if (path.endsWith(`/lessons/${deckId}`)) return route.fulfill({ json: data });
@@ -187,6 +193,101 @@ test("dogenerowanie: okno z liczbą (domyślnie 4) wysyła polecenie dla reguły
   expect(body).toMatchObject({ objectiveId: OBJ_B, count: 6 });
 });
 
+test.describe("bez klucza OpenRouter (lessonGenerationAvailable: false)", () => {
+  const offCatalog = { ...catalog, lessonGenerationAvailable: false };
+  const unavailable = messages.lessons.generationErrors.lesson_agent_unavailable!;
+  const runBase = { id: uuid(98), deckId, deckVersionId: draftId, attempts: 1, rejectedCount: null };
+
+  test("„Dogeneruj” i „Dogeneruj ćwiczenia” w nadzorze są wyłączone z komunikatem", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const calls = await openLesson(page, { catalogData: offCatalog });
+    await expect(page.getByTestId(`regen-open-${OBJ_A}`)).toBeDisabled();
+    await expect(page.getByTestId(`regen-open-${OBJ_B}`)).toBeDisabled();
+    await expect(page.getByTestId("regen-unavailable")).toHaveText(unavailable);
+    // Wyłączony przycisk wskazuje powód (czytnik ekranu odczyta go razem z przyciskiem).
+    await expect(page.getByTestId(`regen-open-${OBJ_A}`)).toHaveAccessibleDescription(unavailable);
+    await expectNoHorizontalOverflow(page);
+
+    await page.getByTestId("lesson-tab-children").click();
+    await expect(page.getByTestId(`pool-regen-${OBJ_A}`)).toBeDisabled();
+    await expect(page.getByTestId(`pool-regen-unavailable-${OBJ_A}`)).toHaveText(unavailable);
+    await expect(page.getByTestId(`pool-regen-${OBJ_A}`)).toHaveAccessibleDescription(unavailable);
+    expect(calls.requests.filter((r) => r.path.endsWith("/regenerate"))).toHaveLength(0);
+  });
+
+  test("telefon: menu zagadnienia z wyłączonym „Dogeneruj”, bez poziomego przewijania", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openLesson(page, { catalogData: offCatalog });
+    await expect(page.getByTestId("regen-unavailable")).toHaveText(unavailable);
+    await page.getByTestId(`objective-menu-${OBJ_A}`).click();
+    await expect(page.getByTestId(`regen-open-${OBJ_A}`)).toBeDisabled();
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("nieudany run bez agenta: komunikat w alercie, „Ponów generowanie” wyłączone", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const calls = await openLesson(page, {
+      catalogData: offCatalog,
+      data: { ...lesson, generation: { ...runBase, state: "failed", errorCode: "lesson_agent_unavailable" } } as unknown as typeof lesson,
+    });
+    await expect(page.getByTestId("generation-failed")).toContainText(unavailable);
+    await expect(page.getByTestId("generation-unavailable")).toHaveText(unavailable);
+    await expect(page.getByTestId("generation-retry")).toBeDisabled();
+    await expect(page.getByTestId("generation-retry")).toHaveAccessibleDescription(unavailable);
+    expect(calls.requests.filter((r) => r.method === "POST" && r.path.includes("/generation"))).toHaveLength(0);
+  });
+
+  test("historyjka: nieudany run historyjki da się ponowić — nie potrzebuje agenta puli", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const calls = await openLesson(page, {
+      catalogData: offCatalog,
+      data: {
+        ...lesson,
+        draft: { ...lesson.draft, storyEnabled: true, story: null },
+        storyGeneration: { ...runBase, id: uuid(97), state: "failed", errorCode: "provider_timeout" },
+      } as unknown as typeof lesson,
+    });
+    await expect(page.getByTestId("lesson-story-failed")).toBeVisible();
+    await expect(page.getByTestId("lesson-story-retry")).toBeEnabled();
+    await page.getByTestId("lesson-story-retry").click();
+    await expect.poll(() => calls.requests.filter((r) => r.method === "POST" && r.path.includes("/generation")).length).toBe(1);
+  });
+
+  test("inny błąd runu: własny komunikat błędu i wyłączone ponowienie z komunikatem o kluczu", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await openLesson(page, {
+      catalogData: offCatalog,
+      data: { ...lesson, generation: { ...runBase, state: "failed", errorCode: "provider_timeout" } } as unknown as typeof lesson,
+    });
+    await expect(page.getByTestId("generation-failed")).toContainText(messages.lessons.generationErrors.provider_timeout!);
+    await expect(page.getByTestId("generation-unavailable")).toHaveText(unavailable);
+    await expect(page.getByTestId("generation-retry")).toBeDisabled();
+  });
+
+  test("zawieszony run: „Ponów generowanie” wyłączone z komunikatem", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await openLesson(page, {
+      catalogData: offCatalog,
+      data: { ...lesson, generation: { ...runBase, state: "running", errorCode: null } } as unknown as typeof lesson,
+    });
+    await expect(page.getByTestId("retry-stalled-generation")).toBeDisabled();
+    await expect(page.getByTestId("generation-unavailable")).toHaveText(unavailable);
+  });
+
+  test("z kluczem: nieudany run z kodem lesson_agent_unavailable pokazuje komunikat, a ponowienie działa", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const calls = await openLesson(page, {
+      data: { ...lesson, generation: { ...runBase, state: "failed", errorCode: "lesson_agent_unavailable" } } as unknown as typeof lesson,
+    });
+    await expect(page.getByTestId("generation-failed")).toContainText(unavailable);
+    await expect(page.getByTestId("generation-unavailable")).toHaveCount(0);
+    await expect(page.getByTestId("regen-unavailable")).toHaveCount(0);
+    await expect(page.getByTestId("generation-retry")).toBeEnabled();
+    await page.getByTestId("generation-retry").click();
+    await expect.poll(() => calls.requests.filter((r) => r.method === "POST" && r.path.includes("/generation")).length).toBe(1);
+  });
+});
+
 test("tryb ciemny obejmuje edytor lekcji", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.emulateMedia({ colorScheme: "dark" });
@@ -247,6 +348,29 @@ test("rozdział angielskiego: powody odrzuceń pod licznikiem i rodzaj zagadnien
   await expect(page.getByTestId(`objective-kind-${WORDS}`)).toHaveText(messages.lessons.objectiveKind.words!);
   await expect(page.getByTestId(`objective-kind-${FRAME}`)).toHaveText(messages.lessons.objectiveKind.frame!);
   await expectNoHorizontalOverflow(page);
+});
+
+test("szkic agenta: licznik odrzuceń nie mniejszy niż suma powodów, a powody spoza piątki w „inne powody”", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const agentDraft = {
+    ...version(draftId, "draft", 2),
+    // Agent: `rejectedCount` liczy tylko usunięcia po przyjęciu, a powody — każde odrzucenie w pętli runu.
+    rejectedCount: 1,
+    rejectedReasons: {
+      "rozwiązanie widoczne wcześniej": 12,
+      "drugi model rozwiązał inaczej": 5,
+      "zły format ćwiczenia": 2,
+      "za dużo ćwiczeń w etapie": 1,
+      "podpowiedź zdradza odpowiedź": 1,
+      "niepoprawny wariant odpowiedzi": 1,
+    },
+  };
+  await openLesson(page, { data: { ...lesson, draft: agentDraft, published: null, assignments: [] } as unknown as typeof lesson });
+  await expect(page.getByTestId("rejected-count")).toHaveText(messages.lessons.rejectedCount.replace("{n}", "22"));
+  const reasons = page.getByTestId("rejected-reasons").getByRole("listitem");
+  await expect(reasons).toHaveCount(6);
+  await expect(reasons.nth(0)).toHaveText("rozwiązanie widoczne wcześniej ×12");
+  await expect(page.getByTestId("rejected-other")).toHaveText("inne powody: 1");
 });
 
 test("lekcja bez powodów odrzuceń i bez rodzaju zagadnień nie pokazuje listy ani znaczka", async ({ page }) => {

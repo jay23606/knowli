@@ -1,6 +1,5 @@
 import { z } from "zod";
-import type { RawPlanObjective } from "../types";
-import type { AgentCapableSubject } from "./capable";
+import type { RawPlanObjective, SubjectModule } from "../types";
 
 /**
  * Walidacja planu zagadnień od agenta-planisty (spec §3.8): kształt, slugi,
@@ -53,7 +52,7 @@ function objectiveErrors(raw: unknown, number: number): string[] {
 
 export function validateAgentPlan(
   raw: unknown,
-  subject: AgentCapableSubject,
+  subject: SubjectModule,
   material: string,
 ): { ok: true; objectives: RawPlanObjective[] } | { ok: false; errors: string[] } {
   const shape = planShape.safeParse(raw);

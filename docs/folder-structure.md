@@ -248,9 +248,11 @@ Lekcje i moduły przedmiotów (moduł gramatyki, 2026-10-12): silnik i przedmiot
 | packages/server/src/domain/lessons/material-creation.ts | Wspólny predykat tworzenia zestawu z materiału (`materialCreationMode`, `requiresParentSubjectTitle`) dla katalogu przedmiotów i poleceń tworzenia |
 | packages/server/src/domain/lessons/exposure-key.ts | `lessonExerciseTargetKey` — klucz ekspozycji ćwiczenia z tekstu wskazanego przez przedmiot (`exposureText`) |
 | packages/server/src/domain/lessons/testing/history-like-subject.ts | Fixture przedmiotu nie-językowego (dowód niezależności silnika) |
-| packages/server/src/modules/materials/lessons/ | `lesson-api.ts`, `lesson-drafts.ts`, `lesson-supervision.ts`, `lesson-generation-{control,errors,policy}.ts` (autorstwo, generowanie i nadzór nad materiałem lekcji) |
+| packages/server/src/modules/materials/lessons/ | `lesson-api.ts`, `lesson-drafts.ts`, `lesson-supervision.ts`, `lesson-generation-{control,errors,policy}.ts` (autorstwo, generowanie i nadzór nad materiałem lekcji); generowanie puli agentem (jedyny generator od etapu 3 #237): `lesson-agent-generation.ts` (wykonanie runu), `lesson-agent-{outcome,checkpoint,check-run,timers}.ts`, `lesson-pool-agent*.ts` (kierownik, narzędzia, wejście, plan, polityka) |
+| packages/server/src/domain/lessons/agent/ | Czysty rdzeń agenta puli: `admission.ts` (przyjmowanie paczek i reguły ujawnień), `state.ts`, `status.ts`, `plan.ts`, `solver.ts`, `capable.ts` |
 | packages/server/src/modules/learning/lessons/ | `lesson-sessions.ts`, `lesson-attempts.ts`, `lesson-materialize.ts`, `lesson-mock-tests.ts`, `lesson-deck-overview.ts` (sesje, próby i kartkówki lekcji) |
-| packages/server/src/ports/ai.ts | + `AnswerGraderProvider`, `LlmProvider.generateLessonPool` |
+| packages/server/src/ports/ai.ts | + `AnswerGraderProvider`, `LessonPoolAgentProvider`, `LessonExerciseCheckerProvider` (`LlmProvider.generateLessonPool` usunięte w etapie 3 #237) |
+| packages/server/src/providers/openai/lesson-pool-agent.ts | Adapter AI SDK agenta puli i checkera (OpenRouter), składany przez `providers/lesson-agent-env.ts` (tylko worker); fake: `providers/fake-lesson-agent.ts` i generator ćwiczeń `providers/fake-lesson-pool.ts` |
 | packages/server/src/providers/openai-compatible/grader.ts | Adapter modelu oceniającego (zgodny z OpenAI) |
 | packages/contracts/src/lessons.ts | DTO lekcji, ćwiczeń, postępu celów, werdyktów, raportu kartkówki, katalogu przedmiotów |
 | packages/kid-ui/src/exercises/lesson/ | Widoki ćwiczeń lekcji |

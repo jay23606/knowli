@@ -14,15 +14,20 @@ export interface SubjectRegistry {
 }
 
 /**
- * Buduje rejestr z listy przedmiotów. Odrzuca (rzuca) duplikaty id przedmiotów
- * oraz moduły niepoprawne wg `validateSubject`, dołączając listę błędów do
- * komunikatu — walidacja katalogu jest warunkiem rejestracji, nie odczytu.
+ * Buduje rejestr z listy przedmiotów. Odrzuca (rzuca) duplikaty id przedmiotów,
+ * przedmioty bez polityki agenta (`agentPolicy`; typ ją wymaga, kontrola
+ * wykonawcza chroni moduły z JS i stuby) oraz moduły niepoprawne wg
+ * `validateSubject`, dołączając listę błędów do komunikatu — walidacja katalogu
+ * jest warunkiem rejestracji, nie odczytu.
  */
 export function createSubjectRegistry(modules: SubjectModule[]): SubjectRegistry {
   const byId = new Map<string, SubjectModule>();
   for (const module of modules) {
     if (byId.has(module.id)) {
       throw new Error(`Rejestr przedmiotów: zduplikowany identyfikator przedmiotu „${module.id}”`);
+    }
+    if ((module as { agentPolicy?: unknown }).agentPolicy === undefined) {
+      throw new Error(`Rejestr przedmiotów: przedmiot „${module.id}” nie ma agentPolicy`);
     }
     const errors = validateSubject(module);
     if (errors.length > 0) {

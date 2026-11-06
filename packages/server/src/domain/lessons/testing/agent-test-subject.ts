@@ -1,4 +1,3 @@
-import type { AgentCapableSubject } from "../agent/capable";
 import type { LessonExerciseDraft, SubjectAgentPolicy, SubjectModule } from "../types";
 import { historyLikeSubject } from "./history-like-subject";
 
@@ -25,7 +24,7 @@ function defaultPolicy(subject: SubjectModule): SubjectAgentPolicy {
 export function withAgentPolicy(
   subject: SubjectModule,
   policy: Partial<SubjectAgentPolicy> = {},
-): AgentCapableSubject {
+): SubjectModule {
   return { ...subject, agentPolicy: { ...defaultPolicy(subject), ...policy } };
 }
 
@@ -70,4 +69,4 @@ const base: SubjectModule = {
   refineGeneratedPool,
 };
 
-export const agentTestSubject: AgentCapableSubject = withAgentPolicy(base);
+export const agentTestSubject: SubjectModule = withAgentPolicy(base);

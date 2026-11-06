@@ -12,7 +12,8 @@ export interface SubjectServiceInfo {
   generationServices: string | null;
   /**
    * Usługa, do której trafiają tematy zdań: sam model agenta (pierwsza z `generationServices`; usługa
-   * etapu zagadnień i runu historyjki tematów nie dostaje).
+   * etapu zagadnień i runu historyjki tematów nie dostaje). Drugi model (`checkService`) tematów nie dostaje,
+   * tylko gotowe zdania — mówi o tym sam komunikat `themesService`.
    */
   themesService: string | null;
   /** Komunikat o generowaniu (materiał trafia do usług z `generationServices`). */

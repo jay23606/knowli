@@ -34,6 +34,7 @@ function withList(list: SourceMaterialSummaryDto[]): QueryClient {
 }
 
 const fullCatalog: SubjectCatalogDto = {
+  lessonGenerationAvailable: true,
   subjects: [
     { id: "english_grammar", titlePl: "Gramatyka angielska", creation: "catalog", subjectTitleRequired: false, topics: [] },
     { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] },
@@ -107,6 +108,7 @@ describe("SourcePage", () => {
     const GEN = ["openrouter.ai · a", "openrouter.ai · b"];
     const CHECK = "openrouter.ai · c";
     const agentCatalog = (chapterOnly: boolean): SubjectCatalogDto => ({
+      lessonGenerationAvailable: true,
       subjects: [
         fullCatalog.subjects[0]!,
         { ...fullCatalog.subjects[1]!, generationServices: GEN, checkService: CHECK, checkServiceIncludesMaterial: true },
@@ -192,6 +194,17 @@ describe("SourcePage", () => {
       expect(markup).not.toContain('data-testid="source-no-lesson-subjects"');
     });
 
+    it("bez klucza (lessonGenerationAvailable: false): przyciski lekcji wyłączone z komunikatem, zestaw słówek aktywny", () => {
+      const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, { ...fullCatalog, lessonGenerationAvailable: false }));
+      expect(markup).toMatch(/<button[^>]*disabled=""[^>]*data-testid="source-create-chapter"/);
+      expect(markup).toMatch(/<button[^>]*disabled=""[^>]*data-testid="source-create-school"/);
+      expect(markup).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="source-create-vocabulary"/);
+      expect(markup).toContain('data-testid="source-generation-unavailable"');
+      expect(markup).toContain(messages.lessons.generationErrors.lesson_agent_unavailable);
+      const available = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source));
+      expect(available).not.toContain('data-testid="source-generation-unavailable"');
+    });
+
     it("katalog jeszcze się wczytuje: przyciski są, ale wyłączone", () => {
       const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, null));
       expect(markup).toMatch(/<button[^>]*disabled=""[^>]*data-testid="source-create-chapter"/);
@@ -199,12 +212,12 @@ describe("SourcePage", () => {
     });
 
     it("przedmiotu nie ma w katalogu: bez jego przycisku (formularz nie wybierze innego przedmiotu)", () => {
-      const schoolOnly = { subjects: fullCatalog.subjects.filter((subject) => subject.id !== "english_chapter") };
+      const schoolOnly = { lessonGenerationAvailable: true, subjects: fullCatalog.subjects.filter((subject) => subject.id !== "english_chapter") };
       const markup = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, schoolOnly));
       expect(markup).not.toContain('data-testid="source-create-chapter"');
       expect(markup).toContain('data-testid="source-create-school"');
 
-      const none = { subjects: fullCatalog.subjects.filter((subject) => subject.creation !== "material") };
+      const none = { lessonGenerationAvailable: true, subjects: fullCatalog.subjects.filter((subject) => subject.creation !== "material") };
       const empty = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, none));
       expect(empty).not.toContain('data-testid="source-create-chapter"');
       expect(empty).not.toContain('data-testid="source-create-school"');
@@ -230,7 +243,7 @@ describe("SourcePage", () => {
       const loading = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, null));
       expect(loading).toMatch(vocabularyButton);
 
-      const none = { subjects: fullCatalog.subjects.filter((subject) => subject.creation !== "material") };
+      const none = { lessonGenerationAvailable: true, subjects: fullCatalog.subjects.filter((subject) => subject.creation !== "material") };
       const empty = renderParentMarkup(<SourcePage sourceId={SOURCE_ID} {...handlers()} />, withSource(source, none));
       expect(empty).toMatch(vocabularyButton);
       expect(empty).toContain(messages.sources.noLessonSubjects);

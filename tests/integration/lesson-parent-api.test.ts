@@ -33,6 +33,7 @@ import { finishLessonTask, testDatabase, testDatabaseUrl, truncateCoreTables } f
 import { EDITOR_CARD_EXAMPLE, lessonWorld, seedEditorPoolWithLeak } from "../fixtures/lesson-world";
 import { ManualClock } from "./helpers";
 import { fakeGeneration, type FakeGeneration } from "./fakes";
+import { fakeObjectiveExercises } from "../../packages/server/src/providers/fake-lesson-pool";
 import { handleParentApi } from "./helpers";
 import { errorResponse } from "../../apps/web/src/http/errors";
 import { createLessonSnapshot, toLessonDraftPatch } from "../../apps/web/src/parent/lessons/lesson-editor-state";
@@ -316,14 +317,36 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
     expect(cards[0]).toEqual({ title: "Dodaj -s", body: expect.any(String) });
     expect(Object.keys(cards[0]!).sort()).toEqual(["body", "title"]);
     for (const forbidden of ["descriptionEn", "errorCategories", "hints"]) expect(objective).not.toHaveProperty(forbidden);
+    // usługi bez opisu agenta (web bez klucza OpenRouter): generowanie lekcji niedostępne, bez usług agenta
+    expect(catalog.lessonGenerationAvailable).toBe(false);
+    expect(subject).not.toHaveProperty("generationServices");
+  });
+
+  it("katalog z opisem agenta: generowanie lekcji dostępne, usługi przy każdym przedmiocie", async () => {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const { db } = testDatabase();
+    const services = createServices({
+      db, clock: new ManualClock(), media: fakes.settings, generation: fakes.deps,
+      lessonAgentPublic: { generationService: "fake-lesson-agent-model", checkService: "fake-lesson-checker-model" },
+    });
+    await setupParent(services, "lesson-api-pin");
+    const { token } = await loginParent(services, "lesson-api-pin");
+
+    const res = await call(services, "GET", "lesson-catalog", { cookie: token });
+    expect(res.status).toBe(200);
+    const catalog = SubjectCatalogDtoSchema.parse(await res.json());
+    expect(catalog.lessonGenerationAvailable).toBe(true);
+    for (const subject of catalog.subjects) {
+      expect(subject.generationServices?.[0]).toBe("fake-lesson-agent-model");
+      expect(subject.checkService).toBe("fake-lesson-checker-model");
+    }
   });
 
   it("generacja → edycja samego tytułu → publikacja → rzeczywista sesja dziecka", async () => {
-    const fakes = await fakeGeneration();
-    disposers.push(fakes.dispose);
-    const generate = fakes.llm.generateLessonPool.bind(fakes.llm);
-    fakes.llm.generateLessonPool = async (...args) => {
-      const result = await generate(...args);
+    // Zgłoszenie generatora fake'a agenta z pierwszą luką zamienioną na przekształcenie.
+    const fakes = await fakeGeneration({ agent: { generate: {}, objectives: { negative: [{ build: (input) => {
+      const result = fakeObjectiveExercises(input, 0);
       let replaced = false;
       return { ...result, exercises: result.exercises.map((raw) => {
         const ex = raw as Record<string, unknown>;
@@ -333,7 +356,8 @@ describe("Parent API lekcji (integracja, przez router HTTP)", () => {
         return { ...base, exerciseType: "lesson_transform", statement: "She dances.", transformId: "to_negative",
           answer: "She does not dance", focus: ["does", "not"], acceptedAnswers: [] };
       }) };
-    };
+    } }] } } });
+    disposers.push(fakes.dispose);
     const { services, cookie } = await freshParent(fakes);
     // Transform jest preferowany dopiero przy dostępnym graderze; dokładna
     // odpowiedź w tym teście nadal jest oceniana deterministycznie.

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { APICallError, InvalidToolInputError, JSONParseError, NoObjectGeneratedError, NoOutputGeneratedError } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
+import { messages } from "@learning/contracts";
 import type {
   LessonAgentToolOutcome,
   LessonObjectiveAgentInput,
@@ -15,6 +16,7 @@ import {
   AiSdkExerciseChecker,
   AiSdkLessonPoolAgent,
   objectiveInstructions,
+  objectiveUserPrompt,
   OPENROUTER_BASE_URL,
   openRouterCostOf,
   toGenerationProviderError,
@@ -75,7 +77,7 @@ const POOL: LessonPoolInput = {
 function agentInput(overrides: Partial<LessonObjectiveAgentInput> = {}): LessonObjectiveAgentInput {
   return {
     pool: POOL,
-    objective: { id: "subject.topic.animals", title: "Zwierzęta", cards: [{ title: "Słowa", body: "cat — kot" }], examplesFromPlan: false },
+    objective: { id: "subject.topic.animals", title: "Zwierzęta", cards: [{ title: "Słowa", body: "cat — kot" }], examplesFromPlan: false, index: 0, existingCount: 0 },
     otherObjectives: [],
     cardSentences: [],
     targets: { guided: 2, productive: 2, independent: 3, requiredTypes: [], targetCount: 6, listenAllowance: 0, maxExercises: 8 },
@@ -177,6 +179,27 @@ describe("AiSdkLessonPoolAgent (MockLanguageModelV4, bez sieci)", () => {
     expect(cost.values).toEqual([0.01]);
     // Opcje dostawcy, bez ponowień SDK.
     expect(model.doGenerateCalls[0]!.providerOptions).toEqual({ openrouter: { reasoning: { effort: "low" } } });
+  });
+
+  it("rachunek: kod liczy odpowiedź i treść przed submit zamiast ufać polom modelu", async () => {
+    const material = "Skala mapy pozwala przeliczyć odległość na mapie na odległość w terenie.";
+    const calculation = {
+      exerciseType: "lesson_calculation",
+      objectiveId: "subject.topic.animals",
+      calculation: { kind: "scale_distance", params: { scaleDenominator: 25000, mapDistanceCm: 3 }, unit: "m", templateFamilyId: "map-scale" },
+      sourceRefs: [{ quote: material }],
+    };
+    const injected = { ...calculation, answer: "999 km", prompt: "Nowe fakty geograficzne", focus: ["999"], acceptedAnswers: ["999"] };
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallResult("submit_exercises", { exercises: [injected] }), textResult("never reached")] });
+    const { tools, submitted } = fakeTools([], { stopAfterSubmit: true });
+
+    await new AiSdkLessonPoolAgent({ apiKey: "", model: "test-model", effort: "low", languageModel: model }).runObjective(agentInput(), tools, recordingCost([]), new AbortController().signal);
+
+    expect(submitted[0]!.exercises[0]).toMatchObject({
+      ...calculation, answer: "750 m", focus: [], acceptedAnswers: [],
+      prompt: "Na mapie w skali 1:25 000 odcinek ma 3 cm. Oblicz odległość w terenie w m.",
+      instructionPl: messages.kid.lessonCalculationInstruction,
+    });
   });
 
   it("nie woła modelu, gdy zagadnienie jest zamknięte przed pierwszym krokiem", async () => {
@@ -946,6 +969,27 @@ describe("providerOptions (spec §4, §5)", () => {
     const model = new MockLanguageModelV4({ doGenerate: [textResult(JSON.stringify({ equivalent: [[true]] }))] });
     await new AiSdkExerciseChecker(agentOptions(model, { effort: "none" })).judgeVariants(JUDGE_INPUT, recordingCost([]), new AbortController().signal);
     expect(model.doGenerateCalls[0]!.providerOptions).toEqual({ openrouter: {} });
+  });
+});
+
+describe("prompt podagenta bez pól fake'a", () => {
+  it("prompt podagenta nie zawiera index ani existingCount", async () => {
+    const input = agentInput({ objective: { ...agentInput().objective, index: 3907, existingCount: 4561 } });
+    for (const text of [objectiveInstructions(input), objectiveUserPrompt(input)]) {
+      expect(text).not.toContain("3907");
+      expect(text).not.toContain("4561");
+    }
+    const model = new MockLanguageModelV4({ doGenerate: [textResult("done")] });
+    await new AiSdkLessonPoolAgent({ apiKey: "", model: "test-model", effort: "low", languageModel: model }).runObjective(
+      input,
+      fakeTools([]).tools,
+      recordingCost([]),
+      new AbortController().signal,
+    );
+    const request = JSON.stringify(model.doGenerateCalls[0]!.prompt);
+    expect(request).not.toContain("3907");
+    expect(request).not.toContain("4561");
+    expect(request).not.toContain("existingCount");
   });
 });
 

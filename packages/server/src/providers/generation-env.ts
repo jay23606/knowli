@@ -123,12 +123,22 @@ export function imageProviderFromEnv(
 }
 
 /**
+ * Opóźnienie fake'owej generacji lekcji (tryb `UMIEM_FAKE_PROVIDERS=1`):
+ * `UMIEM_FAKE_LESSON_DELAY_MS`, inaczej `UMIEM_FAKE_DELAY_MS`; wartość nieliczbowa → 0.
+ * Wspólne dla fake LLM (etap zagadnień szkoły i historyjka) i fake agenta puli (`providers/lesson-agent-env.ts`).
+ */
+export function fakeLessonDelayMsFromEnv(env: Record<string, string | undefined>): number {
+  const delayMs = Number(env.UMIEM_FAKE_LESSON_DELAY_MS ?? env.UMIEM_FAKE_DELAY_MS ?? 0);
+  return Number.isFinite(delayMs) ? delayMs : 0;
+}
+
+/**
  * Składanie zależności generacji ze zmiennych środowiskowych (worker, E2E):
  * UMIEM_FAKE_PROVIDERS=1 wyłącza sieciowe adaptery; bez klucza API wynik jest
  * undefined i proces wykonawczy nie wystartuje. Nazwy providerów w env muszą
  * zgadzać się z faktycznymi adapterami, bo wchodzą do fingerprintów mediów.
  *
- * LLM (materiał: zestawy słówek i pule ćwiczeń lekcji) konfigurują opcjonalne,
+ * LLM (materiał: zestawy słówek, etap zagadnień szkoły i historyjka lekcji; same ćwiczenia lekcji pisze agent puli, `lesson-agent-env.ts`) konfigurują opcjonalne,
  * niezależne `UMIEM_LLM_MODEL`/`UMIEM_LLM_BASE_URL`/`UMIEM_LLM_API_KEY` z
  * fallbackami do wartości domyślnych adaptera i `OPENAI_API_KEY` (ten ostatni
  * tylko dla api.openai.com, patrz {@link openAiCompatibleEndpointFromEnv}) — wzorzec jak
@@ -149,11 +159,10 @@ export function createGenerationDepsFromEnv(
   const lessonExecution = lessonGenerationPolicyFromEnv(env);
   if (env.UMIEM_FAKE_PROVIDERS === "1") {
     const delayMs = Number(env.UMIEM_FAKE_DELAY_MS ?? 0);
-    const lessonDelayMs = Number(env.UMIEM_FAKE_LESSON_DELAY_MS ?? env.UMIEM_FAKE_DELAY_MS ?? 0);
     return {
       ...fakeGenerationDeps(mediaStore, {
         delayMs: Number.isFinite(delayMs) ? delayMs : 0,
-        lessonDelayMs: Number.isFinite(lessonDelayMs) ? lessonDelayMs : 0,
+        lessonDelayMs: fakeLessonDelayMsFromEnv(env),
         // bramka E2E: plik wstrzymuje fake'owe generowanie zestawu i mediów (fake.ts)
         ...(env.UMIEM_FAKE_HOLD_FILE ? { holdFile: env.UMIEM_FAKE_HOLD_FILE } : {}),
       }),

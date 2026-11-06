@@ -6,14 +6,10 @@ import type {
   LlmGeneratedItem,
   LlmProvider,
 } from "../../ports/ai";
-import { GenerationProviderError } from "../../ports/generation-error";
 import { LESSON_STORY_LIMITS } from "../../domain/lessons/story";
-import { lessonPoolJsonSchema, poolExerciseTypes, voiceToneProperty } from "./lesson-pool-schema";
-import { materializeGeneratedCalculations } from "../lesson-calculations";
-import { materializeGeneratedKeywords } from "../lesson-keywords";
-import { materializeGeneratedAssignments } from "../lesson-assignments";
+import { poolExerciseTypes, voiceToneProperty } from "./lesson-pool-schema";
 import { withChatRequestExtras, type ChatRequestExtras } from "../chat-request-options";
-import { asLessonTransportError, lessonHttpError, postLessonJson, type LessonJsonRequestConfig } from "./lesson-json-request";
+import { postLessonJson, type LessonJsonRequestConfig } from "./lesson-json-request";
 import { providerFromBaseUrl, type UsageRecorder } from "../../ports/usage";
 import {
   recordHttpError,
@@ -282,26 +278,13 @@ export function lessonSystemPrompt(input: LessonPoolInput): string {
         "(different subjects, verbs or objects) so every canonical answer differs.",
     );
   }
-  if (input.deduplication !== "exercise" && input.existingAnswers && input.existingAnswers.length > 0) {
-    parts.push(
-      "Do NOT repeat these canonical answers already in the pool: " +
-        input.existingAnswers.map((a) => `"${a}"`).join(", ") +
-        ".",
-    );
-  }
   if (input.deduplication === "exercise") {
+    // Istniejące ćwiczenia lekcji zna narzędzie agenta (odrzuca powtórzenia), nie prompt.
     parts.push(
       "Within this response, never repeat an exercise with the same objective, type, and functional stimulus. " +
         "Do not repeat any existing exercise with the same objective, type, and functional stimulus, even if its answer differs. " +
         "Reusing a short canonical answer such as do, does, don't, or doesn't with a different valid exercise is allowed.",
     );
-    if (input.existingExercises?.length) {
-      parts.push(
-        "Existing exercise stimuli: " +
-          input.existingExercises.map((exercise) => `${exercise.objectiveId} / ${exercise.exerciseType} / ${exercise.stimulus}`).join("; ") +
-          ".",
-      );
-    }
   }
   if (input.groundingRequired) {
     parts.push(
@@ -447,38 +430,6 @@ function fencedUserMaterial(lead: string, input: { material: string; instruction
   return lines.join("\n");
 }
 
-/**
- * `examples` z modelu: strict schema zwraca tablicę par {objectiveId,
- * examples}; dla odporności na providery ignorujące schema akceptujemy też
- * record. Scalanie: pierwsza para per objectiveId wygrywa.
- */
-function lessonExamplesToRecord(raw: unknown): Record<string, string[]> {
-  const result: Record<string, string[]> = {};
-  if (Array.isArray(raw)) {
-    for (const entry of raw) {
-      if (entry === null || typeof entry !== "object") {
-        continue;
-      }
-      const { objectiveId, examples } = entry as { objectiveId?: unknown; examples?: unknown };
-      if (typeof objectiveId !== "string" || !Array.isArray(examples)) {
-        continue;
-      }
-      if (!(objectiveId in result)) {
-        result[objectiveId] = examples.filter((e): e is string => typeof e === "string");
-      }
-    }
-    return result;
-  }
-  if (raw !== null && typeof raw === "object") {
-    for (const [objectiveId, examples] of Object.entries(raw as Record<string, unknown>)) {
-      if (Array.isArray(examples)) {
-        result[objectiveId] = examples.filter((e): e is string => typeof e === "string");
-      }
-    }
-  }
-  return result;
-}
-
 /** Schema etapu zagadnień tematu dynamicznego (przedmioty z materiału rodzica). */
 function lessonObjectivesJsonSchema(voiceTones: boolean): Record<string, unknown> {
   return {
@@ -491,13 +442,11 @@ function lessonObjectivesJsonSchema(voiceTones: boolean): Record<string, unknown
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["slug", "titlePl", "descriptionEn", "kind", "cards"],
+          required: ["slug", "titlePl", "descriptionEn", "cards"],
           properties: {
             slug: { type: "string" },
             titlePl: { type: "string" },
             descriptionEn: { type: "string" },
-            // Strict wymaga pola; null = przedmiot bez rodzajów zagadnień.
-            kind: { type: ["string", "null"], enum: ["words", "frame", null] },
             cards: {
               type: "array",
               items: {
@@ -519,18 +468,15 @@ function lessonObjectivesJsonSchema(voiceTones: boolean): Record<string, unknown
 }
 
 function lessonObjectivesSystemPrompt(input: LessonObjectivesInput): string {
-  const rules = input.objectivesRules?.trim();
   return (
     `${input.generationRole} ` +
     `Subject: ${input.subjectTitle}. Topic: ${input.topicTitle}. ` +
     "Split the parent material into 2-8 learnable objectives (one checkable knowledge unit each), in teaching order. " +
     "For every objective return: slug (ASCII lowercase with underscores, unique), titlePl (short Polish title), " +
     "descriptionEn (one English sentence describing exactly what the child must know, based only on the material), " +
-    "kind (an objective kind such as words or frame, only when the subject rules for objectives ask for it; otherwise null), " +
     "cards (2-4 Polish explanation cards {title, body} in simple language for a child; body at most 600 characters; " +
     "you may simplify and add a non-factual analogy, but NEVER add facts, dates or definitions that are not in the material). " +
     (input.voiceTones === true ? `Each card also has ${VOICE_TONE_RULE} ` : "") +
-    (rules === undefined || rules === "" ? "" : `Subject rules for objectives: ${rules} `) +
     "Return strict JSON only."
   );
 }
@@ -599,10 +545,12 @@ function lessonStorySystemPrompt(input: LessonStoryInput): string {
 }
 
 /**
- * Adapter LLM: zestawy słówek w trybie `json_object`, pula lekcji w trybie
- * `json_schema` strict (structured outputs) — walidacja semantyczna wyniku
- * AI pozostaje w domenie (`pool-validation.ts`). Wybór modelu czeka na
- * próbę techniczną z zadania 0 — bez kluczy adapter pozostaje niezweryfikowany.
+ * Adapter LLM: zestawy słówek w trybie `json_object`, zagadnienia i historyjka
+ * lekcji w trybie `json_schema` strict (structured outputs) — walidacja
+ * semantyczna wyniku AI pozostaje w domenie. Pulę ćwiczeń generuje agent puli
+ * (`lesson-pool-agent.ts`) z promptem `lessonSystemPrompt`/`lessonUserMaterial`.
+ * Wybór modelu czeka na próbę techniczną z zadania 0 — bez kluczy adapter
+ * pozostaje niezweryfikowany.
  */
 export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider {
   const model = options.model ?? DEFAULT_MODEL;
@@ -707,90 +655,6 @@ export function createOpenAiLlmProvider(options: OpenAiLlmOptions): LlmProvider 
         accept: isPlainObject,
       });
       return { story };
-    },
-    async generateLessonPool(input: LessonPoolInput, signal?: AbortSignal) {
-      // Local schema/prompt errors are programming/input errors, not network
-      // failures. Keep them outside the transport catch so they are not retried.
-      const schema = lessonPoolJsonSchema(input);
-      const system = lessonSystemPrompt(input);
-      const user = lessonUserMaterial(input);
-      const base = usageBase("lesson_generation", "lesson_pool");
-      // ciało też przed `try`: błąd jego budowy nie jest wywołaniem dostawcy (bez zapisu `failed`)
-      const body = JSON.stringify(withChatRequestExtras(options.requestExtras, {
-        model,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "lesson_pool",
-            strict: true,
-            schema,
-          },
-        },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }));
-      let recorded = false;
-      try {
-        const timeoutSignal = AbortSignal.timeout(lessonRequestTimeoutMs);
-        const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-        const response = await fetch(`${baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${options.apiKey}`,
-            "content-type": "application/json",
-          },
-          body,
-          signal: requestSignal,
-        });
-        if (!response.ok) {
-          recorded = true;
-          recordHttpError(options.usage, base, response.status);
-          throw await lessonHttpError(response);
-        }
-        let payload: unknown;
-        try {
-          payload = await response.json();
-        } catch {
-          recorded = true;
-          recordUnreadable(options.usage, base, response.status);
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        // płatna odpowiedź jest zapisana zanim treść zostanie zwalidowana
-        recorded = true;
-        recordResponse(options.usage, base, response.status, payload);
-        if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        const choices = (payload as { choices?: unknown }).choices;
-        if (!Array.isArray(choices) || choices.length === 0 || choices[0] === null || typeof choices[0] !== "object") {
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        const choice = choices[0] as { finish_reason?: string | null; message?: { content?: string | null; refusal?: string | null } };
-        if (choice?.message?.refusal) throw new GenerationProviderError("refusal", { status: response.status });
-        if (choice?.finish_reason === "content_filter") throw new GenerationProviderError("refusal", { status: response.status });
-        if (choice?.finish_reason === "length") throw new GenerationProviderError("incomplete", { status: response.status });
-        const content = choice?.message?.content;
-        if (typeof content !== "string" || content.trim() === "") throw new GenerationProviderError("output", { status: response.status });
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(content);
-        } catch {
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray((parsed as { exercises?: unknown }).exercises)) {
-          throw new GenerationProviderError("output", { status: response.status });
-        }
-        const result = parsed as { exercises: unknown[]; examples?: unknown };
-        return {
-          exercises: materializeGeneratedAssignments(materializeGeneratedKeywords(materializeGeneratedCalculations(result.exercises))),
-          examples: lessonExamplesToRecord(result.examples),
-        };
-      } catch (error) {
-        if (!recorded) recordTransportFailure(options.usage, base);
-        throw asLessonTransportError(error);
-      }
     },
   };
 }

@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "../../../errors";
 import { A, B, choice, gap, open, subject as fixtureSubject, topic } from "../../../domain/lessons/testing/agent-admission-fixtures";
 import { withAgentPolicy } from "../../../domain/lessons/testing/agent-test-subject";
-import { historyLikeSubject } from "../../../domain/lessons/testing/history-like-subject";
 import { chapterAgentPolicy } from "../../../domain/lessons/subjects/english-chapter/agent-policy";
 import { englishChapterSubject } from "../../../domain/lessons/subjects/english-chapter/module";
 import { englishGrammarSubject } from "../../../domain/lessons/subjects/english-grammar/module";
@@ -298,22 +297,12 @@ describe("runLessonPoolAgent — przebieg zagadnień", () => {
     const without = setup();
     await runLessonPoolAgent(without.deps, runInput(), never);
     for (const call of without.agent.calls) expect(call.input).not.toHaveProperty("promptNotes");
-    expect(englishGrammarSubject.agentPolicy?.promptNotes).toBeUndefined();
-    expect(englishChapterSubject.agentPolicy?.promptNotes).toBeUndefined();
+    expect(englishGrammarSubject.agentPolicy.promptNotes).toBeUndefined();
+    expect(englishChapterSubject.agentPolicy.promptNotes).toBeUndefined();
   });
 });
 
 describe("runLessonPoolAgent — przedmiot i źródło zagadnień", () => {
-  it("przedmiot bez polityki agenta → AppError validation bez wywołań", async () => {
-    const { agent, checker, deps } = setup({ subjects: [historyLikeSubject] });
-    const error = await runLessonPoolAgent(deps, runInput({ subjectId: historyLikeSubject.id }), never).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(AppError);
-    expect((error as AppError).code).toBe("validation");
-    expect(agent.calls).toEqual([]);
-    expect(agent.planCalls).toEqual([]);
-    expect(checker.solveCalls).toEqual([]);
-  });
-
   it("nieznany przedmiot w rejestrze → AppError validation bez wywołań", async () => {
     const { agent, deps } = setup();
     await expect(runLessonPoolAgent(deps, runInput({ subjectId: "unknown_subject" }), never)).rejects.toMatchObject({

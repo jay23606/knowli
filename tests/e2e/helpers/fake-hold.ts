@@ -8,7 +8,7 @@ import { readTestRunConfig } from "../../test-run-config";
  * w packages/server/src/providers/fake.ts): dopóki plik istnieje, worker świata
  * wstrzymuje fake'owe generowanie słówek (`generateDeck`), TTS i ilustracji.
  * Nie obejmuje okładek zestawu (generuje je proces web) ani puli lekcji
- * (do niej służy `FAKE_SLOW_MARKER`).
+ * (fake-agent puli; do niej służy `FAKE_SLOW_MARKER` z `fake-lesson-pool.ts`).
  *
  * Fake'i nie mają w E2E sztucznego opóźnienia, więc spec, który sprawdza
  * przejściowy stan „generowanie”, wstrzymuje je PRZED akcją, która zleca

@@ -466,6 +466,9 @@ export default function NewLessonForm({
     ? messages.lessons.themesService.replace("{service}", () => themesTarget)
     : messages.lessons.themesServiceUnknown;
 
+  // bez klucza OpenRouter na serwerze run lekcji kończyłby się porażką (także ponowienie niewysłanego polecenia)
+  const generationUnavailable = catalog?.lessonGenerationAvailable === false;
+
   const submitError = form.errors.submit;
   const counterTemplate = fromMaterial ? messages.lessons.schoolMaterialCounter : messages.lessons.materialCounter;
 
@@ -681,6 +684,12 @@ export default function NewLessonForm({
               <Text size="sm" className="pp-editor-muted" data-testid="lesson-open-check-service">{serviceInfo.openCheck}</Text>
             )}
 
+            {generationUnavailable && (
+              <Alert color="yellow" variant="light" role="status" data-testid="lesson-generation-unavailable" icon={<ParentIcon name="alert-triangle" />}>
+                {messages.lessons.generationErrors.lesson_agent_unavailable}
+              </Alert>
+            )}
+
             {submitError && (
               <Alert color="red" variant="light" role="alert" data-testid="api-error" icon={<ParentIcon name="alert-triangle" />}>
                 <Stack gap={4} align="flex-start">
@@ -706,7 +715,7 @@ export default function NewLessonForm({
                 data-testid="lesson-create-submit"
                 leftSection={creating ? <Loader size={16} color="currentColor" /> : undefined}
                 onClick={() => void submit()}
-                disabled={creating || refreshingSource || sourceRefreshFailed || sourceOutdated || sourceMissing || (!hasPending && !canSubmitLesson(values, catalog, fromSource))}
+                disabled={creating || refreshingSource || sourceRefreshFailed || sourceOutdated || sourceMissing || generationUnavailable || (!hasPending && !canSubmitLesson(values, catalog, fromSource))}
               >
                 {creating ? messages.lessons.creating : hasPending ? messages.lessons.retryCreate : messages.lessons.createLesson}
               </Button>

@@ -639,7 +639,8 @@ test("listen choice slot follows the first assessed task with autoplay, readback
   const { childId, deckId, childName, listenAssetIds } = await createAssignedLesson(page, {
     labels: { childName: `Obieg słuchowy ${suffix}`, lessonTitle: `Present Simple słuchowy ${suffix}` },
   });
-  // Fake provider dokłada do 2 ćwiczeń słuchowych na cel; wszystkie nagrania są gotowe przed startem sesji.
+  // Fake-agent puli dokłada ćwiczenia słuchowe w limicie zagadnienia (`listenAllowance`);
+  // wszystkie nagrania są gotowe przed startem sesji.
   expect(listenAssetIds.length).toBeGreaterThan(0);
   const published = LessonDeckDtoSchema.parse(await (await page.request.get(`/api/v1/parent/lessons/${deckId}`)).json()).published!;
   expect(published.exercises.filter((exercise) => exercise.exerciseType === "lesson_listen_choice")).toHaveLength(listenAssetIds.length);

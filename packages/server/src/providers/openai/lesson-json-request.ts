@@ -43,7 +43,7 @@ function retryAfterMs(response: Response): number | undefined {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
 }
 
-export async function lessonHttpError(response: Response): Promise<GenerationProviderError> {
+async function lessonHttpError(response: Response): Promise<GenerationProviderError> {
   let kind: "configuration" | "rate_limit" | "transient" =
     response.status === 429 ? "rate_limit" : response.status === 408 || response.status >= 500 ? "transient" : "configuration";
   if (response.status === 429) {
@@ -69,7 +69,7 @@ export async function lessonHttpError(response: Response): Promise<GenerationPro
   });
 }
 
-export function asLessonTransportError(error: unknown): GenerationProviderError {
+function asLessonTransportError(error: unknown): GenerationProviderError {
   if (error instanceof GenerationProviderError) return error;
   return new GenerationProviderError(
     error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError") ? "timeout" : "transient",

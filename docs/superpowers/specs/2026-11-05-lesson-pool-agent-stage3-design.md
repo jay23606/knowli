@@ -300,7 +300,9 @@ dodaje także `agentPolicy`.
   `lessonGenerationAvailable: true`. `deploy/compose.smoke.yaml` dostaje
   `UMIEM_FAKE_PROVIDERS: "1"` także w web (tam `OPENROUTER_API_KEY=""`).
 - **Generator fake-agenta:** deterministyczny generator ćwiczeń z
-  `FakeLlmProvider` przenosimy do `providers/fake-lesson-agent.ts` (funkcja
+  `FakeLlmProvider` przenosimy do czystych funkcji w `providers/fake-lesson-pool.ts`
+  (nie do `fake-lesson-agent.ts`; odstępstwo plikowe z implementacji — z generatora
+  korzysta fake-agent, a do ostatniego etapu PR też `FakeLlmProvider`; funkcja
   fake'a, nie metoda portu). Wymagania:
   1. odpowiedzi i bodźce **unikalne w całej lekcji**: numeracja z ziarnem z
      indeksu zagadnienia w temacie (nie od zera w każdym zagadnieniu);
@@ -341,8 +343,8 @@ dodaje także `agentPolicy`.
   warunku listy; przy `false` ich nie ma. Informacja o usłudze tematów zdań
   (`themesService ?? generationService` w formularzu) zostaje, a gdy agent jest
   jedynym generatorem, komunikat `themesService*` wymienia też checkera agenta:
-  dostaje gotowe zdania, nie listę tematów (AGENTS.md: checker i krytyk nie
-  widzą listy tematów); plan sprawdza,
+  dostaje gotowe zdania, nie listę tematów (AGENTS.md: checker nie
+  widzi listy tematów); plan sprawdza,
   co z katalogowym `generationService` potoku zostaje potrzebne (zagadnienia
   szkoły, historyjka) i odpowiednio zmienia fixture'y `mocked`.
 - Web i worker muszą widzieć ten sam klucz agenta. W `deploy/compose.yaml`
@@ -482,7 +484,7 @@ wymieniają nowych domyślnych odbiorców wprost.
 
 `probe:chapter` po PR 2 generuje agentem. Zmiany:
 
-1. składa `lessonAgentDepsFromEnv(env, registry, usage)` z
+1. składa `lessonAgentDepsFromEnv(env, usage)` (bez rejestru — agent obsługuje każdy przedmiot) z
    `@learning/server/lesson-agent` (tests/probes mogą ładować SDK);
    `LessonAgentUnavailable` to błąd sondy przed pierwszym wywołaniem;
 2. wpis tymczasowy rejestru = budżet runu agenta (nie szacunek potoku);
@@ -581,3 +583,49 @@ wymieniają nowych domyślnych odbiorców wprost.
   porażki, „+N” w przebiegu kontrolnym, brakujące specy E2E i fixture'y,
   dokumentacja, kosze; nazwa „płatny przebieg kontrolny” zamiast „test dymny”
   — przyjęte.
+
+### Decyzje z implementacji (2026-11-05)
+
+- **Powody odrzuceń (decyzja właściciela).** Agent zapisuje do szkicu
+  `rejectedReasons` — liczby odrzuceń według kodu z polskimi etykietami
+  (`messages.lessons.agentRejectionReasons`; kody bez etykiety razem pod
+  `agentRejectionOther`), bez treści ćwiczeń i bez słów; przy sukcesie i przy
+  porażce walidacji, z kumulowanych `rejectionCodes` runu. `rejectedCount` bez
+  zmiany znaczenia (usunięcia po przyjęciu). Panel („Powody odrzuceń przy
+  generowaniu”) działa bez zmian.
+- **Powody bez słów (decyzja właściciela 2026-11-05, przegląd końcowy).** Powody
+  odrzuceń to ogólne polskie etykiety kodów, bez słów: dawny powód rozdziału ze
+  słowem („słowo spoza materiału: raining”, „tylko słowa pomocnicze: the”)
+  trafia do rodzica jako etykieta kodu `refine` („ćwiczenie niezgodne z regułami
+  przedmiotu”), a tekst ze słowem dostaje tylko generator w odpowiedzi narzędzia.
+  `docs/SPEC.md` §37 opisuje to zamiast przykładów ze słowami.
+- **Licznik w panelu (przegląd końcowy).** Suma powodów (odrzucenia w pętli
+  agenta) bywa większa od `rejectedCount` (usunięcia po przyjęciu), więc edytor
+  pokazuje jako liczbę odrzuconych większą z obu wartości, a „inne powody: N” =
+  ta liczba minus suma wypisanych powodów — powody spoza pierwszej piątki nie
+  znikają. Bez zmian kontraktu.
+- **Rozstrzygnięcie 4: `GenerationDeps.lessonAgent` opcjonalne w typie**
+  (`LessonAgentDeps | LessonAgentUnavailable | undefined`), bo `GenerationDeps`
+  składają też web i fabryki testowe; „wymagane w workerze” (§5.1) pilnuje test
+  kompozycji workera, a `executeLessonGeneration` traktuje `undefined` jak
+  `LessonAgentUnavailable`.
+- **Rozstrzygnięcie 3: generator rozdziału zna zagadnienie.** Fake generuje
+  słowa i ramy z kart zagadnienia, co najmniej jedno ćwiczenie każdej grupy
+  `targets.requiredTypes` i każde słowo kart przynajmniej raz (na materiale bez
+  sekcji „Słowa:”/„Zwroty:” — słowa materiału, tłumaczenia przeplatane po
+  zagadnieniach), dzięki czemu pula rozdziału jest publikowalna bez
+  `generationGaps`.
+- **Rozstrzygnięcie 11: worker bez klucza startuje tylko w konfiguracji bez
+  innych zależności od OpenRouter** (LLM i TTS na OpenAI-direct). Przy domyślnych
+  adresach brak klucza nadal zatrzymuje start na `UMIEM_LLM_BASE_URL` i
+  `UMIEM_TTS_BASE_URL`; tak testujemy i opisujemy w `docs/deploy.md`.
+- **Rozstrzygnięcie 12: web z kluczem agenta w złym kształcie.** Przy domyślnym
+  graderze na OpenRouter web nie wstaje już dziś (`graderFromEnv`), więc
+  testujemy: `lessonAgentPublicFromEnv` nigdy nie rzuca, a web z
+  `UMIEM_LESSON_AGENT_API_KEY=sk-proj-…` (czyta go tylko agent) się składa i
+  podaje `lessonGenerationAvailable: false`; w workerze ten sam klucz zatrzymuje
+  start z nazwą zmiennej.
+- **Poprawki przyjęcia znalezione przy przenoszeniu.** Rodzina pytań otwartych
+  szkoły nie jest ujawnieniem (`sameQuestionFamily`, `familyRepeatsAllowed`), a
+  tryb `generation` rozwija formy skrócone i liczy warianty odpowiedzi.
+

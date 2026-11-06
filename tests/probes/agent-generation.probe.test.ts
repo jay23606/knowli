@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { graderConfigured } from "../../packages/server/src/config";
 import { withConfigDefaults } from "../../packages/server/src/config-defaults";
-import { agentObjectivesOf, asAgentCapable, type AgentCapableSubject } from "../../packages/server/src/domain/lessons/agent/capable";
+import { agentObjectivesOf } from "../../packages/server/src/domain/lessons/agent/capable";
 import { allExamples, createLessonAgentState, orderedLesson, withExamples, withPool, type LessonAgentState } from "../../packages/server/src/domain/lessons/agent/state";
 import { lessonInvariantCheck } from "../../packages/server/src/domain/lessons/agent/status";
 import { cardExposureSources } from "../../packages/server/src/domain/lessons/card-exposure-sources";
@@ -13,7 +13,7 @@ import { findExposureLeaks } from "../../packages/server/src/domain/lessons/expo
 import { defaultPoolSize } from "../../packages/server/src/domain/lessons/lesson-policy";
 import { validatePool } from "../../packages/server/src/domain/lessons/pool-validation";
 import { createProductionSubjectRegistry } from "../../packages/server/src/domain/lessons/subjects";
-import type { DynamicObjectiveKind, DynamicTopicData, LessonExerciseDraft, LessonTopic } from "../../packages/server/src/domain/lessons/types";
+import type { DynamicObjectiveKind, DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule } from "../../packages/server/src/domain/lessons/types";
 import { mergeExamples } from "../../packages/server/src/modules/materials/lessons/lesson-drafts";
 import {
   runLessonPoolAgent,
@@ -134,7 +134,7 @@ function readObjectivesDump(path: string): ObjectivesDump {
 }
 
 /** Źródło zagadnień kierownika ze zrzutu: przedmiot katalogowy → `catalog`, z tematem dynamicznym → `input`. */
-function sourceFromDump(subject: AgentCapableSubject, dump: ObjectivesDump): { source: AgentObjectiveSource; topic: LessonTopic } {
+function sourceFromDump(subject: SubjectModule, dump: ObjectivesDump): { source: AgentObjectiveSource; topic: LessonTopic } {
   if (subject.buildDynamicTopic === undefined) {
     const candidates = subject.topics.filter((topic) => topic.id === dump.topicId && (dump.topicVersion === undefined || topic.version === dump.topicVersion));
     const catalog = candidates.sort((a, b) => b.version - a.version)[0];
@@ -199,7 +199,7 @@ function meteredChecker(inner: LessonExerciseCheckerProvider, meter: ProbeMeter)
 }
 
 /** Stan lekcji odtworzony z wyniku kierownika (pule i przykłady zagadnień) do niezależnej kontroli końcowej. */
-function finalState(subject: AgentCapableSubject, topic: LessonTopic, kinds: ReadonlyMap<string, DynamicObjectiveKind>, result: LessonPoolAgentResult): LessonAgentState {
+function finalState(subject: SubjectModule, topic: LessonTopic, kinds: ReadonlyMap<string, DynamicObjectiveKind>, result: LessonPoolAgentResult): LessonAgentState {
   let state = createLessonAgentState({
     topic,
     objectives: agentObjectivesOf(topic, kinds),
@@ -233,7 +233,7 @@ describe.skipIf(!enabled)("próba agenta puli lekcji na prawdziwych modelach", (
     if (dumpPath !== undefined && existsSync(dumpPath)) throw new Error(`${dumpPath} już istnieje — zrzut płatnej próby nie jest nadpisywany`);
     if (subjectKind !== "chapter" && objectivesDumpPath === undefined) throw new Error("grammar i school wymagają UMIEM_PROBE_AGENT_OBJECTIVES_DUMP");
 
-    const subject = asAgentCapable(createProductionSubjectRegistry().getSubject(SUBJECT_IDS[subjectKind])!);
+    const subject = createProductionSubjectRegistry().getSubject(SUBJECT_IDS[subjectKind])!;
     const objectivesDump = objectivesDumpPath === undefined ? undefined : readObjectivesDump(objectivesDumpPath);
     if (objectivesDump !== undefined && objectivesDump.subjectId !== subject.id) {
       throw new Error(`zrzut zagadnień jest dla ${objectivesDump.subjectId}, próba dla ${subject.id}`);

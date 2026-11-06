@@ -175,15 +175,15 @@ function offersListenChoice(subject: SubjectModule): boolean {
 }
 
 /**
- * Usługi widoczne dla rodzica przy przedmiocie obsługiwanym przez agenta puli (spec etapu 2a §11):
+ * Usługi widoczne dla rodzica przy przedmiocie (spec etapu 2a §11; agent generuje każdy przedmiot):
  * model agenta, a gdy do `UMIEM_LLM` idzie etap zagadnień (temat dynamiczny bez planera z polityki)
- * albo run historyjki (przedmiot z `lessonStory`), także ta usługa; drugi model (checker) i informacja, czy dostaje materiał. Przedmiot poza listą
- * agenta albo bez polityki — bez pól (obowiązuje katalogowe `generationService`).
+ * albo run historyjki (przedmiot z `lessonStory`), także ta usługa; drugi model (checker) i informacja,
+ * czy dostaje materiał. Bez agenta (generowanie lekcji niedostępne) — bez pól.
  */
 function agentServicesOf(services: Services, subject: SubjectModule) {
   const agent = services.lessonAgentPublic;
   const policy = subject.agentPolicy;
-  if (!agent || !policy || !agent.subjects.has(subject.id)) return {};
+  if (!agent) return {};
   const stageService = services.generationService;
   const topicsFromMaterial = materialCreationMode(subject) !== undefined && policy.planCoverage === undefined;
   // Krok poza agentem z materiałem lekcji: etap zagadnień albo run historyjki po nowej puli (oba przez `UMIEM_LLM`).
@@ -202,6 +202,9 @@ function agentServicesOf(services: Services, subject: SubjectModule) {
 
 export function lessonCatalog(services: Services): SubjectCatalogDto {
   return {
+    // Opis agenta jest w web przy kluczu OpenRouter albo w trybie fake — wtedy worker z tym samym env ma agenta, jeśli wystartuje
+    // (np. błędny limit `UMIEM_LESSON_AGENT_*` zatrzymuje start workera, a web go nie sprawdza; `lessonAgentPublicFromEnv`).
+    lessonGenerationAvailable: services.lessonAgentPublic !== undefined,
     ...(services.generationService ? { generationService: services.generationService } : {}),
     subjects: services.subjects.listSubjects().map((subject) => {
       const latestByTopic = new Map<string, LessonTopic>();
@@ -354,9 +357,8 @@ async function readLessonDraftDto(
   // Ujawnione rozwiązania (spec etapu przeglądu lekcji §8): tylko edytowalny szkic — wersja opublikowana
   // jest niezmienna, więc rodzic nie ma czego poprawić; indeksy z domeny mapujemy na id ćwiczeń.
   // Miękkie powtórzenie w rodzinie pytań szkoły (ta sama rodzina w tym samym zagadnieniu) to zamierzona
-  // struktura, nie błąd rodzica: bez ostrzeżenia, choć pokrycie nadal liczy rodzinę raz.
-  const sameFamily = (a: LessonExerciseDraft, b: LessonExerciseDraft) =>
-    a.objectiveId === b.objectiveId && a.familyId !== undefined && a.familyId.trim() !== "" && a.familyId === b.familyId;
+  // struktura, nie błąd rodzica: bez ostrzeżenia, choć pokrycie nadal liczy rodzinę raz (ta sama reguła
+  // co przyjęcie agenta puli).
   const exposureLeaks: ExposureLeakDto[] = draftSubject && !published
     ? findExposureLeaks({
         exercises: drafts,
@@ -364,8 +366,8 @@ async function readLessonDraftDto(
         objectiveOrder: context.objectiveIds,
         subject: draftSubject,
         mode: "coverage",
+        familyRepeatsAllowed: true,
       })
-        .filter((leak) => !(leak.kind === "soft" && leak.source.kind === "exercise" && sameFamily(drafts[leak.index]!, drafts[leak.source.index]!)))
         .map((leak) => ({
           exerciseId: revisions[leak.index]!.itemId,
           kind: leak.kind,

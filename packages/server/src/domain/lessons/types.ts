@@ -151,7 +151,7 @@ export interface AgentGateFinding {
 /**
  * Polityka przedmiotu dla agenta puli (`SubjectModule.agentPolicy`). Silnik
  * agenta nie zna identyfikatorów przedmiotów — dziedzinowe reguły przychodzą
- * wyłącznie tędy. Przedmiot bez polityki nie jest generowany agentem.
+ * wyłącznie tędy. Polityka jest obowiązkowa: rejestr odrzuca przedmiot bez niej.
  */
 export interface SubjectAgentPolicy {
   /** Typy, które checker rozwiązuje „na ślepo” (bez klucza odpowiedzi). */
@@ -447,6 +447,6 @@ export interface SubjectModule {
     drafts: readonly LessonExerciseDraft[],
     ctx: { material: string },
   ): ReadonlyMap<number, readonly string[]>;
-  /** Polityka agenta puli; brak = przedmiot nie jest generowany agentem. */
-  readonly agentPolicy?: SubjectAgentPolicy;
+  /** Polityka agenta puli — każdy przedmiot jest generowany agentem. */
+  readonly agentPolicy: SubjectAgentPolicy;
 }

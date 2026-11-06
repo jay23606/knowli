@@ -1,9 +1,8 @@
 import { AppError } from "../../../errors";
-import type { AgentCapableSubject } from "../../../domain/lessons/agent/capable";
 import { AGENT_PLAN_MAX_OBJECTIVES, AGENT_PLAN_MIN_OBJECTIVES, validateAgentPlan } from "../../../domain/lessons/agent/plan";
 import { MAX_TEXT_LENGTH } from "../../../domain/lessons/pool-validation";
 import { validateDynamicTopicData } from "../../../domain/lessons/topic-resolution";
-import type { DynamicTopicData, RawPlanObjective } from "../../../domain/lessons/types";
+import type { DynamicTopicData, RawPlanObjective, SubjectModule } from "../../../domain/lessons/types";
 import type { LessonAgentPlanInput, LessonPoolAgentProvider, RunCostSink } from "../../../ports/ai";
 import { buildDynamicTopicData, withSubjectObjectiveKinds } from "./lesson-drafts";
 import { untilAborted } from "./lesson-agent-timers";
@@ -11,7 +10,7 @@ import { agentFailureOf, type AgentFailure, type RunBudgetSink } from "./lesson-
 
 /**
  * Plan zagadnień kierownika agenta puli (spec etapu 1 §7.1 pkt 2): planista
- * proponuje zagadnienia, a `propose` składa temat tą samą ścieżką co potok
+ * proponuje zagadnienia, a `propose` składa temat wspólną ścieżką tematów dynamicznych
  * (`validateAgentPlan` → `buildDynamicTopicData` → `withSubjectObjectiveKinds` →
  * `validateDynamicTopicData`). Błędy wracają do modelu; pierwsza poprawna
  * propozycja wygrywa.
@@ -19,7 +18,7 @@ import { agentFailureOf, type AgentFailure, type RunBudgetSink } from "./lesson-
 
 export interface PlanArgs {
   readonly agent: LessonPoolAgentProvider;
-  readonly subject: AgentCapableSubject;
+  readonly subject: SubjectModule;
   readonly deckId: string;
   readonly topicTitle: string;
   readonly material: string;
@@ -42,10 +41,10 @@ export type PlanOutcome =
 /** Górna granica przykładów zagadnienia (pilnuje jej `validateAgentPlan`); tu tylko w tekście dla modelu. */
 const MAX_PLAN_EXAMPLES = 3;
 
-/** Brak przyjętej propozycji po wszystkich krokach: ten sam kod co niepoprawne zagadnienia w potoku. */
+/** Brak przyjętej propozycji po wszystkich krokach: ten sam kod (`validation`) co niepoprawne zagadnienia etapu zagadnień. */
 const NOT_ACCEPTED_FAILURE = agentFailureOf(new AppError("validation"));
 
-/** Linie przykładów planu: przycięte, niepuste, najwyżej `MAX_TEXT_LENGTH` znaków (jak w potoku). */
+/** Linie przykładów planu: przycięte, niepuste, najwyżej `MAX_TEXT_LENGTH` znaków (limit tekstów lekcji). */
 function planExampleLines(objective: RawPlanObjective): string[] {
   return objective.examples
     .map((line) => line.trim())

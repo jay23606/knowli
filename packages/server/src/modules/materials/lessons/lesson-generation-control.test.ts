@@ -41,41 +41,6 @@ describe("withLessonGenerationControl", () => {
     await assertion;
   });
 
-  it("callSoft: przekroczenie limitu żądania przerywa tylko to żądanie, następne call w tym samym zakresie działa", async () => {
-    vi.useFakeTimers();
-    let softSignal!: AbortSignal;
-    const run = withLessonGenerationControl({ requestTimeoutMs: 25, runTimeoutMs: 500, cancelPollMs: 100, assertCurrent: async () => true }, async (control) => {
-      const soft = await control.callSoft((signal) => { softSignal = signal; return new Promise<string>(() => undefined); })
-        .then(() => "resolved", (error: unknown) => error);
-      const next = await control.call(async () => "next");
-      return { soft, next };
-    });
-    await vi.advanceTimersByTimeAsync(26);
-    const result = await run;
-    expect(result.soft).toBeInstanceOf(GenerationProviderError);
-    expect(result.soft).toMatchObject({ kind: "timeout" });
-    expect(softSignal.aborted).toBe(true);
-    expect(result.next).toBe("next");
-  });
-
-  it("callSoft respektuje zamknięcie procesu i zmianę tożsamości jak call", async () => {
-    vi.useFakeTimers();
-    const controller = new AbortController();
-    const run = withLessonGenerationControl({ requestTimeoutMs: 200, runTimeoutMs: 500, cancelPollMs: 100, signal: controller.signal, assertCurrent: async () => true },
-      (control) => control.callSoft(() => new Promise<void>(() => undefined)));
-    const assertion = expect(run).rejects.toMatchObject({ reason: "shutdown" });
-    controller.abort();
-    await vi.advanceTimersByTimeAsync(1);
-    await assertion;
-
-    let calls = 0;
-    const superseded = withLessonGenerationControl({ requestTimeoutMs: 200, runTimeoutMs: 500, cancelPollMs: 10, assertCurrent: async () => ++calls < 2 },
-      (control) => control.callSoft(() => new Promise<void>(() => undefined)));
-    const supersededAssertion = expect(superseded).rejects.toThrow(/superseded/);
-    await vi.advanceTimersByTimeAsync(11);
-    await supersededAssertion;
-  });
-
   describe("run", () => {
     it("run nie ma limitu pojedynczego żądania", async () => {
       vi.useFakeTimers();

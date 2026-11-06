@@ -5,17 +5,20 @@ import type {
   LessonObjectiveAgentTools,
   RunCostSink,
 } from "../ports/ai";
-import { asAgentCapable } from "../domain/lessons/agent/capable";
+import { agentObjectivesOf } from "../domain/lessons/agent/capable";
 import { validateAgentPlan } from "../domain/lessons/agent/plan";
+import { createLessonAgentState } from "../domain/lessons/agent/state";
 import { englishChapterSubject } from "../domain/lessons/subjects/english-chapter/module";
 import { englishGrammarSubject } from "../domain/lessons/subjects/english-grammar/module";
 import { schoolSubject } from "../domain/lessons/subjects/school/module";
 import { validateDynamicTopicData } from "../domain/lessons/topic-resolution";
 import type { SubjectModule } from "../domain/lessons/types";
 import { buildDynamicTopicData, withSubjectObjectiveKinds } from "../modules/materials/lessons/lesson-drafts";
-import { runLessonPoolAgent, type LessonPoolAgentRunInput } from "../modules/materials/lessons/lesson-pool-agent";
+import { lessonAgentLimits, runLessonPoolAgent, type LessonPoolAgentRunInput } from "../modules/materials/lessons/lesson-pool-agent";
+import { objectiveAgentInput } from "../modules/materials/lessons/lesson-pool-agent-input";
 import { FakeLlmProvider } from "./fake";
 import { FakeExerciseChecker, FakeLessonPoolAgent, fakePlanFromCoverage } from "./fake-lesson-agent";
+import { FAKE_SLOW_DELAY_MS, FAKE_SLOW_MARKER, fakeObjectiveExercises } from "./fake-lesson-pool";
 import { createTestRecorder } from "./usage/test-recorder";
 
 const OUTCOME: LessonAgentToolOutcome = {
@@ -631,7 +634,7 @@ describe("FakeExerciseChecker", () => {
   });
 });
 
-describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedostępny)", () => {
+describe("FakeLessonPoolAgent — generator z prawdziwym kierownikiem (checker niedostępny)", () => {
   const never = new AbortController().signal;
 
   function registryOf(...subjects: SubjectModule[]) {
@@ -658,10 +661,9 @@ describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedost�
   }
 
   function setup(subject: SubjectModule) {
-    const llm = new FakeLlmProvider();
-    const agent = new FakeLessonPoolAgent({ fromLlm: llm });
+    const agent = new FakeLessonPoolAgent({ generate: {} });
     const checker = new FakeExerciseChecker({ unavailable: true });
-    return { llm, agent, checker, deps: { agent, checker, subjects: registryOf(subject) } };
+    return { agent, checker, deps: { agent, checker, subjects: registryOf(subject) } };
   }
 
   const accepted = (result: Awaited<ReturnType<typeof runLessonPoolAgent>>) =>
@@ -675,7 +677,7 @@ describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedost�
     vi.restoreAllMocks();
   });
 
-  it("fromLlm: rozdział (planer) — plan przechodzi validateAgentPlan i bramkę pokrycia; run daje ≥ 1 przyjęte ćwiczenie", async () => {
+  it("rozdział (planer) — plan przechodzi validateAgentPlan i bramkę pokrycia; run daje ≥ 1 przyjęte ćwiczenie", async () => {
     const material = [
       "Słowa:",
       "coat — płaszcz",
@@ -686,7 +688,7 @@ describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedost�
       "I am wearing …",
       "Put on your …",
     ].join("\n");
-    const { llm, agent, deps } = setup(englishChapterSubject);
+    const { agent, deps } = setup(englishChapterSubject);
     const result = await runLessonPoolAgent(deps, runInput({ subjectId: englishChapterSubject.id, material }), never);
 
     const planCall = agent.planCalls[0]!;
@@ -706,18 +708,20 @@ describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedost�
       { title: "Frames", body: "I am wearing …\nPut on your …" },
     ]);
     expect(plan.objectives.map((objective) => objective.examples)).toEqual([["coat"], ["scarf"], ["I am wearing …"]]);
-    const validated = validateAgentPlan(plan, asAgentCapable(englishChapterSubject), material);
+    const validated = validateAgentPlan(plan, englishChapterSubject, material);
     expect(validated.ok).toBe(true);
     // Bramka pokrycia przedmiotu (część validateAgentPlan) — sprawdzona też wprost.
     expect(englishChapterSubject.agentPolicy!.planGate!(validated.ok ? validated.objectives : [], material)).toEqual([]);
 
     expect(result.planStatus).toBe("accepted");
-    expect(llm.lessonRequests.length).toBeGreaterThan(0);
+    // Generator zgłosił ćwiczenia każdego zagadnienia (wynik narzędzia zapisany po `submit`).
+    expect(agent.calls.length).toBeGreaterThan(0);
+    expect(agent.calls.every((call) => call.outcomes.length > 0)).toBe(true);
     expect(agent.calls.every((call) => call.input.objective.examplesFromPlan)).toBe(true);
     expect(accepted(result)).toBeGreaterThanOrEqual(1);
   });
 
-  it("fromLlm: rozdział bez ram — trzecie zagadnienie słów", async () => {
+  it("rozdział bez ram — trzecie zagadnienie słów", async () => {
     const material = ["Słowa:", "coat — płaszcz", "boots — buty", "scarf — szalik"].join("\n");
     const { agent, deps } = setup(englishChapterSubject);
     const result = await runLessonPoolAgent(deps, runInput({ subjectId: englishChapterSubject.id, material }), never);
@@ -730,7 +734,7 @@ describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedost�
     expect(result.planStatus).toBe("accepted");
   });
 
-  it("fromLlm: gramatyka (katalog) ≥ 1", async () => {
+  it("gramatyka (katalog) ≥ 1", async () => {
     const topic = englishGrammarSubject.topics.find((candidate) => candidate.id === "present_simple")!;
     const { agent, deps } = setup(englishGrammarSubject);
     const result = await runLessonPoolAgent(
@@ -741,11 +745,11 @@ describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedost�
     expect(result.planStatus).toBe("not_needed");
     expect(agent.calls.length).toBe(topic.objectives.length);
     expect(accepted(result)).toBeGreaterThanOrEqual(1);
-    // Przykłady kart z wyniku LLM (zagadnienie bez przykładów z planu).
+    // Przykłady kart z wyniku generatora (zagadnienie bez przykładów z planu).
     expect(result.objectives[0]!.examples.length).toBeGreaterThan(0);
   });
 
-  it("fromLlm: szkoła (wejście z fake generateLessonObjectives) ≥ 1", async () => {
+  it("szkoła (wejście z fake generateLessonObjectives) ≥ 1", async () => {
     const material = [
       "Zagadnienie 1: Rzeki Polski",
       "Wisła jest najdłuższą rzeką Polski. Odra płynie na zachodzie kraju.",
@@ -773,12 +777,12 @@ describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedost�
     expect(accepted(result)).toBeGreaterThanOrEqual(1);
   });
 
-  it("scenariusz sluga ma pierwszeństwo przed fromLlm", async () => {
-    const llm = new FakeLlmProvider();
-    const agent = new FakeLessonPoolAgent({ fromLlm: llm, objectives: { alpha: [] } });
-    const result = await agent.runObjective(agentInput("alpha"), makeTools([]), costSink(), never);
+  it("scenariusz sluga ma pierwszeństwo przed generatorem", async () => {
+    const agent = new FakeLessonPoolAgent({ generate: {}, objectives: { alpha: [] } });
+    const tools = makeTools([]);
+    const result = await agent.runObjective(agentInput("alpha"), tools, costSink(), never);
     expect(result).toEqual({ steps: 0, stopReason: "model_finished" });
-    expect(llm.lessonRequests).toEqual([]);
+    expect(tools.submitted).toEqual([]);
   });
 
   it.each([
@@ -797,7 +801,7 @@ describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedost�
     });
     expect(plan.objectives.map((objective) => (objective.cards as { body: string }[])[0]!.body)).toEqual(bodies);
     expect(plan.objectives.map((objective) => (objective.examples as string[])[0])).toEqual(bodies.map((body) => body.split(", ")[0]));
-    expect(validateAgentPlan(plan, asAgentCapable(englishChapterSubject), material)).toMatchObject({ ok: true });
+    expect(validateAgentPlan(plan, englishChapterSubject, material)).toMatchObject({ ok: true });
   });
 
   it("plan bez pokrycia przedmiotu bierze nagłówki materiału (trzy zagadnienia słów)", () => {
@@ -814,5 +818,295 @@ describe("FakeLessonPoolAgent — fromLlm (prawdziwy kierownik, checker niedost�
       ["words", "Góry", ["Góry"]],
       ["words", "Miasta", ["Miasta"]],
     ]);
+  });
+});
+
+describe("FakeLessonPoolAgent — generator (pętla kroków, etap 3 PR 2)", () => {
+  const never = new AbortController().signal;
+  const GRAMMAR_TOPIC = englishGrammarSubject.topics.find((candidate) => candidate.id === "present_simple")!;
+
+  /** Wejście podagenta gramatyki z prawdziwego `objectiveAgentInput` (pierwsze zagadnienie tematu). */
+  function grammarInput(overrides: { material?: string; maxSteps?: number } = {}): LessonObjectiveAgentInput {
+    const objectives = agentObjectivesOf(GRAMMAR_TOPIC);
+    const limits = lessonAgentLimits(englishGrammarSubject, GRAMMAR_TOPIC, 0);
+    const state = createLessonAgentState({ topic: GRAMMAR_TOPIC, objectives, fixed: [], examples: {}, fixedSources: {} });
+    return objectiveAgentInput({
+      subject: englishGrammarSubject,
+      topic: GRAMMAR_TOPIC,
+      state,
+      objective: objectives[0]!,
+      limits: limits.get(objectives[0]!.id)!,
+      material: overrides.material ?? "",
+      graderAvailable: false,
+      examplesFixed: false,
+      maxSteps: overrides.maxSteps ?? 8,
+    });
+  }
+
+  function outcome(missing: string[], complete = false): LessonAgentToolOutcome {
+    return { ...OUTCOME, missing, complete };
+  }
+
+  /** Narzędzia z kolejnymi wynikami `submit` (ostatni się powtarza). */
+  function scriptedTools(outcomes: LessonAgentToolOutcome[], log: string[] = []) {
+    const submitted: { exercises: unknown[]; examples?: unknown }[] = [];
+    const tools = makeTools(log, {
+      submit: async (raw) => {
+        log.push("submit");
+        submitted.push(raw as { exercises: unknown[]; examples?: unknown });
+        return outcomes[Math.min(submitted.length - 1, outcomes.length - 1)]!;
+      },
+    });
+    return { tools, submitted };
+  }
+
+  const typesOf = (raw: { exercises: unknown[] }) => raw.exercises.map((exercise) => (exercise as { exerciseType: string }).exerciseType);
+  const answersOf = (raw: { exercises: unknown[] }) => raw.exercises.map((exercise) => (exercise as { answer: string }).answer);
+
+  it("pętla: kolejny krok tylko dla braku", async () => {
+    const agent = new FakeLessonPoolAgent({ generate: {} });
+    const { tools, submitted } = scriptedTools([outcome(["independent: 0 of 3"]), outcome([], true)]);
+    const result = await agent.runObjective(grammarInput(), tools, costSink(), never);
+    expect(result).toEqual({ steps: 2, stopReason: "model_finished" });
+    expect(submitted).toHaveLength(2);
+    expect(typesOf(submitted[0]!).length).toBeGreaterThan(3);
+    expect(submitted[0]!.examples).toBeDefined();
+    expect(typesOf(submitted[1]!)).toEqual(["lesson_open_answer", "lesson_open_answer", "lesson_open_answer"]);
+    expect(submitted[1]!.examples).toBeUndefined();
+    // Drugi krok ma inne odpowiedzi niż pierwszy (przesunięcie +100).
+    expect(answersOf(submitted[1]!).filter((answer) => answersOf(submitted[0]!).includes(answer))).toEqual([]);
+  });
+
+  it("+N: `new exercises: 2 of 12` i `independent: 1 of 3` → drugi krok zamawia 10 z etapu samodzielnego", async () => {
+    const agent = new FakeLessonPoolAgent({ generate: {} });
+    const { tools, submitted } = scriptedTools([outcome(["new exercises: 2 of 12", "independent: 1 of 3", "exercises: 9 of 20"]), outcome([], true)]);
+    await agent.runObjective(grammarInput(), tools, costSink(), never);
+    expect(submitted).toHaveLength(2);
+    expect(typesOf(submitted[1]!)).toEqual(Array.from({ length: 10 }, () => "lesson_open_answer"));
+  });
+
+  it("brak wymaganego typu → jedno ćwiczenie tego typu; brak przykładów kart → przykłady ponownie", async () => {
+    const agent = new FakeLessonPoolAgent({ generate: {} });
+    const { tools, submitted } = scriptedTools([
+      outcome(["needs at least one lesson_listen_choice or lesson_choice", "card examples: 0 of 1-3"]),
+      outcome([], true),
+    ]);
+    await agent.runObjective(grammarInput(), tools, costSink(), never);
+    expect(typesOf(submitted[1]!)).toEqual(["lesson_listen_choice"]);
+    expect(submitted[1]!.examples).toBeDefined();
+  });
+
+  it("przy stale complete: false kroków = maxSteps; bez rozpoznanego braku pętla kończy", async () => {
+    const agent = new FakeLessonPoolAgent({ generate: {} });
+    const stale = scriptedTools([outcome(["independent: 0 of 3"])]);
+    expect(await agent.runObjective(grammarInput({ maxSteps: 3 }), stale.tools, costSink(), never)).toEqual({ steps: 3, stopReason: "max_steps" });
+    expect(stale.submitted).toHaveLength(3);
+
+    const unknown = scriptedTools([outcome(["something the fake cannot fix"])]);
+    expect(await agent.runObjective(grammarInput(), unknown.tools, costSink(), never)).toEqual({ steps: 1, stopReason: "model_finished" });
+  });
+
+  it("shouldStop() kończy pętlę jako stopped", async () => {
+    const agent = new FakeLessonPoolAgent({ generate: {} });
+    const log: string[] = [];
+    const { tools } = scriptedTools([outcome(["independent: 0 of 3"])], log);
+    const stopping = { ...tools, shouldStop: () => log.length > 0 };
+    expect(await agent.runObjective(grammarInput(), stopping, costSink(), never)).toEqual({ steps: 1, stopReason: "stopped" });
+  });
+
+  it("krok `generate` w scenariuszu zgłasza generator z przesunięciem zagadnienia", async () => {
+    const agent = new FakeLessonPoolAgent({ objectives: { affirmative_base: [{ generate: true }] } });
+    const { tools, submitted } = scriptedTools([outcome([], true)]);
+    const input = grammarInput();
+    expect(input.objective.id.endsWith(".affirmative_base")).toBe(true);
+    await agent.runObjective(input, tools, costSink(), never);
+    expect(submitted).toEqual([fakeObjectiveExercises(input, 0)]);
+  });
+
+  it("krok `build` dostaje wejście podagenta", async () => {
+    const seen: LessonObjectiveAgentInput[] = [];
+    const agent = new FakeLessonPoolAgent({
+      objectives: {
+        alpha: [
+          {
+            build: (input) => {
+              seen.push(input);
+              return { exercises: [input.objective.id] };
+            },
+          },
+        ],
+      },
+    });
+    const { tools, submitted } = scriptedTools([outcome([], true)]);
+    const input = agentInput("alpha");
+    await agent.runObjective(input, tools, costSink(), never);
+    expect(seen).toEqual([input]);
+    expect(submitted).toEqual([{ exercises: ["lesson.topic.alpha"] }]);
+  });
+
+  describe("opóźnienia", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("FAKE_SLOW_MARKER opóźnia tylko pierwszy krok", async () => {
+      vi.useFakeTimers();
+      const agent = new FakeLessonPoolAgent({ generate: {} });
+      const { tools, submitted } = scriptedTools([outcome(["independent: 0 of 3"]), outcome([], true)]);
+      const run = agent.runObjective(grammarInput({ material: `Lekcja ${FAKE_SLOW_MARKER}` }), tools, costSink(), never);
+      await vi.advanceTimersByTimeAsync(FAKE_SLOW_DELAY_MS - 1);
+      expect(submitted).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(run).resolves.toEqual({ steps: 2, stopReason: "model_finished" });
+      expect(submitted).toHaveLength(2);
+    });
+
+    it("delayMs opóźnia każdy krok", async () => {
+      vi.useFakeTimers();
+      const agent = new FakeLessonPoolAgent({ generate: { delayMs: 50 } });
+      const { tools, submitted } = scriptedTools([outcome(["independent: 0 of 3"]), outcome([], true)]);
+      const run = agent.runObjective(grammarInput(), tools, costSink(), never);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(submitted).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(49);
+      expect(submitted).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(run).resolves.toEqual({ steps: 2, stopReason: "model_finished" });
+    });
+
+    it("abort przerywa sen: odrzucenie signal.reason i brak wiszących timerów", async () => {
+      vi.useFakeTimers();
+      const agent = new FakeLessonPoolAgent({ generate: { delayMs: 10_000 } });
+      const { tools, submitted } = scriptedTools([outcome([], true)]);
+      const controller = new AbortController();
+      const run = agent.runObjective(grammarInput(), tools, costSink(), controller.signal);
+      const settled = expect(run).rejects.toThrow("stop");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(vi.getTimerCount()).toBe(1);
+      controller.abort(new Error("stop"));
+      await settled;
+      expect(vi.getTimerCount()).toBe(0);
+      expect(submitted).toHaveLength(0);
+    });
+  });
+
+  it("record: false nie zapisuje historii", async () => {
+    const agent = new FakeLessonPoolAgent({ generate: {}, record: false });
+    const { tools } = scriptedTools([outcome([], true)]);
+    await agent.runObjective(grammarInput(), tools, costSink(), never);
+    const planInput = { subjectTitle: "Angielski", topicTitle: "Unit 1", material: "Słowa:\ncoat — płaszcz", generationRole: "", objectiveCount: { min: 3, max: 6 }, maxSteps: 8 };
+    await agent.planObjectives(planInput, { propose: async () => ({ ok: true, errors: [] }), shouldStop: () => false }, costSink(), never);
+    expect(agent.calls).toEqual([]);
+    expect(agent.planCalls).toEqual([]);
+
+    const recording = new FakeLessonPoolAgent({ generate: {} });
+    await recording.runObjective(grammarInput(), scriptedTools([outcome([], true)]).tools, costSink(), never);
+    expect(recording.calls).toHaveLength(1);
+  });
+
+  it("planista bez plans przy generate daje plan z pokrycia", async () => {
+    const agent = new FakeLessonPoolAgent({ generate: {} });
+    const proposals: unknown[] = [];
+    const planInput = {
+      subjectTitle: "Angielski",
+      topicTitle: "Unit 1",
+      material: "Słowa:\ncoat — płaszcz\nboots — buty\nscarf — szalik",
+      generationRole: "",
+      objectiveCount: { min: 3, max: 6 },
+      coverage: { words: ["coat", "boots", "scarf"], frames: [] },
+      maxSteps: 8,
+    };
+    const result = await agent.planObjectives(
+      planInput,
+      {
+        propose: async (raw) => {
+          proposals.push(raw);
+          return { ok: true, errors: [] };
+        },
+        shouldStop: () => false,
+      },
+      costSink(),
+      never,
+    );
+    expect(result).toEqual({ steps: 1 });
+    expect(proposals).toEqual([fakePlanFromCoverage(planInput)]);
+  });
+
+  describe("prawdziwy kierownik, checker niedostępny: jeden krok na zagadnienie, bez odrzuceń", () => {
+    function runInput(overrides: Partial<LessonPoolAgentRunInput>): LessonPoolAgentRunInput {
+      return {
+        runId: "run-1",
+        subjectId: englishGrammarSubject.id,
+        deckId: "42",
+        objectiveSource: { source: "planner" },
+        topicTitle: "Unit 1",
+        material: "",
+        poolSize: 0,
+        graderAvailable: false,
+        fixed: [],
+        draftExamples: {},
+        skipObjectives: [],
+        familyScope: null,
+        initialSpentUsd: 0,
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    async function run(subject: SubjectModule, overrides: Partial<LessonPoolAgentRunInput>) {
+      const agent = new FakeLessonPoolAgent({ generate: {} });
+      const checker = new FakeExerciseChecker({ unavailable: true });
+      const result = await runLessonPoolAgent(
+        { agent, checker, subjects: { getSubject: (id: string) => (id === subject.id ? subject : undefined) } },
+        runInput({ subjectId: subject.id, ...overrides }),
+        never,
+      );
+      expect(result.rejections.map((entry) => entry.code)).toEqual([]);
+      expect(result.objectives.map((objective) => [objective.status, objective.missing])).toEqual(result.objectives.map(() => ["complete", []]));
+      expect(agent.calls.every((call) => call.outcomes.length === 1)).toBe(true);
+      return { agent, result };
+    }
+
+    it("gramatyka (katalog)", async () => {
+      const { result } = await run(englishGrammarSubject, { objectiveSource: { source: "catalog", topic: GRAMMAR_TOPIC }, topicTitle: GRAMMAR_TOPIC.titlePl });
+      expect(result.objectives).toHaveLength(GRAMMAR_TOPIC.objectives.length);
+    });
+
+    it.each([
+      ["Słowa:/Zwroty:", ["Słowa:", "coat — płaszcz", "boots — buty", "scarf — szalik", "gloves — rękawiczki", "Zwroty:", "I am wearing …", "Put on your …"].join("\n")],
+      ["bez sekcji", "I wear a coat. I wear boots. She wears a dress. We wear a skirt."],
+    ])("rozdział (planer, %s)", async (_name, material) => {
+      const { result } = await run(englishChapterSubject, { material, poolSize: 40 });
+      expect(result.planStatus).toBe("accepted");
+      expect(result.objectives).toHaveLength(3);
+    });
+
+    it("szkoła (wejście z fake generateLessonObjectives)", async () => {
+      const material = [
+        "Zagadnienie 1: Rzeki Polski",
+        "Wisła jest najdłuższą rzeką Polski. Odra płynie na zachodzie kraju.",
+        "Zagadnienie 2: Góry Polski",
+        "Tatry są najwyższymi górami Polski. Sudety leżą na południowym zachodzie.",
+      ].join("\n");
+      const { objectives } = await new FakeLlmProvider().generateLessonObjectives({
+        subjectTitle: schoolSubject.titlePl,
+        topicTitle: "Polska",
+        material,
+        generationRole: schoolSubject.prompts.generationRole,
+      });
+      const built = buildDynamicTopicData(objectives, schoolSubject.id, "42", "Polska", (objective) =>
+        validateDynamicTopicData(schoolSubject, { titlePl: "Polska", objectives: [objective] }),
+      );
+      const dynamicTopic = withSubjectObjectiveKinds(schoolSubject, built.data!);
+      const { result } = await run(schoolSubject, { objectiveSource: { source: "input", dynamicTopic }, topicTitle: "Polska", material });
+      expect(result.objectives).toHaveLength(2);
+    });
   });
 });

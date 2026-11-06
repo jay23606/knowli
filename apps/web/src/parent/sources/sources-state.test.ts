@@ -94,7 +94,7 @@ describe("sources state", () => {
 
   describe("sourceLessonKinds: przyciski tylko dla przedmiotów z katalogu tworzonych z materiału", () => {
     const subject = (id: string, creation: "catalog" | "material") => ({ id, titlePl: id, creation, subjectTitleRequired: id === "school", topics: [] });
-    const catalogOf = (...subjects: SubjectCatalogDto["subjects"]): SubjectCatalogDto => ({ subjects });
+    const catalogOf = (...subjects: SubjectCatalogDto["subjects"]): SubjectCatalogDto => ({ lessonGenerationAvailable: true, subjects });
 
     it("bez katalogu (wczytywanie, błąd) — nieznane", () => {
       expect(sourceLessonKinds(undefined)).toBeNull();

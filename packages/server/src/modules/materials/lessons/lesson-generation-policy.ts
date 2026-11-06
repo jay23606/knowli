@@ -2,11 +2,6 @@ export interface LessonGenerationPolicy {
   requestTimeoutMs: number;
   runTimeoutMs: number;
   cancelPollMs: number;
-  /**
-   * Runda dogenerowania pod brakujący etap po partii głównej (spec etapu przeglądu lekcji);
-   * brak = włączona. Nie pochodzi z env — wyłączają ją tylko testy przez `deps.lessonExecution`.
-   */
-  stageTopUp?: boolean;
 }
 
 export const DEFAULT_LESSON_GENERATION_POLICY: LessonGenerationPolicy = {

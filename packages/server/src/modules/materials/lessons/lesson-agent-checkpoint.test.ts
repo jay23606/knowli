@@ -77,6 +77,12 @@ describe("punkt kontrolny agenta — odczyt i podsumowanie", () => {
     expect(log).toHaveBeenCalledTimes(1);
   });
 
+  it("parse: rejectionCodesWritten przechodzi przez kolumnę jsonb, brak pola zostaje brakiem", () => {
+    const value = progress({ rejectionCodesWritten: { solver_mismatch: 2 } });
+    expect(parseLessonAgentProgress(stored(value), "run-1")).toEqual(value);
+    expect(parseLessonAgentProgress(stored(progress()), "run-1")).not.toHaveProperty("rejectionCodesWritten");
+  });
+
   it("parse: podsumowanie → undefined", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const summary = summarizeLessonAgentProgress(progress(), 2);

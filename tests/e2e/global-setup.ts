@@ -247,7 +247,8 @@ export default async function globalSetup(): Promise<(() => Promise<void>) | voi
       // stan „generowanie” (zestaw, TTS, obrazy), wstrzymują fake'i bramką
       // UMIEM_FAKE_HOLD_FILE (holdFakeGeneration) zamiast ścigać się z zegarem;
       // test restartu trwającej generacji lekcji oznacza materiał
-      // FAKE_SLOW_MARKER (fake.ts).
+      // FAKE_SLOW_MARKER (fake-lesson-pool.ts: pierwszy krok każdego zagadnienia
+      // fake-agenta puli trwa wtedy 3 s).
       UMIEM_FAKE_DELAY_MS: process.env.UMIEM_E2E_FAKE_DELAY_MS ?? "0",
       UMIEM_FAKE_HOLD_FILE: fakeHoldFile,
       UMIEM_FAKE_LESSON_DELAY_MS: process.env.UMIEM_E2E_FAKE_LESSON_DELAY_MS ?? "0",

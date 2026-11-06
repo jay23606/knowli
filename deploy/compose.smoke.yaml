@@ -12,6 +12,10 @@ services:
     ports: !override
       - "127.0.0.1:${SMOKE_PORT:-24700}:3000"
     environment:
+      # Tryb fake także w web (etap 3 #237): generowanie lekcji dostępne bez
+      # klucza (worker składa fake-agenta), a mowa, grader i ocena aktywności
+      # są deterministycznymi fake'ami — nic nie wychodzi do sieci.
+      UMIEM_FAKE_PROVIDERS: "1"
       UMIEM_TTS_PROVIDER: fake-tts
       UMIEM_TTS_MODEL: fake-tts-1
       UMIEM_TTS_VOICE: fake-voice
@@ -19,8 +23,9 @@ services:
       UMIEM_IMAGE_MODEL: fake-image-1
       UMIEM_IMAGE_SIZE: 512x512
       # Nadpisują domyślną konfigurację (config-defaults.ts): bez stylu i WAV.
-      # Puste klucze = „nie ustawiono”: grader wyłączony, odpowiedzi testowe nie
-      # wychodzą do sieci, nawet gdy rodzinny .env ma klucz OpenRouter.
+      # Puste klucze = „nie ustawiono”: drugie zabezpieczenie obok trybu fake —
+      # klucz OpenRouter z rodzinnego .env nie trafia do żadnego adaptera web,
+      # a opis agenta w trybie fake i tak go nie czyta.
       UMIEM_TTS_FORMAT: mp3
       UMIEM_TTS_STYLE: none
       OPENROUTER_API_KEY: ""

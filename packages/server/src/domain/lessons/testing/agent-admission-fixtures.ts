@@ -1,8 +1,8 @@
 import { keywordsAnswer } from "../pool-validation";
 import { agentTestSubject } from "./agent-test-subject";
-import type { LessonExerciseDraft, LessonTopic } from "../types";
+import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../types";
 import type { AgentCheckContext, CandidateChecks, ObjectiveAgentLimits } from "../agent/admission";
-import { agentObjectivesOf, type AgentCapableSubject } from "../agent/capable";
+import { agentObjectivesOf } from "../agent/capable";
 import { createLessonAgentState, type LessonAgentState, type LessonAgentStateInput } from "../agent/state";
 
 /**
@@ -18,7 +18,7 @@ export const topic: LessonTopic = {
   ...baseTopic,
   objectives: baseTopic.objectives.map((objective) => ({ ...objective, exerciseTypes: [...agentTestSubject.exerciseTypes] })),
 };
-export const subject: AgentCapableSubject = {
+export const subject: SubjectModule = {
   ...agentTestSubject,
   usesV3Payload: true,
   poolDeduplication: "exercise",
@@ -30,7 +30,7 @@ export const [A, B] = objectives.map((objective) => objective.id) as [string, st
 export const DEFAULT_LIMITS: ObjectiveAgentLimits = { targetCount: 8, listenAllowance: 2, maxExercises: 12 };
 
 export function contextFor(
-  overrides: { subject?: AgentCapableSubject; limits?: Partial<Record<string, ObjectiveAgentLimits>>; material?: string } = {},
+  overrides: { subject?: SubjectModule; limits?: Partial<Record<string, ObjectiveAgentLimits>>; material?: string } = {},
   objectiveIds: readonly string[] = [A, B],
 ): AgentCheckContext {
   return {

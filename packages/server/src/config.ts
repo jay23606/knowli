@@ -150,17 +150,24 @@ export interface GenerationDeps {
    */
   graderAvailable?: boolean;
   /**
-   * Agent puli lekcji dla przedmiotów z listy `UMIEM_LESSON_AGENT_SUBJECTS`
-   * (składany tylko w workerze, `providers/lesson-agent-env.ts`). Nieobecny =
-   * wszystkie lekcje generuje potok.
+   * Agent puli lekcji dla każdego przedmiotu (składany tylko w workerze,
+   * `providers/lesson-agent-env.ts`; worker ustawia pole zawsze). Bez klucza
+   * OpenRouter — {@link LessonAgentUnavailable}; nieobecny (web, fabryki testowe)
+   * znaczy to samo: run lekcji kończy się wtedy `failed`/`lesson_agent_unavailable`.
    */
-  lessonAgent?: LessonAgentDeps;
+  lessonAgent?: LessonAgentDeps | LessonAgentUnavailable;
+}
+
+/** Agent puli lekcji niedostępny: worker bez klucza OpenRouter (start bez błędu, runy lekcji bez generatora). */
+export type LessonAgentUnavailable = { readonly unavailable: "no_openrouter_key" };
+
+/** Czy worker ma zależności agenta puli (nie {@link LessonAgentUnavailable} i nie brak pola). */
+export function isLessonAgentAvailable(agent: GenerationDeps["lessonAgent"]): agent is LessonAgentDeps {
+  return agent !== undefined && !("unavailable" in agent);
 }
 
 /** Zależności agenta puli lekcji w workerze (adapter dostawcy za portami). */
 export interface LessonAgentDeps {
-  /** Identyfikatory przedmiotów generowanych agentem. */
-  readonly subjects: ReadonlySet<string>;
   readonly agent: LessonPoolAgentProvider;
   readonly checker: LessonExerciseCheckerProvider;
   /**
@@ -256,8 +263,8 @@ export interface Services {
    */
   generationService?: string;
   /**
-   * Opis agenta puli lekcji dla panelu rodzica (przedmioty z listy i etykiety usług, z env
-   * procesu web); nieobecny = wszystkie przedmioty idą potokiem. To opis konfiguracji, nie klient modelu.
+   * Opis agenta puli lekcji dla panelu rodzica (etykiety usług, z env procesu web); nieobecny =
+   * generowanie lekcji niedostępne (`lessonGenerationAvailable: false`). To opis konfiguracji, nie klient modelu.
    */
   lessonAgentPublic?: LessonAgentPublic;
   /**
@@ -502,7 +509,6 @@ const AGENT_EFFORTS: ReadonlySet<string> = new Set(["xhigh", "high", "medium", "
 
 /** Ustawienia agenta puli lekcji po walidacji env (bez SDK; adapter składa `providers/lesson-agent-env.ts`). */
 export interface LessonAgentSettings {
-  readonly subjects: ReadonlySet<string>;
   readonly apiKey: string;
   readonly model: string;
   readonly effort: string;
@@ -522,12 +528,6 @@ type AgentStringName =
 function agentStringEnv(env: Record<string, string | undefined>, name: AgentStringName): string {
   const value = env[name]?.trim();
   return value ? value : CONFIG_DEFAULTS[name];
-}
-
-/** Identyfikatory z listy po przecinku: przycięte, bez pustych i duplikatów. */
-function agentSubjectIds(env: Record<string, string | undefined>): string[] {
-  const ids = (env.UMIEM_LESSON_AGENT_SUBJECTS ?? "").split(",").map((id) => id.trim()).filter((id) => id !== "");
-  return [...new Set(ids)];
 }
 
 function agentEffortEnv(
@@ -556,25 +556,6 @@ function agentProviderRouting(
   return effort === "none" ? routing : { ...routing, require_parameters: true };
 }
 
-/**
- * Lista przedmiotów agenta (`UMIEM_LESSON_AGENT_SUBJECTS`) po walidacji: pusta
- * lista → pusty zbiór; nieznany przedmiot albo przedmiot bez `agentPolicy` to
- * błąd startu z nazwą zmiennej. Wspólna dla ustawień z kluczem i trybu fake
- * (`providers/lesson-agent-env.ts`), który klucza nie wymaga.
- */
-export function lessonAgentSubjectsFromEnv(
-  env: Record<string, string | undefined>,
-  subjects: Pick<SubjectRegistry, "getSubject">,
-): ReadonlySet<string> {
-  const ids = agentSubjectIds(env);
-  for (const id of ids) {
-    const subject = subjects.getSubject(id);
-    if (subject === undefined) throw new Error(`UMIEM_LESSON_AGENT_SUBJECTS: unknown subject „${id}”`);
-    if (subject.agentPolicy === undefined) throw new Error(`UMIEM_LESSON_AGENT_SUBJECTS: subject „${id}” has no agent policy`);
-  }
-  return new Set(ids);
-}
-
 /** Limity agenta z env (`UMIEM_LESSON_AGENT_MAX_STEPS`, współbieżność, terminy, budżet); zła liczba to błąd startu. */
 export function lessonAgentPolicyFromEnv(env: Record<string, string | undefined>): Partial<LessonAgentPolicy> {
   const int = (name: keyof typeof CONFIG_DEFAULTS & `UMIEM_LESSON_AGENT_${string}`) =>
@@ -596,20 +577,15 @@ export function lessonAgentPolicyFromEnv(env: Record<string, string | undefined>
 }
 
 /**
- * Agent puli lekcji z env (worker). Pusta lista → `undefined`. Błędna
- * konfiguracja (nieznany przedmiot albo bez `agentPolicy`, zła liczba,
- * nieznany wysiłek, generator i checker z tej samej rodziny modeli, zła opcja
- * routingu) to błąd startu z nazwą zmiennej. Niepusta lista bez klucza
- * OpenRouter → `undefined` i jedno ostrzeżenie (lekcje generuje potok). Brakujące
- * wartości biorą {@link CONFIG_DEFAULTS}, więc działa też bez `withConfigDefaults`.
- * Tryb fake (`UMIEM_FAKE_PROVIDERS=1`) obsługuje `providers/lesson-agent-env.ts`.
+ * Agent puli lekcji z env (worker; dotyczy każdego przedmiotu). Błędna konfiguracja
+ * (zła liczba, nieznany wysiłek, generator i checker z tej samej rodziny modeli, zła
+ * opcja routingu, klucz w kształcie OpenAI) to błąd startu z nazwą zmiennej —
+ * walidowana zawsze, przed kluczem. Brak klucza OpenRouter → `undefined` bez logu
+ * (linię startu pisze worker). Brakujące wartości biorą {@link CONFIG_DEFAULTS}, więc
+ * działa też bez `withConfigDefaults`. Tryb fake (`UMIEM_FAKE_PROVIDERS=1`) obsługuje
+ * `providers/lesson-agent-env.ts`.
  */
-export function lessonAgentSettingsFromEnv(
-  env: Record<string, string | undefined>,
-  subjects: Pick<SubjectRegistry, "getSubject">,
-): LessonAgentSettings | undefined {
-  const ids = lessonAgentSubjectsFromEnv(env, subjects);
-  if (ids.size === 0) return undefined;
+export function lessonAgentSettingsFromEnv(env: Record<string, string | undefined>): LessonAgentSettings | undefined {
   const policy = lessonAgentPolicyFromEnv(env);
 
   const effort = agentEffortEnv(env, "UMIEM_LESSON_AGENT_REASONING");
@@ -624,12 +600,8 @@ export function lessonAgentSettingsFromEnv(
   const checkerProvider = agentProviderRouting(env, "UMIEM_LESSON_AGENT_CHECKER", checkerEffort);
 
   const apiKey = lessonAgentKeyFromEnv(env);
-  if (apiKey === undefined) {
-    console.warn("[config] UMIEM_LESSON_AGENT_SUBJECTS bez klucza OpenRouter — lekcje generuje potok");
-    return undefined;
-  }
+  if (apiKey === undefined) return undefined;
   return {
-    subjects: ids,
     apiKey,
     model,
     effort,
@@ -641,9 +613,8 @@ export function lessonAgentSettingsFromEnv(
   };
 }
 
-/** Opis agenta puli dla panelu rodzica: przedmioty z listy i etykiety usług (`host · model`). */
+/** Opis agenta puli dla panelu rodzica: etykiety usług (`host · model`); obecny = generowanie lekcji dostępne. */
 export interface LessonAgentPublic {
-  readonly subjects: ReadonlySet<string>;
   readonly generationService: string;
   readonly checkService: string;
   /** Usługa oceny odpowiedzi próbnych do pytań otwartych (`host · model` gradera); brak = grader niedostępny. */
@@ -661,23 +632,25 @@ function openCheckServiceLabel(env: Record<string, string | undefined>): string 
 }
 
 /**
- * Opis agenta dla panelu rodzica (web): przedmioty z listy i nazwy usług.
- * Nigdy nie rzuca — nieznane identyfikatory i przedmioty bez polityki pomija,
- * a obecność zależy od listy, nie od klucza (web może go nie mieć). Tryb fake
- * pokazuje nazwy fake.
+ * Opis agenta dla panelu rodzica (web): nazwy usług. Obecny = worker ma agenta,
+ * czyli generowanie lekcji jest dostępne. Tryb fake pokazuje nazwy fake (bez
+ * klucza); inaczej `undefined`, gdy klucza OpenRouter nie ma albo ma kształt
+ * klucza OpenAI (worker z takim kluczem nie wstaje). Nigdy nie rzuca — błędne
+ * liczby i wysiłki agenta zatrzymują worker, nie web.
  */
-export function lessonAgentPublicFromEnv(
-  env: Record<string, string | undefined>,
-  subjects: Pick<SubjectRegistry, "getSubject">,
-): LessonAgentPublic | undefined {
-  const known = agentSubjectIds(env).filter((id) => subjects.getSubject(id)?.agentPolicy !== undefined);
-  if (known.length === 0) return undefined;
+export function lessonAgentPublicFromEnv(env: Record<string, string | undefined>): LessonAgentPublic | undefined {
   if (env.UMIEM_FAKE_PROVIDERS === "1") {
-    return { subjects: new Set(known), generationService: "fake-lesson-agent-model", checkService: "fake-lesson-checker-model" };
+    return { generationService: "fake-lesson-agent-model", checkService: "fake-lesson-checker-model" };
   }
+  let apiKey: string | undefined;
+  try {
+    apiKey = lessonAgentKeyFromEnv(env);
+  } catch {
+    return undefined;
+  }
+  if (apiKey === undefined) return undefined;
   const openCheckService = openCheckServiceLabel(env);
   return {
-    subjects: new Set(known),
     generationService: `openrouter.ai · ${agentStringEnv(env, "UMIEM_LESSON_AGENT_MODEL")}`,
     checkService: `openrouter.ai · ${agentStringEnv(env, "UMIEM_LESSON_AGENT_CHECKER_MODEL")}`,
     ...(openCheckService ? { openCheckService } : {}),

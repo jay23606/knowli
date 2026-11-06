@@ -32,13 +32,6 @@ export interface LessonCoverageInput {
   readonly ignoreExposure?: boolean;
 }
 
-/** Braki etapów jednego zagadnienia (wynik `stageDeficits`); runda pod etap zamawia dokładnie je. */
-export interface StageDeficits {
-  readonly guided: number;
-  readonly productive: number;
-  readonly independent: number;
-}
-
 /**
  * Dodatkowa reguła szkoły: zagadnienie potrzebuje co najmniej dwóch RÓŻNYCH
  * pytań otwartych (różne odpowiedzi wzorcowe), nie jednej rodziny sformułowań.
@@ -128,15 +121,4 @@ export function lessonCoverageGaps(input: LessonCoverageInput): (CoverageGap & {
     const excluded = gap.stage === "independent" ? (excludedByObjective.get(gap.objectiveId) ?? 0) : 0;
     return excluded > 0 ? { ...gap, excluded } : gap;
   });
-}
-
-/** Brak per etap zagadnienia = max(required − actual) po obu źródłach braków; 0 gdy pokryte. */
-export function stageDeficits(input: LessonCoverageInput, objectiveId: string): StageDeficits {
-  const deficits = { guided: 0, productive: 0, independent: 0 };
-  for (const gap of lessonCoverageGaps(input)) {
-    if (gap.objectiveId === objectiveId && (gap.stage === "guided" || gap.stage === "productive" || gap.stage === "independent")) {
-      deficits[gap.stage] = Math.max(deficits[gap.stage], gap.required - gap.actual);
-    }
-  }
-  return deficits;
 }

@@ -2,8 +2,7 @@ import { exerciseExposureText } from "../exposure-key";
 import { findExposureLeaks, type ExposureLeak } from "../exposure-leaks";
 import { withoutOrphanKeywords } from "../keyword-families";
 import { MAX_TEXT_LENGTH, validateLessonExercise, validatePool } from "../pool-validation";
-import type { AgentObjective, LessonExerciseDraft } from "../types";
-import type { AgentCapableSubject } from "./capable";
+import type { AgentObjective, LessonExerciseDraft, SubjectModule } from "../types";
 import { blindMatches } from "./solver";
 import {
   allExamples,
@@ -32,7 +31,7 @@ export interface ObjectiveAgentLimits {
 
 /** Kontekst kontroli (§3.2). */
 export interface AgentCheckContext {
-  readonly subject: AgentCapableSubject;
+  readonly subject: SubjectModule;
   readonly material: string;
   readonly limits: ReadonlyMap<string, ObjectiveAgentLimits>;
 }
@@ -109,13 +108,24 @@ function lessonRules(state: LessonAgentState, ctx: AgentCheckContext): LessonRul
   return { entries, poolRejected, extraRejected };
 }
 
+/**
+ * Tryb porównań ujawnień w przyjmowaniu: `generation` (równoważność odpowiedzi po normalizatorze
+ * przedmiotu, także warianty ofiary) — „Where is the box?”
+ * ujawnia przykład „Where's the box?”, a wariant tłumaczenia równy zdaniu innego ćwiczenia też jest
+ * ujawnieniem. Ostrzejszy od `coverage` (równość `target_key`), więc pula przyjęta tak jest czysta także
+ * w pokryciu i w ostrzeżeniach szkicu. Ten sam tryb w migawce, bezpieczniku i kontroli końcowej.
+ */
+const ADMISSION_LEAK_MODE = "generation";
+
 function lessonLeaks(state: LessonAgentState, entries: readonly OrderedLessonEntry[], ctx: AgentCheckContext): Map<LessonExerciseDraft, ExposureLeak> {
   const leaks = findExposureLeaks({
     exercises: entries.map((entry) => entry.draft),
     examples: allExamples(state),
     objectiveOrder: state.objectives.map((objective) => objective.id),
     subject: ctx.subject,
-    mode: "coverage",
+    mode: ADMISSION_LEAK_MODE,
+    // Rodzina pytań otwartych (ta sama odpowiedź wzorcowa) nie ujawnia rozwiązania samej sobie — jak w szkicu.
+    familyRepeatsAllowed: true,
   });
   return new Map(leaks.map((leak) => [entries[leak.index]!.draft, leak] as const));
 }
@@ -268,7 +278,7 @@ function deterministicSteps(
   const poolVictims = newlyRejected(rules.poolRejected, before.poolRejected, candidate);
   if (poolVictims.length > 0) return reject("lesson", "lesson_pool", victimReasons(poolVictims, rules.entries));
 
-  // 4. Ujawnienia (tryb coverage): kandydat ofiarą albo nowa ofiara (także `fixed`).
+  // 4. Ujawnienia (tryb generation): kandydat ofiarą albo nowa ofiara (także `fixed`).
   const leaked = lessonLeaks(next, rules.entries, ctx);
   const ownLeak = leaked.get(candidate);
   if (ownLeak !== undefined) return reject("leak", "leak_victim", [leakVictimReason(ownLeak, rules.entries, ctx)]);
@@ -431,7 +441,7 @@ export function admitBatch(
   return { state: current, results };
 }
 
-/** Najwyżej tyle przykładów kart na zagadnienie (jak potok generowania). */
+/** Najwyżej tyle przykładów kart na zagadnienie. */
 const MAX_EXAMPLES = 3;
 
 /**
@@ -480,7 +490,7 @@ export function submitExamples(
       examples: { [objectiveId]: [text] },
       objectiveOrder: state.objectives.map((objective) => objective.id),
       subject: ctx.subject,
-      mode: "coverage",
+      mode: ADMISSION_LEAK_MODE,
     })
       .filter((leak) => leak.source.kind === "card_example" && !leakedBefore.has(entries[leak.index]!.draft))
       .map((leak) => entries[leak.index]!);

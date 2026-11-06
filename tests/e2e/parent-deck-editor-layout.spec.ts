@@ -61,7 +61,7 @@ async function openEditor(page: Page): Promise<Calls> {
       return route.fulfill({ status: 204, body: "" });
     }
     if (path.endsWith("/login")) return route.fulfill({ json: { authenticated: true, setupRequired: false } });
-    if (path.endsWith("/lesson-catalog")) return route.fulfill({ json: { subjects: [] } });
+    if (path.endsWith("/lesson-catalog")) return route.fulfill({ json: { lessonGenerationAvailable: true, subjects: [] } });
     if (path.endsWith("/children")) return route.fulfill({ json: [{ id: childId, displayName: "Ala", avatarKey: "fox", recordingMode: "hold", canRead: true, interests: [] }] });
     if (path.endsWith("/decks")) return route.fulfill({ json: [{ deckId, title: deck.title, state: "published", kind: "vocabulary", editableVersionId: draftId, publishedVersionId: draftId }] });
     if (path.endsWith(`/decks/${deckId}`)) return route.fulfill({ json: current });

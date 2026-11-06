@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { LessonDeckDtoSchema } from "@learning/contracts";
 import { FAKE_SLOW_MARKER } from "@learning/server";
 import { lessonWorld } from "../fixtures/lesson-world";
+import { lessonAgentRunSummary } from "./helpers/lesson-agent-run";
 import { closeWorldDatabase, worldPool } from "./helpers/world-database";
 import { loginParent } from "./helpers/parent-session";
 
@@ -110,7 +111,8 @@ test("browser Back from a newly created lesson returns to the list, not to the e
 
 test("parent can safely restart a running lesson generation", async ({ page }) => {
   await enterParent(page);
-  // Znacznik w materiale: fake LLM generuje pulę 3 s, więc przycisk restartu trwającej generacji jest osiągalny.
+  // Znacznik w materiale: pierwszy krok każdego zagadnienia fake-agenta puli trwa 3 s (przerywalnie),
+  // więc przycisk restartu trwającej generacji jest osiągalny, a restart wznawia run od nowa.
   await createLesson(page, `Restart ${randomUUID().slice(0, 8)} ${FAKE_SLOW_MARKER}`, false);
   const retry = page.getByTestId("retry-stalled-generation");
   await expect(retry).toBeVisible();
@@ -149,6 +151,12 @@ test("generates a multi-objective Present Simple pool with Polish prompts and no
     expect(exercises.filter((exercise) => exercise.exerciseType !== "lesson_listen_choice").every((exercise) => exercise.instructionPl?.length)).toBe(true);
   }
   expect(deck.draft?.exercises.some((exercise) => exercise.exerciseType === "lesson_open_answer" && exercise.prompt?.startsWith("Przetłumacz"))).toBe(true);
+  // Fake-agent puli: każde zagadnienie zamknięte w jednym runie, bez odrzuceń kierownika
+  // (odpowiedzi i bodźce unikalne w całej lekcji, nie tylko w zagadnieniu).
+  const agentRun = await lessonAgentRunSummary(await worldPool(), deckId);
+  expect(Object.keys(agentRun.objectives).sort()).toEqual([...objectiveIds].sort());
+  expect(Object.values(agentRun.objectives).every((objective) => objective.status === "complete")).toBe(true);
+  expect(agentRun.rejectionCodes).toEqual({});
 });
 
 // Klik „Zapisz" + oczekiwanie na odpowiedź PATCH szkicu i na koniec zapisu

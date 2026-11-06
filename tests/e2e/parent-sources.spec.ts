@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { DeckDtoSchema, LessonDeckDtoSchema, messages } from "@learning/contracts";
+import { lessonAgentRunSummary } from "./helpers/lesson-agent-run";
 import { closeWorldDatabase, worldPool } from "./helpers/world-database";
 import { loginParent } from "./helpers/parent-session";
 
@@ -8,7 +9,8 @@ import { loginParent } from "./helpers/parent-session";
  * E2E zakładki „Źródła” na prawdziwej bazie, workerze i fałszywych providerach
  * (Etap 2, design 2026-10-30 §3.4, §8): rodzic zapisuje źródło (fikcyjny
  * rozdział), tworzy z niego lekcję rozdziału (formularz bez pola materiału,
- * polecenie z `sourceMaterialId`), czeka na generację workera i publikuje
+ * polecenie z `sourceMaterialId`), czeka na generację workera (fake-agent puli:
+ * plan zagadnień słów i ram z pokrycia materiału) i publikuje
  * lekcję, widzi w edytorze „Ze źródła”, po edycji tekstu źródła — notkę
  * o zmianie, a po jego usunięciu opublikowana lekcja zostaje z własną kopią
  * tekstu, bez odnośnika. Efekt sprawdzany w interfejsie, w API rodzica i w bazie
@@ -16,7 +18,7 @@ import { loginParent } from "./helpers/parent-session";
  *
  * Etap 4 (design §6.2, §8 „Słówka ze źródła”): z tego samego rodzaju źródła
  * rodzic tworzy zestaw słówek („Utwórz zestaw słówek”, polecenie
- * z `sourceMaterialId` i zawężeniem), worker z fałszywym LLM (domyślnie: słowa
+ * z `sourceMaterialId` i zawężeniem), worker z fałszywym LLM słówek (domyślnie: słowa
  * z tekstu) wypełnia szkic, edytor pokazuje słówka z tekstu i „Ze źródła”,
  * zestaw jest na stronie źródła, a po edycji tekstu — notka o zmianie przy
  * niezmienionym zestawie.
@@ -116,6 +118,20 @@ test("rodzic tworzy źródło, lekcję rozdziału, publikuje ją, edytuje i usuw
   const afterCreate = LessonDeckDtoSchema.parse(await (await page.request.get(`/api/v1/parent/lessons/${deckId}`)).json());
   expect(afterCreate.source).toEqual({ id: sourceId, title, copiedRevision: 1, currentRevision: 1 });
   expect(afterCreate.draft?.exercises.length).toBeGreaterThan(0);
+  // Pulę generuje fake-agent workera (etap 3 #237): planer dzieli pokrycie materiału na zagadnienia
+  // z rodzajem (słowa albo rama; ten materiał bez sekcji „Zwroty:” daje same słowa), każde zagadnienie
+  // kończy się z ćwiczeniami, a kierownik niczego nie odrzuca.
+  const objectives = afterCreate.draft?.dynamicTopic?.objectives ?? [];
+  expect(objectives.length).toBeGreaterThanOrEqual(2);
+  expect(objectives.every((objective) => objective.kind === "words" || objective.kind === "frame")).toBe(true);
+  for (const objective of objectives) {
+    expect(afterCreate.draft!.exercises.some((exercise) => exercise.objectiveId === objective.id), objective.id).toBe(true);
+  }
+  const agentRun = await lessonAgentRunSummary(pool, deckId);
+  expect(agentRun.kind).toBe("summary");
+  expect(Object.keys(agentRun.objectives).sort()).toEqual(objectives.map((objective) => objective.id).sort());
+  expect(Object.values(agentRun.objectives).every((objective) => objective.status === "complete" && objective.accepted > 0)).toBe(true);
+  expect(agentRun.rejectionCodes).toEqual({});
 
   // Baza: odnośnik i rewizja źródła przy zestawie oraz kopia tekstu w kontekście wersji.
   const storedLesson = async () => {

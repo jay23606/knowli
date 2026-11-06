@@ -35,6 +35,11 @@ export type LessonAgentProgress = {
   readonly totalSpentUsd: number;
   /** Histogram kodów odrzuceń, bez treści. */
   readonly rejectionCodes: Record<string, number>;
+  /**
+   * Część `rejectionCodes` już policzona w `rejectedReasons` szkicu (porażka walidacji zapisuje powody i zostawia
+   * postęp do „Ponów”); brak = nic nie zapisano. Kolejny zapis dolicza tylko różnicę, żeby nie podwoić powodów.
+   */
+  readonly rejectionCodesWritten?: Record<string, number>;
   /** Liczniki kontroli etapu 2b (`CHECK_COUNTER_KEYS`), sumowane między próbami; brak w punktach kontrolnych etapu 2a. */
   readonly checkCounters?: Record<string, number>;
   readonly removedAfterAcceptance: number;
@@ -88,6 +93,7 @@ const progressSchema = z.object({
   budgetSpentUsd: nonNegative,
   totalSpentUsd: nonNegative,
   rejectionCodes: z.record(z.string(), count),
+  rejectionCodesWritten: z.record(z.string(), count).optional(),
   // Opcjonalne: punkty kontrolne etapu 2a (w produkcji) nie mają tego pola.
   checkCounters: z.record(z.string(), count).optional(),
   removedAfterAcceptance: count,
@@ -140,6 +146,7 @@ export function parseLessonAgentProgress(value: unknown, runId?: string): Lesson
     budgetSpentUsd: data.budgetSpentUsd,
     totalSpentUsd: data.totalSpentUsd,
     rejectionCodes: data.rejectionCodes,
+    ...(data.rejectionCodesWritten === undefined ? {} : { rejectionCodesWritten: data.rejectionCodesWritten }),
     ...(data.checkCounters === undefined ? {} : { checkCounters: data.checkCounters }),
     removedAfterAcceptance: data.removedAfterAcceptance,
   };

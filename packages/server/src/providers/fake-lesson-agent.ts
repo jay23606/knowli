@@ -5,17 +5,17 @@ import type {
   LessonObjectiveAgentInput,
   LessonObjectiveAgentTools,
   LessonPoolAgentProvider,
-  LlmProvider,
   RunCostSink,
 } from "../ports/ai";
 import type { UsageRecorder } from "../ports/usage";
+import { FAKE_SLOW_DELAY_MS, FAKE_SLOW_MARKER, fakeObjectiveExercises } from "./fake-lesson-pool";
 import { recordResponse } from "./usage/record-http";
 
 /**
  * Deterministyczne fake'i agenta puli lekcji i checkera (etap 1 issue #237): sterowane scenariuszem,
- * bez sieci i modeli. Służą testom kierownika agenta i trybowi `UMIEM_FAKE_PROVIDERS=1` (etap 2a §5:
- * `fromLlm` + checker `unavailable`); nie są adapterem żadnej usługi. Nie znają identyfikatorów
- * przedmiotów — zagadnienia rozpoznają po slugu z identyfikatora celu.
+ * bez sieci i modeli. Służą testom kierownika agenta i trybowi `UMIEM_FAKE_PROVIDERS=1` (etap 3 PR 2
+ * §5.2: pętla generatora `generate` + checker `unavailable`); nie są adapterem żadnej usługi.
+ * Scenariusze rozpoznają zagadnienia po slugu z identyfikatora celu.
  */
 
 /** Krok scenariusza podagenta: jedno „wywołanie modelu” z narzędziami albo awarią. */
@@ -31,10 +31,11 @@ export type FakeAgentStep =
    * „Wywołanie w locie”: `onReached` sygnalizuje dojście do kroku, potem krok czeka na `gate`;
    * przerwanie sygnału odrzuca `signal.reason`. Koszt kroku jest zapisany przed czekaniem.
    */
-  | { gate: Promise<void>; onReached?: () => void };
-
-/** Krok wewnętrzny trybu `fromLlm`: jedno „wywołanie modelu” z wynikiem `generateLessonPool`. */
-type FakeObjectiveStep = FakeAgentStep | { fromLlm: LlmProvider };
+  | { gate: Promise<void>; onReached?: () => void }
+  /** Jedno zgłoszenie generatora ({@link fakeObjectiveExercises}) z bieżącym przesunięciem zagadnienia (+100 na krok). */
+  | { generate: true }
+  /** Zgłoszenie zbudowane z wejścia podagenta w czasie kroku (identyfikatory zagadnień szkoły i rozdziału zawierają `deckId`). */
+  | { build: (input: LessonObjectiveAgentInput) => { exercises: unknown[]; examples?: unknown } };
 
 /** Scenariusz zagadnienia: jeden dla każdego wywołania albo `calls[i]` dla i-tego wywołania (ponowienia). */
 export type FakeObjectiveScript = FakeAgentStep[] | { calls: FakeAgentStep[][] };
@@ -55,14 +56,22 @@ export interface FakeLessonPoolAgentOptions {
    */
   usage?: UsageRecorder;
   /**
-   * Tryb „jak LLM” (tryb fake workera): zagadnienie bez scenariusza zgłasza w jednym kroku wynik
-   * `generateLessonPool` dla swojego zagadnienia, a planer bez `plans` — deterministyczny plan z pokrycia
-   * materiału ({@link fakePlanFromCoverage}).
+   * Pętla generatora (spec etapu 3 §5.2): zagadnienie bez scenariusza zgłasza {@link fakeObjectiveExercises}
+   * i dokłada kroki tylko dla braków z wyniku narzędzia (do `maxSteps`); planer bez `plans` — plan
+   * z pokrycia. `delayMs` opóźnia każdy krok, a `FAKE_SLOW_MARKER` w materiale — pierwszy krok
+   * zagadnienia do co najmniej `FAKE_SLOW_DELAY_MS`; sen przerywa sygnał.
    */
-  fromLlm?: LlmProvider;
+  generate?: { delayMs?: number };
+  /** Zapis historii `calls` i `planCalls` (domyślnie `true`); proces workera wyłącza go, żeby nie rosła. */
+  record?: boolean;
 }
 
 type PlanTools = Parameters<LessonPoolAgentProvider["planObjectives"]>[1];
+type SubmitInput = Parameters<LessonObjectiveAgentTools["submit"]>[0];
+type FakeStage = "guided" | "productive" | "independent";
+
+/** Odstęp numeracji kolejnych kroków generatora w zagadnieniu. */
+const GENERATOR_STEP_OFFSET = 100;
 
 /**
  * Czeka na przerwanie sygnału i odrzuca `signal.reason`; przerwany wcześniej odrzuca od razu.
@@ -84,6 +93,107 @@ function rejectOnAbort(signal: AbortSignal): { promise: Promise<never>; dispose:
       if (onAbort) signal.removeEventListener("abort", onAbort);
     },
   };
+}
+
+/** Sen przerywany sygnałem: przerwanie odrzuca `signal.reason`, a timer i nasłuch są zdejmowane zawsze. */
+async function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  const abort = rejectOnAbort(signal);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+      abort.promise,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    abort.dispose();
+  }
+}
+
+/**
+ * Przesunięcie numeracji pierwszego kroku zagadnienia: `index · 1000` w puli bez ćwiczeń zagadnienia,
+ * a przy istniejących (szkic przy „+N”, przyjęte z punktu kontrolnego) osobne pasmo
+ * `index · 1000 + 500 + existingCount · 2`. Kolizje z numerami szkicu po usunięciach rodzica naprawia
+ * kolejny krok pętli.
+ */
+function startOffset(input: LessonObjectiveAgentInput): number {
+  const { index, existingCount } = input.objective;
+  return existingCount > 0 ? index * 1000 + 500 + existingCount * 2 : index * 1000;
+}
+
+/** Zamówienie kolejnego kroku pętli generatora. */
+interface GeneratorRequest {
+  readonly counts: Record<FakeStage, number>;
+  readonly required: readonly (readonly string[])[];
+  /** Ponowne przykłady kart (brak „card examples” w wyniku). */
+  readonly examples: boolean;
+}
+
+const STAGES: readonly FakeStage[] = ["guided", "productive", "independent"];
+
+const STAGE_GAP = /^(guided|productive|independent): (\d+) of (\d+)$/u;
+const NEW_EXERCISES = /^new exercises: (\d+) of (\d+)$/u;
+const DISTINCT_OPEN = /^distinct open answers: (\d+) of (\d+)$/u;
+const EXERCISES = /^exercises: (\d+) of (\d+)$/u;
+const NEEDS_TYPE = /^needs at least one (.+)$/u;
+
+/** `b − a` z dopasowania `"… a of b"` (grupy 1 i 2). */
+function shortfall(match: RegExpExecArray): number {
+  return Math.max(0, Number(match[2]) - Number(match[1]));
+}
+
+/**
+ * Kolejny krok z braków wyniku narzędzia (`objectiveStatus`): `"<etap>: a of b"` → `b − a` ćwiczeń etapu,
+ * `"distinct open answers: a of b"` → tyle samodzielnych więcej, `"exercises: a of b"` → reszta braku
+ * jako wspomagane, `"needs at least one …"` → po jednym ćwiczeniu typu, `"card examples"` → przykłady.
+ * W „+N” `"new exercises: k of N"` → `N − k` rozłożone po równo na etapy z braków (żaden — samodzielny),
+ * co najmniej braki etapów; `"exercises"` wtedy pomijany. Brak rozpoznanego braku → `undefined` (koniec).
+ */
+function nextGeneratorRequest(missing: readonly string[]): GeneratorRequest | undefined {
+  const counts: Record<FakeStage, number> = { guided: 0, productive: 0, independent: 0 };
+  const listed = new Set<FakeStage>();
+  const required: string[][] = [];
+  let remaining: number | undefined;
+  let total = 0;
+  let examples = false;
+  for (const line of missing) {
+    const stage = STAGE_GAP.exec(line);
+    const added = NEW_EXERCISES.exec(line);
+    const distinct = DISTINCT_OPEN.exec(line);
+    const exercises = EXERCISES.exec(line);
+    const needs = NEEDS_TYPE.exec(line);
+    if (stage !== null) {
+      const name = stage[1] as FakeStage;
+      counts[name] += Math.max(0, Number(stage[3]) - Number(stage[2]));
+      listed.add(name);
+    } else if (added !== null) remaining = shortfall(added);
+    else if (distinct !== null) counts.independent += shortfall(distinct);
+    else if (exercises !== null) total = shortfall(exercises);
+    else if (needs !== null) required.push(needs[1]!.split(" or "));
+    else if (line.startsWith("card examples:")) examples = true;
+  }
+  const sum = () => counts.guided + counts.productive + counts.independent;
+  if (remaining !== undefined) {
+    const stages = listed.size > 0 ? STAGES.filter((stage) => listed.has(stage)) : (["independent"] as const);
+    const extra = Math.max(0, remaining - sum());
+    stages.forEach((stage, position) => {
+      counts[stage] += Math.floor(extra / stages.length) + (position < extra % stages.length ? 1 : 0);
+    });
+  } else {
+    counts.guided += Math.max(0, total - sum());
+  }
+  if (sum() === 0 && required.length === 0 && !examples) return undefined;
+  return { counts, required, examples };
+}
+
+/** Odpowiedzi zgłoszonych ćwiczeń: kolejne kroki unikają ich jak zdań lekcji (`avoidSentences`). */
+function answersOf(exercises: readonly unknown[]): string[] {
+  return exercises.flatMap((exercise) => {
+    const answer = (exercise as { answer?: unknown } | null)?.answer;
+    return typeof answer === "string" ? [answer] : [];
+  });
 }
 
 /** Obietnica, która nigdy się nie rozstrzyga (dostawca ignorujący `signal`). */
@@ -118,7 +228,7 @@ function materialHeadings(material: string): string[] {
 }
 
 /**
- * Deterministyczny plan trybu `fromLlm`: trzy zagadnienia „Część 1/2/3”. Słowa pokrycia (gdy brak —
+ * Deterministyczny plan generatora (`generate`): trzy zagadnienia „Część 1/2/3”. Słowa pokrycia (gdy brak —
  * nagłówki materiału) dzielone po kolei i po równo na dwa zagadnienia `words`, ramy w trzecim `frame`; bez
  * ram trzecie też jest zagadnieniem słów. Przy mniejszej liczbie słów niż zagadnień słowa się powtarzają,
  * więc każda karta ma słowo materiału. Karta „Words”/„Frames” z listą pokrywa cały materiał (bramka planu),
@@ -199,9 +309,14 @@ export class FakeLessonPoolAgent implements LessonPoolAgentProvider {
     signal: AbortSignal,
   ): Promise<{ steps: number; stopReason: "stopped" | "max_steps" | "model_finished" }> {
     const slug = input.objective.id.split(".").at(-1) ?? input.objective.id;
-    const script = this.scriptFor(slug) ?? (this.options.fromLlm ? [{ fromLlm: this.options.fromLlm }] : []);
+    const scripted = this.scriptFor(slug);
     const outcomes: unknown[] = [];
-    this.calls.push({ objectiveId: input.objective.id, input, tools, outcomes });
+    if (this.options.record !== false) this.calls.push({ objectiveId: input.objective.id, input, tools, outcomes });
+    if (scripted === undefined && this.options.generate !== undefined) {
+      return this.meter.track(() => this.runGenerator(input, tools, cost, signal, outcomes));
+    }
+    const script = scripted ?? [];
+    const progress = { generated: 0 };
     return this.meter.track(async () => {
       let steps = 0;
       for (const step of script) {
@@ -212,10 +327,55 @@ export class FakeLessonPoolAgent implements LessonPoolAgentProvider {
         // narzędzi go nie gubi (jak onLanguageModelCallEnd w AI SDK).
         this.recordStep(cost, "agent_objective");
         steps += 1;
-        await this.executeStep(step, tools, outcomes, signal, input);
+        await this.executeStep(step, tools, outcomes, signal, input, progress);
       }
       return { steps, stopReason: "model_finished" as const };
     });
+  }
+
+  /**
+   * Pętla generatora: krok 1 z liczbami `pool.stageCounts` (wymagane typy i dodatek słuchowy), kolejne
+   * tylko dla braków z wyniku `submit` ({@link nextGeneratorRequest}), z przesunięciem +100 i odpowiedziami
+   * wcześniejszych kroków w `avoidSentences`. Koniec: `complete`, brak rozpoznanego braku (`model_finished`),
+   * `maxSteps` albo `shouldStop()`. Koszt kroku zapisany po „odpowiedzi” (po śnie), przed narzędziem.
+   */
+  private async runGenerator(
+    input: LessonObjectiveAgentInput,
+    tools: LessonObjectiveAgentTools,
+    cost: RunCostSink,
+    signal: AbortSignal,
+    outcomes: unknown[],
+  ): Promise<{ steps: number; stopReason: "stopped" | "max_steps" | "model_finished" }> {
+    let steps = 0;
+    let offset = startOffset(input);
+    let request: GeneratorRequest | undefined;
+    let stepInput = input;
+    for (;;) {
+      signal.throwIfAborted();
+      if (steps >= input.maxSteps) return { steps, stopReason: "max_steps" };
+      if (tools.shouldStop()) return { steps, stopReason: "stopped" };
+      await this.pause(input, steps === 0, signal);
+      this.recordStep(cost, "agent_objective");
+      steps += 1;
+      const generated = fakeObjectiveExercises(stepInput, offset, request?.counts, request?.required);
+      const examples = request === undefined || request.examples ? generated.examples : undefined;
+      signal.throwIfAborted();
+      const outcome = await tools.submit({ exercises: generated.exercises, ...(examples === undefined ? {} : { examples }) });
+      outcomes.push(outcome);
+      if (outcome.complete) return { steps, stopReason: "model_finished" };
+      request = nextGeneratorRequest(outcome.missing);
+      if (request === undefined) return { steps, stopReason: "model_finished" };
+      offset += GENERATOR_STEP_OFFSET;
+      const pool = stepInput.pool;
+      stepInput = { ...stepInput, pool: { ...pool, avoidSentences: [...(pool.avoidSentences ?? []), ...answersOf(generated.exercises)] } };
+    }
+  }
+
+  /** Opóźnienie kroku generatora: `delayMs`, a pierwszy krok materiału z `FAKE_SLOW_MARKER` co najmniej `FAKE_SLOW_DELAY_MS`. */
+  private async pause(input: LessonObjectiveAgentInput, first: boolean, signal: AbortSignal): Promise<void> {
+    const base = this.options.generate?.delayMs ?? 0;
+    const ms = first && input.pool.material.includes(FAKE_SLOW_MARKER) ? Math.max(base, FAKE_SLOW_DELAY_MS) : base;
+    if (ms > 0) await sleepUnlessAborted(ms, signal);
   }
 
   async planObjectives(
@@ -225,9 +385,9 @@ export class FakeLessonPoolAgent implements LessonPoolAgentProvider {
     signal: AbortSignal,
   ): Promise<{ steps: number }> {
     const proposals: unknown[] = [];
-    this.planCalls.push({ input, proposals });
+    if (this.options.record !== false) this.planCalls.push({ input, proposals });
     let steps = 0;
-    const plans = this.options.plans ?? (this.options.fromLlm ? [fakePlanFromCoverage(input)] : []);
+    const plans = this.options.plans ?? (this.options.generate !== undefined ? [fakePlanFromCoverage(input)] : []);
     for (const plan of plans) {
       signal.throwIfAborted();
       if (steps >= input.maxSteps || tools.shouldStop()) break;
@@ -239,8 +399,8 @@ export class FakeLessonPoolAgent implements LessonPoolAgentProvider {
     return { steps };
   }
 
-  /** Scenariusz wywołania; `undefined` = zagadnienie bez scenariusza (wtedy `fromLlm` albo brak kroków). */
-  private scriptFor(slug: string): FakeObjectiveStep[] | undefined {
+  /** Scenariusz wywołania; `undefined` = zagadnienie bez scenariusza (wtedy generator albo brak kroków). */
+  private scriptFor(slug: string): FakeAgentStep[] | undefined {
     const script = this.options.objectives?.[slug];
     const call = this.callCounts.get(slug) ?? 0;
     this.callCounts.set(slug, call + 1);
@@ -261,29 +421,32 @@ export class FakeLessonPoolAgent implements LessonPoolAgentProvider {
   }
 
   private async executeStep(
-    step: FakeObjectiveStep,
+    step: FakeAgentStep,
     tools: LessonObjectiveAgentTools,
     outcomes: unknown[],
     signal: AbortSignal,
     input: LessonObjectiveAgentInput,
+    progress: { generated: number },
   ): Promise<void> {
     signal.throwIfAborted();
-    if ("fromLlm" in step) {
-      // Wynik generatora potoku dla wejścia podagenta, zawężony do jego zagadnienia.
-      const objective = input.objective;
-      const res = await step.fromLlm.generateLessonPool(input.pool, signal);
+    if ("generate" in step) {
+      const first = progress.generated === 0;
+      const offset = startOffset(input) + GENERATOR_STEP_OFFSET * progress.generated;
+      progress.generated += 1;
+      await this.pause(input, first, signal);
+      const generated = fakeObjectiveExercises(input, offset);
       signal.throwIfAborted();
-      const exercises = res.exercises.filter((exercise) => (exercise as { objectiveId?: unknown } | null)?.objectiveId === objective.id);
-      const examples = objective.examplesFromPlan ? undefined : res.examples?.[objective.id];
-      outcomes.push(await tools.submit({ exercises, ...(examples === undefined ? {} : { examples }) }));
+      outcomes.push(await tools.submit(generated));
+    } else if ("build" in step) {
+      outcomes.push(await tools.submit(step.build(input) as SubmitInput));
     } else if ("submit" in step) {
-      const raw = step.submit as Parameters<LessonObjectiveAgentTools["submit"]>[0];
+      const raw = step.submit as SubmitInput;
       outcomes.push(await tools.submit(raw));
     } else if ("remove" in step) {
       outcomes.push(await tools.remove(step.remove));
     } else if ("parallel" in step) {
       // Wywołania startują synchronicznie jedno po drugim i nie czekają na siebie (AI SDK: Promise.all).
-      await Promise.all(step.parallel.map((inner) => this.executeStep(inner, tools, outcomes, signal, input)));
+      await Promise.all(step.parallel.map((inner) => this.executeStep(inner, tools, outcomes, signal, input, progress)));
     } else if ("throw" in step) {
       throw step.throw;
     } else if ("stall" in step) {

@@ -532,10 +532,19 @@ export function topRejectedReasons(
 }
 
 /**
- * Odrzucenia, których nie wyjaśniają wypisane powody: `rejectedCount` liczy
- * wszystkie odrzucenia generowania (kształt, walidacja puli, duplikaty), a
- * `rejectedReasons` tylko sprawdzanie słów z materiału — do tego lista pokazuje
- * najwyżej kilka powodów. Nigdy ujemna.
+ * Liczba odrzuconych ćwiczeń w wierszu licznika: większa z `rejectedCount` i sumy
+ * wszystkich `rejectedReasons`. Agent puli zapisuje w `rejectedReasons` każde
+ * odrzucenie w pętli generowania (kumulowane w runie), a w `rejectedCount` tylko
+ * usunięcia po przyjęciu — licznik nie może być mniejszy niż suma powodów pod nim.
+ */
+export function rejectedTotal(rejectedCount: number, reasons: Readonly<Record<string, number>> | undefined): number {
+  return Math.max(rejectedCount, Object.values(reasons ?? {}).reduce((sum, count) => sum + count, 0));
+}
+
+/**
+ * Odrzucenia, których nie wyjaśniają wypisane powody: różnica licznika
+ * ({@link rejectedTotal}) i sumy powodów pokazanych na liście (najwyżej kilka) —
+ * powody spoza pierwszej piątki i odrzucenia bez zapisanego powodu. Nigdy ujemna.
  */
 export function otherRejectedCount(rejectedCount: number, listed: readonly { count: number }[]): number {
   return Math.max(0, rejectedCount - listed.reduce((sum, { count }) => sum + count, 0));

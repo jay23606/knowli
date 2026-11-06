@@ -73,6 +73,7 @@ describe("LESSON_EXERCISE_TYPES", () => {
 
 describe("SubjectCatalogDtoSchema", () => {
   const catalog = {
+    lessonGenerationAvailable: true,
     subjects: [{
       id: "english_grammar",
       titlePl: "Angielski — gramatyka",
@@ -91,21 +92,21 @@ describe("SubjectCatalogDtoSchema", () => {
   });
   it("is strict (no model-facing descriptions)", () => {
     const parsed = SubjectCatalogDtoSchema.safeParse({
-      subjects: [{ ...catalog.subjects[0], descriptionEn: "leak" }],
+      lessonGenerationAvailable: true, subjects: [{ ...catalog.subjects[0], descriptionEn: "leak" }],
     });
     expect(parsed.success).toBe(false);
   });
   it("wymaga sposobu tworzenia (creation) i znacznika nazwy przedmiotu od rodzica", () => {
     const { creation: _creation, ...withoutCreation } = catalog.subjects[0]!;
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [withoutCreation] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [withoutCreation] }).success).toBe(false);
     const { subjectTitleRequired: _required, ...withoutRequired } = catalog.subjects[0]!;
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [withoutRequired] }).success).toBe(false);
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...catalog.subjects[0], creation: "dynamic" }] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [withoutRequired] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [{ ...catalog.subjects[0], creation: "dynamic" }] }).success).toBe(false);
   });
   it("przyjmuje przedmiot tworzony z materiału bez tematów katalogowych", () => {
     const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, topics: [] };
     const school = { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] };
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [chapter, school] }).success).toBe(true);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [chapter, school] }).success).toBe(true);
   });
 });
 
@@ -154,7 +155,7 @@ describe("ton lektora (voiceTone)", () => {
   });
   it("static subject catalog does not get a tone (its strict card rejects voiceTone)", () => {
     const parsed = SubjectCatalogDtoSchema.safeParse({
-      subjects: [{
+      lessonGenerationAvailable: true, subjects: [{
         id: "english_grammar", titlePl: "Angielski — gramatyka",
         topics: [{
           id: "present_simple", version: 1, titlePl: "Present Simple",
@@ -811,15 +812,22 @@ describe("tematy zdań z zainteresowań dziecka (#197)", () => {
     }).success).toBe(false);
   });
 
+  it("SubjectCatalogDtoSchema wymaga lessonGenerationAvailable (boolean)", () => {
+    const subject = { id: "english_grammar", titlePl: "Angielski — gramatyka", creation: "catalog", subjectTitleRequired: false, topics: [] };
+    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [subject] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: "true", subjects: [subject] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.parse({ lessonGenerationAvailable: false, subjects: [subject] }).lessonGenerationAvailable).toBe(false);
+  });
+
   it("SubjectCatalogDtoSchema przyjmuje katalog z nowymi polami i bez nich", () => {
     const subject = { id: "english_grammar", titlePl: "Angielski — gramatyka", creation: "catalog", subjectTitleRequired: false, topics: [] };
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [subject] }).success).toBe(true);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [subject] }).success).toBe(true);
     expect(SubjectCatalogDtoSchema.safeParse({
-      subjects: [{ ...subject, acceptsInterests: true }], generationService: "openrouter.ai",
+      lessonGenerationAvailable: true, subjects: [{ ...subject, acceptsInterests: true }], generationService: "openrouter.ai",
     }).success).toBe(true);
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, acceptsInterests: "yes" }] }).success).toBe(false);
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, offersListenChoice: true }] }).success).toBe(true);
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, offersListenChoice: "yes" }] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [{ ...subject, acceptsInterests: "yes" }] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [{ ...subject, offersListenChoice: true }] }).success).toBe(true);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [{ ...subject, offersListenChoice: "yes" }] }).success).toBe(false);
   });
 
   it("LessonDraftDtoSchema przyjmuje tematy szkicu", () => {
@@ -842,12 +850,12 @@ describe("usługi generowania per przedmiot i luki generowania (agent puli, etap
   };
 
   it("pola usług przedmiotu są opcjonalne, a stare ładunki przechodzą", () => {
-    const parsed = SubjectCatalogDtoSchema.parse({ subjects: [subject] }).subjects[0]!;
+    const parsed = SubjectCatalogDtoSchema.parse({ lessonGenerationAvailable: true, subjects: [subject] }).subjects[0]!;
     expect(parsed).not.toHaveProperty("generationServices");
     expect(parsed).not.toHaveProperty("checkService");
     expect(parsed).not.toHaveProperty("checkServiceIncludesMaterial");
     const withServices = SubjectCatalogDtoSchema.parse({
-      subjects: [{ ...subject, generationServices: ["openrouter.ai · a", "openrouter.ai · b"], checkService: "openrouter.ai · c", checkServiceIncludesMaterial: true }],
+      lessonGenerationAvailable: true, subjects: [{ ...subject, generationServices: ["openrouter.ai · a", "openrouter.ai · b"], checkService: "openrouter.ai · c", checkServiceIncludesMaterial: true }],
     }).subjects[0]!;
     expect(withServices.generationServices).toEqual(["openrouter.ai · a", "openrouter.ai · b"]);
     expect(withServices.checkService).toBe("openrouter.ai · c");
@@ -855,11 +863,11 @@ describe("usługi generowania per przedmiot i luki generowania (agent puli, etap
   });
 
   it("openCheckService (ocena odpowiedzi próbnych do pytań otwartych): opcjonalne, bez pustego napisu", () => {
-    expect(SubjectCatalogDtoSchema.parse({ subjects: [subject] }).subjects[0]!).not.toHaveProperty("openCheckService");
-    const parsed = SubjectCatalogDtoSchema.parse({ subjects: [{ ...subject, openCheckService: "openrouter.ai · g" }] }).subjects[0]!;
+    expect(SubjectCatalogDtoSchema.parse({ lessonGenerationAvailable: true, subjects: [subject] }).subjects[0]!).not.toHaveProperty("openCheckService");
+    const parsed = SubjectCatalogDtoSchema.parse({ lessonGenerationAvailable: true, subjects: [{ ...subject, openCheckService: "openrouter.ai · g" }] }).subjects[0]!;
     expect(parsed.openCheckService).toBe("openrouter.ai · g");
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, openCheckService: "" }] }).success).toBe(false);
-    expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, openCheckService: 1 }] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [{ ...subject, openCheckService: "" }] }).success).toBe(false);
+    expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [{ ...subject, openCheckService: 1 }] }).success).toBe(false);
   });
 
   it("pola usług odrzucają puste wartości i złe typy", () => {
@@ -870,7 +878,7 @@ describe("usługi generowania per przedmiot i luki generowania (agent puli, etap
       { checkService: "" },
       { checkServiceIncludesMaterial: "tak" },
     ]) {
-      expect(SubjectCatalogDtoSchema.safeParse({ subjects: [{ ...subject, ...bad }] }).success).toBe(false);
+      expect(SubjectCatalogDtoSchema.safeParse({ lessonGenerationAvailable: true, subjects: [{ ...subject, ...bad }] }).success).toBe(false);
     }
   });
 

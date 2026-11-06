@@ -7,6 +7,7 @@ import {
   filledClozeOf,
   formatRejectedReason,
   otherRejectedCount,
+  rejectedTotal,
   syncGapAnswers,
   applyCalculationPreview,
   groupCalculationFamilies,
@@ -675,6 +676,34 @@ describe("otherRejectedCount (odrzucenia spoza wypisanych powodów)", () => {
 
   it("nigdy nie jest ujemna (liczniki z kilku przebiegów mogą się rozjechać)", () => {
     expect(otherRejectedCount(3, listed)).toBe(0);
+  });
+});
+
+describe("rejectedTotal (licznik odrzuceń zgodny z listą powodów)", () => {
+  it("szkic agenta: powody z pętli generowania przewyższają rejectedCount (usunięcia po przyjęciu) — licznik to suma powodów", () => {
+    const reasons = {
+      "rozwiązanie widoczne wcześniej": 12,
+      "drugi model rozwiązał inaczej": 5,
+      "zły format ćwiczenia": 2,
+      "za dużo ćwiczeń w etapie": 1,
+      "podpowiedź zdradza odpowiedź": 1,
+      "niepoprawny wariant odpowiedzi": 1,
+    };
+    const total = rejectedTotal(1, reasons);
+    expect(total).toBe(22);
+    // Pięć wypisanych powodów (12+5+2+1+1) i jeden poza listą — „inne powody: 1”, nic nie znika.
+    const shown = topRejectedReasons(reasons);
+    expect(otherRejectedCount(total, shown)).toBe(1);
+  });
+
+  it("rejectedCount większy niż suma powodów zostaje licznikiem (odrzucenia bez zapisanego powodu)", () => {
+    expect(rejectedTotal(12, { "powód A": 3, "powód B": 2 })).toBe(12);
+    expect(otherRejectedCount(rejectedTotal(12, { "powód A": 3, "powód B": 2 }), topRejectedReasons({ "powód A": 3, "powód B": 2 }))).toBe(7);
+  });
+
+  it("bez powodów licznik to rejectedCount", () => {
+    expect(rejectedTotal(0, undefined)).toBe(0);
+    expect(rejectedTotal(4, {})).toBe(4);
   });
 });
 

@@ -14,8 +14,7 @@ import {
   topic,
 } from "../../../domain/lessons/testing/agent-admission-fixtures";
 import { withAgentPolicy } from "../../../domain/lessons/testing/agent-test-subject";
-import type { AgentCapableSubject } from "../../../domain/lessons/agent/capable";
-import type { LessonExerciseDraft, LessonTopic } from "../../../domain/lessons/types";
+import type { LessonExerciseDraft, LessonTopic, SubjectModule } from "../../../domain/lessons/types";
 import type { LessonAgentToolOutcome } from "../../../ports/ai";
 import { FakeAnswerGrader } from "../../../providers/fake";
 import { FakeExerciseChecker, type FakeExerciseCheckerOptions } from "../../../providers/fake-lesson-agent";
@@ -33,7 +32,7 @@ function solveByNumber(view: string): string[] {
 
 interface SetupOptions {
   checker?: FakeExerciseCheckerOptions;
-  subject?: AgentCapableSubject;
+  subject?: SubjectModule;
   state?: LessonAgentState;
   cost?: RunCostMeter;
   examplesFixed?: boolean;

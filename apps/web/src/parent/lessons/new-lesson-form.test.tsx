@@ -43,7 +43,7 @@ const grammar = {
 const school = { id: "school", titlePl: "Przedmiot szkolny", creation: "material", subjectTitleRequired: true, topics: [] };
 const chapter = { id: "english_chapter", titlePl: "Angielski — rozdział", creation: "material", subjectTitleRequired: false, offersListenChoice: true, topics: [] };
 
-const catalog = { subjects: [grammar, school, chapter] } as unknown as SubjectCatalogDto;
+const catalog = { lessonGenerationAvailable: true, subjects: [grammar, school, chapter] } as unknown as SubjectCatalogDto;
 
 const values = (overrides: Partial<NewLessonValues> = {}): NewLessonValues => ({
   ...initialLessonValues(catalog),
@@ -52,9 +52,10 @@ const values = (overrides: Partial<NewLessonValues> = {}): NewLessonValues => ({
 });
 
 /** Formularz z wczytanym katalogiem, w którym pierwszym przedmiotem jest podany (renderowanie statyczne nie wykonuje zapytań). */
-function renderWithCatalog(first: unknown, extras: { children?: unknown[]; generationService?: string } = {}): string {
+function renderWithCatalog(first: unknown, extras: { children?: unknown[]; generationService?: string; available?: boolean } = {}): string {
   const queryClient = new QueryClient();
   queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, {
+    lessonGenerationAvailable: extras.available ?? true,
     subjects: [first],
     ...(extras.generationService ? { generationService: extras.generationService } : {}),
   } as unknown as SubjectCatalogDto);
@@ -470,8 +471,9 @@ describe("NewLessonForm", () => {
         expect(markup).not.toContain(messages.lessons.generationServicesInfo.replace("{service}", GEN[0]!));
       });
 
-      it("przedmiot potoku: usługa tematów zdań z katalogu, bez komunikatów agenta", () => {
-        const markup = renderWithCatalog(grammar, { generationService: SERVICE });
+      it("bez agenta (lessonGenerationAvailable: false) przedmiot nie ma usług agenta: usługa tematów zdań z katalogu, bez komunikatów agenta", () => {
+        // Przy dostępnym agencie katalog podaje usługi agenta dla każdego przedmiotu — przedmiot bez nich jest tylko przy `false`.
+        const markup = renderWithCatalog(grammar, { generationService: SERVICE, available: false });
         expect(markup).toContain(messages.lessons.themesService.replace("{service}", SERVICE));
         expect(markup).not.toContain('data-testid="lesson-check-service"');
         expect(markup).not.toContain('data-testid="lesson-generation-service"');
@@ -512,6 +514,24 @@ describe("NewLessonForm", () => {
       expect(messages.lessons.themesService).toContain("{service}");
     });
 
+    it("notka o tematach wymienia drugi model sprawdzający, który dostaje gotowe zdania", () => {
+      expect(messages.lessons.themesService).toBe(
+        "Tematy zdań trafią do usługi: {service}. Z profilu wysyłamy tylko tematy — bez imienia i roku urodzenia. Drugi model sprawdzający ćwiczenia dostaje gotowe zdania, nie listę tematów. Zdania z tymi tematami może też zobaczyć usługa oceniająca odpowiedzi.",
+      );
+      expect(messages.lessons.themesServiceUnknown).toContain("Tematy zdań trafią do usługi generującej.");
+      expect(messages.lessons.themesServiceUnknown).toContain("Drugi model sprawdzający ćwiczenia dostaje gotowe zdania, nie listę tematów.");
+    });
+
+    it("komunikat o niedostępnym generowaniu: tylko przy lessonGenerationAvailable false", () => {
+      expect(messages.lessons.generationErrors.lesson_agent_unavailable).toBe(
+        "Generowanie lekcji wymaga klucza OpenRouter w konfiguracji serwera. Po dodaniu klucza ponów generowanie.",
+      );
+      const off = renderWithCatalog(grammar, { available: false });
+      expect(off).toContain('data-testid="lesson-generation-unavailable"');
+      expect(off).toContain(messages.lessons.generationErrors.lesson_agent_unavailable);
+      expect(renderWithCatalog(grammar)).not.toContain('data-testid="lesson-generation-unavailable"');
+    });
+
     it("sekcja ukryta dla rozdziału, szkoły i przedmiotu bez flagi", () => {
       for (const subject of [chapter, school, { ...grammar, acceptsInterests: false }]) {
         const markup = renderWithCatalog(subject, { children: [ola] });
@@ -534,10 +554,10 @@ describe("NewLessonForm", () => {
         vi.unstubAllGlobals();
       });
 
-      function renderInteractive(children: unknown[] | "error" = [ola, adam], initialSubjectId?: string) {
+      function renderInteractive(children: unknown[] | "error" = [ola, adam], initialSubjectId?: string, available = true) {
         const registerEditorState = vi.fn();
         const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false, retryOnMount: false } } });
-        queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, catalog);
+        queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, { ...catalog, lessonGenerationAvailable: available });
         if (children === "error") {
           // błąd odczytu listy dzieci: bez danych i bez ponownego pobrania przy montowaniu
           queryClient.getQueryCache().build(queryClient, orpc.children.list.queryOptions()).setState({
@@ -555,7 +575,7 @@ describe("NewLessonForm", () => {
             </MantineProvider>
           </QueryClientProvider>,
         );
-        return { registerEditorState };
+        return { registerEditorState, queryClient };
       }
       const pills = () => Array.from(document.querySelectorAll("[data-testid='lesson-themes'] .mantine-Pill-root")).map((el) => el.textContent?.trim());
       const insertButton = (id: string) => screen.getByTestId(`lesson-themes-insert-${id}`) as HTMLButtonElement;
@@ -674,6 +694,34 @@ describe("NewLessonForm", () => {
         fireEvent.click(screen.getByTestId("lesson-create-submit"));
         await waitFor(() => expect(lessonsApi.create).toHaveBeenCalledTimes(2));
         expect(lessonsApi.create.mock.calls[1]![0]).toMatchObject({ deckId: lessonsApi.create.mock.calls[0]![0].deckId, interests: ["dinozaury", "Minecraft"] });
+      });
+
+      it("bez klucza (lessonGenerationAvailable: false): komunikat i wyłączona wysyłka mimo poprawnych danych", async () => {
+        renderInteractive([ola, adam], undefined, false);
+        fireEvent.change(screen.getByTestId("lesson-material"), { target: { value: "He plays football." } });
+        expect(screen.getByTestId("lesson-generation-unavailable").textContent).toContain(messages.lessons.generationErrors.lesson_agent_unavailable);
+        expect((screen.getByTestId("lesson-create-submit") as HTMLButtonElement).disabled).toBe(true);
+        fireEvent.click(screen.getByTestId("lesson-create-submit"));
+        expect(lessonsApi.create).not.toHaveBeenCalled();
+      });
+
+      it("z kluczem: bez komunikatu, wysyłka działa", async () => {
+        renderInteractive();
+        fireEvent.change(screen.getByTestId("lesson-material"), { target: { value: "He plays football." } });
+        expect(screen.queryByTestId("lesson-generation-unavailable")).toBeNull();
+        expect((screen.getByTestId("lesson-create-submit") as HTMLButtonElement).disabled).toBe(false);
+      });
+
+      it("niewysłane polecenie (hasPending) też jest zablokowane, gdy klucza brakuje", async () => {
+        lessonsApi.create.mockResolvedValueOnce({});
+        const { queryClient } = renderInteractive();
+        fireEvent.change(screen.getByTestId("lesson-material"), { target: { value: "He plays football." } });
+        fireEvent.click(screen.getByTestId("lesson-create-submit"));
+        await waitFor(() => expect(screen.getByTestId("api-error").textContent).toContain(messages.lessons.createUncertain));
+        expect((screen.getByTestId("lesson-create-submit") as HTMLButtonElement).disabled).toBe(false);
+        queryClient.setQueryData(orpc.lessonCatalog.get.queryOptions().queryKey, { ...catalog, lessonGenerationAvailable: false });
+        await waitFor(() => expect(screen.queryByTestId("lesson-generation-unavailable")).not.toBeNull());
+        expect((screen.getByTestId("lesson-create-submit") as HTMLButtonElement).disabled).toBe(true);
       });
 
       it("zmiana przedmiotu na rozdział ukrywa sekcję", async () => {

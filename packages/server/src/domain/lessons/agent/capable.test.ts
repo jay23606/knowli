@@ -2,17 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DynamicObjectiveKind, LessonExerciseDraft } from "../types";
 import { historyLikeSubject } from "../testing/history-like-subject";
 import { agentTestSubject, withAgentPolicy } from "../testing/agent-test-subject";
-import { agentObjectivesOf, asAgentCapable } from "./capable";
-
-describe("asAgentCapable", () => {
-  it("przepuszcza przedmiot z polityką agenta", () => {
-    expect(asAgentCapable(agentTestSubject)).toBe(agentTestSubject);
-  });
-
-  it("rzuca dla przedmiotu bez polityki agenta", () => {
-    expect(() => asAgentCapable(historyLikeSubject)).toThrow("subject has no agentPolicy");
-  });
-});
+import { agentObjectivesOf } from "./capable";
 
 describe("agentObjectivesOf", () => {
   const topic = historyLikeSubject.topics[0]!;

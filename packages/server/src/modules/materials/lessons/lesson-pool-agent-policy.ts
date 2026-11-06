@@ -17,7 +17,7 @@ export interface LessonAgentPolicy {
   readonly checkerTimeoutMs: number;
   /** Liczony od faktycznego startu podagenta. */
   readonly objectiveTimeoutMs: number;
-  /** Agent nie trwa dłużej niż kontroler runu potoku. */
+  /** Agent nie trwa dłużej niż kontroler runu (`withLessonGenerationControl`). */
   readonly runTimeoutMs: number;
   /** Budżet wyczerpany przy wydatku ≥ `runBudgetUsd`. */
   readonly runBudgetUsd: number;
@@ -53,7 +53,7 @@ export const DEFAULT_LESSON_AGENT_POLICY: LessonAgentPolicy = {
 export const RUN_TIMEOUT_REASON = "run_timeout";
 export const OBJECTIVE_TIMEOUT_REASON = "objective_timeout";
 
-/** Porażka planu albo zagadnienia: kod i ponawialność z klasyfikacji potoku. */
+/** Porażka planu albo zagadnienia: kod i ponawialność z klasyfikacji błędów generacji (`classifyLessonGenerationFailure`). */
 export interface AgentFailure {
   readonly errorCode: string;
   readonly retryable: boolean;

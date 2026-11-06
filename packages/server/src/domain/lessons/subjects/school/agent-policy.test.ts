@@ -62,7 +62,7 @@ describe("schoolAgentPolicy — wartości i typy", () => {
   it("każdy zarejestrowany przedmiot: niepusta lista kontroli ma komplet tekstów odrzuceń, a sędzia podpowiedzi wymaga materiału", () => {
     const policies = createProductionSubjectRegistry()
       .listSubjects()
-      .flatMap((subject) => (subject.agentPolicy === undefined ? [] : [[subject.id, subject.agentPolicy] as const]));
+      .map((subject) => [subject.id, subject.agentPolicy] as const);
     // Szkoła ma obie listy: niezmiennik nie jest pusty.
     expect(policies.map(([id]) => id)).toContain(schoolSubject.id);
     for (const [id, policy] of policies) {

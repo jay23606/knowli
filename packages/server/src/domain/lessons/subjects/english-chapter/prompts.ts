@@ -9,7 +9,7 @@ import type { SubjectPromptProfile } from "../../types";
  * stoi w `instructionPl`, bo kartkówka usuwa `hint`.
  */
 /** Słowa funkcyjne dozwolone obok materiału — lista dla generatora. */
-export const CHAPTER_FUNCTION_WORDS = "I, you, he, she, my, a, the, is, are, do, can, and, in, on, this, what, today, very";
+const CHAPTER_FUNCTION_WORDS = "I, you, he, she, my, a, the, is, are, do, can, and, in, on, this, what, today, very";
 
 export const englishChapterPrompts: SubjectPromptProfile = {
   generationRole:

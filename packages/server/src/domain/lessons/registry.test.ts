@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createSubjectRegistry } from "./registry";
 import { historyLikeSubject } from "./testing/history-like-subject";
+import { testAgentPolicy } from "./testing/test-agent-policy";
+import { createProductionSubjectRegistry } from "./subjects";
 import type { LessonTopic, SubjectModule } from "./types";
 
 function cloneData<T>(value: T): T {
@@ -19,6 +21,22 @@ describe("createSubjectRegistry", () => {
     const registry = createSubjectRegistry([historyLikeSubject]);
     expect(registry.getSubject("test_history")).toBe(historyLikeSubject);
     expect(registry.listSubjects()).toEqual([historyLikeSubject]);
+  });
+
+  it("odrzuca przedmiot bez polityki agenta, nazywając pole i przedmiot", () => {
+    const withoutPolicy = { ...historyLikeSubject, agentPolicy: undefined } as unknown as SubjectModule;
+    expect(() => createSubjectRegistry([withoutPolicy])).toThrow(/agentPolicy/);
+    expect(() => createSubjectRegistry([withoutPolicy])).toThrow(/test_history/);
+  });
+
+  it("historyLikeSubject ma wspólną politykę testową", () => {
+    expect(historyLikeSubject.agentPolicy).toBe(testAgentPolicy);
+  });
+
+  it("każdy przedmiot produkcyjny ma politykę agenta", () => {
+    for (const subject of createProductionSubjectRegistry().listSubjects()) {
+      expect(subject.agentPolicy, subject.id).toBeDefined();
+    }
   });
 
   it("odrzuca zduplikowane id przedmiotów", () => {

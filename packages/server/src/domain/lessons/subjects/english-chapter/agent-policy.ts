@@ -46,17 +46,17 @@ const NO_SOLUTION_TYPES: ReadonlySet<LessonExerciseType> = new Set(["lesson_card
 /** Typy, których rozwiązanie nie jest jednym zdaniem ramy: bramka ramy je pomija. */
 const FRAME_GATE_SKIPPED: ReadonlySet<LessonExerciseType> = new Set(["lesson_listen_choice", "lesson_match", "lesson_group"]);
 
-function cardsText(objective: AgentObjective): string {
+function cardsText(objective: Pick<AgentObjective, "cards">): string {
   return objective.cards.map((card) => card.body).join("\n");
 }
 
-/** Słowa materiału, które występują na kartach tego zagadnienia. */
-function objectiveCardWords(objective: AgentObjective, material: string): string[] {
+/** Słowa materiału, które występują na kartach tego zagadnienia (także generator fake'a agenta). */
+export function objectiveCardWords(objective: Pick<AgentObjective, "cards">, material: string): string[] {
   return parseMaterialLexicon(material).words.filter((word) => objective.cards.some((card) => mentions(card.body, word)));
 }
 
-/** Ramy materiału, których stała część występuje na kartach tego zagadnienia. */
-function objectiveFrames(objective: AgentObjective, material: string): string[] {
+/** Ramy materiału, których stała część występuje na kartach tego zagadnienia (także generator fake'a agenta). */
+export function objectiveFrames(objective: Pick<AgentObjective, "cards">, material: string): string[] {
   const cards = plainText(cardsText(objective));
   return parseMaterialLexicon(material).frames.filter((frame) => {
     const key = frameKey(frame);

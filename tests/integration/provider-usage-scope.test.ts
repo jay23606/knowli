@@ -102,9 +102,12 @@ async function usageOfAsset(assetId: string): Promise<UsageRow[]> {
   return usageRows("generation_run_id = (select id from learning_app.generation_runs where asset_id = $1)", [assetId]);
 }
 
-/** Generacja z fake'ami zapisującymi koszt; okładka ma osobny fake obrazu. */
+/**
+ * Generacja z fake'ami zapisującymi koszt; okładka ma osobny fake obrazu. Fake agenta puli lekcji zapisuje
+ * koszt sam (`usage`, jak adapter: jeden wpis na krok, operacje `agent_objective`/`agent_plan`).
+ */
 async function generationServices(): Promise<{ services: Services; fakes: FakeGeneration }> {
-  const fakes = await fakeGeneration();
+  const fakes = await fakeGeneration({ agent: { generate: {}, usage: recorder } });
   disposers.push(fakes.dispose);
   const services = createServices({
     db,
@@ -171,6 +174,11 @@ describe("zakres kosztów materiałów", () => {
       expect(rows.length, runId).toBeGreaterThan(0);
       for (const row of rows) expect(row).toMatchObject({ scope_kind: "run", generation_run_id: runId, deck_id: deckId });
     }
+    // Koszt runu lekcji pochodzi z kroków agenta puli (generator lekcji).
+    const lessonOperations = (await pool.query<{ feature: string; operation: string | null }>(
+      "select distinct feature, operation from learning_app.provider_usage_events where generation_run_id = $1", [lesson.runId],
+    )).rows;
+    expect(lessonOperations).toContainEqual({ feature: "lesson_generation", operation: "agent_objective" });
     // Media zestawu i lekcji (lektor, ilustracje) też niosą talię, która je zleciła.
     const all = await usageRows();
     expect(all.some((row) => row.feature === "tts")).toBe(true);

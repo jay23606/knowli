@@ -46,7 +46,7 @@ dostawcy.
 | `feature` | Proces | Adapter / miejsce wywołania | Dostawca (domyślnie) | Kwota |
 | --- | --- | --- | --- | --- |
 | `deck_generation` | worker | `providers/openai/llm.ts` `generateDeck` | OpenRouter, Gemini 3.8 Flash | `usage.cost` |
-| `lesson_generation` | worker | `providers/openai/llm.ts` `generateLessonPool` / `generateLessonObjectives` / `generateLessonStory` | OpenRouter, Gemini 3.8 Flash | `usage.cost` |
+| `lesson_generation` | worker | `providers/openai/llm.ts` `generateLessonPool` / `generateLessonObjectives` / `generateLessonStory` (`generateLessonPool` i operacja `lesson_pool` usunięte w etapie 3 #237 PR 2; stare wiersze `lesson_pool` zostają) | OpenRouter, Gemini 3.8 Flash | `usage.cost` |
 | `lesson_generation` (operacja `lesson_review`) | worker | `providers/openai/lesson-reviewer.ts` `reviewLessonObjective` (przez `lesson-json-request.ts`) | OpenRouter, `anthropic/claude-sonnet-5.5` | `usage.cost`; usunięty w etapie 3 #237 |
 | `lesson_generation` (operacje `agent_plan`, `agent_objective`, `check_solve`, `check_variants`, od etapu 2b `check_hints`, `check_open`) | worker | `providers/openai/lesson-pool-agent.ts` — agent puli lekcji i drugi model (checker), etap 2a/2b #237 | OpenRouter (`provider: openrouter`), domyślnie `google/gemini-3.8-flash` i `deepseek/deepseek-v4.1-flash-1017` | `providerMetadata.openrouter.usage.cost`; jeden zapis na żądanie HTTP (także każdy krok narzędzi agenta); błąd HTTP = 0, brak odpowiedzi albo nieczytelne ciało 2xx = NULL |
 | `tts` | worker | `providers/openai/tts.ts` | OpenRouter, Gemini 3.8 Flash TTS | zadanie 0 (§8.1): odpowiedź nie niesie kosztu; szacunek z długości audio (przybliżenie, rozliczenie prawdopodobnie tokenowe) |

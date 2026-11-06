@@ -244,9 +244,9 @@ export {
   type SpeechAttemptInput,
 } from "./modules/learning";
 export { authorizeFeedbackAudio } from "./modules/learning";
+export { FAKE_SLOW_MARKER } from "./providers/fake-lesson-pool";
 export {
   deterministicBytes,
-  FAKE_SLOW_MARKER,
   fakeGenerationDeps,
   fakeMediaSettings,
   fakeSpeechDeps,
@@ -264,7 +264,6 @@ export {
   FakeSttProvider,
   FakeTtsProvider,
   type LlmBehavior,
-  type LlmLessonBehavior,
   type FakeGraderBehavior,
 } from "./providers/fake";
 export { createGenerationDepsFromEnv, generationPublicServiceFromEnv, imageProviderFromEnv } from "./providers/generation-env";

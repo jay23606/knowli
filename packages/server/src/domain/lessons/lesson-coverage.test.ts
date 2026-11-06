@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE, lessonCoverageGaps, lessonPoolMinimums, stageDeficits } from "./lesson-coverage";
+import { DISTINCT_OPEN_ANSWERS_PER_OBJECTIVE, lessonCoverageGaps, lessonPoolMinimums } from "./lesson-coverage";
 import { DEFAULT_LESSON_POLICY } from "./lesson-policy";
 import { poolCoverage, type CoverageGap } from "./pool-validation";
 import { englishChapterSubject } from "./subjects/english-chapter/module";
@@ -171,48 +171,5 @@ describe("lessonCoverageGaps: ignoreExposure (raport przed/po)", () => {
     ];
     expect(lessonCoverageGaps({ subject, exercises, examples: { [A]: ["Warszawa"] }, objectiveIds: [A], ignoreExposure: true }))
       .toEqual(legacyCoverage(subject, exercises, [A]));
-  });
-});
-
-describe("stageDeficits", () => {
-  it("stageDeficits: rozdział 3/3/0 przy minimach 3/3/2 → { guided: 0, productive: 0, independent: 2 }", () => {
-    const input = {
-      subject: englishChapterSubject,
-      exercises: [
-        choice(), choice(), choice(),
-        gapExercise("A ___.", "x"), gapExercise("B ___.", "y"), gapExercise("C ___.", "z"),
-      ],
-      examples: {},
-      objectiveIds: [A],
-    };
-    expect(stageDeficits(input, A)).toEqual({ guided: 0, productive: 0, independent: 2 });
-  });
-
-  it("uwzględnia wykluczone ujawnione ćwiczenia samodzielne", () => {
-    const input = {
-      subject: englishChapterSubject,
-      exercises: [
-        choice(), choice(), choice(),
-        gapExercise("A ___.", "x"), gapExercise("B ___.", "y"), gapExercise("C ___.", "z"),
-        translation("I'm hungry."), translation("I'm thirsty."),
-      ],
-      examples: { [A]: ["I'm hungry."] },
-      objectiveIds: [A],
-    };
-    expect(stageDeficits(input, A)).toEqual({ guided: 0, productive: 0, independent: 1 });
-  });
-
-  it("zagadnienie pokryte → same zera", () => {
-    const input = {
-      subject: englishChapterSubject,
-      exercises: [
-        choice(), choice(), choice(),
-        gapExercise("A ___.", "x"), gapExercise("B ___.", "y"), gapExercise("C ___.", "z"),
-        translation("I'm thirsty."), translation("I'm cold."),
-      ],
-      examples: {},
-      objectiveIds: [A],
-    };
-    expect(stageDeficits(input, A)).toEqual({ guided: 0, productive: 0, independent: 0 });
   });
 });

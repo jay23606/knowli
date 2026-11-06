@@ -58,7 +58,7 @@ export interface LlmPromptProfileInput {
   readonly interestsRule?: string;
 }
 
-/** Ile ćwiczeń danego etapu wygenerować dla jednego celu (partia per cel). */
+/** Ile ćwiczeń danego etapu wygenerować dla jednego celu (liczby z `targets` kierownika agenta). */
 export interface LlmLessonStageCounts {
   readonly guided: number;
   readonly productive: number;
@@ -75,7 +75,7 @@ export interface LessonPoolInput {
   readonly exerciseTypes: readonly string[];
   /** Przekształcenia dostępne w temacie (dla `lesson_transform`). */
   readonly transforms: readonly LlmLessonTransformInput[];
-  /** Cele tej partii — zwykle jeden (generacja per cel). */
+  /** Cele wejścia — w wejściu podagenta dokładnie jeden (jego zagadnienie). */
   readonly objectives: readonly LlmLessonObjectiveInput[];
   readonly material: string;
   readonly instruction?: string;
@@ -85,9 +85,9 @@ export interface LessonPoolInput {
   readonly countPerObjective: number;
   readonly stageCounts: LlmLessonStageCounts;
   /**
-   * Ile DODATKOWYCH ćwiczeń `lesson_listen_choice` (0–2) wolno wygenerować na cel partii: leżą poza
-   * podziałem etapów i poza `countPerObjective`, a prompt podnosi o nie limit partii. Brak pola = adapter
-   * nie prosi o ten typ (przedmiot bez nagrań zdań albo cel bez typu na liście).
+   * Ile DODATKOWYCH ćwiczeń `lesson_listen_choice` (0–2) wolno wygenerować na cel: leżą poza
+   * podziałem etapów i poza `countPerObjective`, a prompt podnosi o nie limit ćwiczeń celu. Brak pola =
+   * adapter nie prosi o ten typ (przedmiot bez nagrań zdań albo cel bez typu na liście).
    */
   readonly listenChoicePerObjective?: number;
   /** Ile miejsc etapu samodzielnego zastrzec dla różnych pytań otwartych (przedmioty v3). */
@@ -97,10 +97,6 @@ export interface LessonPoolInput {
   readonly groundingRequired?: boolean;
   /** Tożsamość duplikatu w obrębie puli; domyślnie zgodność odpowiedzi. */
   readonly deduplication?: "answer" | "exercise";
-  /** Odpowiedzi już w puli (dla dogenerowania bez duplikatów). */
-  readonly existingAnswers?: readonly string[];
-  /** Bodźce już w puli, używane gdy przedmiot deduplikuje całe ćwiczenia. */
-  readonly existingExercises?: readonly { objectiveId: string; exerciseType: string; stimulus: string }[];
   /** Czy generator ma zwracać `voiceTone` ćwiczenia (przedmiot z `ttsForPrompts`); bez flagi schemat i prompt nie mają pola. */
   readonly voiceTones?: boolean;
   /** Czy generator ma zwracać `explanationPl` ćwiczenia (przedmiot z `exerciseExplanations`); bez flagi schemat i prompt nie mają pola. */
@@ -111,11 +107,6 @@ export interface LessonPoolInput {
    * po `toLowerCase().trim()` bez końcowej kropki; brak pola = bez ograniczeń.
    */
   readonly avoidSentences?: readonly string[];
-  /**
-   * Po co wołamy generator: `pool` (domyślnie) — pełna generacja lub dogenerowanie puli;
-   * `stage_top_up` — runda dogenerowania w etapie przeglądu lekcji. Fake rozdziela po tym kolejki zachowań.
-   */
-  readonly purpose?: "pool" | "stage_top_up";
 }
 
 /**
@@ -131,8 +122,6 @@ export interface LessonObjectivesInput {
   readonly generationRole: string;
   /** Czy karty zagadnień niosą `voiceTone` (przedmiot z `ttsForPrompts`); bez flagi schemat i prompt nie mają pola. */
   readonly voiceTones?: boolean;
-  /** Reguły przedmiotu dla podziału materiału na zagadnienia (opcjonalne). */
-  readonly objectivesRules?: string;
 }
 
 /**
@@ -169,7 +158,7 @@ export interface RunCostSink {
 export interface LessonObjectiveAgentInput {
   /**
    * Pola promptu produkcyjnego (rola, reguły, typy, materiał, polecenie, tematy zdań, avoidSentences).
-   * Liczby partii (`countPerObjective`, `stageCounts`, `listenChoicePerObjective`) wypełnia kierownik
+   * Liczby ćwiczeń (`countPerObjective`, `stageCounts`, `listenChoicePerObjective`) wypełnia kierownik
    * z `targets`; `targets` jest jedynym źródłem liczb.
    */
   readonly pool: LessonPoolInput;
@@ -180,6 +169,13 @@ export interface LessonObjectiveAgentInput {
     readonly cards: readonly { readonly title: string; readonly body: string }[];
     /** `false` = model dostarcza przykłady zagadnienia przez `submit`; `true` = przykłady ustalone (plan albo wznowienie). */
     readonly examplesFromPlan: boolean;
+    /**
+     * Pozycja zagadnienia w kolejności lekcji (od 0; zagadnień jest `otherObjectives.length + 1`) i liczba
+     * ćwiczeń zagadnienia już w stanie runu (`fixed` i przyjęte). Tylko dla fake'a agenta (rozłączna
+     * numeracja zagadnień i „+N”); adapter modelu ich nie wysyła.
+     */
+    readonly index: number;
+    readonly existingCount: number;
   };
   readonly otherObjectives: readonly {
     readonly title: string;
@@ -252,7 +248,7 @@ export interface LessonAgentPlanInput {
 
 /**
  * Agent puli ćwiczeń (etap 1 issue #237): model w pętli wywołuje narzędzia, a serwer waliduje każdy
- * wynik. Kontrakt adapterów: surowe rekordy materializuje jak `generateLessonPool` przed `submit`
+ * wynik. Kontrakt adapterów: surowe rekordy materializuje (rachunki, słowa kluczowe, pary/grupy/luki) przed `submit`
  * i nie waliduje treści; kończy pętlę, gdy `shouldStop()` zwraca `true` (sprawdzane przed każdym
  * krokiem), po `maxSteps` albo gdy model kończy; zgłasza koszt każdego żądania przez `RunCostSink`;
  * przerwanie `signal` kończy wywołanie wyjątkiem przerwania.
@@ -359,17 +355,6 @@ export interface LlmProvider {
     input: LessonStoryInput,
     signal?: AbortSignal,
   ): Promise<{ story: unknown }>;
-  /**
-   * Generacja surowej puli ćwiczeń jednego celu (design „Generowanie puli”).
-   * Zwraca ćwiczenia do walidacji w domenie (`pool-validation.ts`) oraz
-   * przykłady per cel do kart lekcji. Adapter materializuje surowe parametry
-   * lesson_calculation do kanonicznego prompt/answer przed wspólną walidacją;
-   * wadliwe rekordy pozostawia do indywidualnego odrzucenia.
-   */
-  generateLessonPool(
-    input: LessonPoolInput,
-    signal?: AbortSignal,
-  ): Promise<{ exercises: unknown[]; examples: Record<string, string[]> }>;
 }
 
 /** `wav` = PCM od providera opakowane w WAV (Gemini TTS); `mp3` = gotowy plik providera. */

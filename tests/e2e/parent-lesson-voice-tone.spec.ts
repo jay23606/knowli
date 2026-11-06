@@ -91,7 +91,7 @@ async function openLesson(page: Page, options: { cardRegenerateFails?: boolean; 
     const path = new URL(request.url()).pathname;
     calls.requests.push({ method, path, body: method === "GET" ? null : request.postDataJSON() });
     if (path.endsWith("/login")) return route.fulfill({ json: { authenticated: true, setupRequired: false } });
-    if (path.endsWith("/lesson-catalog")) return route.fulfill({ json: { subjects: [] } });
+    if (path.endsWith("/lesson-catalog")) return route.fulfill({ json: { lessonGenerationAvailable: true, subjects: [] } });
     if (path.endsWith("/decks")) return route.fulfill({ json: [{ deckId, title: lesson.title, state: "draft", kind: "lesson", editableVersionId: draftId, publishedVersionId: null }] });
     if (path.endsWith(`/lessons/${deckId}`)) return route.fulfill({ json: { ...lesson, draft: current } });
     if (method === "PATCH" && path.endsWith(`/lesson-drafts/${draftId}`)) {

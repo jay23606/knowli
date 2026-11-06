@@ -110,8 +110,8 @@ export const SubjectCatalogDtoSchema = z.object({
     offersListenChoice: z.boolean().optional(),
     /**
      * Etykiety usług (host · model), do których trafia materiał przy generowaniu tego przedmiotu
-     * (agent puli, a w szkole także usługa etapu zagadnień); brak = przedmiot bez nadpisania,
-     * obowiązuje katalogowe `generationService`.
+     * (agent puli, a w szkole także usługa etapu zagadnień); brak = generowanie lekcji niedostępne
+     * (`lessonGenerationAvailable: false`).
      */
     generationServices: z.array(z.string().min(1)).min(1).optional(),
     /** Etykieta drugiego modelu, który rozwiązuje gotowe ćwiczenia na próbę (agent puli); brak = bez kontroli rozwiązywaniem. */
@@ -134,9 +134,14 @@ export const SubjectCatalogDtoSchema = z.object({
     }).strict()),
   }).strict()),
   /**
-   * Skonfigurowana etykieta usługi generującej lekcje (host · model, z env procesu web);
-   * parent-facing, do informacji o tematach zdań. To opis konfiguracji, nie dowód, że
-   * generowanie jest dostępne; brak = etykiety nie da się ustalić.
+   * Czy generowanie lekcji jest dostępne (worker ma agenta puli: klucz OpenRouter albo tryb fake).
+   * `false` = formularz i ponowienia generowania lekcji pokazują komunikat zamiast działać.
+   */
+  lessonGenerationAvailable: z.boolean(),
+  /**
+   * Skonfigurowana etykieta usługi `UMIEM_LLM` (host · model, z env procesu web): etap zagadnień
+   * szkoły, historyjka gramatyki i awaryjny adresat tematów zdań. To opis konfiguracji, nie dowód,
+   * że generowanie jest dostępne (o tym mówi `lessonGenerationAvailable`); brak = etykiety nie da się ustalić.
    */
   generationService: z.string().min(1).optional(),
 }).strict();
@@ -575,7 +580,7 @@ export const LessonDraftDtoSchema = z.object({
   storyAudio: LessonPromptAudioDtoSchema.optional(),
   /**
    * Zagadnienia do uzupełnienia po częściowym generowaniu agentem puli; brak pola = pula pełna,
-   * generowanie potokiem albo wersja opublikowana.
+   * szkic sprzed agenta (dawny potok) albo wersja opublikowana.
    */
   generationGaps: z.array(LessonGenerationGapDtoSchema).min(1).optional(),
 });
