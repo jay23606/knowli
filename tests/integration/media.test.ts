@@ -452,6 +452,44 @@ describe("zasoby medialne i uzgodnienia szkicu (integracja)", () => {
     await publishDraft(services, deckB.id, 1);
   });
 
+  it("#303: nieudana regeneracja nie przywraca przy edycji obrazu odrzuconego przez rodzica", async () => {
+    const fakes = await fakeGeneration();
+    disposers.push(fakes.dispose);
+    const services = mediaServices(fakes);
+
+    const dto = await createDraft(services, { title: "Dni", items: [item({ visualType: "image" })] });
+    await reconcileDraftAssets(services, dto.id);
+    await runDueGenerationWork(services);
+    const rejected = (await assetLink(dto.id, 0, "illustration")).asset_id!;
+    expect((await assetRow(rejected)).state).toBe("ready");
+
+    const regenerated = await regenerateRevisionAsset(services, {
+      draftId: dto.id,
+      itemRevisionId: dto.items[0]!.revisionId,
+      role: "illustration",
+    });
+    fakes.image.failuresLeft = 3;
+    for (let pass = 0; pass < 3; pass += 1) {
+      await runDueGenerationWork(services);
+    }
+    expect((await assetRow(regenerated.assetId)).state).toBe("failed");
+    const failedDraft = await readDraft(services, dto.id);
+    expect(failedDraft.assets.find((a) => a.role === "illustration")!.state).toBe("failed");
+
+    // zwykła edycja szkicu ponawia generację zamiast wiązać odrzuconą gen 1
+    await editDraft(services, dto.id, { title: "Dni tygodnia", expectedEditNumber: 1 });
+    const link = await assetLink(dto.id, 0, "illustration");
+    expect(link.asset_id).not.toBe(rejected);
+    expect(link.asset_id).not.toBe(regenerated.assetId);
+    expect(link.state).toBe("pending");
+    expect((await assetRow(link.asset_id!)).generation_number).toBe(3);
+    await expect(publishDraft(services, dto.id, 2)).rejects.toMatchObject({ code: "validation" });
+
+    // kolejna edycja przy trwającej gen 3 nie wraca do gen 1
+    await editDraft(services, dto.id, { title: "Dni", expectedEditNumber: 2 });
+    expect((await assetLink(dto.id, 0, "illustration")).asset_id).toBe(link.asset_id);
+  });
+
   it("zmiana tekstu zmienia fingerprint audio: stary zasób zostaje w cache, szkic dostaje nowy", async () => {
     const fakes = await fakeGeneration();
     disposers.push(fakes.dispose);

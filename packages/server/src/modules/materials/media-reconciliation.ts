@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { LessonVoiceToneSchema, type MediaPendingDetails } from "@learning/contracts";
 import { ttsVoiceFor, type MediaSettings, type Services } from "../../config";
@@ -296,21 +296,25 @@ function requiredAssetsForRevision(
  * Gotowy albo trwający zasób fingerprintu, w przeciwnym razie nowe zlecenie.
  * `originDeckId` — talia szkicu, którego uzgodnienie zleca zasób (spec kosztów
  * §3.2): trafia tylko do nowego runu; współdzielony zasób zostaje przypisany
- * talii, która go zleciła pierwsza.
+ * talii, która go zleciła pierwsza. `afterGeneration` — numer nieudanej
+ * generacji powiązanej ze szkicem: starsze generacje fingerprintu rodzic
+ * odrzucił regeneracją (#303), więc nie wracają do szkicu.
  */
 async function findOrCreateAsset(
   tx: Tx,
   settings: MediaSettings,
   req: RequiredAsset,
   originDeckId: string | null,
+  afterGeneration = 0,
 ): Promise<{ id: string; state: "pending" | "ready" }> {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${req.fingerprint}))`);
+  const newer = gt(mediaAssets.generationNumber, afterGeneration);
 
   const ready = (
     await tx
       .select({ id: mediaAssets.id })
       .from(mediaAssets)
-      .where(and(eq(mediaAssets.fingerprint, req.fingerprint), eq(mediaAssets.state, "ready")))
+      .where(and(eq(mediaAssets.fingerprint, req.fingerprint), eq(mediaAssets.state, "ready"), newer))
       .orderBy(desc(mediaAssets.generationNumber))
       .limit(1)
   )[0];
@@ -322,7 +326,7 @@ async function findOrCreateAsset(
     await tx
       .select({ id: mediaAssets.id })
       .from(mediaAssets)
-      .where(and(eq(mediaAssets.fingerprint, req.fingerprint), eq(mediaAssets.state, "pending")))
+      .where(and(eq(mediaAssets.fingerprint, req.fingerprint), eq(mediaAssets.state, "pending"), newer))
       .orderBy(desc(mediaAssets.generationNumber))
       .limit(1)
   )[0];
@@ -453,6 +457,7 @@ export async function reconcileDraftAssetsTx(
 
     for (const req of required) {
       const existing = mine.get(req.role);
+      let failedGeneration = 0;
       if (existing && existing.expectedFingerprint === req.fingerprint) {
         if (existing.state === "omitted") {
           continue;
@@ -460,10 +465,13 @@ export async function reconcileDraftAssetsTx(
         if (existing.assetId !== null) {
           const asset = (
             await tx
-              .select({ state: mediaAssets.state, fingerprint: mediaAssets.fingerprint })
+              .select({ state: mediaAssets.state, fingerprint: mediaAssets.fingerprint, generationNumber: mediaAssets.generationNumber })
               .from(mediaAssets)
               .where(eq(mediaAssets.id, existing.assetId))
           )[0];
+          if (asset && asset.fingerprint === req.fingerprint && asset.state === "failed") {
+            failedGeneration = asset.generationNumber;
+          }
           // Nagranie pytania, zdania feedbacku i wyjaśnienia błędu nie jest decyzją rodzica (brak
           // „Regeneruj” w panelu, design szkoły §11.2) i jest tanie: publikacja zleca je ponownie.
           if (asset && asset.fingerprint === req.fingerprint && asset.state === "failed" && options.keepFailed
@@ -487,7 +495,7 @@ export async function reconcileDraftAssetsTx(
           }
         }
       }
-      const asset = await findOrCreateAsset(tx, settings, req, originDeckId);
+      const asset = await findOrCreateAsset(tx, settings, req, originDeckId, failedGeneration);
       const nextState = asset.state === "ready" ? "approved" : "pending";
       if (existing) {
         await tx
