@@ -472,6 +472,7 @@ describe("agent puli lekcji (integracja)", () => {
       rejectedCount?: number;
       droppedObjectiveCount?: number;
       generationGaps?: unknown;
+      cleanupCounts?: Record<string, number>;
     }
 
     const contextOf = (version: VersionRow) => version.lesson_context as DraftContext;
@@ -1368,15 +1369,22 @@ describe("agent puli lekcji (integracja)", () => {
         const { services } = await agentWorld({
           objectives: { third_person_s: { calls: [[], [GENERATE]] } },
         });
-        const { runId } = await createLesson(services, command());
+        const { runId, deckId } = await createLesson(services, command());
         const before = contextOf(await versionOf(runId));
         // Wcześniejsza próba: 2 usunięcia bezpiecznika i 1 zagadnienie odrzucone przy budowie tematu.
-        await setCheckpoint(runId, { ...emptyLessonAgentProgress(), removedAfterAcceptance: 2, droppedObjectiveCount: 1 });
+        // Oraz oczyszczenia przy przyjmowaniu (#286): 3 podpowiedzi i 5 wariantów.
+        await setCheckpoint(runId, {
+          ...emptyLessonAgentProgress(),
+          removedAfterAcceptance: 2,
+          droppedObjectiveCount: 1,
+          cleanupCounts: { hintsRemoved: 3, variantsRemoved: 5 },
+        });
         await executeLessonGeneration(services, runId);
         expect((await fullRun(runId)).error_code).toBe("validation");
         const failedContext = contextOf(await versionOf(runId));
         expect(failedContext.rejectedCount).toBe((before.rejectedCount ?? 0) + 2);
         expect(failedContext.droppedObjectiveCount).toBe((before.droppedObjectiveCount ?? 0) + 1);
+        expect(failedContext.cleanupCounts).toEqual({ hintsRemoved: 3, variantsRemoved: 5 });
 
         await retryGeneration(services, runId);
         await executeLessonGeneration(services, runId);
@@ -1385,6 +1393,9 @@ describe("agent puli lekcji (integracja)", () => {
         const context = contextOf(await versionOf(runId));
         expect(context.rejectedCount).toBe((before.rejectedCount ?? 0) + 2);
         expect(context.droppedObjectiveCount).toBe((before.droppedObjectiveCount ?? 0) + 1);
+        expect(context.cleanupCounts).toEqual({ hintsRemoved: 3, variantsRemoved: 5 });
+        expect((await readLessonDeck(services, deckId)).draft!.cleanupCounts)
+          .toEqual({ hintsRemoved: 3, variantsRemoved: 5, quotesSnapped: 0 });
       });
 
       it("awaria transakcji porażki walidacji → liczniki zostają w punkcie kontrolnym (kontekst wycofany)", async () => {

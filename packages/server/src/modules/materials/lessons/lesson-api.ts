@@ -76,6 +76,7 @@ interface LessonContextView {
   examples: Record<string, string[]>;
   rejectedCount: number;
   rejectedReasons?: Record<string, number>;
+  cleanupCounts?: Record<string, number>;
   droppedObjectiveCount?: number;
   material: string;
   subjectTitlePl?: string;
@@ -98,6 +99,7 @@ export function readLessonContext(raw: Record<string, unknown> | null): LessonCo
     examples: ctx.examples ?? {},
     rejectedCount: ctx.rejectedCount ?? 0,
     ...(ctx.rejectedReasons && Object.keys(ctx.rejectedReasons).length > 0 ? { rejectedReasons: ctx.rejectedReasons } : {}),
+    ...(ctx.cleanupCounts && Object.values(ctx.cleanupCounts).some((count) => count > 0) ? { cleanupCounts: ctx.cleanupCounts } : {}),
     ...(ctx.droppedObjectiveCount ? { droppedObjectiveCount: ctx.droppedObjectiveCount } : {}),
     material: ctx.material ?? "",
     ...(ctx.subjectTitlePl ? { subjectTitlePl: ctx.subjectTitlePl } : {}),
@@ -432,6 +434,9 @@ async function readLessonDraftDto(
     ...(audio.story ? { storyAudio: audio.story } : {}),
     rejectedCount: context.rejectedCount,
     ...(context.rejectedReasons ? { rejectedReasons: context.rejectedReasons } : {}),
+    ...(context.cleanupCounts
+      ? { cleanupCounts: { hintsRemoved: context.cleanupCounts.hintsRemoved ?? 0, variantsRemoved: context.cleanupCounts.variantsRemoved ?? 0, quotesSnapped: context.cleanupCounts.quotesSnapped ?? 0 } }
+      : {}),
     ...(context.droppedObjectiveCount ? { droppedObjectiveCount: context.droppedObjectiveCount } : {}),
     coverage,
     ...(exposureLeaks.length > 0 ? { exposureLeaks } : {}),

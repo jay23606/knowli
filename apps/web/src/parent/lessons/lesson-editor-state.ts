@@ -560,6 +560,19 @@ export function formatRejectedReason(template: string, reason: string, count: nu
   return template.replace(/\{(reason|n)\}/gu, (_placeholder, name: string) => (name === "reason" ? reason : String(count)));
 }
 
+/** Poprawki agenta pod listą powodów odrzuceń (`cleanupCounts`): tylko niezerowe liczniki, w stałej kolejności. */
+export function cleanupLines(
+  counts: { hintsRemoved: number; variantsRemoved: number; quotesSnapped: number } | undefined,
+  templates: { hints: string; variants: string; quotes: string },
+): string[] {
+  if (counts === undefined) return [];
+  return [
+    [counts.hintsRemoved, templates.hints],
+    [counts.variantsRemoved, templates.variants],
+    [counts.quotesSnapped, templates.quotes],
+  ].flatMap(([n, template]) => (n as number) > 0 ? [(template as string).replace("{n}", String(n))] : []);
+}
+
 /** Applies an API preview only while it still describes this variant. No arithmetic in the client. */
 export function applyCalculationPreview(exercise: EditableLessonExercise, requested: CalculationSpec, preview: { prompt: string; answer: string }): EditableLessonExercise {
   return JSON.stringify(exercise.calculation) === JSON.stringify(requested)

@@ -373,10 +373,24 @@ test("szkic agenta: licznik odrzuceń nie mniejszy niż suma powodów, a powody 
   await expect(page.getByTestId("rejected-other")).toHaveText("inne powody: 1");
 });
 
+test("szkic agenta: poprawki przy przyjmowaniu pokazują tylko niezerowe liczniki", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const cleaned = { ...version(draftId, "draft", 2), cleanupCounts: { hintsRemoved: 5, variantsRemoved: 18, quotesSnapped: 0 } };
+  await openLesson(page, { data: { ...lesson, draft: cleaned, published: null, assignments: [] } as unknown as typeof lesson });
+  await expect(page.getByTestId("cleanup-counts-label")).toHaveText(messages.lessons.cleanupLabel);
+  const lines = page.getByRole("list", { name: messages.lessons.cleanupLabel }).getByRole("listitem");
+  await expect(lines).toHaveText([
+    messages.lessons.cleanupHints.replace("{n}", "5"),
+    messages.lessons.cleanupVariants.replace("{n}", "18"),
+  ]);
+  await expectNoHorizontalOverflow(page);
+});
+
 test("lekcja bez powodów odrzuceń i bez rodzaju zagadnień nie pokazuje listy ani znaczka", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openLesson(page);
   await expect(page.getByTestId("rejected-reasons")).toHaveCount(0);
+  await expect(page.getByTestId("cleanup-counts")).toHaveCount(0);
   await expect(page.locator('[data-testid^="objective-kind-"]')).toHaveCount(0);
 });
 

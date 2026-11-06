@@ -37,6 +37,7 @@ import "./lesson-panels.css";
 import {
   createLessonSnapshot,
   applyCalculationPreview,
+  cleanupLines,
   formatRejectedReason,
   otherRejectedCount,
   rejectedTotal,
@@ -702,6 +703,11 @@ export default function LessonEditor({
     ?? topic?.objectives.find((objective) => objective.id === objectiveId);
   // Powody odrzuceń przy generowaniu (zliczenia bez danych dziecka) — rodzic widzi, czy dogenerować.
   const rejectedReasons = topRejectedReasons(active?.rejectedReasons);
+  const cleanup = cleanupLines(active?.cleanupCounts, {
+    hints: messages.lessons.cleanupHints,
+    variants: messages.lessons.cleanupVariants,
+    quotes: messages.lessons.cleanupQuotes,
+  });
   // Licznik nie mniejszy niż suma powodów (agent: powody z pętli, `rejectedCount` tylko usunięcia po przyjęciu).
   const rejectedShown = rejectedTotal(active?.rejectedCount ?? 0, active?.rejectedReasons);
   // Odrzucenia spoza wypisanych powodów (powody poza listą albo bez powodu) — rodzic widzi całą skalę.
@@ -1379,6 +1385,14 @@ export default function LessonEditor({
               {otherRejected > 0 && (
                 <li data-testid="rejected-other">{messages.lessons.rejectedOtherReasons.replace("{n}", String(otherRejected))}</li>
               )}
+            </ul>
+          </div>
+        )}
+        {cleanup.length > 0 && (
+          <div>
+            <Text size="sm" className="pp-editor-muted" id="cleanup-counts-label" data-testid="cleanup-counts-label">{messages.lessons.cleanupLabel}</Text>
+            <ul className="pp-lesson-rejected-reasons pp-editor-muted" aria-labelledby="cleanup-counts-label" data-testid="cleanup-counts">
+              {cleanup.map((line) => <li key={line}>{line}</li>)}
             </ul>
           </div>
         )}

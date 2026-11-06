@@ -148,7 +148,7 @@ function discardedProgress(progress: LessonAgentProgress): LessonAgentProgress {
       { ...entry, exercises: [], ...(entry.status === "complete" ? { status: "incomplete" as const } : {}) },
     ]),
   );
-  return { ...progress, objectives, removedAfterAcceptance: 0, droppedObjectiveCount: 0, rejectionCodesWritten: { ...progress.rejectionCodes } };
+  return { ...progress, objectives, removedAfterAcceptance: 0, droppedObjectiveCount: 0, cleanupCounts: {}, rejectionCodesWritten: { ...progress.rejectionCodes } };
 }
 
 /**
@@ -305,6 +305,7 @@ export async function executeLessonAgentGeneration(
       rejectedCount: progress.removedAfterAcceptance + check.removed,
       // Powody dla rodzica: kumulowane kody runu bez tych, które porażka walidacji już zapisała w szkicu.
       rejectedReasons: agentRejectedReasons(unwrittenRejectionCodes(progress)),
+      ...(progress.cleanupCounts === undefined ? {} : { cleanupCounts: progress.cleanupCounts }),
       droppedObjectiveCount: progress.droppedObjectiveCount ?? 0,
     };
     const written = await finalizeLessonPoolWrite(services, {
@@ -354,6 +355,7 @@ export async function executeLessonAgentGeneration(
         ...progress,
         removedAfterAcceptance: 0,
         droppedObjectiveCount: 0,
+        cleanupCounts: {},
         rejectionCodesWritten: { ...progress.rejectionCodes },
       };
       await failLessonPoolValidation(services, {
@@ -362,6 +364,7 @@ export async function executeLessonAgentGeneration(
           newExamples: {},
           rejectedCount: progress.removedAfterAcceptance,
           rejectedReasons: agentRejectedReasons(unwrittenRejectionCodes(progress)),
+          ...(progress.cleanupCounts === undefined ? {} : { cleanupCounts: progress.cleanupCounts }),
           droppedObjectiveCount: progress.droppedObjectiveCount ?? 0,
         },
         onTransaction: (tx) => saveLessonAgentCheckpoint(tx, run, counted),

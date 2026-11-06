@@ -5,7 +5,7 @@ import type { DynamicTopicData, LessonExerciseDraft, LessonTopic, SubjectModule 
 import type { LessonAgentObjectiveProgress, LessonAgentProgress } from "./lesson-agent-checkpoint";
 import { CHECK_COUNTER_KEYS } from "./lesson-agent-check-run";
 import type { LessonGenerationGap, LessonRunInput } from "./lesson-drafts";
-import type { AgentObjectiveSource, LessonPoolAgentResult, LessonPoolAgentRunInput } from "./lesson-pool-agent";
+import { CLEANUP_COUNTER_KEYS, type AgentObjectiveSource, type LessonPoolAgentResult, type LessonPoolAgentRunInput } from "./lesson-pool-agent";
 
 export type { LessonGenerationGap };
 
@@ -287,6 +287,12 @@ export function mergeAttemptIntoProgress(
     const delta = result.stats[key];
     if (delta > 0) checkCounters[key] = (checkCounters[key] ?? 0) + delta;
   }
+  // Oczyszczenia przy przyjmowaniu: sumowane jak liczniki kontroli, do zapisu w kontekście szkicu.
+  const cleanupCounts: Record<string, number> = { ...progress.cleanupCounts };
+  for (const key of CLEANUP_COUNTER_KEYS) {
+    const delta = result.stats[key];
+    if (delta > 0) cleanupCounts[key] = (cleanupCounts[key] ?? 0) + delta;
+  }
   const attemptSpentUsd = Math.max(0, result.spentUsd - progress.budgetSpentUsd);
   const dynamicTopic = progress.dynamicTopic ?? result.dynamicTopic;
   return {
@@ -297,6 +303,7 @@ export function mergeAttemptIntoProgress(
     totalSpentUsd: progress.totalSpentUsd + attemptSpentUsd,
     rejectionCodes,
     ...(Object.keys(checkCounters).length === 0 ? {} : { checkCounters }),
+    ...(Object.keys(cleanupCounts).length === 0 ? {} : { cleanupCounts }),
     removedAfterAcceptance: progress.removedAfterAcceptance + result.stats.invariantViolations,
   };
 }

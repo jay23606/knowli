@@ -469,6 +469,17 @@ describe("mergeAttemptIntoProgress", () => {
     expect(mergeAttemptIntoProgress(second, counted({}), "pool").checkCounters).toEqual(second.checkCounters);
   });
 
+  it("oczyszczenia: sumowane między próbami, bez pola gdy nic nie policzono", () => {
+    const cleaned = (stats: Partial<LessonPoolAgentResult["stats"]>) =>
+      attemptResult([], { stats: { ...emptyLessonPoolAgentStats(), ...stats } });
+    expect(mergeAttemptIntoProgress(emptyLessonAgentProgress(), cleaned({}), "pool")).not.toHaveProperty("cleanupCounts");
+    const first = mergeAttemptIntoProgress(emptyLessonAgentProgress(), cleaned({ hintsRemoved: 2, variantsRemoved: 3 }), "pool");
+    expect(first.cleanupCounts).toEqual({ hintsRemoved: 2, variantsRemoved: 3 });
+    const second = mergeAttemptIntoProgress(first, cleaned({ variantsRemoved: 1, quotesSnapped: 4 }), "pool");
+    expect(second.cleanupCounts).toEqual({ hintsRemoved: 2, variantsRemoved: 4, quotesSnapped: 4 });
+    expect(mergeAttemptIntoProgress(second, cleaned({}), "pool").cleanupCounts).toEqual(second.cleanupCounts);
+  });
+
   it("pula: kod porażki zagadnienia i temat planu z wyniku", () => {
     const merged = mergeAttemptIntoProgress(
       emptyLessonAgentProgress(),

@@ -11,6 +11,7 @@ import {
   syncGapAnswers,
   applyCalculationPreview,
   groupCalculationFamilies,
+  cleanupLines,
   groupExercisesByObjectiveAndStage,
   lessonThemesPatch,
   lessonExerciseChanged,
@@ -658,6 +659,20 @@ describe("topRejectedReasons (powody odrzuceń przy generowaniu)", () => {
   it("brak powodów (undefined albo pusty obiekt) daje pustą listę", () => {
     expect(topRejectedReasons(undefined)).toEqual([]);
     expect(topRejectedReasons({})).toEqual([]);
+  });
+});
+
+describe("cleanupLines (poprawki agenta przy przyjmowaniu)", () => {
+  const templates = { hints: "podpowiedzi: {n}", variants: "warianty: {n}", quotes: "cytaty: {n}" };
+
+  it("wypisuje tylko niezerowe liczniki w stałej kolejności", () => {
+    expect(cleanupLines({ hintsRemoved: 5, variantsRemoved: 18, quotesSnapped: 0 }, templates)).toEqual(["podpowiedzi: 5", "warianty: 18"]);
+    expect(cleanupLines({ hintsRemoved: 0, variantsRemoved: 0, quotesSnapped: 2 }, templates)).toEqual(["cytaty: 2"]);
+  });
+
+  it("brak pola albo same zera daje pustą listę", () => {
+    expect(cleanupLines(undefined, templates)).toEqual([]);
+    expect(cleanupLines({ hintsRemoved: 0, variantsRemoved: 0, quotesSnapped: 0 }, templates)).toEqual([]);
   });
 });
 

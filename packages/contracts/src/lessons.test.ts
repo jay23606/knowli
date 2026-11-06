@@ -343,6 +343,26 @@ describe("LessonDraftDtoSchema — powody odrzuceń", () => {
   });
 });
 
+describe("LessonDraftDtoSchema — cleanupCounts", () => {
+  const draft = {
+    id: UUID, deckId: UUID2, editNumber: 1, status: "review", title: "Rozdział 3",
+    subjectId: "english_chapter", topicId: "chapter", topicVersion: 1,
+    objectiveIds: ["o1"], examples: {}, exercises: [], assets: [], rejectedCount: 0, coverage: [],
+  };
+  const counts = { hintsRemoved: 5, variantsRemoved: 18, quotesSnapped: 0 };
+
+  it("jest opcjonalne (wstecznie zgodne) i przyjmuje liczniki", () => {
+    expect(LessonDraftDtoSchema.parse(draft).cleanupCounts).toBeUndefined();
+    expect(LessonDraftDtoSchema.parse({ ...draft, cleanupCounts: counts }).cleanupCounts).toEqual(counts);
+  });
+
+  it("odrzuca liczby ujemne, ułamkowe, brakujące liczniki i obce klucze", () => {
+    for (const bad of [{ ...counts, hintsRemoved: -1 }, { ...counts, variantsRemoved: 1.5 }, { hintsRemoved: 1 }, { ...counts, treść: 1 }]) {
+      expect(LessonDraftDtoSchema.safeParse({ ...draft, cleanupCounts: bad }).success).toBe(false);
+    }
+  });
+});
+
 describe("LessonDraftDtoSchema — ujawnione rozwiązania", () => {
   const draft = {
     id: UUID, deckId: UUID2, editNumber: 1, status: "draft", title: "Present Simple",

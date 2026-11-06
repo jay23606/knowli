@@ -845,6 +845,11 @@ export const messages = {
     rejectedReasonsLabel: "Powody odrzuceń przy generowaniu",
     rejectedReason: "{reason} ×{n}",
     rejectedOtherReasons: "inne powody: {n}",
+    // Oczyszczenia agenta puli (`cleanupCounts` szkicu): ćwiczenia przyjęte po poprawce, nie odrzucone; same liczby.
+    cleanupLabel: "Poprawki agenta przy przyjmowaniu ćwiczeń",
+    cleanupHints: "usunięte podpowiedzi: {n}",
+    cleanupVariants: "usunięte warianty odpowiedzi: {n}",
+    cleanupQuotes: "poprawione cytaty z materiału: {n}",
     // Powody odrzuceń agenta puli lekcji (`rejectedReasons` szkicu): etykiety kodów odrzuceń agenta, bez treści ćwiczeń.
     agentRejectionReasons: {
       shape_malformed: "zły format ćwiczenia",

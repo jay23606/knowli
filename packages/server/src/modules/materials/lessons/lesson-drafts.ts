@@ -99,6 +99,8 @@ export interface LessonContext {
   rejectedCount: number;
   /** Powody odrzuceń z czyszczenia świeżej puli (`refineGeneratedPool`) z licznikami; bez danych dziecka. */
   rejectedReasons?: Record<string, number>;
+  /** Oczyszczenia agenta puli przy przyjmowaniu (`hintsRemoved`, `variantsRemoved`, `quotesSnapped`), sumowane między przebiegami; same liczby. */
+  cleanupCounts?: Record<string, number>;
   /** Zagadnienia odrzucone/pominięte na etapie generowania tematu (szkoła; panel rodzica). */
   droppedObjectiveCount?: number;
   /** Historyjka na koniec sesji (przedmioty z `lessonStory`); zapisuje ją run historyjki albo rodzic. */
@@ -1098,7 +1100,15 @@ export interface LessonPoolWriteContext {
   /** Odrzucenia tej próby; sumowane z licznikiem poprzedniego kontekstu (wspólny zapis dolicza kolizje z historyjką i słowa kluczowe). */
   readonly rejectedCount: number;
   readonly rejectedReasons: Record<string, number>;
+  /** Oczyszczenia tej próby (ścieżka agenta); sumowane z poprzednim kontekstem jak `rejectedReasons`. */
+  readonly cleanupCounts?: Record<string, number>;
   readonly droppedObjectiveCount: number;
+}
+
+/** Kontekst z doliczonymi oczyszczeniami próby; bez nich (albo same zera) pole zostaje, jakie było. */
+function withCleanupCounts(next: LessonContext, prev: LessonContext, added: Record<string, number> | undefined): LessonContext {
+  const cleanupCounts = sumRejectedReasons(prev.cleanupCounts, added ?? {});
+  return Object.values(cleanupCounts).some((count) => count > 0) ? { ...next, cleanupCounts } : next;
 }
 
 /**
@@ -1151,12 +1161,12 @@ function failedValidationContext(
   rejectedReasons: Record<string, number>,
   extendContext: LessonContextExtension | undefined,
 ): LessonContext {
-  const next: LessonContext = {
+  const next = withCleanupCounts({
     ...prevContext,
     rejectedCount: (prevContext.rejectedCount ?? 0) + context.rejectedCount + writeRejected,
     ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
     droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + context.droppedObjectiveCount,
-  };
+  }, prevContext, context.cleanupCounts);
   return extendContext === undefined ? next : extendContext(next, []);
 }
 
@@ -1283,14 +1293,14 @@ export async function finalizeLessonPoolWrite(
     // Pełna generacja zastępuje pulę: luki poprzedniego generowania agentem są nieaktualne (ścieżka
     // agenta dopisuje bieżące w `extendContext`); dogenerowanie zostawia luki innych zagadnień.
     const { generationGaps: _staleGaps, ...prevWithoutGaps } = prevContext;
-    const baseContext: LessonContext = {
+    const baseContext = withCleanupCounts({
       ...(args.regenerate ? prevContext : prevWithoutGaps),
       ...(context.dynamicTopic ? { dynamicTopic: context.dynamicTopic, objectiveIds: context.dynamicTopic.objectives.map((o) => o.id) } : {}),
       examples: { ...prevContext.examples, ...context.newExamples },
       rejectedCount: (prevContext.rejectedCount ?? 0) + context.rejectedCount + writeRejected,
       ...(Object.keys(rejectedReasons).length > 0 ? { rejectedReasons } : {}),
       droppedObjectiveCount: (prevContext.droppedObjectiveCount ?? 0) + context.droppedObjectiveCount,
-    };
+    }, prevContext, context.cleanupCounts);
     const nextContext = args.extendContext === undefined ? baseContext : args.extendContext(baseContext, accepted);
     await tx
       .update(deckVersions)

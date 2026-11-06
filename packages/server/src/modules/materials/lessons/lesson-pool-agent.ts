@@ -174,7 +174,7 @@ export interface LessonPoolAgentDeps {
 const EXTRA_SOURCES_KEY = "__extra";
 
 /** Liczniki oczyszczeń z narzędzi (sumowane w statystykach runu i w logu zagadnienia). */
-const CLEANUP_COUNTER_KEYS = ["hintsRemoved", "variantsRemoved", "quotesSnapped"] as const;
+export const CLEANUP_COUNTER_KEYS = ["hintsRemoved", "variantsRemoved", "quotesSnapped"] as const;
 
 /** Typ ćwiczenia do dziennika: tylko znane typy lekcji (typ z rekordu modelu to dowolny napis). */
 function loggedType(exerciseType: string): string {

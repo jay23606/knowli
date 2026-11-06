@@ -585,6 +585,16 @@ export const LessonDraftDtoSchema = z.object({
    * `refineGeneratedPool`) z licznikami; tekst powodu jest dla rodzica, bez danych dziecka.
    */
   rejectedReasons: z.record(z.string(), z.number().int().positive()).optional(),
+  /**
+   * Oczyszczenia agenta puli przy przyjmowaniu ćwiczeń (sumy po przebiegach tej wersji): usunięte podpowiedzi
+   * pytań otwartych, usunięte warianty odpowiedzi i cytaty wyrównane do materiału. Same liczby, bez treści;
+   * brak pola = nic nie oczyszczono.
+   */
+  cleanupCounts: z.object({
+    hintsRemoved: z.number().int().nonnegative(),
+    variantsRemoved: z.number().int().nonnegative(),
+    quotesSnapped: z.number().int().nonnegative(),
+  }).strict().optional(),
   /** Zagadnienia odrzucone/pominięte na etapie generowania tematu (zestawy szkolne). */
   droppedObjectiveCount: z.number().int().nonnegative().optional(),
   coverage: z.array(CoverageGapDtoSchema),
